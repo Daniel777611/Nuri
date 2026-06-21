@@ -7,6 +7,7 @@ import {
   RefreshControl,
   Pressable,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -78,21 +79,53 @@ export default function Home() {
     setRefreshing(false);
   };
 
-  const askAI = async (card: FeedCard) => {
+  const onCardTap = (card: FeedCard) => {
     api
-      .trackEvent("click_ask_ai", { card_id: card.id, card_type: card.type })
+      .trackEvent("click_card", { card_id: card.id, card_type: card.type })
       .catch(() => {});
-    const session = await api.startSession({
-      card_id: card.id,
-      title: card.title,
-    });
-    router.push(`/chat/${session.id}`);
+    router.push(`/detail/${card.id}`);
   };
 
   const onScroll = (e: any) => {
     const y = e.nativeEvent.contentOffset.y;
     const idx = Math.floor(y / 220);
     api.trackEvent("scroll_depth", { value: idx }).catch(() => {});
+  };
+
+  const [favIds, setFavIds] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<string | null>(null);
+  const [shareCardId, setShareCardId] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listFavorites().then((f) => setFavIds(new Set(f.map((x: any) => x.id))));
+  }, []);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 1500);
+  };
+
+  const toggleFav = async (card: FeedCard) => {
+    const r = await api.toggleFavorite(card.id);
+    setFavIds((p) => {
+      const n = new Set(p);
+      if (r.favorited) n.add(card.id);
+      else n.delete(card.id);
+      return n;
+    });
+    showToast(r.favorited ? "已收藏" : "已取消收藏");
+    api
+      .trackEvent("favorite", { card_id: card.id, card_type: card.type })
+      .catch(() => {});
+  };
+
+  const refreshOne = async (card: FeedCard) => {
+    const alt = await api.getAltCard(card.id);
+    setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
+    showToast("已换一条");
+    api
+      .trackEvent("card_refresh", { card_id: card.id, card_type: card.type })
+      .catch(() => {});
   };
 
   return (
@@ -138,10 +171,11 @@ export default function Home() {
           testID="home-feed-scroll"
         >
           {cards.map((card) => (
-            <View
+            <Pressable
               key={card.id}
               style={styles.card}
               testID={`feed-card-${card.id}`}
+              onPress={() => onCardTap(card)}
             >
               <View style={styles.cardTopRow}>
                 <View
@@ -177,19 +211,86 @@ export default function Home() {
               <Text style={styles.cardTitle}>{card.title}</Text>
               <Text style={styles.cardSummary}>{card.summary}</Text>
 
-              <Pressable
-                onPress={() => askAI(card)}
-                style={styles.askBtn}
-                testID={`feed-card-ask-${card.id}`}
-              >
-                <Text style={styles.askBtnText}>问问AI</Text>
-                <Ionicons name="arrow-forward" size={14} color={colors.brand} />
-              </Pressable>
-            </View>
+              <View style={styles.actionsRow}>
+                <Pressable
+                  hitSlop={8}
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    toggleFav(card);
+                  }}
+                  style={styles.actionBtn}
+                  testID={`feed-fav-${card.id}`}
+                >
+                  <Ionicons
+                    name={favIds.has(card.id) ? "star" : "star-outline"}
+                    size={18}
+                    color={favIds.has(card.id) ? colors.brand : colors.muted}
+                  />
+                </Pressable>
+                <Pressable
+                  hitSlop={8}
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    setShareCardId(card.id);
+                  }}
+                  style={styles.actionBtn}
+                  testID={`feed-share-${card.id}`}
+                >
+                  <Ionicons name="share-outline" size={18} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  hitSlop={8}
+                  onPress={(e) => {
+                    e.stopPropagation?.();
+                    refreshOne(card);
+                  }}
+                  style={styles.actionBtn}
+                  testID={`feed-refresh-${card.id}`}
+                >
+                  <Ionicons name="refresh-outline" size={18} color={colors.muted} />
+                </Pressable>
+              </View>
+            </Pressable>
           ))}
           <View style={{ height: spacing.xxxl }} />
         </ScrollView>
       )}
+
+      {toast ? (
+        <View style={styles.toast} pointerEvents="none" testID="home-toast">
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      ) : null}
+
+      <Modal
+        visible={!!shareCardId}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShareCardId(null)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setShareCardId(null)} />
+        <View style={styles.shareSheet} testID="home-share-sheet">
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>分享到</Text>
+          {["复制链接", "微信", "短信", "更多…"].map((label) => (
+            <Pressable
+              key={label}
+              onPress={() => {
+                const cid = shareCardId;
+                setShareCardId(null);
+                showToast("已分享 (mock)");
+                if (cid)
+                  api.trackEvent("share", { card_id: cid }).catch(() => {});
+              }}
+              style={styles.shareRow}
+              testID={`home-share-${label}`}
+            >
+              <Ionicons name="share-social-outline" size={18} color={colors.onSurface} />
+              <Text style={styles.shareLabel}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -284,4 +385,65 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   askBtnText: { color: colors.brand, fontWeight: "700", fontSize: type.base },
+  actionsRow: {
+    marginTop: spacing.md,
+    paddingTop: spacing.sm,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: spacing.md,
+  },
+  actionBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toast: {
+    position: "absolute",
+    top: 80,
+    alignSelf: "center",
+    backgroundColor: "rgba(28,25,23,0.92)",
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radius.pill,
+  },
+  toastText: { color: "#fff", fontSize: type.base, fontWeight: "600" },
+  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.32)" },
+  shareSheet: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: spacing.lg,
+    paddingBottom: spacing.xxl,
+  },
+  sheetHandle: {
+    width: 36,
+    height: 4,
+    backgroundColor: colors.border,
+    borderRadius: 2,
+    alignSelf: "center",
+    marginBottom: spacing.md,
+  },
+  sheetTitle: {
+    fontSize: type.lg,
+    fontWeight: "700",
+    color: colors.onSurface,
+    marginBottom: spacing.md,
+  },
+  shareRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+  },
+  shareLabel: { fontSize: type.lg, color: colors.onSurface },
 });

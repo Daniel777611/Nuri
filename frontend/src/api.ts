@@ -20,6 +20,12 @@ export const api = {
   deleteChild: (id: string) => req(`/children/${id}`, { method: "DELETE" }),
 
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
+  getCardDetail: (id: string) => req(`/feed/${id}/detail`),
+  getAltCard: (exclude: string) =>
+    req(`/feed/alt?exclude=${encodeURIComponent(exclude)}`),
+  listFavorites: () => req(`/favorites`),
+  toggleFavorite: (card_id: string) =>
+    req(`/favorites/toggle`, { method: "POST", body: JSON.stringify({ card_id }) }),
 
   trackEvent: (event: string, payload: any = {}) =>
     req(`/analytics`, { method: "POST", body: JSON.stringify({ event, ...payload }) }),

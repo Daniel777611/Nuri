@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 2 (detail page + favorites + card action row) verified end-to-end. Backend: 21/21 pytest passed including new tests for GET /api/feed/{id}/detail (all 6 cards have body>=200 chars, tags, hook_line, image_url), GET /api/feed/alt?exclude= (excludes correctly + varies across calls), POST /api/favorites/toggle (on/off), GET /api/favorites (returns full card payload). Frontend (390x844): home cards no longer have 问问AI buttons; action row (★ feed-fav, ↗ feed-share, ⟳ feed-refresh) all present and functional with proper toasts (已收藏 / 已分享 (mock) / 已换一条). Body tap navigates to /detail/<id> as required. Detail page renders chip, title, hero image, multi-paragraph body (~445 chars), tags row, hook line, sticky bottom 问问AI button; detail-fav-btn toggles outline↔solid; detail-share-btn opens share-sheet with 4 options; detail-ask-ai-btn starts chat session whose AI opener references the article (food_picky chat mentions 18个月). Profile shows '我的收藏' section listing favorited cards (profile-fav-<id>) and tapping navigates to /detail/<id>. Iter1 smoke check OK: 4-tab nav present, privacy wipe confirm modal still opens, tasks page renders. Mood feedback bottom sheet not retested because backend wipe during tests left tasks empty (not a regression).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo / expo-font / expo-router", "issue": "Expo SDK reports outdated patch versions: expo@54.0.34 expected ~54.0.35, expo-font@14.0.11 expected ~14.0.12, expo-router@6.0.23 expected ~6.0.24. Not breaking but should be bumped via `npx expo install --check`. Reference: /var/log/supervisor/expo.err.log"},
+      {"component": "Detail toast Animated.View", "issue": "Console warning: 'Animated: useNativeDriver is not supported... Falling back to JS-based animation.' on web. Either set useNativeDriver based on Platform.OS !== 'web' or accept the warning. Reference: /app/frontend/app/detail/[id].tsx:46-55"},
+      {"component": "Home Modal backdrop", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents'. Originates from toast View with pointerEvents prop. Reference: /app/frontend/app/(tabs)/index.tsx:260"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2_detail_fav.py",
+    "/app/backend/tests/test_parenting_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: run `npx expo install --check` in /app/frontend to bump expo/expo-font/expo-router to expected patch versions.",
+    "Optional: gate Animated useNativeDriver on Platform.OS !== 'web' in /app/frontend/app/detail/[id].tsx to silence web warning.",
+    "Optional: migrate `pointerEvents` prop to `style={{pointerEvents:'none'}}` on toast View in /app/frontend/app/(tabs)/index.tsx (line 260) to remove deprecation warning."
+  ],
+  "critical_code_review_comments": [
+    "Backend uses fallback `mongodb://localhost:27017` in os.environ.get — works but per CRITICAL RULES the fallback should be removed so missing config fails fast (server.py:31-32). Not blocking.",
+    "Home card has an unused style key `askBtn`/`askBtnText` left over after removing the per-card 问问AI button — safe to delete (index.tsx:376-387)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter2_detail_fav.py (new)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "100% of iter2 critical flows"},
+  "seed_data_creation": "Backend pytest test_privacy_wipe wipes the singleton DB; UI test then re-creates child via onboarding and adds card_food_picky favorite. No persistent seed required.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 2 features for North American Chinese Parenting AI are fully working. New endpoints: GET /api/feed/{id}/detail, GET /api/feed/alt?exclude=, GET/POST /api/favorites(/toggle). Frontend routes added: /detail/[id]. Home cards no longer have per-card 问问AI; action row uses feed-fav-<id> / feed-share-<id> / feed-refresh-<id>. Detail page testIDs: detail-back-btn, detail-fav-btn, detail-share-btn, detail-ask-ai-btn, detail-hook-line. Profile has profile-fav-<id> rows under '我的收藏'. Share sheet on home uses testID home-share-sheet with options home-share-{复制链接|微信|短信|更多…}; on detail uses share-sheet with options share-{label}. Note: running the backend pytest suite includes a privacy_wipe test that clears DB — re-run onboarding before UI testing.",
+  "rca_of_issue": "N/A — all features pass. No bugs to RCA."
+}

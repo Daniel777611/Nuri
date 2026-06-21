@@ -18,6 +18,7 @@ import { colors, radius, spacing, type } from "@/src/theme";
 export default function Profile() {
   const router = useRouter();
   const [children, setChildren] = useState<any[]>([]);
+  const [favorites, setFavorites] = useState<any[]>([]);
   const [privacy, setPrivacy] = useState<any>({
     allow_history_training: true,
     daily_push: true,
@@ -27,9 +28,14 @@ export default function Profile() {
   const [confirmWipe, setConfirmWipe] = useState(false);
 
   const load = useCallback(async () => {
-    const [ks, p] = await Promise.all([api.listChildren(), api.getPrivacy()]);
+    const [ks, p, favs] = await Promise.all([
+      api.listChildren(),
+      api.getPrivacy(),
+      api.listFavorites(),
+    ]);
     setChildren(ks);
     setPrivacy(p);
+    setFavorites(favs);
   }, []);
 
   useFocusEffect(
@@ -95,6 +101,36 @@ export default function Profile() {
             <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
             <Text style={styles.addRowText}>添加孩子</Text>
           </Pressable>
+        </Section>
+
+        <Section title="我的收藏">
+          {favorites.length === 0 ? (
+            <View style={{ padding: spacing.md }}>
+              <Text style={{ color: colors.muted, fontSize: 14 }}>
+                还没有收藏。在首页或详情页点击 ★ 即可收藏。
+              </Text>
+            </View>
+          ) : (
+            favorites.map((f) => (
+              <Pressable
+                key={f.id}
+                onPress={() => router.push(`/detail/${f.id}`)}
+                style={styles.child}
+                testID={`profile-fav-${f.id}`}
+              >
+                <View style={styles.childAvatar}>
+                  <Ionicons name="star" size={16} color={colors.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.childName} numberOfLines={1}>
+                    {f.title}
+                  </Text>
+                  <Text style={styles.childMeta}>{f.type_label}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+              </Pressable>
+            ))
+          )}
         </Section>
 
         <Section title="隐私设置">

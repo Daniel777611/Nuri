@@ -82,6 +82,12 @@ class FeedCard(BaseModel):
     cta: str = "问问AI →"
 
 
+class FeedCardDetail(FeedCard):
+    body: str = ""
+    tags: List[str] = Field(default_factory=list)
+    hook_line: str = "看完想知道你家宝宝是不是也这样？"
+
+
 class ChatMessage(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
@@ -192,6 +198,75 @@ FEED_CARDS: List[FeedCard] = [
         image_url="https://images.unsplash.com/photo-1584555613483-1c5f3ce97b9b?w=600",
     ),
 ]
+
+
+# Detail page content per card (story-style ~300-500 chars)
+CARD_DETAILS: dict = {
+    "card_food_picky": {
+        "body": "上周我在妈妈群看到一位姐姐发的求助：她家18个月的宝宝突然只肯吃白米饭、面条和酸奶，看到绿色蔬菜就闭嘴扭头。这种场景，太熟悉了。\n\n其实这阶段在儿科里有专门的名字，叫 food neophobia——食物新恐惧期。研究显示，18到36个月几乎是每个孩子都会经历的一个发育节点：他们开始对食物的颜色、质地、形状变得敏感，会本能地「先怀疑、再接受」。这不是叛逆，也不是被你惯坏了。\n\n那能做什么？三件最关键的小事：\n1. 每餐桌上放一样新食物，但不要强迫吃。哪怕只是看一眼、摸一下，都是接受过程的一部分。\n2. 新食物搭配老熟悉——把宝宝喜欢的米饭和一点点新蔬菜放一起，比单独上一盘陌生菜更容易接受。\n3. 一次只引入一种新食物，连续7–10天。重复曝光比丰富度更重要。\n\n但最难的，其实是家长的心态：你不焦虑，孩子就不会从你的表情里学到「吃饭是件紧张的事」。",
+        "tags": ["#18月龄", "#挑食", "#辅食"],
+        "hook_line": "看完想知道你家宝宝是不是也这样？",
+    },
+    "card_bilingual_school": {
+        "body": "湾区一所私立双语小学最近改了招生政策，要求父母至少一方流利中文。妈妈群直接炸了。\n\n支持的一派说：在北美，中文环境是稀缺的，错过6岁前的语言敏感期，以后再想补就难了。送孩子去双语学校，至少能保住听说读写四项基本功，文化认同也是一笔隐形资产。\n\n反对的一派说：学术深度永远是英语的天花板。双语学校的英语阅读和写作进度往往慢于主流学校，等高中要拼 GPA、SAT、AP 的时候，可能反而吃亏。而且转回主流学校之后的衔接也是个大问题。\n\n其实这件事没有标准答案。真正影响决定的不是「中文重要还是英语重要」，而是：你家这个孩子的语言天赋、社交风格、你和伴侣的时间精力、未来5–10年的搬家计划。\n\n所以与其问「该不该上」，不如先问自己：你最在意的3件事是什么？",
+        "tags": ["#双语教育", "#择校", "#华人家长"],
+        "hook_line": "你家也在纠结这个选择吗？",
+    },
+    "card_baby_monitor": {
+        "body": "选婴儿监视器这件事，华人家长在北美其实有一个特别的痛点：隐私。\n\n大部分美区热销的监视器都是云端方案——视频先传到厂商的服务器，再分发给你的手机。听起来很方便，但一旦想到孩子的睡眠画面被打包加密上传到一家公司，很多家长就睡不着觉了。\n\n所以我们重点对比了3款：\n• Nanit：画面最清晰，AI 睡眠分析很强，但订阅费贵，且数据全部上云。\n• Owlet：主打「袜子+摄像头」二合一，能监测心率血氧，曾因 FDA 警告下架重新上架。\n• VTech：传统点对点信号，完全不联网，画面相对粗糙但安全感最高。\n\n选哪个，本质上是在「功能感」和「安全感」之间做取舍。如果你家是新生儿、且家里 wifi 信号好，Nanit 的睡眠分析确实值这个钱；如果你介意隐私、或者只是想看到孩子是否还在床上，VTech 完全够用。",
+        "tags": ["#婴儿监视器", "#选品", "#隐私"],
+        "hook_line": "想结合你家情况，听听我的建议？",
+    },
+    "card_sleep_routine": {
+        "body": "如果让我只推荐一件事帮你的孩子睡得更好，我会说：入睡仪式。\n\n2岁前后的宝宝，对「接下来要发生什么」特别敏感。如果每天晚上都是「洗澡 → 换睡衣 → 关大灯 → 读绘本 → 拥抱 → 上床」，他的大脑会在第一步就开始分泌褪黑素准备入睡。仪式比时长更重要——哪怕只有20分钟，只要顺序固定，效果就比每天哄一小时还稳定。\n\n几个我自己反复验证过的小诀窍：\n1. 从洗澡开始倒计时：水温降下来的过程本身就会让体温微降，触发睡意。\n2. 绘本永远是同一类——温柔、低饱和、句子短。这不是看新故事的时间。\n3. 关大灯、留小夜灯，让光照从亮到暗，模拟自然黄昏。\n4. 最后5分钟不再说话，只是身体接触。\n\n这套仪式一旦建立，夜醒次数会肉眼可见地减少。",
+        "tags": ["#睡眠", "#入睡仪式", "#幼儿"],
+        "hook_line": "想为你家做一个本周睡眠计划吗？",
+    },
+    "card_screen_time": {
+        "body": "AAP（美国儿科学会）今年更新了屏幕时间指南，把「互动性」作为关键标准——也就是说，和爷爷视频通话，不再算「屏幕时间」。\n\n这一改，让很多华人家庭松了口气。我们这一代孩子的祖父母大多在国内，视频是仅有的「见面」方式。如果按旧标准，一周视频几次就快超标了。\n\n但群里也有不同声音：新标准是不是给了家长偷懒的借口？孩子拿着 iPad 跟一个动画「互动」，也算互动吗？算游戏吗？算学习吗？\n\n我的看法是：指南只是工具，不是答案。真正该问自己的3个问题：\n1. 屏幕之后，孩子是更躁动还是更平静？\n2. 屏幕之外，他还在做哪些事？（户外、阅读、自由玩耍）\n3. 你和孩子在一起的时间，是不是有相当一部分被设备打断了？\n\n如果三个答案都让你安心，规则可以宽一点。",
+        "tags": ["#屏幕时间", "#AAP", "#育儿争议"],
+        "hook_line": "想聊聊你家的屏幕规则吗？",
+    },
+    "card_thermometer": {
+        "body": "新手家长第一次量体温的紧张，我永远记得。\n\n38.0°C 还是 37.9°C？要不要送急诊？北美的儿科医生大多会告诉你：3个月以下任何发烧都去 ER，3个月以上看精神状态。但前提是，你得先有一支靠谱的温度计。\n\n额温枪 vs 耳温枪，常见的3款：\n• Braun Thermoscan 7：耳温枪经典款，年龄校准准确，缺点是耳道太小或太多耳屎时偏差大。\n• iHealth 额温枪：非接触、几秒出数，适合睡着的宝宝；但环境温度变化会影响读数。\n• Frida Baby 3-in-1：耳额双用，价位中等，适合「什么都想试」的家庭。\n\n比型号更重要的是：每次测3次取中间值，记录在 app 里看趋势，而不是只看绝对值。一次 38.2°C 可能是误差，连续3次都在 38°C 以上，才需要认真处理。\n\n冷静地量、冷静地记录，比一惊一乍地往医院跑更有用。",
+        "tags": ["#温度计", "#发烧", "#新手家长"],
+        "hook_line": "拍张读数发给我，AI 可以帮你判断？",
+    },
+}
+
+
+# Pool of alternate cards used by "换一条" single-card refresh
+ALT_FEED_CARDS: List[FeedCard] = [
+    FeedCard(id="alt_tantrum", type="tip", type_label="科普",
+             title="2岁宝宝当众尖叫怎么办？6步冷静法",
+             summary="terrible twos 不是病——但你可以提前练好这套话术，关键时刻不慌。",
+             image_url="https://images.unsplash.com/photo-1602030638412-bb8dcc0bc8b0?w=600"),
+    FeedCard(id="alt_daycare", type="news", type_label="热点",
+             title="纽约 daycare 学费再涨15%，华人妈妈群讨论留职还是辞职",
+             summary="月费 $2800+ 已是常态。这一波算账，可能让你重新思考一年内的职业规划。",
+             image_url="https://images.unsplash.com/photo-1587653263995-422546a7a569?w=600"),
+    FeedCard(id="alt_carseat", type="product", type_label="推荐",
+             title="0-4岁安全座椅，到底要不要买 Nuna？",
+             summary="对比 Nuna / Britax / Graco 在北美的真实事故评分和长期使用反馈。",
+             image_url="https://images.unsplash.com/photo-1581952976147-5a2d15560349?w=600"),
+    FeedCard(id="alt_potty", type="tip", type_label="科普",
+             title="如厕训练，到底什么时候开始最合适？",
+             summary="北美儿科和国内传统经验有不少分歧，先看孩子准备好的5个信号。",
+             image_url="https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=600"),
+    FeedCard(id="alt_winter", type="news", type_label="热点",
+             title="加拿大冬天到底要不要带娃出门玩雪？",
+             summary="-15°C 的多伦多家长群因为这个话题分裂了，背后其实是两种育儿文化。",
+             image_url="https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=600"),
+]
+
+
+def _to_detail(card: FeedCard) -> FeedCardDetail:
+    extra = CARD_DETAILS.get(card.id, {
+        "body": card.summary + "\n\n(这是一篇示例正文，AI 助手将根据你的实际情况给出更具体的建议。)",
+        "tags": ["#育儿"],
+        "hook_line": "想结合你家情况聊聊吗？",
+    })
+    return FeedCardDetail(**card.dict(), **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +476,48 @@ async def get_feed(shuffle: bool = False):
         import random
         random.shuffle(cards)
     return cards
+
+
+@api_router.get("/feed/{card_id}/detail", response_model=FeedCardDetail)
+async def get_card_detail(card_id: str):
+    for c in FEED_CARDS + ALT_FEED_CARDS:
+        if c.id == card_id:
+            return _to_detail(c)
+    raise HTTPException(404, "card not found")
+
+
+@api_router.get("/feed/alt", response_model=FeedCard)
+async def get_alt_card(exclude: str = ""):
+    import random
+    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS) if c.id != exclude]
+    return random.choice(pool)
+
+
+# ---- Favorites (mock, single-user) ----
+class FavToggle(BaseModel):
+    card_id: str
+
+
+@api_router.get("/favorites", response_model=List[FeedCard])
+async def list_favorites():
+    docs = await _docs(db.favorites, sort=("ts", -1))
+    out: List[FeedCard] = []
+    by_id = {c.id: c for c in (FEED_CARDS + ALT_FEED_CARDS)}
+    for d in docs:
+        cid = d.get("card_id")
+        if cid and cid in by_id:
+            out.append(by_id[cid])
+    return out
+
+
+@api_router.post("/favorites/toggle")
+async def toggle_favorite(body: FavToggle):
+    existing = await _doc(db.favorites, {"card_id": body.card_id})
+    if existing:
+        await db.favorites.delete_one({"card_id": body.card_id})
+        return {"favorited": False, "card_id": body.card_id}
+    await db.favorites.insert_one({"card_id": body.card_id, "ts": iso(utc_now())})
+    return {"favorited": True, "card_id": body.card_id}
 
 
 class AnalyticsEvent(BaseModel):
