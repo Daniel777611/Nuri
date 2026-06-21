@@ -18,7 +18,9 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-const TAG_BG: Record<string, string> = {
+import { Platform } from "react-native";
+
+const USE_NATIVE_DRIVER = Platform.OS !== "web";
   tip: "#EEF6F1",
   news: "#FFF1EE",
   product: "#FEF9E7",
@@ -45,13 +47,13 @@ export default function Detail() {
         Animated.timing(toastOpacity, {
           toValue: 1,
           duration: 180,
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
         Animated.delay(1400),
         Animated.timing(toastOpacity, {
           toValue: 0,
           duration: 250,
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
       ]).start(() => setToast(null));
     },
@@ -155,7 +157,7 @@ export default function Detail() {
       </View>
 
       {toast ? (
-        <Animated.View style={[styles.toast, { opacity: toastOpacity }]} pointerEvents="none">
+        <Animated.View style={[styles.toast, { opacity: toastOpacity, pointerEvents: "none" }]}>
           <Text style={styles.toastText}>{toast}</Text>
         </Animated.View>
       ) : null}

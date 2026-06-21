@@ -257,7 +257,7 @@ export default function Home() {
       )}
 
       {toast ? (
-        <View style={styles.toast} pointerEvents="none" testID="home-toast">
+        <View style={[styles.toast, { pointerEvents: "none" }]} testID="home-toast">
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       ) : null}
@@ -372,27 +372,6 @@ const styles = StyleSheet.create({
     color: colors.muted,
     lineHeight: 20,
     marginTop: spacing.sm,
-  },
-  askBtn: {
-    marginTop: spacing.md,
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    gap: spacing.xs,
-    backgroundColor: colors.brandTertiary,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.pill,
-  },
-  askBtnText: { color: colors.brand, fontWeight: "700", fontSize: type.base },
-  actionsRow: {
-    marginTop: spacing.md,
-    paddingTop: spacing.sm,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: spacing.md,
   },
   actionBtn: {
     width: 32,
