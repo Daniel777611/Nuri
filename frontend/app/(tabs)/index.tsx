@@ -374,11 +374,21 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   actionBtn: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
     borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
+  },
+  actionsRow: {
+    marginTop: spacing.md,
+    paddingTop: spacing.sm,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: spacing.sm,
   },
   toast: {
     position: "absolute",
