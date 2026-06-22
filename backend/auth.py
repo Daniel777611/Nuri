@@ -105,7 +105,6 @@ async def get_optional_user_id(
 async def require_user_id(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
 ) -> str:
-    uid = (await get_optional_user_id(creds)) if False else None  # noqa: F841
     if not creds or creds.scheme.lower() != "bearer":
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,

@@ -195,7 +195,7 @@ export default function Profile() {
               {privacy.language === "zh" ? "中文" : "English (mock)"}
             </Text>
           </Pressable>
-          <Pressable style={styles.logoutRow} testID="profile-logout-btn">
+          <Pressable style={styles.logoutRow} testID="profile-logout-btn" onPress={logout}>
             <Text style={styles.logoutText}>登出</Text>
           </Pressable>
         </Section>
