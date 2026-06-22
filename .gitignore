@@ -18,7 +18,7 @@ venv/
 chroma_db/
 
 # data files (PDFs, etc.)
-# data/
+data/
 
 # OS/editor
 .DS_Store
