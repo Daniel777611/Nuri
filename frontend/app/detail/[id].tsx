@@ -21,6 +21,8 @@ import { colors, radius, spacing, type } from "@/src/theme";
 import { Platform } from "react-native";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
+
+const TAG_BG: Record<string, string> = {
   tip: "#EEF6F1",
   news: "#FFF1EE",
   product: "#FEF9E7",
