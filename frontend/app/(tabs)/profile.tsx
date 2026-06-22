@@ -12,7 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
-import { api } from "@/src/api";
+import { api, auth } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Profile() {
@@ -52,8 +52,14 @@ export default function Profile() {
 
   const wipeAll = async () => {
     await api.wipe();
+    await auth.clearToken();
     setConfirmWipe(false);
-    router.replace("/onboarding");
+    router.replace("/register");
+  };
+
+  const logout = async () => {
+    await auth.clearToken();
+    router.replace("/login");
   };
 
   return (

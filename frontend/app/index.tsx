@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { View, ActivityIndicator } from "react-native";
 
-import { api } from "@/src/api";
+import { api, auth } from "@/src/api";
 import { colors } from "@/src/theme";
 
 export default function Index() {
@@ -12,14 +12,22 @@ export default function Index() {
   useEffect(() => {
     (async () => {
       try {
-        const children = await api.listChildren();
-        if (children && children.length > 0) {
-          router.replace("/(tabs)");
-        } else {
-          router.replace("/onboarding");
+        const token = await auth.getToken();
+        if (!token) {
+          router.replace("/register");
+          return;
         }
-      } catch {
-        router.replace("/onboarding");
+        // Validate token by fetching /me
+        try {
+          await api.me();
+        } catch {
+          await auth.clearToken();
+          router.replace("/register");
+          return;
+        }
+        const children = await api.listChildren();
+        if (children && children.length > 0) router.replace("/(tabs)");
+        else router.replace("/onboarding");
       } finally {
         setChecking(false);
       }

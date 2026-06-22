@@ -1,10 +1,27 @@
 import { API } from "./theme";
+import { storage } from "./utils/storage";
+
+const TOKEN_KEY = "auth_token";
+
+async function getToken(): Promise<string | null> {
+  return (await storage.secureGet(TOKEN_KEY, "")) || null;
+}
+
+export const auth = {
+  TOKEN_KEY,
+  setToken: (t: string) => storage.secureSet(TOKEN_KEY, t),
+  clearToken: () => storage.secureRemove(TOKEN_KEY),
+  getToken,
+};
 
 async function req<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(API + path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
+  const token = await getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string>) || {}),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(API + path, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API ${path} ${res.status}: ${text}`);
@@ -49,4 +66,8 @@ export const api = {
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
+
+  register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),
+  login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }),
+  me: () => req(`/auth/me`),
 };

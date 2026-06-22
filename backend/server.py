@@ -10,7 +10,7 @@ This backend exposes mock prototype endpoints for:
   - Lightweight analytics counters for card impressions/clicks
 """
 
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -23,6 +23,21 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
 from pydantic import BaseModel, Field
+
+from auth import (
+    AuthResponse,
+    UserLogin,
+    UserPublic,
+    UserRegister,
+    UserUpdate,
+    create_access_token,
+    get_optional_user_id,
+    new_user_doc,
+    require_user_id,
+    scope_filter,
+    to_public,
+    verify_password,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -438,23 +453,74 @@ async def root():
     return {"app": "parenting-ai", "use_real_llm": USE_REAL_LLM}
 
 
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+@api_router.post("/auth/register", response_model=AuthResponse, status_code=201)
+async def auth_register(body: UserRegister):
+    existing = await db.users.find_one({"email": body.email.lower()})
+    if existing:
+        raise HTTPException(400, "该邮箱已注册")
+    doc = new_user_doc(body)
+    await db.users.insert_one(doc)
+    token = create_access_token(doc["id"])
+    return AuthResponse(access_token=token, user=to_public(doc))
+
+
+@api_router.post("/auth/login", response_model=AuthResponse)
+async def auth_login(body: UserLogin):
+    doc = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
+    if not doc or not verify_password(body.password, doc.get("hashed_password", "")):
+        raise HTTPException(401, "邮箱或密码错误")
+    token = create_access_token(doc["id"])
+    return AuthResponse(access_token=token, user=to_public(doc))
+
+
+@api_router.get("/auth/me", response_model=UserPublic)
+async def auth_me(user_id: str = Depends(require_user_id)):
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "user not found")
+    return to_public(doc)
+
+
+@api_router.put("/auth/me", response_model=UserPublic)
+async def auth_me_update(body: UserUpdate, user_id: str = Depends(require_user_id)):
+    patch = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if patch:
+        await db.users.update_one({"id": user_id}, {"$set": patch})
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0})
+    return to_public(doc)
+
+
 # ---- Children ----
 @api_router.get("/children", response_model=List[Child])
-async def list_children():
-    docs = await _docs(db.children, sort=("created_at", 1))
+async def list_children(user_id: Optional[str] = Depends(get_optional_user_id)):
+    docs = await _docs(db.children, scope_filter(user_id), sort=("created_at", 1))
     return [Child(**d) for d in docs]
 
 
 @api_router.post("/children", response_model=Child)
-async def add_child(body: ChildCreate):
+async def add_child(
+    body: ChildCreate,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
     child = Child(**body.dict())
-    await db.children.insert_one(child.dict())
+    doc = child.dict()
+    if user_id:
+        doc["user_id"] = user_id
+    await db.children.insert_one(doc)
     return child
 
 
 @api_router.put("/children/{child_id}", response_model=Child)
-async def update_child(child_id: str, body: ChildCreate):
-    existing = await _doc(db.children, {"id": child_id})
+async def update_child(
+    child_id: str,
+    body: ChildCreate,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
+    q = {"id": child_id, **scope_filter(user_id)}
+    existing = await _doc(db.children, q)
     if not existing:
         raise HTTPException(404, "child not found")
     updated = {**existing, **body.dict()}
@@ -463,8 +529,12 @@ async def update_child(child_id: str, body: ChildCreate):
 
 
 @api_router.delete("/children/{child_id}")
-async def delete_child(child_id: str):
-    await db.children.delete_one({"id": child_id})
+async def delete_child(
+    child_id: str,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
+    q = {"id": child_id, **scope_filter(user_id)}
+    await db.children.delete_one(q)
     return {"ok": True}
 
 
@@ -499,8 +569,8 @@ class FavToggle(BaseModel):
 
 
 @api_router.get("/favorites", response_model=List[FeedCard])
-async def list_favorites():
-    docs = await _docs(db.favorites, sort=("ts", -1))
+async def list_favorites(user_id: Optional[str] = Depends(get_optional_user_id)):
+    docs = await _docs(db.favorites, scope_filter(user_id), sort=("ts", -1))
     out: List[FeedCard] = []
     by_id = {c.id: c for c in (FEED_CARDS + ALT_FEED_CARDS)}
     for d in docs:
@@ -511,12 +581,21 @@ async def list_favorites():
 
 
 @api_router.post("/favorites/toggle")
-async def toggle_favorite(body: FavToggle):
-    existing = await _doc(db.favorites, {"card_id": body.card_id})
+async def toggle_favorite(
+    body: FavToggle,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
+    q: dict = {"card_id": body.card_id}
+    if user_id:
+        q["user_id"] = user_id
+    existing = await _doc(db.favorites, q)
     if existing:
-        await db.favorites.delete_one({"card_id": body.card_id})
+        await db.favorites.delete_one(q)
         return {"favorited": False, "card_id": body.card_id}
-    await db.favorites.insert_one({"card_id": body.card_id, "ts": iso(utc_now())})
+    doc = {"card_id": body.card_id, "ts": iso(utc_now())}
+    if user_id:
+        doc["user_id"] = user_id
+    await db.favorites.insert_one(doc)
     return {"favorited": True, "card_id": body.card_id}
 
 
@@ -547,7 +626,10 @@ async def analytics_summary():
 
 # ---- Chat ----
 @api_router.post("/chat/sessions", response_model=ChatSession)
-async def start_session(body: StartChatRequest):
+async def start_session(
+    body: StartChatRequest,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
     script_key = body.script_key or (CARD_TO_SCRIPT.get(body.card_id or "", "free"))
     title = body.title or "和育儿助手聊天"
     if body.card_id:
@@ -561,8 +643,10 @@ async def start_session(body: StartChatRequest):
         script_key=script_key,
         step=0,
     )
-    await db.chat_sessions.insert_one(session.dict())
-    # Seed first AI message
+    doc = session.dict()
+    if user_id:
+        doc["user_id"] = user_id
+    await db.chat_sessions.insert_one(doc)
     first = SCRIPTS[script_key][0]
     msg = ChatMessage(
         session_id=session.id,
@@ -571,7 +655,10 @@ async def start_session(body: StartChatRequest):
         quick_replies=first.get("quick_replies", []),
         transition=first.get("transition"),
     )
-    await db.chat_messages.insert_one(msg.dict())
+    mdoc = msg.dict()
+    if user_id:
+        mdoc["user_id"] = user_id
+    await db.chat_messages.insert_one(mdoc)
     await db.chat_sessions.update_one(
         {"id": session.id}, {"$set": {"step": 1}}
     )
@@ -579,8 +666,8 @@ async def start_session(body: StartChatRequest):
 
 
 @api_router.get("/chat/sessions", response_model=List[ChatSession])
-async def list_sessions():
-    docs = await _docs(db.chat_sessions, sort=("created_at", -1))
+async def list_sessions(user_id: Optional[str] = Depends(get_optional_user_id)):
+    docs = await _docs(db.chat_sessions, scope_filter(user_id), sort=("created_at", -1))
     return [ChatSession(**d) for d in docs]
 
 
@@ -677,8 +764,13 @@ async def _generate_tasks_for(script_key: str, session_title: str):
 
 # ---- Tasks ----
 @api_router.get("/tasks", response_model=List[Task])
-async def list_tasks(scope: Optional[str] = None):
-    q = {"scope": scope} if scope in ("today", "week") else {}
+async def list_tasks(
+    scope: Optional[str] = None,
+    user_id: Optional[str] = Depends(get_optional_user_id),
+):
+    q: dict = dict(scope_filter(user_id))
+    if scope in ("today", "week"):
+        q["scope"] = scope
     docs = await _docs(db.tasks, q, sort=("created_at", -1))
     return [Task(**d) for d in docs]
 
