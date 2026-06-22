@@ -105,6 +105,14 @@ def embed_1024(texts: List[str]) -> List[List[float]]:
     )
     return [d.embedding for d in resp.data]
 
+def embed_query(text: str) -> List[float]:
+    resp = oai.embeddings.create(
+        model="text-embedding-3-large",
+        input=text,
+        dimensions=EMBED_DIM,
+    )
+    return resp.data[0].embedding
+
 def marker_id_for(doc_id: str) -> str:
     return f"{doc_id}::marker"
 
@@ -161,7 +169,7 @@ def upsert_doc_with_marker(doc_id: str, chunks: List[str]) -> int:
     return len(chunks)
 
 def retrieve_chunks(question: str, top_k: int, doc_id: Optional[str]) -> Tuple[List[str], List[float]]:
-    qv = embed_1024([question])[0]
+    qv = embed_query(question)
 
     #kwargs is dict to hold query parameters, we conditionally add filter if doc_id is provided
     query_kwargs = dict(
