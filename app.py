@@ -170,14 +170,14 @@ with st.sidebar:
     # serious guard 1：must have active_doc_id 
     # Here prevent me from using default PDF without indexing.
     if not active_doc_id:
-         st.info("No PDF indexed in this session. Searching ALL indexed docs in Pinecone.")
+         st.info("No PDF indexed in this session. Searching ALL indexed docs in Supabase.")
     # serious guard 2: must haveindex
     if active_doc_id not in st.session_state.get("indexed_docs", set()):
-         st.info("No PDF indexed in this session. Searching ALL indexed docs in Pinecone.")
+         st.info("No PDF indexed in this session. Searching ALL indexed docs in Supabase.")
     #Guard end
 
 # -----------------------------
-# Pinecone Insert button
+# Supabase vector insert button
 # optimization: avoid re-indexing the same doc_id
 # -----------------------------
 if pdf_bytes is not None:
@@ -271,7 +271,7 @@ if prompt:
     # 2) call backend /ask to get answer and retrieved chunks, then print answer in chat history
     with st.chat_message("assistant"):
         # if uploaded is None:
-        #     st.warning("Please upload a PDF first, then click 'Index this PDF to Pinecone'.")
+        #     st.warning("Please upload a PDF first, then click 'Index this PDF to Supabase'.")
         #     st.stop()
 
         # st.spinner is a context manager that shows a spinner while the code inside is running

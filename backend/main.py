@@ -2,7 +2,7 @@
 backend/main.py
 Unified backend for Family Growth Radar.
 - /api/*  : React Native frontend API (in-memory storage)
-- /index /ask : legacy Pinecone RAG endpoints (optional)
+- /index /ask : Supabase pgvector RAG endpoints (optional)
 """
 
 import io, os, uuid, hashlib, random
@@ -21,19 +21,26 @@ from pydantic import BaseModel, EmailStr, Field
 
 load_dotenv()
 
-# ── Optional Pinecone (legacy RAG) ───────────────────────────────────────────
+# ── Optional Supabase/pgvector RAG dependencies ──────────────────────────────
 try:
-    from pinecone import Pinecone
-    from pypdf import PdfReader
-    _PINE_OK = True
+    from supabase import Client, create_client
+    _SUPABASE_OK = True
 except ImportError:
-    _PINE_OK = False
+    Client = None
+    create_client = None
+    _SUPABASE_OK = False
+
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
 
 # ── Env ──────────────────────────────────────────────────────────────────────
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX   = os.getenv("PINECONE_INDEX")
-PINECONE_NS      = os.getenv("PINECONE_NAMESPACE", "pdf")
+SUPABASE_URL     = os.getenv("SUPABASE_URL")
+SUPABASE_KEY     = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
+VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
 JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
 JWT_ALG          = "HS256"
 JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
@@ -41,24 +48,19 @@ EMBED_DIM        = 1024
 
 oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-pine_index = None
+supabase_client = None
 
-def _get_pine_index():
-    global pine_index
-    if pine_index is not None:
-        return pine_index
-    if not (_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX):
+def _get_supabase() -> Optional["Client"]:
+    global supabase_client
+    if supabase_client is not None:
+        return supabase_client
+    if not (_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY and create_client):
         return None
     try:
-        _pc = Pinecone(api_key=PINECONE_API_KEY)
-        for _idx in _pc.list_indexes():
-            _n = _idx.get("name") if isinstance(_idx, dict) else getattr(_idx, "name", None)
-            _h = _idx.get("host") if isinstance(_idx, dict) else getattr(_idx, "host", None)
-            if _n == PINECONE_INDEX:
-                pine_index = _pc.Index(host=_h)
-                return pine_index
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        return supabase_client
     except Exception as e:
-        print(f"[warn] Pinecone init skipped: {e}")
+        print(f"[warn] Supabase init skipped: {e}")
     return None
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -651,10 +653,16 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "pinecone": bool(_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX), "openai": oai is not None}
+    return {
+        "ok": True,
+        "supabase": bool(_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY),
+        "vector_store": "supabase",
+        "openai": oai is not None,
+    }
 
 def _read_pdf(pdf_bytes: bytes) -> str:
-    from pypdf import PdfReader
+    if PdfReader is None:
+        raise HTTPException(503, "pypdf not installed")
     reader = PdfReader(io.BytesIO(pdf_bytes))
     return "\n".join(p.extract_text() or "" for p in reader.pages)
 
@@ -679,52 +687,63 @@ def _embed_one(text: str) -> List[float]:
     resp = oai.embeddings.create(model="text-embedding-3-large", input=text, dimensions=EMBED_DIM)
     return resp.data[0].embedding
 
-def _marker_id(doc_id: str) -> str:
-    return f"{doc_id}::marker"
-
 def _is_indexed(doc_id: str):
-    pine_index = _get_pine_index()
-    if not pine_index:
-        raise HTTPException(503, "Pinecone not configured")
-    mid = _marker_id(doc_id)
-    res = pine_index.fetch(ids=[mid], namespace=PINECONE_NS)
-    vecs = res.get("vectors", {}) if isinstance(res, dict) else getattr(res, "vectors", {}) or {}
-    if mid in vecs:
-        v = vecs[mid]
-        md = v.get("metadata", {}) if isinstance(v, dict) else getattr(v, "metadata", {}) or {}
-        return True, md.get("total_chunks")
-    return False, None
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    res = (
+        sb.table(VECTOR_TABLE)
+        .select("id", count="exact")
+        .eq("namespace", VECTOR_NAMESPACE)
+        .eq("doc_id", doc_id)
+        .limit(1)
+        .execute()
+    )
+    total = int(getattr(res, "count", 0) or 0)
+    return total > 0, total or None
 
 def _upsert_doc(doc_id: str, chunks: List[str]) -> int:
-    pine_index = _get_pine_index()
-    if not pine_index:
-        raise HTTPException(503, "Pinecone not configured")
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
     vecs_data = _embed_batch(chunks)
-    vectors = [{"id": f"{doc_id}-{i}", "values": v, "metadata": {"text": c, "doc_id": doc_id, "chunk_id": i}}
-               for i, (c, v) in enumerate(zip(chunks, vecs_data))]
-    marker = [0.0] * EMBED_DIM; marker[0] = 1e-6
-    vectors.append({"id": _marker_id(doc_id), "values": marker,
-                    "metadata": {"doc_id": doc_id, "is_marker": True, "total_chunks": len(chunks)}})
-    pine_index.upsert(vectors=vectors, namespace=PINECONE_NS)
+    rows = [
+        {
+            "id": f"{doc_id}-{i}",
+            "namespace": VECTOR_NAMESPACE,
+            "doc_id": doc_id,
+            "chunk_id": i,
+            "content": c,
+            "embedding": v,
+            "metadata": {"doc_id": doc_id, "chunk_id": i},
+        }
+        for i, (c, v) in enumerate(zip(chunks, vecs_data))
+    ]
+    for start in range(0, len(rows), 100):
+        sb.table(VECTOR_TABLE).upsert(rows[start:start + 100], on_conflict="id").execute()
     return len(chunks)
 
 def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
-    pine_index = _get_pine_index()
-    if not pine_index:
-        raise HTTPException(503, "Pinecone not configured")
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
     qv = _embed_one(question)
-    kwargs = dict(namespace=PINECONE_NS, vector=qv, top_k=top_k, include_metadata=True)
-    if doc_id:
-        kwargs["filter"] = {"doc_id": {"$eq": doc_id}}
-    res = pine_index.query(**kwargs)
-    matches = res.matches if hasattr(res, "matches") else (res.get("matches", []) if isinstance(res, dict) else [])
+    res = sb.rpc(
+        "match_rag_chunks",
+        {
+            "query_embedding": qv,
+            "match_count": top_k,
+            "filter_doc_id": doc_id,
+            "filter_namespace": VECTOR_NAMESPACE,
+        },
+    ).execute()
+    matches = getattr(res, "data", None) or []
     chunks, scores = [], []
     for m in (matches or []):
-        md = getattr(m, "metadata", None) or (m.get("metadata", {}) if isinstance(m, dict) else {})
-        text = (md or {}).get("text", "")
+        text = (m or {}).get("content", "")
         if text:
             chunks.append(text)
-            scores.append(float(getattr(m, "score", 0) or (m.get("score", 0) if isinstance(m, dict) else 0)))
+            scores.append(float((m or {}).get("similarity", 0)))
     return chunks, scores
 
 def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
@@ -744,24 +763,24 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
 
 @app.post("/index")
 async def index_pdf(file: UploadFile = File(...)):
-    if not _get_pine_index():
-        raise HTTPException(503, "Pinecone not configured")
+    if not _get_supabase():
+        raise HTTPException(503, "Supabase not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
     pdf_bytes = await file.read()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
     already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
     if already:
-        return {"doc_id": doc_id, "total_chunks": total, "namespace": PINECONE_NS, "already_indexed": True}
+        return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": True}
     text   = await anyio.to_thread.run_sync(_read_pdf, pdf_bytes)
     chunks = await anyio.to_thread.run_sync(_chunk_text, text)
     total  = await anyio.to_thread.run_sync(_upsert_doc, doc_id, chunks)
-    return {"doc_id": doc_id, "total_chunks": total, "namespace": PINECONE_NS, "already_indexed": False}
+    return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": False}
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-    if not _get_pine_index():
-        raise HTTPException(503, "Pinecone not configured")
+    if not _get_supabase():
+        raise HTTPException(503, "Supabase not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
     chunks, scores = await anyio.to_thread.run_sync(_retrieve, req.question, req.top_k, req.doc_id)

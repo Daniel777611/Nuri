@@ -5,7 +5,7 @@ A simple end-to-end **Retrieval-Augmented Generation (RAG)** demo built with:
 - **Frontend**: Streamlit
 - **Backend**: FastAPI
 - **Document parsing**: PyPDF
-- **(Planned)** Embedding + Vector DB (Pinecone)
+- **Vector DB**: Supabase Postgres + pgvector
 
 This project demonstrates a full RAG pipeline:
 PDF upload → text chunking → retrieval → answer generation.
@@ -15,7 +15,20 @@ Option A:
 - clone repo
 - install requirement
 - set environment variables
+- in Supabase SQL Editor, run `supabase/rag_vectors.sql`
 - run start.bat or manually run app.py and /backend/main
+
+Required backend environment variables:
+
+```bash
+OPENAI_API_KEY=...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...
+VECTOR_NAMESPACE=pdf
+SUPABASE_VECTOR_TABLE=rag_chunks
+```
+
+Use the service role key only on the backend. Do not expose it in the frontend app.
 
 Option B:
 - Backend deployed on Render: https://nasm-rag.onrender.com/
