@@ -351,41 +351,65 @@ async def _gen_tasks(script_key: str, session_title: str, uid: Optional[str]):
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @api.post("/auth/register", status_code=201)
 async def register(body: UserRegister):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
     email = body.email.lower()
-    if email in _users_email:
+    existing = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("id").eq("email", email).execute()
+    )
+    if existing.data:
         raise HTTPException(400, "该邮箱已注册")
     doc = {
         "id": str(uuid.uuid4()), "email": email,
         "nickname": body.nickname, "city": body.city,
-        "parent_role": body.parent_role, "top_concerns": body.top_concerns,
+        "parent_role": body.parent_role, "top_concerns": list(body.top_concerns),
         "hashed_password": _hash_pw(body.password), "created_at": _now(),
     }
-    _users_email[email] = doc
-    _users_id[doc["id"]] = doc
+    await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
     return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
 
 @api.post("/auth/login")
 async def login(body: UserLogin):
-    doc = _users_email.get(body.email.lower())
-    if not doc or not _verify_pw(body.password, doc["hashed_password"]):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
+    res = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("*").eq("email", body.email.lower()).execute()
+    )
+    if not res.data or not _verify_pw(body.password, res.data[0]["hashed_password"]):
         raise HTTPException(401, "邮箱或密码错误")
+    doc = res.data[0]
     return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
 
 @api.get("/auth/me")
 async def me(uid: str = Depends(_req_uid)):
-    doc = _users_id.get(uid)
-    if not doc:
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
+    res = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("*").eq("id", uid).execute()
+    )
+    if not res.data:
         raise HTTPException(404, "user not found")
-    return _to_public(doc)
+    return _to_public(res.data[0])
 
 @api.put("/auth/me")
 async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
-    doc = _users_id.get(uid)
-    if not doc:
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
+    res = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("*").eq("id", uid).execute()
+    )
+    if not res.data:
         raise HTTPException(404, "user not found")
-    for k, v in body.dict(exclude_unset=True).items():
-        if v is not None:
-            doc[k] = v
+    updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if updates:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("users").update(updates).eq("id", uid).execute()
+        )
+    doc = {**res.data[0], **updates}
     return _to_public(doc)
 
 # ── Children ──────────────────────────────────────────────────────────────────
