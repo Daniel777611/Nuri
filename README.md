@@ -15,6 +15,8 @@ Option A:
 - clone repo
 - install requirement
 - set environment variables
+- in Supabase SQL Editor, run `supabase/rag_vectors.sql` for RAG vectors
+- in Supabase SQL Editor, run `supabase/app_data.sql` for login and child profile persistence
 - run start.bat or manually run app.py and /backend/main
 
 Option B:

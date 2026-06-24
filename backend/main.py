@@ -418,6 +418,16 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
 # ── Children ──────────────────────────────────────────────────────────────────
 @api.get("/children")
 async def list_children(uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("children")
+            .select("*")
+            .eq("user_id", uid)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return res.data or []
     return [c for c in _children if not uid or c.get("user_id") == uid]
 
 @api.post("/children", status_code=201)
@@ -425,11 +435,27 @@ async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
     child = {"id": str(uuid.uuid4()), "created_at": _now(), **body.dict()}
     if uid:
         child["user_id"] = uid
+    sb = _get_supabase()
+    if sb and uid:
+        await anyio.to_thread.run_sync(lambda: sb.table("children").insert(child).execute())
+        return child
     _children.append(child)
     return child
 
 @api.put("/children/{child_id}")
 async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("children")
+            .update(body.dict())
+            .eq("id", child_id)
+            .eq("user_id", uid)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+        raise HTTPException(404, "child not found")
     for i, c in enumerate(_children):
         if c["id"] == child_id and (not uid or c.get("user_id") == uid):
             _children[i] = {**c, **body.dict()}
@@ -439,6 +465,12 @@ async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = De
 @api.delete("/children/{child_id}")
 async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
     global _children
+    sb = _get_supabase()
+    if sb and uid:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("children").delete().eq("id", child_id).eq("user_id", uid).execute()
+        )
+        return {"ok": True}
     _children = [c for c in _children
                  if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
     return {"ok": True}
