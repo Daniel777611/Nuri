@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  Pressable,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -17,8 +19,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-// 1x1 transparent pixel placeholder + a tiny mocked "thermometer" data URL
-// We use a small base64 image so payloads stay small and don't break upload paths.
 const MOCK_IMAGE_BASE64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAQUlEQVR42u3OMQEAAAQDMKr6V2N4DYBz1xCWxKsQKAQKgUKgECgECoFCoBAoBAqBQqAQKAQKgUKgECgECsHRBVbsAAGoVgrhAAAAAElFTkSuQmCC";
 
@@ -31,6 +31,38 @@ type Msg = {
   transition?: any;
 };
 
+function NuriAvatar({ size = 34 }: { size?: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: colors.brand,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        shadowColor: colors.brand,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 3,
+      }}
+    >
+      <Text
+        style={{
+          color: "#fff",
+          fontSize: size * 0.42,
+          fontWeight: "800",
+          letterSpacing: -0.5,
+        }}
+      >
+        N
+      </Text>
+    </View>
+  );
+}
+
 export default function ChatDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -38,16 +70,12 @@ export default function ChatDetail() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
-  const [title, setTitle] = useState("和育儿助手聊天");
   const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     const msgs = await api.getMessages(id);
     setMessages(msgs);
-    const sessions = await api.listSessions();
-    const cur = sessions.find((s: any) => s.id === id);
-    if (cur) setTitle(cur.title);
   }, [id]);
 
   useEffect(() => {
@@ -65,7 +93,6 @@ export default function ChatDetail() {
     setInput("");
     setSending(true);
 
-    // Optimistic user bubble
     const optimistic: Msg = {
       id: `tmp-${Date.now()}`,
       role: "user",
@@ -76,7 +103,6 @@ export default function ChatDetail() {
 
     setTyping(true);
     try {
-      // 1s simulated thinking delay
       await new Promise((r) => setTimeout(r, 900));
       const res = await api.sendMessage(id, {
         text,
@@ -93,16 +119,13 @@ export default function ChatDetail() {
     }
   };
 
-  const sendImage = () => {
-    // Prototype: simulate a photo upload from camera
-    send("（上传了一张照片）", MOCK_IMAGE_BASE64);
-  };
-
+  const sendImage = () => send("（上传了一张照片）", MOCK_IMAGE_BASE64);
   const goTasks = () => router.push("/(tabs)/tasks");
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <Stack.Screen options={{ headerShown: false }} />
+
       <View style={styles.header}>
         <Pressable
           onPress={() => router.back()}
@@ -111,15 +134,21 @@ export default function ChatDetail() {
         >
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.title} numberOfLines={1}>
-          {title}
-        </Text>
+        <View style={styles.headerCenter}>
+          <NuriAvatar size={36} />
+          <View style={{ marginLeft: spacing.sm }}>
+            <Text style={styles.headerName}>NURI</Text>
+            <View style={styles.onlineRow}>
+              <View style={styles.onlineDot} />
+              <Text style={styles.headerSub}>育儿助手 · 在线</Text>
+            </View>
+          </View>
+        </View>
         <View style={{ width: 36 }} />
       </View>
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         style={{ flex: 1 }}
       >
         <ScrollView
@@ -155,15 +184,14 @@ export default function ChatDetail() {
             placeholderTextColor={colors.muted}
             style={styles.input}
             multiline
+            returnKeyType="send"
+            onSubmitEditing={() => send()}
             testID="chat-input"
           />
           <Pressable
             onPress={() => send()}
-            disabled={sending || (!input.trim() && !sending)}
-            style={[
-              styles.sendBtn,
-              (!input.trim() || sending) && { opacity: 0.5 },
-            ]}
+            disabled={sending || !input.trim()}
+            style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
             testID="chat-send-btn"
           >
             <Ionicons name="arrow-up" size={18} color="#fff" />
@@ -190,19 +218,18 @@ function MessageBubble({
   if (msg.transition?.kind === "tasks_generated") {
     return (
       <View style={[styles.row, { justifyContent: "flex-start" }]}>
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
         <View style={styles.transitionCard} testID="chat-transition-tasks">
           <View style={styles.transitionTop}>
-            <Ionicons
-              name="checkmark-circle"
-              size={18}
-              color={colors.success}
-            />
+            <Ionicons name="checkmark-circle" size={18} color={colors.success} />
             <Text style={styles.transitionTitle}>
               已为你生成 {msg.transition.count} 个任务
             </Text>
           </View>
           <Text style={styles.transitionSub}>
-            涵盖今日小动作和本周追踪，AI会持续帮你检查进度。
+            涵盖今日小动作和本周追踪，NURI 会持续帮你检查进度。
           </Text>
           <Pressable
             onPress={onTasks}
@@ -220,6 +247,9 @@ function MessageBubble({
   if (msg.transition?.kind === "hospital_card") {
     return (
       <View style={[styles.row, { justifyContent: "flex-start" }]}>
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
         <View style={styles.hospitalCard} testID="chat-hospital-card">
           <Text style={styles.hospitalText}>{msg.text}</Text>
           <View style={styles.hospitalDivider} />
@@ -249,13 +279,16 @@ function MessageBubble({
         { justifyContent: isAI ? "flex-start" : "flex-end" },
       ]}
     >
+      {isAI && (
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
+      )}
       <View
-        style={[
-          styles.bubble,
-          isAI ? styles.bubbleAI : styles.bubbleUser,
-        ]}
+        style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}
         testID={`bubble-${msg.role}`}
       >
+        {isAI && <Text style={styles.senderLabel}>NURI</Text>}
         {msg.image_base64 ? (
           <Image
             source={{ uri: msg.image_base64 }}
@@ -286,9 +319,7 @@ function MessageBubble({
               testID="chat-go-community"
             >
               <Ionicons name="people-outline" size={12} color={colors.muted} />
-              <Text style={[styles.qrText, { color: colors.muted }]}>
-                看看社群
-              </Text>
+              <Text style={[styles.qrText, { color: colors.muted }]}>看看社群</Text>
             </Pressable>
           </View>
         ) : null}
@@ -298,12 +329,59 @@ function MessageBubble({
 }
 
 function TypingDots() {
+  const dot1 = useRef(new Animated.Value(0)).current;
+  const dot2 = useRef(new Animated.Value(0)).current;
+  const dot3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const bounce = (dot: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, {
+            toValue: -5,
+            duration: 280,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(dot, {
+            toValue: 0,
+            duration: 280,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.delay(Math.max(0, 400 - delay)),
+        ])
+      );
+
+    const a1 = bounce(dot1, 0);
+    const a2 = bounce(dot2, 130);
+    const a3 = bounce(dot3, 260);
+    a1.start();
+    a2.start();
+    a3.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [dot1, dot2, dot3]);
+
   return (
     <View style={[styles.row, { justifyContent: "flex-start" }]}>
-      <View style={[styles.bubble, styles.bubbleAI]}>
-        <Text style={{ color: colors.muted, fontSize: type.lg, letterSpacing: 2 }}>
-          ···
-        </Text>
+      <View style={styles.avatarSlot}>
+        <NuriAvatar size={30} />
+      </View>
+      <View style={[styles.bubble, styles.bubbleAI, styles.typingBubble]}>
+        <Text style={styles.senderLabel}>NURI</Text>
+        <View style={styles.dotsRow}>
+          {[dot1, dot2, dot3].map((dot, i) => (
+            <Animated.View
+              key={i}
+              style={[styles.dot, { transform: [{ translateY: dot }] }]}
+            />
+          ))}
+        </View>
       </View>
     </View>
   );
@@ -311,6 +389,7 @@ function TypingDots() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -327,35 +406,69 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  title: {
+  headerCenter: {
     flex: 1,
-    fontSize: type.lg,
-    fontWeight: "600",
-    color: colors.onSurface,
-    textAlign: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 36,
   },
+  headerName: {
+    fontSize: type.lg,
+    fontWeight: "700",
+    color: colors.onSurface,
+    letterSpacing: 0.3,
+  },
+  onlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 1,
+  },
+  onlineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.success,
+  },
+  headerSub: { fontSize: type.sm, color: colors.muted },
+
   scroll: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     paddingBottom: spacing.lg,
     gap: spacing.sm,
   },
-  row: { flexDirection: "row", marginBottom: spacing.sm },
+  row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
+  avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
+
   bubble: {
-    maxWidth: "80%",
+    maxWidth: "78%",
     paddingVertical: spacing.sm + 2,
     paddingHorizontal: spacing.md,
     borderRadius: radius.lg,
   },
   bubbleAI: {
-    backgroundColor: colors.surfaceTertiary,
+    backgroundColor: "#fff",
     borderTopLeftRadius: 4,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
   },
   bubbleUser: {
     backgroundColor: colors.brand,
     borderTopRightRadius: 4,
   },
-  bubbleText: { color: colors.onSurface, fontSize: type.lg, lineHeight: 22 },
+  senderLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: colors.brand,
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  bubbleText: { color: colors.onSurface, fontSize: type.lg, lineHeight: 23 },
   bubbleImage: {
     width: 160,
     height: 120,
@@ -363,6 +476,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.surfaceTertiary,
   },
+
   quickReplies: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -376,24 +490,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceSecondary,
+    backgroundColor: colors.surfaceTertiary,
     borderColor: colors.border,
     borderWidth: 1,
   },
   qrText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
+
+  typingBubble: { paddingVertical: spacing.md },
+  dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.brand,
+    opacity: 0.85,
+  },
+
   transitionCard: {
+    flex: 1,
     backgroundColor: "#fff",
     borderColor: colors.brand,
     borderWidth: 1,
     borderRadius: radius.md,
     padding: spacing.md,
-    width: "85%",
+    shadowColor: colors.brand,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  transitionTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
+  transitionTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   transitionTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface },
   transitionSub: {
     fontSize: type.sm,
@@ -412,13 +538,14 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   transitionBtnText: { color: "#fff", fontWeight: "700", fontSize: type.base },
+
   hospitalCard: {
+    flex: 1,
     backgroundColor: "#fff",
     borderColor: colors.error,
     borderWidth: 1,
     borderRadius: radius.md,
     padding: spacing.md,
-    width: "92%",
     gap: spacing.sm,
   },
   hospitalText: { fontSize: type.base, color: colors.onSurface, lineHeight: 20 },
@@ -435,6 +562,7 @@ const styles = StyleSheet.create({
   },
   hospitalName: { fontSize: type.base, fontWeight: "600", color: colors.onSurface },
   hospitalMeta: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
+
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -473,4 +601,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  sendBtnDisabled: { opacity: 0.45 },
 });
