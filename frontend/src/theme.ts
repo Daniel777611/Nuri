@@ -49,4 +49,6 @@ export const type = {
   xxl: 24,
 };
 
-export const API = process.env.EXPO_PUBLIC_BACKEND_URL + "/api";
+const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, "");
+
+export const API = backendUrl ? `${backendUrl}/api` : "/api";

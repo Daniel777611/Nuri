@@ -42,7 +42,13 @@ EMBED_DIM        = 1024
 oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 pine_index = None
-if _PINE_OK and PINECONE_API_KEY and PINECONE_INDEX:
+
+def _get_pine_index():
+    global pine_index
+    if pine_index is not None:
+        return pine_index
+    if not (_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX):
+        return None
     try:
         _pc = Pinecone(api_key=PINECONE_API_KEY)
         for _idx in _pc.list_indexes():
@@ -50,9 +56,10 @@ if _PINE_OK and PINECONE_API_KEY and PINECONE_INDEX:
             _h = _idx.get("host") if isinstance(_idx, dict) else getattr(_idx, "host", None)
             if _n == PINECONE_INDEX:
                 pine_index = _pc.Index(host=_h)
-                break
+                return pine_index
     except Exception as e:
         print(f"[warn] Pinecone init skipped: {e}")
+    return None
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Family Growth Radar API")
@@ -644,7 +651,7 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "pinecone": pine_index is not None, "openai": oai is not None}
+    return {"ok": True, "pinecone": bool(_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX), "openai": oai is not None}
 
 def _read_pdf(pdf_bytes: bytes) -> str:
     from pypdf import PdfReader
@@ -676,6 +683,9 @@ def _marker_id(doc_id: str) -> str:
     return f"{doc_id}::marker"
 
 def _is_indexed(doc_id: str):
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
     mid = _marker_id(doc_id)
     res = pine_index.fetch(ids=[mid], namespace=PINECONE_NS)
     vecs = res.get("vectors", {}) if isinstance(res, dict) else getattr(res, "vectors", {}) or {}
@@ -686,6 +696,9 @@ def _is_indexed(doc_id: str):
     return False, None
 
 def _upsert_doc(doc_id: str, chunks: List[str]) -> int:
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
     vecs_data = _embed_batch(chunks)
     vectors = [{"id": f"{doc_id}-{i}", "values": v, "metadata": {"text": c, "doc_id": doc_id, "chunk_id": i}}
                for i, (c, v) in enumerate(zip(chunks, vecs_data))]
@@ -696,6 +709,9 @@ def _upsert_doc(doc_id: str, chunks: List[str]) -> int:
     return len(chunks)
 
 def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
     qv = _embed_one(question)
     kwargs = dict(namespace=PINECONE_NS, vector=qv, top_k=top_k, include_metadata=True)
     if doc_id:
@@ -728,7 +744,7 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
 
 @app.post("/index")
 async def index_pdf(file: UploadFile = File(...)):
-    if not pine_index:
+    if not _get_pine_index():
         raise HTTPException(503, "Pinecone not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
@@ -744,7 +760,7 @@ async def index_pdf(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask(req: AskRequest):
-    if not pine_index:
+    if not _get_pine_index():
         raise HTTPException(503, "Pinecone not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
