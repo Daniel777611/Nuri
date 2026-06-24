@@ -1,0 +1,769 @@
+﻿"""
+backend/main.py
+Unified backend for Family Growth Radar.
+- /api/*  : React Native frontend API (in-memory storage)
+- /index /ask : legacy Pinecone RAG endpoints (optional)
+"""
+
+import io, os, uuid, hashlib, random
+from datetime import datetime, timezone, timedelta
+from typing import List, Literal, Optional
+
+import anyio
+import bcrypt
+import jwt
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from openai import OpenAI
+from pydantic import BaseModel, EmailStr, Field
+
+load_dotenv()
+
+# ── Optional Pinecone (legacy RAG) ───────────────────────────────────────────
+try:
+    from pinecone import Pinecone
+    from pypdf import PdfReader
+    _PINE_OK = True
+except ImportError:
+    _PINE_OK = False
+
+# ── Env ──────────────────────────────────────────────────────────────────────
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX   = os.getenv("PINECONE_INDEX")
+PINECONE_NS      = os.getenv("PINECONE_NAMESPACE", "pdf")
+JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+JWT_ALG          = "HS256"
+JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
+EMBED_DIM        = 1024
+
+oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+pine_index = None
+
+def _get_pine_index():
+    global pine_index
+    if pine_index is not None:
+        return pine_index
+    if not (_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX):
+        return None
+    try:
+        _pc = Pinecone(api_key=PINECONE_API_KEY)
+        for _idx in _pc.list_indexes():
+            _n = _idx.get("name") if isinstance(_idx, dict) else getattr(_idx, "name", None)
+            _h = _idx.get("host") if isinstance(_idx, dict) else getattr(_idx, "host", None)
+            if _n == PINECONE_INDEX:
+                pine_index = _pc.Index(host=_h)
+                return pine_index
+    except Exception as e:
+        print(f"[warn] Pinecone init skipped: {e}")
+    return None
+
+# ── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(title="Family Growth Radar API")
+api = APIRouter(prefix="/api")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── In-memory stores ─────────────────────────────────────────────────────────
+_users_email: dict[str, dict] = {}     # email -> user doc
+_users_id:    dict[str, dict] = {}     # id    -> user doc
+_children:    list[dict]      = []
+_sessions:    dict[str, dict] = {}     # session_id -> session doc
+_messages:    dict[str, list] = {}     # session_id -> [msg, ...]
+_tasks:       list[dict]      = []
+_favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
+_analytics:   list[dict]      = []
+_privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+_bearer = HTTPBearer(auto_error=False)
+
+def _hash_pw(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+def _verify_pw(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
+
+def _make_token(uid: str) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {"sub": uid, "iat": now, "exp": now + timedelta(minutes=JWT_EXP_MIN)},
+        JWT_SECRET, algorithm=JWT_ALG,
+    )
+
+def _decode_token(token: str) -> Optional[str]:
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG]).get("sub")
+    except jwt.PyJWTError:
+        return None
+
+async def _opt_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> Optional[str]:
+    if creds and creds.scheme.lower() == "bearer":
+        return _decode_token(creds.credentials)
+    return None
+
+async def _req_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> str:
+    uid = await _opt_uid(creds)
+    if not uid:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid token",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return uid
+
+def _to_public(doc: dict) -> dict:
+    return {k: doc[k] for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
+ParentRole = Literal["mom", "dad", "grandparent", "other"]
+Concern    = Literal["sleep", "food", "emotion", "health", "education"]
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+    nickname: str = Field(..., min_length=1)
+    city: str     = Field(..., min_length=1)
+    parent_role: ParentRole = "mom"
+    top_concerns: List[Concern] = Field(default_factory=list)
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserUpdate(BaseModel):
+    nickname:     Optional[str]          = None
+    city:         Optional[str]          = None
+    parent_role:  Optional[ParentRole]   = None
+    top_concerns: Optional[List[Concern]] = None
+
+class ChildCreate(BaseModel):
+    nickname:   str
+    birth_date: str
+    gender: Literal["boy","girl","other"] = "other"
+    allergies: List[str] = Field(default_factory=list)
+    notes: str = ""
+
+class FavToggle(BaseModel):
+    card_id: str
+
+class AnalyticsIn(BaseModel):
+    event:     str
+    card_id:   Optional[str] = None
+    card_type: Optional[str] = None
+    value:     Optional[int] = None
+
+class StartChatRequest(BaseModel):
+    card_id:    Optional[str] = None
+    title:      Optional[str] = None
+    script_key: Optional[str] = None
+
+class UserMessageIn(BaseModel):
+    text:         Optional[str] = ""
+    image_base64: Optional[str] = None
+
+class TaskUpdate(BaseModel):
+    done: Optional[bool] = None
+    mood: Optional[str]  = None
+    note: Optional[str]  = None
+
+class PrivacySettings(BaseModel):
+    allow_history_training:   bool = True
+    daily_push:               bool = True
+    anonymous_community_share: bool = False
+    language: Literal["zh","en"] = "zh"
+
+class AskRequest(BaseModel):
+    question:  str
+    top_k:     int          = 5
+    doc_id:    Optional[str] = None
+    book_name: Optional[str] = None
+
+# ── Static feed data ──────────────────────────────────────────────────────────
+FEED_CARDS = [
+    {"id":"card_food_picky",     "type":"tip",     "type_label":"科普", "cta":"问问AI →",
+     "title":"18个月宝宝突然只吃3种食物，正常吗？",
+     "summary":"\"食物新恐惧期\"是18–36个月最常见的发育阶段。我们梳理了3个最关键的应对原则。",
+     "image_url":"https://images.unsplash.com/photo-1604908554027-93fc287e8ba3?w=600"},
+    {"id":"card_bilingual_school","type":"news",    "type_label":"热点", "cta":"问问AI →",
+     "title":"是否该让孩子上双语学校？华人家长吵翻了",
+     "summary":"湾区一所私立双语小学的招生政策引爆了华人妈妈群，正反两派各执一词。",
+     "image_url":"https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=600"},
+    {"id":"card_baby_monitor",   "type":"product", "type_label":"推荐", "cta":"问问AI →",
+     "title":"这款婴儿监视器值得买吗？",
+     "summary":"对比3款北美热销监视器的隐私政策、夜视清晰度和延迟，附我们的实测建议。",
+     "image_url":"https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=600"},
+    {"id":"card_sleep_routine",  "type":"tip",     "type_label":"科普", "cta":"问问AI →",
+     "title":"2岁前后建立入睡仪式，到底有多重要？",
+     "summary":"睡前30分钟固定的\"仪式\"比哄睡时长更影响夜醒次数。今晚就可以做的3件事。",
+     "image_url":"https://images.unsplash.com/photo-1566004100631-35d015d6a491?w=600"},
+    {"id":"card_screen_time",    "type":"news",    "type_label":"热点", "cta":"问问AI →",
+     "title":"AAP 更新屏幕时间指南，多伦多妈妈群炸了",
+     "summary":"新版指南把\"互动性\"作为关键标准——和爷爷视频不算屏幕时间？看看大家怎么吵。",
+     "image_url":"https://images.unsplash.com/photo-1503602642458-232111445657?w=600"},
+    {"id":"card_thermometer",    "type":"product", "type_label":"推荐", "cta":"问问AI →",
+     "title":"额温枪 vs 耳温枪，新手家长怎么选？",
+     "summary":"北美儿科医生最常推荐的3款，覆盖0–5岁不同月龄，附AI辨别异常体温的方法。",
+     "image_url":"https://images.unsplash.com/photo-1584555613483-1c5f3ce97b9b?w=600"},
+]
+
+ALT_FEED_CARDS = [
+    {"id":"alt_tantrum",  "type":"tip",     "type_label":"科普", "cta":"问问AI →",
+     "title":"2岁宝宝当众尖叫怎么办？6步冷静法",
+     "summary":"terrible twos 不是病——但你可以提前练好这套话术，关键时刻不慌。",
+     "image_url":"https://images.unsplash.com/photo-1602030638412-bb8dcc0bc8b0?w=600"},
+    {"id":"alt_daycare",  "type":"news",    "type_label":"热点", "cta":"问问AI →",
+     "title":"纽约 daycare 学费再涨15%，华人妈妈群讨论留职还是辞职",
+     "summary":"月费 $2800+ 已是常态。这一波算账，可能让你重新思考一年内的职业规划。",
+     "image_url":"https://images.unsplash.com/photo-1587653263995-422546a7a569?w=600"},
+    {"id":"alt_carseat",  "type":"product", "type_label":"推荐", "cta":"问问AI →",
+     "title":"0-4岁安全座椅，到底要不要买 Nuna？",
+     "summary":"对比 Nuna / Britax / Graco 在北美的真实事故评分和长期使用反馈。",
+     "image_url":"https://images.unsplash.com/photo-1581952976147-5a2d15560349?w=600"},
+    {"id":"alt_potty",    "type":"tip",     "type_label":"科普", "cta":"问问AI →",
+     "title":"如厕训练，到底什么时候开始最合适？",
+     "summary":"北美儿科和国内传统经验有不少分歧，先看孩子准备好的5个信号。",
+     "image_url":"https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=600"},
+    {"id":"alt_winter",   "type":"news",    "type_label":"热点", "cta":"问问AI →",
+     "title":"加拿大冬天到底要不要带娃出门玩雪？",
+     "summary":"-15°C 的多伦多家长群因为这个话题分裂了，背后其实是两种育儿文化。",
+     "image_url":"https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=600"},
+]
+
+CARD_DETAILS: dict = {
+    "card_food_picky":      {"body":"上周我在妈妈群看到一位姐姐发的求助：她家18个月的宝宝突然只肯吃白米饭、面条和酸奶。其实这阶段在儿科里有专门的名字，叫 food neophobia——食物新恐惧期。研究显示，18到36个月几乎是每个孩子都会经历的发育节点。\n\n三件最关键的小事：\n1. 每餐桌上放一样新食物，但不要强迫吃。\n2. 新食物搭配老熟悉，混搭比单独上更容易接受。\n3. 一次只引入一种新食物，连续7–10天。重复曝光比丰富度更重要。","tags":["#18月龄","#挑食","#辅食"],"hook_line":"看完想知道你家宝宝是不是也这样？"},
+    "card_bilingual_school":{"body":"湾区一所私立双语小学最近改了招生政策，要求父母至少一方流利中文。妈妈群直接炸了。\n\n支持的一派说：中文环境是稀缺的，错过6岁前的语言敏感期，以后再想补就难了。\n\n反对的一派说：学术深度永远是英语的天花板，双语学校的英语阅读进度往往慢于主流学校。\n\n与其问「该不该上」，不如先问自己：你最在意的3件事是什么？","tags":["#双语教育","#择校","#华人家长"],"hook_line":"你家也在纠结这个选择吗？"},
+    "card_baby_monitor":    {"body":"选婴儿监视器，华人家长在北美有一个特别的痛点：隐私。大部分热销监视器都是云端方案——视频先传到厂商服务器，再分发给你的手机。\n\n对比3款：\n• Nanit：画面最清晰，AI睡眠分析很强，但数据全部上云。\n• Owlet：主打「袜子+摄像头」二合一，能监测心率血氧。\n• VTech：传统点对点信号，完全不联网，隐私感最强。\n\n选哪个，本质上是在「功能感」和「安全感」之间做取舍。","tags":["#婴儿监视器","#选品","#隐私"],"hook_line":"想结合你家情况，听听我的建议？"},
+    "card_sleep_routine":   {"body":"如果让我只推荐一件事帮你的孩子睡得更好，我会说：入睡仪式。\n\n2岁前后的宝宝，对「接下来要发生什么」特别敏感。如果每天晚上都是「洗澡→换睡衣→关大灯→读绘本→拥抱→上床」，他的大脑会在第一步就开始分泌褪黑素。\n\n几个关键诀窍：\n1. 从洗澡开始倒计时，水温降下来本身就触发睡意。\n2. 绘本永远是同一类——温柔、低饱和、句子短。\n3. 最后5分钟不再说话，只是身体接触。","tags":["#睡眠","#入睡仪式","#幼儿"],"hook_line":"想为你家做一个本周睡眠计划吗？"},
+    "card_screen_time":     {"body":"AAP今年更新了屏幕时间指南，把「互动性」作为关键标准——和爷爷视频通话，不再算「屏幕时间」。这让很多华人家庭松了口气。\n\n但群里也有不同声音：新标准是不是给了家长偷懒的借口？\n\n真正该问自己的3个问题：\n1. 屏幕之后，孩子是更躁动还是更平静？\n2. 屏幕之外，他还在做哪些事？\n3. 你和孩子在一起的时间，是不是有相当一部分被设备打断了？","tags":["#屏幕时间","#AAP","#育儿争议"],"hook_line":"想聊聊你家的屏幕规则吗？"},
+    "card_thermometer":     {"body":"额温枪 vs 耳温枪，常见的3款：\n• Braun Thermoscan 7：耳温枪经典款，年龄校准准确，缺点是耳道太小时偏差大。\n• iHealth 额温枪：非接触、几秒出数，适合睡着的宝宝；但环境温度变化会影响读数。\n• Frida Baby 3-in-1：耳额双用，价位中等，适合「什么都想试」的家庭。\n\n比型号更重要的是：每次测3次取中间值，记录趋势，而不是只看绝对值。","tags":["#温度计","#发烧","#新手家长"],"hook_line":"拍张读数发给我，AI 可以帮你判断？"},
+}
+
+CARD_TO_SCRIPT = {
+    "card_food_picky":      "tip_food",
+    "card_bilingual_school":"news_bilingual",
+    "card_baby_monitor":    "product_monitor",
+    "card_sleep_routine":   "tip_food",
+    "card_screen_time":     "news_bilingual",
+    "card_thermometer":     "product_monitor",
+}
+
+CARD_TASKS = {
+    "tip_food":       [{"title":"今天晚餐桌上放一样新食物（不强迫吃）","scope":"today"},{"title":"记录宝宝今日实际进食的种类","scope":"today"},{"title":"本周连续7天，每天尝试一次新食物","scope":"week","progress_total":7}],
+    "news_bilingual": [{"title":"今晚和伴侣聊10分钟，列出你们最在意的3件事","scope":"today"},{"title":"联系1位已经送孩子去双语学校的朋友","scope":"today"},{"title":"本周收集3所候选学校的真实家长反馈","scope":"week","progress_total":7},{"title":"本周参观至少1所学校","scope":"week","progress_total":7},{"title":"周末和伴侣坐下来做一次结构化讨论","scope":"today"}],
+    "product_monitor":[{"title":"今天对比 Nanit / Owlet / VTech 的隐私政策","scope":"today"},{"title":"本周内完成购买决策","scope":"week","progress_total":7}],
+    "free":           [{"title":"今天选一个小目标坚持10分钟","scope":"today"},{"title":"本周和孩子做一件\"专注陪伴\"的事","scope":"week","progress_total":7},{"title":"睡前花5分钟回顾今天3件好事","scope":"today"}],
+}
+
+# Fallback scripts (used when OpenAI is not configured)
+SCRIPTS: dict = {
+    "tip_food": [
+        {"role":"ai","text":"你刚刚看到的这条「18个月宝宝突然只吃3种食物，正常吗」——我看到你点进来了。想具体聊聊你家宝宝的情况吗？","quick_replies":["我家也是这样","这是真的吗","随便看看"]},
+        {"role":"ai","text":"嗯，这其实非常常见，专业上叫 food neophobia（食物新恐惧期）。先问你两件事：宝宝现在主要只吃哪3种？最近有没有体重下降？","quick_replies":["白米饭/面条/牛奶","没有体重下降","有一点下降"]},
+        {"role":"ai","text":"好的，体重稳定就先不用焦虑。核心策略是\"反复轻量曝光\"+ 减少压力：\n\n• 每餐桌上至少放1样新食物，但不强迫吃\n• 把新食物和孩子已经接受的食物放在一起\n• 一次只引入一种新食物，连续7–10天\n\n要不要我帮你做一个本周的小计划？","quick_replies":["要，帮我做计划","我再想想"]},
+        {"role":"ai","text":"好嘞，已为你生成3个本周任务，包含每日记录和一个轻量挑战。","transition":{"kind":"tasks_generated","count":3}},
+    ],
+    "news_bilingual": [
+        {"role":"ai","text":"你点的这条「是否该让孩子上双语学校？华人家长吵翻了」最近确实很热。你是已经在做决定，还是想先听听双方观点？","quick_replies":["我在做决定","想听双方观点","随便看看"]},
+        {"role":"ai","text":"北美华人圈里这个话题有3个真实的分歧点：\n\n1) 英文学术深度 vs 中文文化认同\n2) 同伴语言环境的影响\n3) 转学回主流学校的难度\n\n你最担心的是哪一个？","quick_replies":["英文学术深度","中文文化认同","转学难度"]},
+        {"role":"ai","text":"嗯，这是最多家长卡住的点。我可以给你一个\"决策清单\"——5个你这周可以做的小动作，帮你更有底气地做决定。要不要？","quick_replies":["好，生成清单","先不用"]},
+        {"role":"ai","text":"已为你生成5个本周任务，帮你结构化收集信息。","transition":{"kind":"tasks_generated","count":5}},
+    ],
+    "product_monitor": [
+        {"role":"ai","text":"你点的「婴儿监视器值得买吗」——华人家长在北美选这类产品，隐私政策其实比清晰度更重要。你家是新生儿还是已经会爬了？","quick_replies":["新生儿","会爬了","随便看看"]},
+        {"role":"ai","text":"好的。基于这个阶段，我建议你重点对比3款：Nanit / Owlet / VTech。要不要我帮你列一个对比清单？","quick_replies":["要","先不用"]},
+        {"role":"ai","text":"已为你生成2个本周任务，帮你做出更安心的购买决定。","transition":{"kind":"tasks_generated","count":2}},
+    ],
+    "free": [
+        {"role":"ai","text":"Hi，我是你的育儿助手 NURI。你今天想聊点什么？可以是吃饭、睡觉、情绪、或者你刚刚看到的任何一条内容。","quick_replies":["睡眠问题","吃饭挑食","随便聊聊"]},
+        {"role":"ai","text":"好的，再多告诉我一点情况，比如孩子月龄、最近一周观察到的具体变化，我才能给你更具体的建议。"},
+        {"role":"ai","text":"明白了。要不要我帮你把这周可以做的几件事整理成一个简单清单？","quick_replies":["好的","先不用"]},
+        {"role":"ai","text":"好嘞，已为你生成3个本周任务。","transition":{"kind":"tasks_generated","count":3}},
+    ],
+}
+
+# ── NURI persona ──────────────────────────────────────────────────────────────
+NURI_PERSONA = """你叫 NURI，是一位專業且溫暖的育兒夥伴，而非提供標準答案的專家。NURI 的知識基礎來自兒童發展、心理學、教育學、神經科學、正向教養、依附理論及大量真實家庭經驗。NURI 相信每個孩子、每個家庭都有不同的節奏，因此不追求唯一正確答案，而是透過持續對話，陪伴父母理解孩子、理解自己，一起找到最適合家庭的方式。
+
+第一次互動時，NURI 會進行自我介紹，之後不再重複自己的名字。
+
+當遇到明確育兒問題時，NURI 會先根據廣泛研究提供一版初步策略，並清楚說明這只是第一版方向，之後會隨著對話持續修正。所有正式策略固定使用六個部分呈現：背景分析、專業知識解釋、建議方案 A/B/C、論文與書籍來源、相似家庭經驗、下一步引導。
+
+NURI 不急於給出結論，而是透過每次只詢問 1～2 個問題，逐步了解孩子年齡、氣質、個性、家庭結構、生活型態、父母價值觀、壓力來源以及過去嘗試過的方法，並在約 4～5 輪對話後重新整合並更新策略。
+
+NURI 將每一次對話視為持續陪伴的一部分，會記住過去的討論內容，將孩子的特質、家庭背景、父母的育兒理念、曾經有效或無效的方法作為未來策略的背景參考，而不是每次重新開始。
+
+當使用者沒有提出明確問題時，NURI 會進入陪伴模式，不急著分析或提供方法，而是自然聊天、提供情緒支持、了解媽媽的近況、孩子的成長與家庭生活，讓使用者感受到被理解與陪伴。
+
+NURI 的語氣溫暖、自然、專業但不武斷，不使用重複、制式或過度安慰的句型，不將孩子視為問題，也不要求完美父母。NURI 尊重父母的價值觀，不替父母做決定，而是以「理解先於建議」為核心，透過長期關係與持續修正，陪伴家庭一起成長。
+
+最重要的信念是：每一版策略都只是目前最適合這個家庭的版本，而不是放諸四海皆準的標準答案；NURI 的角色不是替父母解決所有問題，而是陪伴父母一起理解孩子、理解自己，並在每個成長階段找到屬於自己的方法。"""
+
+# ── NURI AI helper ────────────────────────────────────────────────────────────
+def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> str:
+    if not oai:
+        return "AI 暂时不可用。"
+    system = NURI_PERSONA
+    if card_ctx:
+        system += f"\n\n本次对话与以下育儿内容相关，可作为背景参考：\n{card_ctx}"
+    msgs = [{"role": "system", "content": system}]
+    for m in history:
+        role = "user" if m["role"] == "user" else "assistant"
+        msgs.append({"role": role, "content": m.get("text") or ""})
+    resp = oai.chat.completions.create(model="gpt-4o-mini", messages=msgs, temperature=0.7)
+    return resp.choices[0].message.content
+
+def _card_ctx(card_id: str) -> str:
+    for c in FEED_CARDS + ALT_FEED_CARDS:
+        if c["id"] == card_id:
+            d = CARD_DETAILS.get(card_id, {})
+            return f"标题：{c['title']}\n摘要：{c['summary']}\n{d.get('body', '')}"
+    return ""
+
+async def _gen_tasks(script_key: str, session_title: str, uid: Optional[str]):
+    templates = CARD_TASKS.get(script_key, CARD_TASKS["free"])
+    src = f"来自你和AI的对话 · {datetime.now().strftime('%m月%d日')}"
+    for t in templates:
+        task = {
+            "id": str(uuid.uuid4()), "title": t["title"], "scope": t["scope"],
+            "source": src, "done": False, "progress_done": 0,
+            "progress_total": t.get("progress_total", 7),
+            "reflection": None, "created_at": _now(), "completed_at": None,
+        }
+        if uid:
+            task["user_id"] = uid
+        _tasks.append(task)
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
+@api.post("/auth/register", status_code=201)
+async def register(body: UserRegister):
+    email = body.email.lower()
+    if email in _users_email:
+        raise HTTPException(400, "该邮箱已注册")
+    doc = {
+        "id": str(uuid.uuid4()), "email": email,
+        "nickname": body.nickname, "city": body.city,
+        "parent_role": body.parent_role, "top_concerns": body.top_concerns,
+        "hashed_password": _hash_pw(body.password), "created_at": _now(),
+    }
+    _users_email[email] = doc
+    _users_id[doc["id"]] = doc
+    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+
+@api.post("/auth/login")
+async def login(body: UserLogin):
+    doc = _users_email.get(body.email.lower())
+    if not doc or not _verify_pw(body.password, doc["hashed_password"]):
+        raise HTTPException(401, "邮箱或密码错误")
+    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+
+@api.get("/auth/me")
+async def me(uid: str = Depends(_req_uid)):
+    doc = _users_id.get(uid)
+    if not doc:
+        raise HTTPException(404, "user not found")
+    return _to_public(doc)
+
+@api.put("/auth/me")
+async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
+    doc = _users_id.get(uid)
+    if not doc:
+        raise HTTPException(404, "user not found")
+    for k, v in body.dict(exclude_unset=True).items():
+        if v is not None:
+            doc[k] = v
+    return _to_public(doc)
+
+# ── Children ──────────────────────────────────────────────────────────────────
+@api.get("/children")
+async def list_children(uid: Optional[str] = Depends(_opt_uid)):
+    return [c for c in _children if not uid or c.get("user_id") == uid]
+
+@api.post("/children", status_code=201)
+async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
+    child = {"id": str(uuid.uuid4()), "created_at": _now(), **body.dict()}
+    if uid:
+        child["user_id"] = uid
+    _children.append(child)
+    return child
+
+@api.put("/children/{child_id}")
+async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
+    for i, c in enumerate(_children):
+        if c["id"] == child_id and (not uid or c.get("user_id") == uid):
+            _children[i] = {**c, **body.dict()}
+            return _children[i]
+    raise HTTPException(404, "child not found")
+
+@api.delete("/children/{child_id}")
+async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
+    global _children
+    _children = [c for c in _children
+                 if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
+    return {"ok": True}
+
+# ── Feed ──────────────────────────────────────────────────────────────────────
+@api.get("/feed")
+async def get_feed(shuffle: bool = False):
+    cards = list(FEED_CARDS)
+    if shuffle:
+        random.shuffle(cards)
+    return cards
+
+@api.get("/feed/alt")
+async def get_alt_card(exclude: str = ""):
+    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS) if c["id"] != exclude]
+    return random.choice(pool)
+
+@api.get("/feed/{card_id}/detail")
+async def get_card_detail(card_id: str):
+    for c in FEED_CARDS + ALT_FEED_CARDS:
+        if c["id"] == card_id:
+            extra = CARD_DETAILS.get(card_id, {"body": c["summary"], "tags": [], "hook_line": "想了解更多？"})
+            return {**c, **extra}
+    raise HTTPException(404, "card not found")
+
+# ── Favorites ─────────────────────────────────────────────────────────────────
+@api.get("/favorites")
+async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    ids = _favorites.get(key, set())
+    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS}
+    return [by_id[cid] for cid in ids if cid in by_id]
+
+@api.post("/favorites/toggle")
+async def toggle_favorite(body: FavToggle, uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    _favorites.setdefault(key, set())
+    if body.card_id in _favorites[key]:
+        _favorites[key].discard(body.card_id)
+        return {"favorited": False, "card_id": body.card_id}
+    _favorites[key].add(body.card_id)
+    return {"favorited": True, "card_id": body.card_id}
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+@api.post("/analytics")
+async def track_event(ev: AnalyticsIn):
+    _analytics.append({**ev.dict(), "ts": _now()})
+    return {"ok": True}
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+@api.post("/chat/sessions")
+async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_opt_uid)):
+    card_id = body.card_id
+    title = body.title or "和NURI聊天"
+    if card_id:
+        for c in FEED_CARDS:
+            if c["id"] == card_id:
+                title = c["title"]
+                break
+
+    session = {
+        "id": str(uuid.uuid4()), "title": title,
+        "source_card_id": card_id, "step": 1, "script_key": CARD_TO_SCRIPT.get(card_id or "", "free"),
+        "created_at": _now(),
+    }
+    if uid:
+        session["user_id"] = uid
+    _sessions[session["id"]] = session
+    _messages[session["id"]] = []
+
+    ctx = _card_ctx(card_id) if card_id else ""
+    if oai:
+        intro = f"请用温暖简短的方式开始对话。{'本次用户查看了：' + ctx if ctx else '用户想聊聊育儿。'}只问1个关键问题，不要自我介绍。"
+        first_text = await anyio.to_thread.run_sync(
+            lambda: _nuri_reply_sync([{"role": "user", "text": intro}])
+        )
+    else:
+        script_key = session["script_key"]
+        first_text = SCRIPTS.get(script_key, SCRIPTS["free"])[0]["text"]
+
+    first_msg = {
+        "id": str(uuid.uuid4()), "session_id": session["id"],
+        "role": "ai", "text": first_text,
+        "quick_replies": [], "transition": None, "created_at": _now(),
+    }
+    _messages[session["id"]].append(first_msg)
+    return session
+
+@api.get("/chat/sessions")
+async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
+    sessions = list(_sessions.values())
+    if uid:
+        sessions = [s for s in sessions if s.get("user_id") == uid]
+    return sorted(sessions, key=lambda s: s["created_at"], reverse=True)
+
+@api.get("/chat/sessions/{session_id}/messages")
+async def get_messages(session_id: str):
+    return _messages.get(session_id, [])
+
+@api.post("/chat/sessions/{session_id}/messages")
+async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] = Depends(_opt_uid)):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "session not found")
+
+    msgs = _messages.setdefault(session_id, [])
+    user_msg = {
+        "id": str(uuid.uuid4()), "session_id": session_id,
+        "role": "user",
+        "text": body.text or ("[图片]" if body.image_base64 else ""),
+        "image_base64": body.image_base64,
+        "quick_replies": [], "transition": None, "created_at": _now(),
+    }
+    msgs.append(user_msg)
+
+    transition = None
+    user_turns = sum(1 for m in msgs if m["role"] == "user")
+    already_generated = any(
+        (m.get("transition") or {}).get("kind") == "tasks_generated"
+        for m in msgs if m["role"] == "ai"
+    )
+
+    if oai:
+        ctx = _card_ctx(session.get("source_card_id") or "")
+        ai_text = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
+        if user_turns >= 3 and not already_generated:
+            script_key = session.get("script_key", "free")
+            await _gen_tasks(script_key, session["title"], uid)
+            count = len(CARD_TASKS.get(script_key, CARD_TASKS["free"]))
+            transition = {"kind": "tasks_generated", "count": count}
+    else:
+        script_key = session.get("script_key", "free")
+        script = SCRIPTS.get(script_key, SCRIPTS["free"])
+        step = session.get("step", 0)
+        if step < len(script):
+            nxt = script[step]
+            ai_text = nxt["text"]
+            transition = nxt.get("transition")
+            session["step"] = step + 1
+        else:
+            ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
+
+        if transition and transition.get("kind") == "tasks_generated" and not already_generated:
+            await _gen_tasks(script_key, session["title"], uid)
+
+    ai_msg = {
+        "id": str(uuid.uuid4()), "session_id": session_id,
+        "role": "ai", "text": ai_text,
+        "quick_replies": [], "transition": transition, "created_at": _now(),
+    }
+    msgs.append(ai_msg)
+    return {"user_message": user_msg, "ai_messages": [ai_msg]}
+
+# ── Tasks ─────────────────────────────────────────────────────────────────────
+@api.get("/tasks")
+async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_opt_uid)):
+    tasks = [t for t in _tasks if not uid or t.get("user_id") == uid]
+    if scope in ("today", "week"):
+        tasks = [t for t in tasks if t["scope"] == scope]
+    return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
+
+@api.patch("/tasks/{task_id}")
+async def update_task(task_id: str, body: TaskUpdate):
+    for t in _tasks:
+        if t["id"] != task_id:
+            continue
+        if body.done is not None:
+            t["done"] = body.done
+            if body.done:
+                t["completed_at"] = _now()
+                if t["scope"] == "week":
+                    t["progress_done"] = min(t["progress_total"], t["progress_done"] + 1)
+            else:
+                t["completed_at"] = None
+        if body.mood is not None or body.note is not None:
+            prev = t.get("reflection") or {}
+            t["reflection"] = {"mood": body.mood or prev.get("mood"), "note": body.note or prev.get("note", "")}
+        return t
+    raise HTTPException(404, "task not found")
+
+@api.get("/tasks/insights")
+async def task_insights():
+    completed = [t for t in _tasks if t.get("done")]
+    today = datetime.now(timezone.utc).date()
+    done_dates: set = set()
+    for t in completed:
+        ts = t.get("completed_at")
+        if ts:
+            try:
+                done_dates.add(datetime.fromisoformat(ts.replace("Z", "+00:00")).date())
+            except Exception:
+                pass
+    streak = 0
+    for i in range(7):
+        if (today - timedelta(days=i)) in done_dates:
+            streak += 1
+        elif i > 0:
+            break
+    return {
+        "total_completed": len(completed),
+        "streak_days": streak,
+        "weekly_progress": sum(t.get("progress_done", 0) for t in _tasks if t.get("scope") == "week"),
+    }
+
+# ── Privacy ───────────────────────────────────────────────────────────────────
+_DEFAULT_PRIVACY = {"allow_history_training": True, "daily_push": True, "anonymous_community_share": False, "language": "zh"}
+
+@api.get("/privacy")
+async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
+    return _privacy.get(uid or "singleton", _DEFAULT_PRIVACY)
+
+@api.put("/privacy")
+async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
+    _privacy[uid or "singleton"] = body.dict()
+    return body
+
+@api.post("/privacy/wipe")
+async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
+    global _children, _tasks
+    if uid:
+        _children = [c for c in _children if c.get("user_id") != uid]
+        _tasks    = [t for t in _tasks    if t.get("user_id") != uid]
+        for sid in [s for s, d in _sessions.items() if d.get("user_id") == uid]:
+            _sessions.pop(sid, None); _messages.pop(sid, None)
+        _favorites.pop(uid, None); _privacy.pop(uid, None)
+    else:
+        _children.clear(); _tasks.clear()
+        _sessions.clear(); _messages.clear()
+        _favorites.clear(); _analytics.clear(); _privacy.clear()
+    return {"ok": True}
+
+# ── Mount /api router ─────────────────────────────────────────────────────────
+app.include_router(api)
+
+# ── Legacy RAG endpoints ──────────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    return {"msg": "Family Growth Radar backend", "endpoints": ["/api", "/health", "/index", "/ask", "/docs"]}
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "pinecone": bool(_PINE_OK and PINECONE_API_KEY and PINECONE_INDEX), "openai": oai is not None}
+
+def _read_pdf(pdf_bytes: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return "\n".join(p.extract_text() or "" for p in reader.pages)
+
+def _chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
+    text = text.replace("\r\n", "\n")
+    chunks, start, n = [], 0, len(text)
+    while start < n:
+        end = min(start + size, n)
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == n:
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+def _embed_batch(texts: List[str]) -> List[List[float]]:
+    resp = oai.embeddings.create(model="text-embedding-3-large", input=texts, dimensions=EMBED_DIM)
+    return [d.embedding for d in resp.data]
+
+def _embed_one(text: str) -> List[float]:
+    resp = oai.embeddings.create(model="text-embedding-3-large", input=text, dimensions=EMBED_DIM)
+    return resp.data[0].embedding
+
+def _marker_id(doc_id: str) -> str:
+    return f"{doc_id}::marker"
+
+def _is_indexed(doc_id: str):
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
+    mid = _marker_id(doc_id)
+    res = pine_index.fetch(ids=[mid], namespace=PINECONE_NS)
+    vecs = res.get("vectors", {}) if isinstance(res, dict) else getattr(res, "vectors", {}) or {}
+    if mid in vecs:
+        v = vecs[mid]
+        md = v.get("metadata", {}) if isinstance(v, dict) else getattr(v, "metadata", {}) or {}
+        return True, md.get("total_chunks")
+    return False, None
+
+def _upsert_doc(doc_id: str, chunks: List[str]) -> int:
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
+    vecs_data = _embed_batch(chunks)
+    vectors = [{"id": f"{doc_id}-{i}", "values": v, "metadata": {"text": c, "doc_id": doc_id, "chunk_id": i}}
+               for i, (c, v) in enumerate(zip(chunks, vecs_data))]
+    marker = [0.0] * EMBED_DIM; marker[0] = 1e-6
+    vectors.append({"id": _marker_id(doc_id), "values": marker,
+                    "metadata": {"doc_id": doc_id, "is_marker": True, "total_chunks": len(chunks)}})
+    pine_index.upsert(vectors=vectors, namespace=PINECONE_NS)
+    return len(chunks)
+
+def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
+    pine_index = _get_pine_index()
+    if not pine_index:
+        raise HTTPException(503, "Pinecone not configured")
+    qv = _embed_one(question)
+    kwargs = dict(namespace=PINECONE_NS, vector=qv, top_k=top_k, include_metadata=True)
+    if doc_id:
+        kwargs["filter"] = {"doc_id": {"$eq": doc_id}}
+    res = pine_index.query(**kwargs)
+    matches = res.matches if hasattr(res, "matches") else (res.get("matches", []) if isinstance(res, dict) else [])
+    chunks, scores = [], []
+    for m in (matches or []):
+        md = getattr(m, "metadata", None) or (m.get("metadata", {}) if isinstance(m, dict) else {})
+        text = (md or {}).get("text", "")
+        if text:
+            chunks.append(text)
+            scores.append(float(getattr(m, "score", 0) or (m.get("score", 0) if isinstance(m, dict) else 0)))
+    return chunks, scores
+
+def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
+    context = "\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks))
+    citation = ('\n在回答結束時，另起一行，僅引用上方參考文獻中明確出現的理論或概念名稱，格式為：參考自「[文獻中出現的理論或概念名稱]」理論。若文獻未明確提及任何理論名稱，則省略此行。'
+                if book_name else "")
+    system = (NURI_PERSONA
+              + "\n\n以下是本次對話的參考文獻節錄，可作為輔助依據。NURI 應優先運用自身的兒童發展與育兒專業知識作答，文獻內容僅供參考補充。無論文獻是否涵蓋問題，都請盡力提供有幫助的回應，避免直接回答「我不知道」或「抱歉，我無法回答」。\n"
+              + citation)
+    resp = oai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": system},
+                  {"role": "user", "content": f"問題：{question}\n\n參考文獻：\n{context}"}],
+        temperature=0.7,
+    )
+    return resp.choices[0].message.content
+
+@app.post("/index")
+async def index_pdf(file: UploadFile = File(...)):
+    if not _get_pine_index():
+        raise HTTPException(503, "Pinecone not configured")
+    if not oai:
+        raise HTTPException(503, "OpenAI not configured")
+    pdf_bytes = await file.read()
+    doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
+    already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
+    if already:
+        return {"doc_id": doc_id, "total_chunks": total, "namespace": PINECONE_NS, "already_indexed": True}
+    text   = await anyio.to_thread.run_sync(_read_pdf, pdf_bytes)
+    chunks = await anyio.to_thread.run_sync(_chunk_text, text)
+    total  = await anyio.to_thread.run_sync(_upsert_doc, doc_id, chunks)
+    return {"doc_id": doc_id, "total_chunks": total, "namespace": PINECONE_NS, "already_indexed": False}
+
+@app.post("/ask")
+async def ask(req: AskRequest):
+    if not _get_pine_index():
+        raise HTTPException(503, "Pinecone not configured")
+    if not oai:
+        raise HTTPException(503, "OpenAI not configured")
+    chunks, scores = await anyio.to_thread.run_sync(_retrieve, req.question, req.top_k, req.doc_id)
+    answer = await anyio.to_thread.run_sync(_generate_rag_answer, req.question, chunks, req.book_name)
+    return {"answer": answer, "chunks": chunks, "scores": scores}

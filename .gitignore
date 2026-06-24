@@ -1,21 +1,27 @@
-# OS files
+# secrets
+.env
+.streamlit/secrets.toml
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# model/cache
+.cache/
+*.bin
+
+# chroma db (vector store files)
+chroma_db/
+
+# data files (PDFs, etc.)
+data/
+
+# OS/editor
 .DS_Store
 Thumbs.db
-
-# Editor files
-.vscode/
+.vscode/4
 .idea/
-
-# Local environment
-.env
-.env.*
-!.env.example
-
-# Logs
-*.log
-
-# Build outputs
-dist/
-build/
-DerivedData/
-
