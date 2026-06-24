@@ -1,9 +1,11 @@
-streamlit
 fastapi
 uvicorn
-requests
 openai
 pinecone[grpc]
 pypdf
 python-multipart
 python-dotenv
+anyio
+pyjwt
+bcrypt
+email-validator
