@@ -7,6 +7,7 @@ Unified backend for Family Growth Radar.
 
 import io, os, uuid, hashlib, random
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import List, Literal, Optional
 
 import anyio
@@ -15,6 +16,7 @@ import jwt
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import OpenAI
 from pydantic import BaseModel, EmailStr, Field
@@ -38,6 +40,7 @@ JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
 JWT_ALG          = "HS256"
 JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
 EMBED_DIM        = 1024
+FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
 oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -647,6 +650,9 @@ app.include_router(api)
 # ── Legacy RAG endpoints ──────────────────────────────────────────────────────
 @app.get("/")
 async def root():
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
     return {"msg": "Family Growth Radar backend", "endpoints": ["/api", "/health", "/index", "/ask", "/docs"]}
 
 @app.get("/health")
@@ -767,3 +773,23 @@ async def ask(req: AskRequest):
     chunks, scores = await anyio.to_thread.run_sync(_retrieve, req.question, req.top_k, req.doc_id)
     answer = await anyio.to_thread.run_sync(_generate_rag_answer, req.question, chunks, req.book_name)
     return {"answer": answer, "chunks": chunks, "scores": scores}
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def frontend_fallback(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "API route not found")
+
+    candidate = (FRONTEND_DIST / full_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST.resolve())
+    except ValueError:
+        raise HTTPException(404, "Not found")
+
+    if candidate.is_file():
+        return FileResponse(candidate)
+
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+
+    raise HTTPException(404, "Frontend build not found")
