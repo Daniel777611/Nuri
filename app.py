@@ -15,6 +15,9 @@ import hashlib
 import streamlit as st
 from pathlib import Path
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 # ----------------------------
 # Configuration
 # set_page_config should be called only once, at the beginning
@@ -22,23 +25,15 @@ import requests
 # ----------------------------
 st.set_page_config(page_title="My RAG App", layout="wide")
 
-DEFAULT_PDF_PATH = Path("data/NASM_CPT7_Study_Guide.pdf")
+AVAILABLE_BOOKS = {
+    "CHDV 100: Child Development (2020)": Path("data/CHDV-100-OER-Textbook-updatedJuly2020.pdf"),
+    "NASM CPT7 Study Guide": Path("data/NASM_CPT7_Study_Guide.pdf"),
+}
 
 # API_BAse points to deployed FastAPI backend(Render)
 API_BASE = os.getenv("API_BASE", "https://nasm-rag.onrender.com")
 ASK_URL = f"{API_BASE}/ask"
 INDEX_URL = f"{API_BASE}/index"
-
-# st.title("NASM RAG")
-# -----------------------------
-# Default RAG PDF
-# -----------------------------
-def load_default_pdf():
-    if not DEFAULT_PDF_PATH.exists():
-        return None, None, None
-    pdf_bytes = DEFAULT_PDF_PATH.read_bytes()
-    doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
-    return pdf_bytes, doc_id, DEFAULT_PDF_PATH.name
 
 # ----------------------------
 # UI
@@ -72,9 +67,24 @@ if "last_retrieved" not in st.session_state:
     st.session_state["last_retrieved"] = []
 
 # -----------------------------
-# PDF uploader， disabled due to render.com free tier limit.
+# Sidebar: Settings + 教材选择
 # -----------------------------
-uploaded = st.file_uploader("Upload a PDF", type=["pdf"], disabled=False)  #  disabled due to render.com free tier limit
+with st.sidebar:
+    st.header("Settings")
+    top_k = st.slider("Top K", 1, 10, 5)
+    st.divider()
+    st.subheader("教材选择")
+    _available = {t: p for t, p in AVAILABLE_BOOKS.items() if p.exists()}
+    if _available:
+        selected_title = st.selectbox("选择教材", list(_available.keys()))
+    else:
+        selected_title = None
+        st.warning("data/ 目录下未找到教材文件")
+
+# -----------------------------
+# PDF 加载：优先使用侧边栏选择，上传器用于自定义 PDF
+# -----------------------------
+uploaded = st.file_uploader("上传自定义 PDF（可选）", type=["pdf"])
 
 pdf_bytes = None
 doc_id = None
@@ -86,14 +96,13 @@ if uploaded is not None:
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
     filename = uploaded.name
     source = "upload"
-else:
-    b, did, name = load_default_pdf()
-    if b is not None:
-        pdf_bytes, doc_id, filename = b, did, name
-        source = "default"
-        st.info(f"Default PDF: {filename}")
-    else:
-        st.caption("Tip: Put a demo file at data/default.pdf to enable default loading.")
+elif selected_title and selected_title in _available:
+    selected_path = _available[selected_title]
+    pdf_bytes = selected_path.read_bytes()
+    doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
+    filename = selected_path.name
+    source = "default"
+    st.info(f"当前教材：{selected_title}")
 
 # -----------------------------
 # When user changes PDF, reset backend_doc_id
@@ -114,14 +123,6 @@ if doc_id != st.session_state["last_local_doc_id"]:
 if doc_id and doc_id in st.session_state["doc_map"]:
     st.session_state["active_doc_id"] = st.session_state["doc_map"][doc_id]
 
-
-# -----------------------------
-# Sidebar: Settings and debug info
-# -----------------------------
-with st.sidebar:
-    st.header("Settings")
-    top_k = st.slider("Top K", 1, 10, 5)
-    # st.divider()
 
 # -----------------------------
 # Sidebar info
@@ -282,6 +283,7 @@ if prompt:
                         "question": prompt,
                         "top_k": top_k,
                         "doc_id": st.session_state.get("active_doc_id"),
+                        "book_name": filename,
                     },
                     timeout=120,
                 )

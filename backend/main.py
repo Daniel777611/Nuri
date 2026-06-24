@@ -28,7 +28,7 @@ from openai import OpenAI
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from pypdf import PdfReader
-from pinecone.grpc import PineconeGRPC as Pinecone
+from pinecone import Pinecone
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
@@ -66,9 +66,15 @@ EMBED_DIM = 1024
 oai = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# find host based on list_indexes
+# find host based on list_indexes (pinecone v9 returns IndexModel objects, not dicts)
 indexes = pc.list_indexes()
-host = next((i["host"] for i in indexes if i["name"] == PINECONE_INDEX), None)
+host = None
+for idx in indexes:
+    idx_name = idx.get("name") if isinstance(idx, dict) else getattr(idx, "name", None)
+    idx_host = idx.get("host") if isinstance(idx, dict) else getattr(idx, "host", None)
+    if idx_name == PINECONE_INDEX:
+        host = idx_host
+        break
 if not host:
     raise RuntimeError(f"Index '{PINECONE_INDEX}' not found in this Pinecone project.")
 
@@ -208,24 +214,43 @@ def retrieve_chunks(question: str, top_k: int, doc_id: Optional[str]) -> Tuple[L
             scores.append(float(m.get("score", 0.0) or 0.0))
     return chunks, scores
 
-def generate_answer(question: str, chunks: List[str]) -> str:
+NURI_PERSONA = """你叫 NURI，是一位專業且溫暖的育兒夥伴，而非提供標準答案的專家。NURI 的知識基礎來自兒童發展、心理學、教育學、神經科學、正向教養、依附理論及大量真實家庭經驗。NURI 相信每個孩子、每個家庭都有不同的節奏，因此不追求唯一正確答案，而是透過持續對話，陪伴父母理解孩子、理解自己，一起找到最適合家庭的方式。
+
+第一次互動時，NURI 會進行自我介紹，之後不再重複自己的名字。
+
+當遇到明確育兒問題時，NURI 會先根據廣泛研究提供一版初步策略，並清楚說明這只是第一版方向，之後會隨著對話持續修正。所有正式策略固定使用六個部分呈現：背景分析、專業知識解釋、建議方案 A/B/C、論文與書籍來源、相似家庭經驗、下一步引導。
+
+NURI 不急於給出結論，而是透過每次只詢問 1～2 個問題，逐步了解孩子年齡、氣質、個性、家庭結構、生活型態、父母價值觀、壓力來源以及過去嘗試過的方法，並在約 4～5 輪對話後重新整合並更新策略。
+
+NURI 將每一次對話視為持續陪伴的一部分，會記住過去的討論內容，將孩子的特質、家庭背景、父母的育兒理念、曾經有效或無效的方法作為未來策略的背景參考，而不是每次重新開始。
+
+當使用者沒有提出明確問題時，NURI 會進入陪伴模式，不急著分析或提供方法，而是自然聊天、提供情緒支持、了解媽媽的近況、孩子的成長與家庭生活，讓使用者感受到被理解與陪伴。
+
+NURI 的語氣溫暖、自然、專業但不武斷，不使用重複、制式或過度安慰的句型，不將孩子視為問題，也不要求完美父母。NURI 尊重父母的價值觀，不替父母做決定，而是以「理解先於建議」為核心，透過長期關係與持續修正，陪伴家庭一起成長。
+
+最重要的信念是：每一版策略都只是目前最適合這個家庭的版本，而不是放諸四海皆準的標準答案；NURI 的角色不是替父母解決所有問題，而是陪伴父母一起理解孩子、理解自己，並在每個成長階段找到屬於自己的方法。"""
+
+def generate_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
     context = "\n\n".join([f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks)])
+
+    if book_name:
+        citation_note = '\n在回答結束時，另起一行，僅引用上方參考文獻中明確出現的理論或概念名稱，格式為：參考自「[文獻中出現的理論或概念名稱]」理論。若文獻未明確提及任何理論名稱，則省略此行。'
+    else:
+        citation_note = ""
+
+    system_content = (
+        NURI_PERSONA
+        + "\n\n以下是本次對話的參考文獻節錄，可作為輔助依據。NURI 應優先運用自身的兒童發展與育兒專業知識作答，文獻內容僅供參考補充。無論文獻是否涵蓋問題，都請盡力提供有幫助的回應，避免直接回答「我不知道」或「抱歉，我無法回答」。\n"
+        + citation_note
+    )
 
     resp = oai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a rigorous RAG assistant.\n"
-                    "Use ONLY the provided context. Do NOT use outside knowledge.\n"
-                    "If the context provides no relevant information at all, say 'I don't know.'\n"
-                    "Keep the answer short and factual."
-                ),
-            },
-            {"role": "user", "content": f"Question: {question}\n\nContext:\n{context}"},
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"問題：{question}\n\n參考文獻：\n{context}"},
         ],
-        temperature=0.2,
+        temperature=0.7,
     )
     return resp.choices[0].message.content
 
@@ -236,6 +261,7 @@ class AskRequest(BaseModel):
     question: str
     top_k: int = 5
     doc_id: Optional[str] = None
+    book_name: Optional[str] = None
 
 # ----------------------------
 # Endpoints (async)
@@ -287,5 +313,5 @@ async def index_pdf(file: UploadFile = File(...)):
 async def ask(req: AskRequest):
     # run retrieval + generation in threads (OpenAI/Pinecone calls are blocking)
     chunks, scores = await anyio.to_thread.run_sync(retrieve_chunks, req.question, req.top_k, req.doc_id)
-    answer = await anyio.to_thread.run_sync(generate_answer, req.question, chunks)
+    answer = await anyio.to_thread.run_sync(generate_answer, req.question, chunks, req.book_name)
     return {"answer": answer, "chunks": chunks, "scores": scores}
