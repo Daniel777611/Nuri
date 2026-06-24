@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd frontend && npm ci && npm run build:web",
+  "buildCommand": "cd frontend && npm ci --legacy-peer-deps && npm run build:web",
   "outputDirectory": "frontend/dist",
   "rewrites": [
     {
