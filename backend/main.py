@@ -89,8 +89,7 @@ _tasks:       list[dict]      = []
 _favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
-_gen_cards:   list[dict]      = []     # AI-generated feed cards (in-memory)
-_feed_gen_mode: str           = "ai"  # "ai" | "alt"  — controlled by admin toggle
+_feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -134,6 +133,107 @@ def _to_public(doc: dict) -> dict:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+# ── Supabase persistence helpers ──────────────────────────────────────────────
+
+async def _db_get_gen_cards() -> list[dict]:
+    sb = _get_supabase()
+    if not sb:
+        return []
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("feed_cards").select("*").order("created_at", desc=True).limit(50).execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print(f"[warn] _db_get_gen_cards: {e}")
+        return []
+
+async def _db_save_gen_cards(cards: list[dict]):
+    sb = _get_supabase()
+    if not sb:
+        return
+    for card in cards:
+        row = {
+            "id": card["id"], "type": card["type"], "type_label": card["type_label"],
+            "cta": card.get("cta", "问问AI →"), "title": card["title"],
+            "summary": card.get("summary", ""), "body": card.get("body", ""),
+            "tags": card.get("tags", []), "hook_line": card.get("hook_line", ""),
+            "image_url": card.get("image_url", ""), "keywords": card.get("keywords", []),
+            "source": card.get("source", "ai"), "created_at": _now(),
+        }
+        try:
+            await anyio.to_thread.run_sync(
+                lambda r=row: sb.table("feed_cards").upsert(r, on_conflict="id").execute()
+            )
+        except Exception as e:
+            print(f"[warn] _db_save_gen_cards upsert: {e}")
+
+async def _db_get_feed_mode() -> str:
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings").select("value").eq("key", "feed_gen_mode").maybe_single().execute()
+            )
+            if res.data:
+                return str(res.data.get("value", "ai"))
+        except Exception as e:
+            print(f"[warn] _db_get_feed_mode: {e}")
+    return _feed_gen_mode
+
+async def _db_set_feed_mode(mode: str):
+    global _feed_gen_mode
+    _feed_gen_mode = mode
+    sb = _get_supabase()
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings").upsert(
+                    {"key": "feed_gen_mode", "value": mode, "updated_at": _now()},
+                    on_conflict="key"
+                ).execute()
+            )
+        except Exception as e:
+            print(f"[warn] _db_set_feed_mode: {e}")
+
+async def _db_list_fav_ids(uid: str) -> set:
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").select("card_id").eq("user_id", uid).execute()
+            )
+            return {r["card_id"] for r in (res.data or [])}
+        except Exception as e:
+            print(f"[warn] _db_list_fav_ids: {e}")
+    return _favorites.get(uid, set())
+
+async def _db_toggle_fav(uid: str, card_id: str) -> bool:
+    sb = _get_supabase()
+    if sb:
+        try:
+            existing = await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").select("id").eq("user_id", uid).eq("card_id", card_id).execute()
+            )
+            if existing.data:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("favorites").delete().eq("user_id", uid).eq("card_id", card_id).execute()
+                )
+                return False
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").insert({"user_id": uid, "card_id": card_id}).execute()
+            )
+            return True
+        except Exception as e:
+            print(f"[warn] _db_toggle_fav: {e}")
+    # fallback
+    _favorites.setdefault(uid, set())
+    if card_id in _favorites[uid]:
+        _favorites[uid].discard(card_id)
+        return False
+    _favorites[uid].add(card_id)
+    return True
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 ParentRole = Literal["mom", "dad", "grandparent", "other"]
@@ -393,8 +493,8 @@ def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
     except Exception:
         return {"text": resp.choices[0].message.content, "quick_replies": [], "suggest_tasks": False}
 
-def _card_ctx(card_id: str) -> str:
-    for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards:
+def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
+    for c in FEED_CARDS + ALT_FEED_CARDS + (gen_cards or []):
         if c["id"] == card_id:
             d = CARD_DETAILS.get(card_id, {})
             body = d.get("body") or c.get("body", "")
@@ -656,20 +756,23 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
 # ── Feed ──────────────────────────────────────────────────────────────────────
 @api.get("/feed")
 async def get_feed(shuffle: bool = False):
-    cards = list(FEED_CARDS) + list(_gen_cards)
+    gen_cards = await _db_get_gen_cards()
+    cards = list(FEED_CARDS) + gen_cards
     if shuffle:
         random.shuffle(cards)
     return cards
 
 @api.get("/feed/alt")
 async def get_alt_card(exclude: str = ""):
-    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + _gen_cards) if c["id"] != exclude]
+    gen_cards = await _db_get_gen_cards()
+    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + gen_cards) if c["id"] != exclude]
     return random.choice(pool)
 
 @api.get("/feed/search")
 async def search_feed(q: str = "", type: Optional[str] = None):
+    gen_cards = await _db_get_gen_cards()
     q_lower = q.lower().strip()
-    all_cards = FEED_CARDS + ALT_FEED_CARDS + _gen_cards
+    all_cards = FEED_CARDS + ALT_FEED_CARDS + gen_cards
     if not q_lower:
         results = all_cards
     else:
@@ -691,7 +794,8 @@ async def search_feed(q: str = "", type: Optional[str] = None):
 
 @api.post("/feed/generate")
 async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
-    if _feed_gen_mode == "alt":
+    feed_mode = await _db_get_feed_mode()
+    if feed_mode == "alt":
         pool = list(FEED_CARDS + ALT_FEED_CARDS)
         random.shuffle(pool)
         return pool[:body.count]
@@ -717,12 +821,13 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
     new_cards = await anyio.to_thread.run_sync(
         lambda: _gen_feed_cards_sync(keywords, body.count)
     )
-    _gen_cards.extend(new_cards)
+    await _db_save_gen_cards(new_cards)
     return new_cards
 
 @api.get("/feed/{card_id}/detail")
 async def get_card_detail(card_id: str):
-    for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards:
+    gen_cards = await _db_get_gen_cards()
+    for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards:
         if c["id"] == card_id:
             if card_id in CARD_DETAILS:
                 extra = CARD_DETAILS[card_id]
@@ -739,19 +844,16 @@ async def get_card_detail(card_id: str):
 @api.get("/favorites")
 async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    ids = _favorites.get(key, set())
-    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards}
+    ids = await _db_list_fav_ids(key)
+    gen_cards = await _db_get_gen_cards()
+    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards}
     return [by_id[cid] for cid in ids if cid in by_id]
 
 @api.post("/favorites/toggle")
 async def toggle_favorite(body: FavToggle, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    _favorites.setdefault(key, set())
-    if body.card_id in _favorites[key]:
-        _favorites[key].discard(body.card_id)
-        return {"favorited": False, "card_id": body.card_id}
-    _favorites[key].add(body.card_id)
-    return {"favorited": True, "card_id": body.card_id}
+    favorited = await _db_toggle_fav(key, body.card_id)
+    return {"favorited": favorited, "card_id": body.card_id}
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @api.post("/analytics")
@@ -802,7 +904,8 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         except Exception:
             pass
 
-    ctx = _card_ctx(card_id) if card_id else ""
+    gen_cards = await _db_get_gen_cards()
+    ctx = _card_ctx(card_id, gen_cards) if card_id else ""
     name_part = f"用户的名字是{nickname}，" if nickname else ""
     quick_replies: list = []
     if oai:
@@ -984,7 +1087,8 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
     quick_replies: list = []
 
     if oai:
-        ctx = _card_ctx(session.get("source_card_id") or "")
+        gen_cards = await _db_get_gen_cards()
+        ctx = _card_ctx(session.get("source_card_id") or "", gen_cards)
         reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
@@ -1406,13 +1510,12 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
 
 @app.get("/admin/settings")
 async def admin_get_settings(_: None = Depends(_require_admin)):
-    return {"feed_gen_mode": _feed_gen_mode}
+    return {"feed_gen_mode": await _db_get_feed_mode()}
 
 @app.put("/admin/settings")
 async def admin_update_settings(body: FeedModeUpdate, _: None = Depends(_require_admin)):
-    global _feed_gen_mode
-    _feed_gen_mode = body.mode
-    return {"feed_gen_mode": _feed_gen_mode}
+    await _db_set_feed_mode(body.mode)
+    return {"feed_gen_mode": body.mode}
 
 @app.get("/admin/discover")
 async def admin_discover(_: None = Depends(_require_admin)):
