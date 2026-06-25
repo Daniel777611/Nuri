@@ -14,3 +14,5 @@ services:
         sync: false
       - key: PINECONE_NAMESPACE
         value: pdf
+      - key: ADMIN_KEY
+        sync: false

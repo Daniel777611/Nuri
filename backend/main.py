@@ -14,7 +14,7 @@ import anyio
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -45,6 +45,7 @@ VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
 FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
 JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
 JWT_ALG          = "HS256"
 JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
 EMBED_DIM        = 1024
@@ -195,6 +196,22 @@ class AskRequest(BaseModel):
     top_k:     int          = 5
     doc_id:    Optional[str] = None
     book_name: Optional[str] = None
+
+# ── Admin models ─────────────────────────────────────────────────────────────
+class BookMeta(BaseModel):
+    doc_id:      str
+    title:       str
+    category:    Optional[str] = None
+    chunk_count: Optional[int] = None
+
+class BookUpdate(BaseModel):
+    enabled:  Optional[bool] = None
+    title:    Optional[str]  = None
+    category: Optional[str]  = None
+
+def _require_admin(x_admin_key: str = Header(default="")):
+    if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
+        raise HTTPException(403, "Invalid or missing admin key")
 
 # ── Static feed data ──────────────────────────────────────────────────────────
 FEED_CARDS = [
@@ -1100,6 +1117,19 @@ def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
     sb = _get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
+
+    # When no specific doc requested, restrict to enabled books only.
+    enabled_doc_ids = None
+    if doc_id is None:
+        try:
+            books_res = sb.table("books").select("doc_id").eq("enabled", True).execute()
+            rows = getattr(books_res, "data", None) or []
+            if rows:
+                enabled_doc_ids = [r["doc_id"] for r in rows]
+            # If books table is empty / missing, enabled_doc_ids stays None → search all.
+        except Exception:
+            pass
+
     qv = _embed_one(question)
     res = sb.rpc(
         "match_rag_chunks",
@@ -1107,6 +1137,7 @@ def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
             "query_embedding": qv,
             "match_count": top_k,
             "filter_doc_id": doc_id,
+            "filter_doc_ids": enabled_doc_ids,
             "filter_namespace": VECTOR_NAMESPACE,
         },
     ).execute()
@@ -1159,3 +1190,62 @@ async def ask(req: AskRequest):
     chunks, scores = await anyio.to_thread.run_sync(_retrieve, req.question, req.top_k, req.doc_id)
     answer = await anyio.to_thread.run_sync(_generate_rag_answer, req.question, chunks, req.book_name)
     return {"answer": answer, "chunks": chunks, "scores": scores}
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/admin/books")
+async def admin_list_books(_: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    res = sb.table("books").select("*").order("created_at", desc=True).execute()
+    return {"books": getattr(res, "data", None) or []}
+
+@app.post("/admin/books")
+async def admin_upsert_book(meta: BookMeta, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    row: dict = {"doc_id": meta.doc_id, "title": meta.title, "enabled": True}
+    if meta.category is not None:
+        row["category"] = meta.category
+    if meta.chunk_count is not None:
+        row["chunk_count"] = meta.chunk_count
+    sb.table("books").upsert(row, on_conflict="doc_id").execute()
+    return {"ok": True}
+
+@app.patch("/admin/books/{doc_id}")
+async def admin_update_book(doc_id: str, update: BookUpdate, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    patch = {k: v for k, v in update.dict().items() if v is not None}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    sb.table("books").update(patch).eq("doc_id", doc_id).execute()
+    return {"ok": True}
+
+@app.delete("/admin/books/{doc_id}")
+async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    sb.table("books").delete().eq("doc_id", doc_id).execute()
+    return {"ok": True}
+
+@app.get("/admin/discover")
+async def admin_discover(_: None = Depends(_require_admin)):
+    """Return doc_ids present in rag_chunks but not yet in books table."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    chunks_res = sb.rpc("distinct_chunk_doc_ids", {"p_namespace": VECTOR_NAMESPACE}).execute()
+    all_chunks = {r["doc_id"]: r["chunk_count"] for r in (getattr(chunks_res, "data", None) or [])}
+    books_res = sb.table("books").select("doc_id").execute()
+    registered = {r["doc_id"] for r in (getattr(books_res, "data", None) or [])}
+    unregistered = [
+        {"doc_id": doc_id, "chunk_count": count}
+        for doc_id, count in all_chunks.items()
+        if doc_id not in registered
+    ]
+    return {"unregistered": unregistered}

@@ -26,7 +26,8 @@ create or replace function public.match_rag_chunks(
   query_embedding vector(1024),
   match_count int default 5,
   filter_doc_id text default null,
-  filter_namespace text default 'pdf'
+  filter_namespace text default 'pdf',
+  filter_doc_ids text[] default null   -- array of enabled doc_ids; null = no filter
 )
 returns table (
   id text,
@@ -49,6 +50,7 @@ as $$
   from public.rag_chunks rc
   where rc.namespace = filter_namespace
     and (filter_doc_id is null or rc.doc_id = filter_doc_id)
+    and (filter_doc_ids is null or rc.doc_id = any(filter_doc_ids))
   order by rc.embedding <=> query_embedding
   limit match_count;
 $$;
