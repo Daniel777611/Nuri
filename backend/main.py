@@ -420,14 +420,17 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
 async def list_children(uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
     if sb and uid:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("children")
-            .select("*")
-            .eq("user_id", uid)
-            .order("created_at", desc=False)
-            .execute()
-        )
-        return res.data or []
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("children")
+                .select("*")
+                .eq("user_id", uid)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"[warn] listChildren Supabase error: {e}")
     return [c for c in _children if not uid or c.get("user_id") == uid]
 
 @api.post("/children", status_code=201)

@@ -1,5 +1,7 @@
 -- Run this in the Supabase SQL Editor for app login/profile persistence.
 -- Secret values stay in backend environment variables; do not put them here.
+-- The backend uses SUPABASE_SERVICE_ROLE_KEY which bypasses RLS.
+-- The policies below are extra safety for any direct Postgres connections.
 
 create table if not exists public.users (
   id text primary key,
@@ -28,3 +30,27 @@ create index if not exists children_user_created_idx
 
 alter table public.users enable row level security;
 alter table public.children enable row level security;
+
+-- Allow the backend service role full access (service role bypasses RLS by default,
+-- but explicit policies help when using Postgres direct connections).
+do $$ begin
+  if not exists (
+    select 1 from pg_policies where tablename = 'users' and policyname = 'service_role_all_users'
+  ) then
+    execute $p$
+      create policy service_role_all_users on public.users
+        for all to service_role using (true) with check (true)
+    $p$;
+  end if;
+end $$;
+
+do $$ begin
+  if not exists (
+    select 1 from pg_policies where tablename = 'children' and policyname = 'service_role_all_children'
+  ) then
+    execute $p$
+      create policy service_role_all_children on public.children
+        for all to service_role using (true) with check (true)
+    $p$;
+  end if;
+end $$;

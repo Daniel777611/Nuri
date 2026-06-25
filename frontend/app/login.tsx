@@ -31,14 +31,21 @@ export default function Login() {
         password,
       });
       await auth.setToken(res.access_token);
-      // Decide next destination based on whether user has a child
-      const children = await api.listChildren();
-      if (children && children.length > 0) router.replace("/(tabs)");
-      else router.replace("/onboarding");
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("401")) setError("邮箱或密码错误");
       else setError("登录失败，请重试");
+      setSubmitting(false);
+      return;
+    }
+
+    // Route decision after login succeeds — failures here shouldn't block entry
+    try {
+      const children = await api.listChildren();
+      if (children && children.length > 0) router.replace("/(tabs)");
+      else router.replace("/onboarding");
+    } catch {
+      router.replace("/onboarding");
     } finally {
       setSubmitting(false);
     }
