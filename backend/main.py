@@ -198,6 +198,10 @@ class AskRequest(BaseModel):
     book_name: Optional[str] = None
 
 # ── Admin models ─────────────────────────────────────────────────────────────
+class IndexFromUrlRequest(BaseModel):
+    url:      str
+    filename: str = "upload.pdf"
+
 class BookMeta(BaseModel):
     doc_id:      str
     title:       str
@@ -1172,6 +1176,25 @@ async def index_pdf(file: UploadFile = File(...)):
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
     pdf_bytes = await file.read()
+    doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
+    already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
+    if already:
+        return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": True}
+    text   = await anyio.to_thread.run_sync(_read_pdf, pdf_bytes)
+    chunks = await anyio.to_thread.run_sync(_chunk_text, text)
+    total  = await anyio.to_thread.run_sync(_upsert_doc, doc_id, chunks)
+    return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": False}
+
+@api.post("/index-from-url")
+async def index_from_url(req: IndexFromUrlRequest):
+    """Index a PDF fetched from a URL (e.g. Supabase Storage). Bypasses Vercel 4.5MB payload limit."""
+    if not _get_supabase():
+        raise HTTPException(503, "Supabase not configured")
+    if not oai:
+        raise HTTPException(503, "OpenAI not configured")
+    import urllib.request
+    with urllib.request.urlopen(req.url) as r:
+        pdf_bytes = r.read()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
     already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
     if already:

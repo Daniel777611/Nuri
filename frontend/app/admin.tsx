@@ -162,7 +162,9 @@ export default function AdminPage() {
     setBooks((bs) => bs.filter((b) => b.doc_id !== doc_id));
   };
 
-  // ── Index new PDF — must go through Render (OpenAI key protection) ────────
+  // ── Index new PDF ─────────────────────────────────────────────────────────
+  // Flow: frontend → Supabase Storage (bypasses Vercel 4.5MB limit)
+  //       → backend /api/index-from-url (downloads & vectorizes) → books table
   const handleIndexNewBook = () => {
     if (!newTitle.trim()) { setIndexStatus("请先填写书名"); return; }
     if (Platform.OS !== "web") { setIndexStatus("文件上传仅支持 Web 端"); return; }
@@ -173,16 +175,34 @@ export default function AdminPage() {
       const file = e.target.files?.[0];
       if (!file) return;
       setIndexing(true);
-      setIndexStatus("正在上传并向量化 PDF，可能需要几分钟……");
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch(`${BACKEND}/index`, { method: "POST", body: formData });
+        // Step 1: Upload to Supabase Storage
+        setIndexStatus("正在上传 PDF 到 Supabase Storage……");
+        const storagePath = `${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
+        const { error: uploadErr } = await supabase.storage
+          .from("pdfs")
+          .upload(storagePath, file, { contentType: "application/pdf", upsert: true });
+        if (uploadErr) throw new Error(`Storage 上传失败: ${uploadErr.message}`);
+
+        // Step 2: Get public URL
+        const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
+        const pdfUrl = urlData.publicUrl;
+
+        // Step 3: Ask backend to download & vectorize
+        setIndexStatus("正在向量化，可能需要几分钟……");
+        const res = await fetch(`${BACKEND}/api/index-from-url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: pdfUrl, filename: file.name }),
+        });
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
-        setIndexStatus(`向量化完成 ${data.total_chunks} 个 chunk，正在注册……`);
 
-        // Register directly in Supabase — no Render admin endpoint needed
+        // Step 4: Clean up storage (fire and forget)
+        supabase.storage.from("pdfs").remove([storagePath]);
+
+        // Step 5: Register in books table
+        setIndexStatus(`向量化完成 ${data.total_chunks} 个 chunk，正在注册……`);
         await supabase.from("books").upsert(
           { doc_id: data.doc_id, title: newTitle.trim(), category: newCategory, chunk_count: data.total_chunks, enabled: true },
           { onConflict: "doc_id" }
