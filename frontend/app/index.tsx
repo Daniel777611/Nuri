@@ -17,13 +17,20 @@ export default function Index() {
           router.replace("/register");
           return;
         }
-        // Validate token by fetching /me
+        // Validate token — only force-logout on explicit auth errors (401/403),
+        // not on network failures or server errors (which would falsely clear a valid token)
         try {
           await api.me();
-        } catch {
-          await auth.clearToken();
-          router.replace("/register");
-          return;
+        } catch (e: any) {
+          const msg: string = e?.message ?? "";
+          const isAuthError = msg.includes(" 401") || msg.includes(" 403");
+          if (isAuthError) {
+            await auth.clearToken();
+            router.replace("/register");
+            return;
+          }
+          // Network / server error — keep the token and proceed; the UI will
+          // surface errors naturally if the backend is truly unavailable
         }
         const children = await api.listChildren();
         if (children && children.length > 0) router.replace("/(tabs)");

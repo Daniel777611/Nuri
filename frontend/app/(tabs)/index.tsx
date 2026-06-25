@@ -123,7 +123,7 @@ export default function Home() {
     try {
       const newCards = await api.generateCards({ count: 3 });
       if (newCards?.length > 0) {
-        setCards(newCards);
+        setCards(prev => [...prev, ...newCards]);
         showToast(`已生成 ${newCards.length} 张新内容`);
       }
     } catch {
