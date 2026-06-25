@@ -14,19 +14,25 @@ export const auth = {
   getToken,
 };
 
-async function req<T = any>(path: string, init?: RequestInit): Promise<T> {
+async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
   const token = await getToken();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(API + path, { ...init, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API ${path} ${res.status}: ${text}`);
+  try {
+    const res = await fetch(API + path, { ...init, headers, signal: controller.signal });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API ${path} ${res.status}: ${text}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 export const api = {

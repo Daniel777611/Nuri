@@ -50,6 +50,7 @@ export default function Home() {
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [child, setChild] = useState<any>(null);
 
   const load = useCallback(async (shuffle = false) => {
@@ -59,7 +60,6 @@ export default function Home() {
     ]);
     setCards(feed);
     setChild(children[0] || null);
-    // Track impressions
     feed.forEach((c: FeedCard) =>
       api.trackEvent("impression", { card_id: c.id, card_type: c.type }).catch(() => {})
     );
@@ -68,12 +68,29 @@ export default function Home() {
   useEffect(() => {
     (async () => {
       try {
+        setLoadError(false);
         await load(false);
+      } catch {
+        setLoadError(true);
       } finally {
         setLoading(false);
       }
     })();
   }, [load]);
+
+  const retryLoad = () => {
+    setLoading(true);
+    setLoadError(false);
+    (async () => {
+      try {
+        await load(false);
+      } catch {
+        setLoadError(true);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  };
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -250,6 +267,14 @@ export default function Home() {
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} />
+        </View>
+      ) : loadError ? (
+        <View style={styles.center}>
+          <Ionicons name="cloud-offline-outline" size={44} color={colors.muted} />
+          <Text style={styles.errorText}>加载失败，请检查网络</Text>
+          <Pressable onPress={retryLoad} style={styles.retryBtn}>
+            <Text style={styles.retryText}>重试</Text>
+          </Pressable>
         </View>
       ) : (
         <ScrollView
@@ -448,7 +473,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md },
+  errorText: { fontSize: type.base, color: colors.muted },
+  retryBtn: {
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.sm + 2,
+    backgroundColor: colors.brand,
+    borderRadius: radius.pill,
+  },
+  retryText: { fontSize: type.base, fontWeight: "600", color: "#fff" },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   card: {
     backgroundColor: colors.surfaceSecondary,
