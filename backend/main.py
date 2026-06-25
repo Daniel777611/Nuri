@@ -5,7 +5,7 @@ Unified backend for Family Growth Radar.
 - /index /ask : Supabase pgvector RAG endpoints (optional)
 """
 
-import io, os, uuid, hashlib, random
+import io, json, os, uuid, hashlib, random
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -317,18 +317,39 @@ NURI 的語氣溫暖、自然、專業但不武斷，不使用重複、制式或
 最重要的信念是：每一版策略都只是目前最適合這個家庭的版本，而不是放諸四海皆準的標準答案；NURI 的角色不是替父母解決所有問題，而是陪伴父母一起理解孩子、理解自己，並在每個成長階段找到屬於自己的方法。"""
 
 # ── NURI AI helper ────────────────────────────────────────────────────────────
-def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> str:
+_NURI_JSON_SUFFIX = """
+
+请以合法 JSON 格式回复，格式如下：
+{"text": "你的回复", "quick_replies": ["选项1", "选项2"]}
+规则：
+- text：温暖自然，不超过150字，不使用序号列表
+- quick_replies：1-3个，每个不超过12字，帮助用户继续对话；初次互动可给示例选项
+- 不要在 text 里重复 quick_replies 内容"""
+
+def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
     if not oai:
-        return "AI 暂时不可用。"
-    system = NURI_PERSONA
+        return {"text": "AI 暂时不可用。", "quick_replies": []}
+    system = NURI_PERSONA + _NURI_JSON_SUFFIX
     if card_ctx:
-        system += f"\n\n本次对话与以下育儿内容相关，可作为背景参考：\n{card_ctx}"
+        system += f"\n\n本次对话相关内容：\n{card_ctx}"
     msgs = [{"role": "system", "content": system}]
     for m in history:
         role = "user" if m["role"] == "user" else "assistant"
-        msgs.append({"role": role, "content": m.get("text") or ""})
-    resp = oai.chat.completions.create(model="gpt-4o-mini", messages=msgs, temperature=0.7)
-    return resp.choices[0].message.content
+        content = m.get("text") or ""
+        if content:
+            msgs.append({"role": role, "content": content})
+    resp = oai.chat.completions.create(
+        model="gpt-4o-mini", messages=msgs, temperature=0.75,
+        response_format={"type": "json_object"},
+    )
+    try:
+        data = json.loads(resp.choices[0].message.content)
+        return {
+            "text": data.get("text", ""),
+            "quick_replies": data.get("quick_replies", [])[:3],
+        }
+    except Exception:
+        return {"text": resp.choices[0].message.content, "quick_replies": []}
 
 def _card_ctx(card_id: str) -> str:
     for c in FEED_CARDS + ALT_FEED_CARDS:
@@ -340,6 +361,7 @@ def _card_ctx(card_id: str) -> str:
 async def _gen_tasks(script_key: str, session_title: str, uid: Optional[str]):
     templates = CARD_TASKS.get(script_key, CARD_TASKS["free"])
     src = f"来自你和AI的对话 · {datetime.now().strftime('%m月%d日')}"
+    sb = _get_supabase()
     for t in templates:
         task = {
             "id": str(uuid.uuid4()), "title": t["title"], "scope": t["scope"],
@@ -349,7 +371,14 @@ async def _gen_tasks(script_key: str, session_title: str, uid: Optional[str]):
         }
         if uid:
             task["user_id"] = uid
-        _tasks.append(task)
+        if sb and uid:
+            try:
+                await anyio.to_thread.run_sync(lambda: sb.table("tasks").insert(task).execute())
+            except Exception as e:
+                print(f"[warn] _gen_tasks insert error: {e}")
+                _tasks.append(task)
+        else:
+            _tasks.append(task)
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @api.post("/auth/register", status_code=201)
@@ -536,34 +565,74 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
 
     session = {
         "id": str(uuid.uuid4()), "title": title,
-        "source_card_id": card_id, "step": 1, "script_key": CARD_TO_SCRIPT.get(card_id or "", "free"),
+        "source_card_id": card_id, "step": 1,
+        "script_key": CARD_TO_SCRIPT.get(card_id or "", "free"),
         "created_at": _now(),
     }
     if uid:
         session["user_id"] = uid
-    _sessions[session["id"]] = session
-    _messages[session["id"]] = []
+
+    sb = _get_supabase()
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(lambda: sb.table("chat_sessions").insert(session).execute())
+        except Exception as e:
+            print(f"[warn] start_session insert error: {e}")
+            _sessions[session["id"]] = session
+            _messages[session["id"]] = []
+    else:
+        _sessions[session["id"]] = session
+        _messages[session["id"]] = []
 
     ctx = _card_ctx(card_id) if card_id else ""
+    quick_replies: list = []
     if oai:
-        intro = f"请用温暖简短的方式开始对话。{'本次用户查看了：' + ctx if ctx else '用户想聊聊育儿。'}只问1个关键问题，不要自我介绍。"
-        first_text = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync([{"role": "user", "text": intro}])
+        intro_prompt = (
+            f"请用温暖简短的方式开始对话。"
+            f"{'本次用户查看了：' + ctx if ctx else '用户想聊聊育儿。'}"
+            "只问1个关键问题，不要自我介绍，不要重复NURI名字。"
         )
+        reply = await anyio.to_thread.run_sync(
+            lambda: _nuri_reply_sync([{"role": "user", "text": intro_prompt}])
+        )
+        first_text = reply["text"]
+        quick_replies = reply.get("quick_replies", [])
     else:
         script_key = session["script_key"]
-        first_text = SCRIPTS.get(script_key, SCRIPTS["free"])[0]["text"]
+        first_step = SCRIPTS.get(script_key, SCRIPTS["free"])[0]
+        first_text = first_step["text"]
+        quick_replies = first_step.get("quick_replies", [])
 
     first_msg = {
         "id": str(uuid.uuid4()), "session_id": session["id"],
         "role": "ai", "text": first_text,
-        "quick_replies": [], "transition": None, "created_at": _now(),
+        "quick_replies": quick_replies, "transition": None, "created_at": _now(),
     }
-    _messages[session["id"]].append(first_msg)
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(first_msg).execute())
+        except Exception as e:
+            print(f"[warn] start_session msg insert error: {e}")
+    else:
+        _messages[session["id"]].append(first_msg)
+
     return session
 
 @api.get("/chat/sessions")
 async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions")
+                .select("*")
+                .eq("user_id", uid)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"[warn] list_sessions error: {e}")
     sessions = list(_sessions.values())
     if uid:
         sessions = [s for s in sessions if s.get("user_id") == uid]
@@ -571,15 +640,40 @@ async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
 
 @api.get("/chat/sessions/{session_id}/messages")
 async def get_messages(session_id: str):
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages")
+                .select("*")
+                .eq("session_id", session_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"[warn] get_messages error: {e}")
     return _messages.get(session_id, [])
 
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] = Depends(_opt_uid)):
-    session = _sessions.get(session_id)
+    sb = _get_supabase()
+
+    # Load session
+    session = None
+    if sb:
+        try:
+            sr = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions").select("*").eq("id", session_id).execute()
+            )
+            session = sr.data[0] if sr.data else None
+        except Exception as e:
+            print(f"[warn] post_message load session: {e}")
+    if not session:
+        session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "session not found")
 
-    msgs = _messages.setdefault(session_id, [])
     user_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "user",
@@ -587,19 +681,42 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
         "image_base64": body.image_base64,
         "quick_replies": [], "transition": None, "created_at": _now(),
     }
-    msgs.append(user_msg)
 
-    transition = None
+    # Persist user message and load full history for AI
+    msgs: list = []
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(user_msg).execute())
+            mr = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages")
+                .select("role,text,transition")
+                .eq("session_id", session_id)
+                .order("created_at", desc=False)
+                .execute()
+            )
+            msgs = mr.data or []
+        except Exception as e:
+            print(f"[warn] post_message msgs load: {e}")
+    if not msgs:
+        msgs = _messages.setdefault(session_id, [])
+        msgs.append(user_msg)
+
     user_turns = sum(1 for m in msgs if m["role"] == "user")
     already_generated = any(
         (m.get("transition") or {}).get("kind") == "tasks_generated"
         for m in msgs if m["role"] == "ai"
     )
 
+    transition = None
+    quick_replies: list = []
+
     if oai:
         ctx = _card_ctx(session.get("source_card_id") or "")
-        ai_text = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
-        if user_turns >= 3 and not already_generated:
+        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
+        ai_text = reply["text"]
+        quick_replies = reply.get("quick_replies", [])
+        # Generate tasks after 5 user turns (gives conversation room to breathe)
+        if user_turns >= 5 and not already_generated:
             script_key = session.get("script_key", "free")
             await _gen_tasks(script_key, session["title"], uid)
             count = len(CARD_TASKS.get(script_key, CARD_TASKS["free"]))
@@ -612,31 +729,91 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
             nxt = script[step]
             ai_text = nxt["text"]
             transition = nxt.get("transition")
-            session["step"] = step + 1
+            quick_replies = nxt.get("quick_replies", [])
+            new_step = step + 1
         else:
             ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
-
+            new_step = step
         if transition and transition.get("kind") == "tasks_generated" and not already_generated:
             await _gen_tasks(script_key, session["title"], uid)
+        if sb:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_sessions").update({"step": new_step}).eq("id", session_id).execute()
+                )
+            except Exception:
+                pass
+        else:
+            session["step"] = new_step
 
     ai_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": ai_text,
-        "quick_replies": [], "transition": transition, "created_at": _now(),
+        "quick_replies": quick_replies, "transition": transition, "created_at": _now(),
     }
-    msgs.append(ai_msg)
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(ai_msg).execute())
+        except Exception as e:
+            print(f"[warn] post_message ai_msg insert: {e}")
+    else:
+        msgs.append(ai_msg)
+
     return {"user_message": user_msg, "ai_messages": [ai_msg]}
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 @api.get("/tasks")
 async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            q = sb.table("tasks").select("*").eq("user_id", uid)
+            if scope in ("today", "week"):
+                q = q.eq("scope", scope)
+            res = await anyio.to_thread.run_sync(
+                lambda: q.order("created_at", desc=True).execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"[warn] list_tasks error: {e}")
     tasks = [t for t in _tasks if not uid or t.get("user_id") == uid]
     if scope in ("today", "week"):
         tasks = [t for t in tasks if t["scope"] == scope]
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
 
 @api.patch("/tasks/{task_id}")
-async def update_task(task_id: str, body: TaskUpdate):
+async def update_task(task_id: str, body: TaskUpdate, uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            tr = await anyio.to_thread.run_sync(
+                lambda: sb.table("tasks").select("*").eq("id", task_id).eq("user_id", uid).execute()
+            )
+            if not tr.data:
+                raise HTTPException(404, "task not found")
+            t = tr.data[0]
+            updates: dict = {}
+            if body.done is not None:
+                updates["done"] = body.done
+                updates["completed_at"] = _now() if body.done else None
+                if body.done and t.get("scope") == "week":
+                    updates["progress_done"] = min(t.get("progress_total", 7), t.get("progress_done", 0) + 1)
+            if body.mood is not None or body.note is not None:
+                prev = t.get("reflection") or {}
+                updates["reflection"] = {
+                    "mood": body.mood or prev.get("mood"),
+                    "note": body.note or prev.get("note", ""),
+                }
+            if updates:
+                res = await anyio.to_thread.run_sync(
+                    lambda: sb.table("tasks").update(updates).eq("id", task_id).execute()
+                )
+                return res.data[0] if res.data else {**t, **updates}
+            return t
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[warn] update_task error: {e}")
     for t in _tasks:
         if t["id"] != task_id:
             continue
@@ -655,15 +832,25 @@ async def update_task(task_id: str, body: TaskUpdate):
     raise HTTPException(404, "task not found")
 
 @api.get("/tasks/insights")
-async def task_insights():
-    completed = [t for t in _tasks if t.get("done")]
+async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    source: list = _tasks
+    if sb and uid:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("tasks").select("done,scope,progress_done,completed_at").eq("user_id", uid).execute()
+            )
+            source = res.data or []
+        except Exception as e:
+            print(f"[warn] task_insights error: {e}")
+    completed = [t for t in source if t.get("done")]
     today = datetime.now(timezone.utc).date()
     done_dates: set = set()
     for t in completed:
         ts = t.get("completed_at")
         if ts:
             try:
-                done_dates.add(datetime.fromisoformat(ts.replace("Z", "+00:00")).date())
+                done_dates.add(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).date())
             except Exception:
                 pass
     streak = 0
@@ -675,7 +862,7 @@ async def task_insights():
     return {
         "total_completed": len(completed),
         "streak_days": streak,
-        "weekly_progress": sum(t.get("progress_done", 0) for t in _tasks if t.get("scope") == "week"),
+        "weekly_progress": sum(t.get("progress_done", 0) for t in source if t.get("scope") == "week"),
     }
 
 # ── Privacy ───────────────────────────────────────────────────────────────────
