@@ -96,6 +96,7 @@ export default function Home() {
   const [favIds, setFavIds] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [shareCardId, setShareCardId] = useState<string | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
@@ -146,12 +147,26 @@ export default function Home() {
   };
 
   const refreshOne = async (card: FeedCard) => {
-    const alt = await api.getAltCard(card.id);
-    setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
-    showToast("已换一条");
-    api
-      .trackEvent("card_refresh", { card_id: card.id, card_type: card.type })
-      .catch(() => {});
+    setRefreshingId(card.id);
+    try {
+      const generated = await api.generateCards({ keywords: [card.title], count: 1 });
+      if (generated?.length > 0) {
+        setCards((p) => p.map((c) => (c.id === card.id ? generated[0] : c)));
+      } else {
+        const alt = await api.getAltCard(card.id);
+        setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
+      }
+      showToast("已换一条");
+    } catch {
+      try {
+        const alt = await api.getAltCard(card.id);
+        setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
+        showToast("已换一条");
+      } catch { /* ignore */ }
+    } finally {
+      setRefreshingId(null);
+    }
+    api.trackEvent("card_refresh", { card_id: card.id, card_type: card.type }).catch(() => {});
   };
 
   return (
@@ -294,12 +309,16 @@ export default function Home() {
                   hitSlop={8}
                   onPress={(e) => {
                     e.stopPropagation?.();
-                    refreshOne(card);
+                    if (refreshingId !== card.id) refreshOne(card);
                   }}
                   style={styles.actionBtn}
                   testID={`feed-refresh-${card.id}`}
                 >
-                  <Ionicons name="refresh-outline" size={18} color={colors.muted} />
+                  {refreshingId === card.id ? (
+                    <ActivityIndicator size="small" color={colors.brand} />
+                  ) : (
+                    <Ionicons name="refresh-outline" size={18} color={colors.muted} />
+                  )}
                 </Pressable>
               </View>
             </Pressable>
