@@ -117,12 +117,14 @@ export default function Home() {
   };
 
   const onScroll = (e: any) => {
-    const y = e.nativeEvent.contentOffset.y;
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const y = contentOffset.y;
+    const atBottom = y + layoutMeasurement.height >= contentSize.height - 20;
     api.trackEvent("scroll_depth", { value: Math.floor(y / 220) }).catch(() => {});
-    if (y > 30) {
-      hasScrolledAway.current = true;
+    if (y > 50) hasScrolledAway.current = true;
+    if (!atBottom) {
       cancelTopHold();
-    } else if (y <= 0 && hasScrolledAway.current && !topTimer.current && !generatingAll) {
+    } else if (atBottom && hasScrolledAway.current && !topTimer.current && !generatingAll) {
       setTopHolding(true);
       topProgress.setValue(0);
       Animated.timing(topProgress, { toValue: 1, duration: 2000, useNativeDriver: false }).start();
@@ -264,20 +266,6 @@ export default function Home() {
           showsVerticalScrollIndicator={false}
           testID="home-feed-scroll"
         >
-          {topHolding && (
-            <View style={styles.topHoldBanner}>
-              <Animated.View style={[styles.topHoldBar, {
-                width: topProgress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
-              }]} />
-              <Text style={styles.topHoldText}>松手取消 · 停留2秒生成新内容</Text>
-            </View>
-          )}
-          {generatingAll && (
-            <View style={styles.topHoldBanner}>
-              <ActivityIndicator color={colors.brand} />
-              <Text style={styles.topHoldText}>生成中…</Text>
-            </View>
-          )}
           {searchResults !== null && searchResults.length === 0 ? (
             <View style={styles.emptySearch}>
               <Ionicons name="search-outline" size={40} color={colors.muted} />
@@ -370,6 +358,20 @@ export default function Home() {
               </View>
             </Pressable>
           ))}
+          {topHolding && (
+            <View style={styles.topHoldBanner}>
+              <Animated.View style={[styles.topHoldBar, {
+                width: topProgress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
+              }]} />
+              <Text style={styles.topHoldText}>继续上划 · 2秒后生成新内容</Text>
+            </View>
+          )}
+          {generatingAll && (
+            <View style={styles.topHoldBanner}>
+              <ActivityIndicator color={colors.brand} />
+              <Text style={styles.topHoldText}>生成中…</Text>
+            </View>
+          )}
           <View style={{ height: spacing.xxxl }} />
         </ScrollView>
       )}

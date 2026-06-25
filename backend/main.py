@@ -408,7 +408,8 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             f"关键词：{', '.join(keywords)}\n\n"
             f'以JSON返回：{{"cards": [{{"type": "tip/news/product", "title": "标题（25字内）", '
             f'"summary": "摘要（50字内）", "body": "详细内容（150字内）", '
-            f'"tags": ["#标签"], "hook_line": "互动钩子（15字内）"}}]}}\n\n'
+            f'"tags": ["#标签"], "hook_line": "互动钩子（15字内）", '
+            f'"image_keyword": "2-3 english words for unsplash image search, parenting related"}}]}}\n\n'
             f"type: tip=科普知识 news=热点讨论 product=产品推荐\n"
             f"每张卡针对不同关键词，内容实用具体，有北美生活背景"
         }],
@@ -422,6 +423,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             card_type = card.get("type", "tip")
             if card_type not in type_labels:
                 card_type = "tip"
+            img_kw = card.get("image_keyword", "parenting baby toddler").replace(" ", ",")
             cards.append({
                 "id": f"gen_{uuid.uuid4().hex[:8]}",
                 "type": card_type,
@@ -432,6 +434,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
                 "body": card.get("body", ""),
                 "tags": card.get("tags", []),
                 "hook_line": card.get("hook_line", "想了解更多？"),
+                "image_url": f"https://source.unsplash.com/600x400/?{img_kw}",
                 "keywords": keywords,
                 "source": "ai",
             })
