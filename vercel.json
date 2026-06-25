@@ -3,7 +3,7 @@
   "buildCommand": "cd frontend && npm ci --legacy-peer-deps && npm run build:web",
   "outputDirectory": "frontend/dist",
   "functions": {
-    "api/backend.py": {
+    "api/*.py": {
       "maxDuration": 60
     }
   },
