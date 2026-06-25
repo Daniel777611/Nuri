@@ -153,6 +153,13 @@ async def _db_save_gen_cards(cards: list[dict]):
     sb = _get_supabase()
     if not sb or not cards:
         return
+    # Replace previous batch — delete all stored gen cards first
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("feed_cards").delete().eq("source", "ai").execute()
+        )
+    except Exception as e:
+        print(f"[warn] _db_save_gen_cards delete: {e}")
     rows = [
         {
             "id": card["id"], "type": card["type"], "type_label": card["type_label"],
@@ -166,10 +173,10 @@ async def _db_save_gen_cards(cards: list[dict]):
     ]
     try:
         await anyio.to_thread.run_sync(
-            lambda: sb.table("feed_cards").upsert(rows, on_conflict="id").execute()
+            lambda: sb.table("feed_cards").insert(rows).execute()
         )
     except Exception as e:
-        print(f"[warn] _db_save_gen_cards: {e}")
+        print(f"[warn] _db_save_gen_cards insert: {e}")
 
 async def _db_get_feed_mode() -> str:
     sb = _get_supabase()
@@ -503,32 +510,24 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
 
-# Curated Unsplash photo IDs by card type — same format as hardcoded cards
+# Unsplash photo IDs verified working — taken directly from FEED_CARDS & ALT_FEED_CARDS
 _CARD_PHOTOS: dict[str, list[str]] = {
     "tip": [
-        "photo-1604908554027-93fc287e8ba3",  # baby food / toddler eating
-        "photo-1566004100631-35d015d6a491",  # baby sleeping
-        "photo-1522771739844-6a9f6d5f14af",  # parent and child
-        "photo-1559757148-5c350d0d3c56",     # family together
-        "photo-1555252333-9f8e92e65df9",     # child development
-        "photo-1587652990100-ae7b3efdd4b4",  # toddler playing
-        "photo-1536765135654-9ce9e3c7bb4f",  # learning / reading
+        "photo-1604908554027-93fc287e8ba3",  # toddler food (card_food_picky)
+        "photo-1566004100631-35d015d6a491",  # baby sleeping (card_sleep_routine)
+        "photo-1602030638412-bb8dcc0bc8b0",  # toddler tantrum (alt_tantrum)
+        "photo-1576091160550-2173dba999ef",  # potty training (alt_potty)
     ],
     "news": [
-        "photo-1503676260728-1c00da094a0b",  # books / education
-        "photo-1503602642458-232111445657",  # screen time / devices
-        "photo-1602030638412-bb8dcc0bc8b0",  # kids / tantrum
-        "photo-1587653263995-422546a7a569",  # daycare / school
-        "photo-1518091043644-c1d4457512c6",  # outdoor / winter
-        "photo-1488521787991-ed7bbaae773c",  # community / discussion
+        "photo-1503676260728-1c00da094a0b",  # books/education (card_bilingual_school)
+        "photo-1503602642458-232111445657",  # screen time (card_screen_time)
+        "photo-1587653263995-422546a7a569",  # daycare (alt_daycare)
+        "photo-1518091043644-c1d4457512c6",  # outdoor winter (alt_winter)
     ],
     "product": [
-        "photo-1515488042361-ee00e0ddd4e4",  # baby monitor
-        "photo-1584555613483-1c5f3ce97b9b",  # thermometer / health
-        "photo-1581952976147-5a2d15560349",  # car seat
-        "photo-1576091160550-2173dba999ef",  # potty training
-        "photo-1515023115689-589c33041d3c",  # baby products
-        "photo-1567620905732-2d1ec7ab7445",  # mother baby care
+        "photo-1515488042361-ee00e0ddd4e4",  # baby monitor (card_baby_monitor)
+        "photo-1584555613483-1c5f3ce97b9b",  # thermometer (card_thermometer)
+        "photo-1581952976147-5a2d15560349",  # car seat (alt_carseat)
     ],
 }
 
