@@ -324,18 +324,21 @@ NURI_PERSONA = """你叫 NURI，是陪伴父母的育儿伙伴。用简体中文
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 _NURI_JSON_SUFFIX = """
 
-以合法 JSON 格式回复：{"text": "...", "quick_replies": [...]}
+以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "suggest_tasks": false}
 
-text：
-- 先回应用户说的内容，再自然延伸
-- 不超过80字，口语化，不用列表
-- 不强迫以问句结尾——如果自然就问，不自然就不问
+text：先回应用户说的，再自然延伸；不超过80字；口语化；不强迫以问句结尾
 
-quick_replies（用户可能说的下一句话，而不是菜单选项）：
-- 打招呼/寒暄场景：给0-2个，像"最近有点累"、"孩子挺好的"这样的真实回应
-- 正在聊某个话题：给1-3个，让用户可以自然接下去
-- 刚给了建议/结论：可以给0个，让用户自己决定说什么
-- 每个不超过10字，听起来像真人会说的话"""
+quick_replies（用户可能说的下一句话，不是菜单）：
+- 打招呼/寒暄：0-2个，像真人回应
+- 正在聊话题：1-3个，自然接下去
+- 刚给结论/建议：0个也行
+- 每个不超过10字
+
+suggest_tasks（只在全部条件满足时才设为true，否则一律false）：
+- 对话里出现了具体的育儿场景、困扰或目标（不是泛泛聊天）
+- 你已充分了解了背景，知道给什么任务有意义
+- 自然到了"我来帮你整理几件可以做的事"的时机
+- 本次对话还没生成过任务"""
 
 def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
     if not oai:
@@ -358,9 +361,10 @@ def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
         return {
             "text": data.get("text", ""),
             "quick_replies": data.get("quick_replies", [])[:3],
+            "suggest_tasks": bool(data.get("suggest_tasks", False)),
         }
     except Exception:
-        return {"text": resp.choices[0].message.content, "quick_replies": []}
+        return {"text": resp.choices[0].message.content, "quick_replies": [], "suggest_tasks": False}
 
 def _card_ctx(card_id: str) -> str:
     for c in FEED_CARDS + ALT_FEED_CARDS:
@@ -369,15 +373,42 @@ def _card_ctx(card_id: str) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{d.get('body', '')}"
     return ""
 
-async def _gen_tasks(script_key: str, session_title: str, uid: Optional[str]):
-    templates = CARD_TASKS.get(script_key, CARD_TASKS["free"])
+def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
+    """Generate 2-4 contextual tasks from conversation history via AI."""
+    if not oai:
+        return []
+    history = "\n".join(
+        f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
+        for m in msgs[-14:]
+        if m.get("text") and not (m.get("transition") or {}).get("kind")
+    )
+    resp = oai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content":
+            f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
+            '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week"}]}\n'
+            "- 任务必须针对对话中的具体情况，不要泛泛的通用任务\n"
+            "- today=今天完成，week=本周持续追踪\n"
+            "- 如果对话信息不足，返回空数组"
+        }],
+        temperature=0.4,
+        response_format={"type": "json_object"},
+    )
+    try:
+        return json.loads(resp.choices[0].message.content).get("tasks", [])[:4]
+    except Exception:
+        return []
+
+async def _gen_tasks(task_list: list[dict], uid: Optional[str]):
+    """Persist a list of task dicts to Supabase or in-memory."""
     src = f"来自你和AI的对话 · {datetime.now().strftime('%m月%d日')}"
     sb = _get_supabase()
-    for t in templates:
+    for t in task_list:
+        scope = t.get("scope", "today")
         task = {
-            "id": str(uuid.uuid4()), "title": t["title"], "scope": t["scope"],
+            "id": str(uuid.uuid4()), "title": t["title"], "scope": scope,
             "source": src, "done": False, "progress_done": 0,
-            "progress_total": t.get("progress_total", 7),
+            "progress_total": 7 if scope == "week" else 1,
             "reflection": None, "created_at": _now(), "completed_at": None,
         }
         if uid:
@@ -599,9 +630,9 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
     quick_replies: list = []
     if oai:
         if ctx:
-            intro_prompt = f"用户刚看完这条育儿内容：{ctx[:200]}。用温暖随意的方式开场，说说你对这个话题的感受或一个有趣的小观察，像朋友一样。不要问问题。"
+            intro_prompt = f"用户刚看完这条育儿内容：{ctx[:200]}。用轻松的方式开场，可以夸夸对方爱学习、关心孩子，说说你对这个话题的感受或一个有趣的小观察，像老朋友一样自然。不要问问题。"
         else:
-            intro_prompt = "用户来找你随便聊聊。用温暖轻松的方式打个招呼，简单介绍一下自己，让对方感觉可以随便说什么都行。不要问'有什么育儿问题'，就像朋友第一次见面一样自然。"
+            intro_prompt = "用户来找你聊天。用温暖哄人的方式打招呼——可以夸夸对方是个用心的爸爸/妈妈，或者说来得正好，让对方感觉被欢迎、被看见。语气像老朋友，不谄媚，不问'有什么育儿问题'。不要问问题，就像收到朋友的消息那样自然回应。"
         reply = await anyio.to_thread.run_sync(
             lambda: _nuri_reply_sync([{"role": "user", "text": intro_prompt}])
         )
@@ -769,12 +800,12 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
         reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
-        # Generate tasks after 5 user turns (gives conversation room to breathe)
-        if user_turns >= 5 and not already_generated:
-            script_key = session.get("script_key", "free")
-            await _gen_tasks(script_key, session["title"], uid)
-            count = len(CARD_TASKS.get(script_key, CARD_TASKS["free"]))
-            transition = {"kind": "tasks_generated", "count": count}
+        # Let NURI decide when to generate tasks via suggest_tasks flag
+        if reply.get("suggest_tasks") and not already_generated:
+            task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
+            if task_list:
+                await _gen_tasks(task_list, uid)
+                transition = {"kind": "tasks_generated", "count": len(task_list)}
     else:
         script_key = session.get("script_key", "free")
         script = SCRIPTS.get(script_key, SCRIPTS["free"])
@@ -789,7 +820,8 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
             ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
             new_step = step
         if transition and transition.get("kind") == "tasks_generated" and not already_generated:
-            await _gen_tasks(script_key, session["title"], uid)
+            fallback_tasks = [{"title": t["title"], "scope": t["scope"]} for t in CARD_TASKS.get(script_key, CARD_TASKS["free"])]
+            await _gen_tasks(fallback_tasks, uid)
         if sb:
             try:
                 await anyio.to_thread.run_sync(
