@@ -97,6 +97,7 @@ export default function Home() {
   const [toast, setToast] = useState<string | null>(null);
   const [shareCardId, setShareCardId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [pressingId, setPressingId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
@@ -146,27 +147,35 @@ export default function Home() {
       .catch(() => {});
   };
 
-  const refreshOne = async (card: FeedCard) => {
+  const swapCard = async (card: FeedCard) => {
+    setRefreshingId(card.id);
+    try {
+      const alt = await api.getAltCard(card.id);
+      setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
+      showToast("已换一条");
+    } catch { /* ignore */ } finally {
+      setRefreshingId(null);
+    }
+    api.trackEvent("card_refresh", { card_id: card.id, card_type: card.type }).catch(() => {});
+  };
+
+  const generateCard = async (card: FeedCard) => {
+    setPressingId(null);
     setRefreshingId(card.id);
     try {
       const generated = await api.generateCards({ keywords: [card.title], count: 1 });
       if (generated?.length > 0) {
         setCards((p) => p.map((c) => (c.id === card.id ? generated[0] : c)));
+        showToast("已生成新内容");
       } else {
-        const alt = await api.getAltCard(card.id);
-        setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
+        showToast("生成失败，稍后再试");
       }
-      showToast("已换一条");
     } catch {
-      try {
-        const alt = await api.getAltCard(card.id);
-        setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
-        showToast("已换一条");
-      } catch { /* ignore */ }
+      showToast("生成失败，稍后再试");
     } finally {
       setRefreshingId(null);
     }
-    api.trackEvent("card_refresh", { card_id: card.id, card_type: card.type }).catch(() => {});
+    api.trackEvent("card_generate", { card_id: card.id, card_type: card.type }).catch(() => {});
   };
 
   return (
@@ -243,7 +252,19 @@ export default function Home() {
               style={styles.card}
               testID={`feed-card-${card.id}`}
               onPress={() => onCardTap(card)}
+              onPressIn={() => setPressingId(card.id)}
+              onPressOut={() => setPressingId(null)}
+              onLongPress={() => generateCard(card)}
+              delayLongPress={2000}
             >
+              {(pressingId === card.id || refreshingId === card.id) && (
+                <View style={styles.pressOverlay}>
+                  <ActivityIndicator color={colors.brand} size="large" />
+                  <Text style={styles.pressHint}>
+                    {refreshingId === card.id ? "生成中…" : "长按2秒 · 生成新内容"}
+                  </Text>
+                </View>
+              )}
               <View style={styles.cardTopRow}>
                 <View
                   style={[
@@ -309,7 +330,7 @@ export default function Home() {
                   hitSlop={8}
                   onPress={(e) => {
                     e.stopPropagation?.();
-                    if (refreshingId !== card.id) refreshOne(card);
+                    if (!refreshingId) swapCard(card);
                   }}
                   style={styles.actionBtn}
                   testID={`feed-refresh-${card.id}`}
@@ -487,6 +508,19 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: type.base,
+    color: colors.muted,
+  },
+  pressOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    zIndex: 10,
+  },
+  pressHint: {
+    fontSize: type.sm,
     color: colors.muted,
   },
   toast: {
