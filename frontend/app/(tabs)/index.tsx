@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Pressable,
   ActivityIndicator,
   Modal,
+  TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -96,6 +97,31 @@ export default function Home() {
   const [toast, setToast] = useState<string | null>(null);
   const [shareCardId, setShareCardId] = useState<string | null>(null);
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onSearchChange = (text: string) => {
+    setSearchQuery(text);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!text.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    searchTimer.current = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const results = await api.searchCards(text.trim());
+        setSearchResults(results);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 400);
+  };
+
   useEffect(() => {
     api.listFavorites().then((f) => setFavIds(new Set(f.map((x: any) => x.id))));
   }, []);
@@ -151,6 +177,26 @@ export default function Home() {
         </Pressable>
       </View>
 
+      <View style={styles.searchBar}>
+        <Ionicons name="search-outline" size={15} color={colors.muted} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="搜索育儿内容…"
+          placeholderTextColor={colors.muted}
+          value={searchQuery}
+          onChangeText={onSearchChange}
+          returnKeyType="search"
+          clearButtonMode="never"
+        />
+        {searchLoading ? (
+          <ActivityIndicator size="small" color={colors.brand} />
+        ) : searchQuery ? (
+          <Pressable onPress={() => { setSearchQuery(""); setSearchResults(null); }}>
+            <Ionicons name="close-circle" size={15} color={colors.muted} />
+          </Pressable>
+        ) : null}
+      </View>
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.brand} />
@@ -170,7 +216,13 @@ export default function Home() {
           showsVerticalScrollIndicator={false}
           testID="home-feed-scroll"
         >
-          {cards.map((card) => (
+          {searchResults !== null && searchResults.length === 0 ? (
+            <View style={styles.emptySearch}>
+              <Ionicons name="search-outline" size={40} color={colors.muted} />
+              <Text style={styles.emptyText}>没有找到相关内容</Text>
+            </View>
+          ) : null}
+          {(searchResults !== null ? searchResults : cards).map((card) => (
             <Pressable
               key={card.id}
               style={styles.card}
@@ -389,6 +441,34 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "flex-end",
     gap: spacing.sm,
+  },
+  searchBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: type.base,
+    color: colors.onSurface,
+    padding: 0,
+  },
+  emptySearch: {
+    alignItems: "center",
+    paddingTop: 60,
+    gap: spacing.md,
+  },
+  emptyText: {
+    fontSize: type.base,
+    color: colors.muted,
   },
   toast: {
     position: "absolute",

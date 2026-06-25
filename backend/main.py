@@ -89,6 +89,7 @@ _tasks:       list[dict]      = []
 _favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
+_gen_cards:   list[dict]      = []     # AI-generated feed cards (in-memory)
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -212,6 +213,11 @@ class BookUpdate(BaseModel):
     enabled:  Optional[bool] = None
     title:    Optional[str]  = None
     category: Optional[str]  = None
+
+class GenerateCardsRequest(BaseModel):
+    session_id: Optional[str]       = None
+    keywords:   Optional[List[str]] = None
+    count:      int                 = Field(default=3, ge=1, le=6)
 
 def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
@@ -384,11 +390,54 @@ def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
         return {"text": resp.choices[0].message.content, "quick_replies": [], "suggest_tasks": False}
 
 def _card_ctx(card_id: str) -> str:
-    for c in FEED_CARDS + ALT_FEED_CARDS:
+    for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards:
         if c["id"] == card_id:
             d = CARD_DETAILS.get(card_id, {})
-            return f"标题：{c['title']}\n摘要：{c['summary']}\n{d.get('body', '')}"
+            body = d.get("body") or c.get("body", "")
+            return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
+
+def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
+    if not oai:
+        return []
+    type_labels = {"tip": "科普", "news": "热点", "product": "推荐"}
+    resp = oai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content":
+            f"你是育儿内容编辑，根据以下关键词为北美华人家长生成{count}条育儿知识卡片。\n\n"
+            f"关键词：{', '.join(keywords)}\n\n"
+            f'以JSON返回：{{"cards": [{{"type": "tip/news/product", "title": "标题（25字内）", '
+            f'"summary": "摘要（50字内）", "body": "详细内容（150字内）", '
+            f'"tags": ["#标签"], "hook_line": "互动钩子（15字内）"}}]}}\n\n'
+            f"type: tip=科普知识 news=热点讨论 product=产品推荐\n"
+            f"每张卡针对不同关键词，内容实用具体，有北美生活背景"
+        }],
+        temperature=0.8,
+        response_format={"type": "json_object"},
+    )
+    try:
+        data = json.loads(resp.choices[0].message.content)
+        cards = []
+        for card in data.get("cards", [])[:count]:
+            card_type = card.get("type", "tip")
+            if card_type not in type_labels:
+                card_type = "tip"
+            cards.append({
+                "id": f"gen_{uuid.uuid4().hex[:8]}",
+                "type": card_type,
+                "type_label": type_labels[card_type],
+                "cta": "问问AI →",
+                "title": card.get("title", ""),
+                "summary": card.get("summary", ""),
+                "body": card.get("body", ""),
+                "tags": card.get("tags", []),
+                "hook_line": card.get("hook_line", "想了解更多？"),
+                "keywords": keywords,
+                "source": "ai",
+            })
+        return cards
+    except Exception:
+        return []
 
 def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
     """Generate 2-4 contextual tasks from conversation history via AI."""
@@ -569,21 +618,78 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
 # ── Feed ──────────────────────────────────────────────────────────────────────
 @api.get("/feed")
 async def get_feed(shuffle: bool = False):
-    cards = list(FEED_CARDS)
+    cards = list(FEED_CARDS) + list(_gen_cards)
     if shuffle:
         random.shuffle(cards)
     return cards
 
 @api.get("/feed/alt")
 async def get_alt_card(exclude: str = ""):
-    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS) if c["id"] != exclude]
+    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + _gen_cards) if c["id"] != exclude]
     return random.choice(pool)
+
+@api.get("/feed/search")
+async def search_feed(q: str = "", type: Optional[str] = None):
+    q_lower = q.lower().strip()
+    all_cards = FEED_CARDS + ALT_FEED_CARDS + _gen_cards
+    if not q_lower:
+        results = all_cards
+    else:
+        results = []
+        for c in all_cards:
+            detail = CARD_DETAILS.get(c["id"], {})
+            haystack = " ".join([
+                c.get("title", ""),
+                c.get("summary", ""),
+                c.get("body", detail.get("body", "")),
+                " ".join(c.get("tags", detail.get("tags", []))),
+                " ".join(c.get("keywords", [])),
+            ]).lower()
+            if q_lower in haystack:
+                results.append(c)
+    if type:
+        results = [c for c in results if c.get("type") == type]
+    return results
+
+@api.post("/feed/generate")
+async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
+    keywords = list(body.keywords or [])
+    if not keywords and body.session_id and oai:
+        msgs = _messages.get(body.session_id, [])
+        user_texts = [m.get("text", "") for m in msgs if m.get("role") == "user" and m.get("text")]
+        if user_texts:
+            combined = " ".join(user_texts[-5:])
+            try:
+                kw_resp = await anyio.to_thread.run_sync(lambda: oai.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content":
+                        f"从以下育儿对话中提取3-5个关键词（名词短语，用逗号分隔）：\n{combined}\n\n只返回关键词，不要解释。"
+                    }],
+                    temperature=0.3,
+                ))
+                keywords = [k.strip() for k in kw_resp.choices[0].message.content.split(",") if k.strip()][:5]
+            except Exception:
+                pass
+    if not keywords:
+        keywords = ["婴幼儿发展", "育儿健康", "早期教育"]
+    new_cards = await anyio.to_thread.run_sync(
+        lambda: _gen_feed_cards_sync(keywords, body.count)
+    )
+    _gen_cards.extend(new_cards)
+    return new_cards
 
 @api.get("/feed/{card_id}/detail")
 async def get_card_detail(card_id: str):
-    for c in FEED_CARDS + ALT_FEED_CARDS:
+    for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards:
         if c["id"] == card_id:
-            extra = CARD_DETAILS.get(card_id, {"body": c["summary"], "tags": [], "hook_line": "想了解更多？"})
+            if card_id in CARD_DETAILS:
+                extra = CARD_DETAILS[card_id]
+            else:
+                extra = {
+                    "body": c.get("body", c["summary"]),
+                    "tags": c.get("tags", []),
+                    "hook_line": c.get("hook_line", "想了解更多？"),
+                }
             return {**c, **extra}
     raise HTTPException(404, "card not found")
 
@@ -592,7 +698,7 @@ async def get_card_detail(card_id: str):
 async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
     ids = _favorites.get(key, set())
-    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS}
+    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS + _gen_cards}
     return [by_id[cid] for cid in ids if cid in by_id]
 
 @api.post("/favorites/toggle")

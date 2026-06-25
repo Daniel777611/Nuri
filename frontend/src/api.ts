@@ -40,6 +40,10 @@ export const api = {
   getCardDetail: (id: string) => req(`/feed/${id}/detail`),
   getAltCard: (exclude: string) =>
     req(`/feed/alt?exclude=${encodeURIComponent(exclude)}`),
+  searchCards: (q: string, type?: string) =>
+    req(`/feed/search?q=${encodeURIComponent(q)}${type ? `&type=${encodeURIComponent(type)}` : ""}`),
+  generateCards: (b: { session_id?: string; keywords?: string[]; count?: number }) =>
+    req(`/feed/generate`, { method: "POST", body: JSON.stringify(b) }),
   listFavorites: () => req(`/favorites`),
   toggleFavorite: (card_id: string) =>
     req(`/favorites/toggle`, { method: "POST", body: JSON.stringify({ card_id }) }),
