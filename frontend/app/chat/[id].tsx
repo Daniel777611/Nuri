@@ -162,7 +162,6 @@ export default function ChatDetail() {
               msg={m}
               onQuick={(q) => send(q)}
               onTasks={goTasks}
-              onCommunity={() => router.push("/community")}
             />
           ))}
           {typing ? <TypingDots /> : null}
@@ -206,12 +205,10 @@ function MessageBubble({
   msg,
   onQuick,
   onTasks,
-  onCommunity,
 }: {
   msg: Msg;
   onQuick: (q: string) => void;
   onTasks: () => void;
-  onCommunity: () => void;
 }) {
   const isAI = msg.role === "ai";
 
@@ -313,14 +310,6 @@ function MessageBubble({
                 <Text style={styles.qrText}>{q}</Text>
               </Pressable>
             ))}
-            <Pressable
-              onPress={onCommunity}
-              style={[styles.qrBtn, { backgroundColor: "#fff" }]}
-              testID="chat-go-community"
-            >
-              <Ionicons name="people-outline" size={12} color={colors.muted} />
-              <Text style={[styles.qrText, { color: colors.muted }]}>看看社群</Text>
-            </Pressable>
           </View>
         ) : null}
       </View>
