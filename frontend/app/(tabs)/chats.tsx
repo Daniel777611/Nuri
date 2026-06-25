@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 import {
-  Alert,
   FlatList,
   Pressable,
   RefreshControl,
@@ -20,6 +19,7 @@ export default function Chats() {
   const [sessions, setSessions] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -38,18 +38,18 @@ export default function Chats() {
     router.push(`/chat/${s.id}`);
   };
 
-  const confirmDelete = (id: string, title: string) => {
-    Alert.alert("删除对话", `确认删除「${title}」？`, [
-      { text: "取消", style: "cancel" },
-      {
-        text: "删除",
-        style: "destructive",
-        onPress: () => doDelete(id),
-      },
-    ]);
+  const handleMinusTap = (id: string) => {
+    if (confirmId === id) {
+      doDelete(id);
+    } else {
+      setConfirmId(id);
+      // Auto-cancel confirm after 3s
+      setTimeout(() => setConfirmId((cur) => (cur === id ? null : cur)), 3000);
+    }
   };
 
   const doDelete = async (id: string) => {
+    setConfirmId(null);
     setDeleting(id);
     setSessions((prev) => prev.filter((s) => s.id !== id));
     try {
@@ -118,16 +118,23 @@ export default function Chats() {
           <View style={styles.rowWrap}>
             {editing && (
               <Pressable
-                onPress={() => confirmDelete(item.id, item.title)}
+                onPress={() => handleMinusTap(item.id)}
                 disabled={deleting === item.id}
-                style={styles.deleteBtn}
+                style={[
+                  styles.deleteBtn,
+                  confirmId === item.id && styles.deleteBtnConfirm,
+                ]}
                 testID={`delete-session-${item.id}`}
               >
-                <Ionicons
-                  name="remove-circle"
-                  size={22}
-                  color={deleting === item.id ? colors.muted : colors.error}
-                />
+                {confirmId === item.id ? (
+                  <Text style={styles.confirmText}>删除</Text>
+                ) : (
+                  <Ionicons
+                    name="remove-circle"
+                    size={22}
+                    color={deleting === item.id ? colors.muted : colors.error}
+                  />
+                )}
               </Pressable>
             )}
             <Pressable
@@ -210,8 +217,20 @@ const styles = StyleSheet.create({
   },
   deleteBtn: {
     width: 28,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: radius.sm,
+  },
+  deleteBtnConfirm: {
+    width: 44,
+    backgroundColor: colors.error,
+    borderRadius: radius.sm,
+  },
+  confirmText: {
+    color: "#fff",
+    fontSize: type.sm,
+    fontWeight: "700",
   },
   row: {
     flexDirection: "row",

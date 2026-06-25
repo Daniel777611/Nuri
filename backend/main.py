@@ -653,10 +653,11 @@ async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)
     sb = _get_supabase()
     if sb:
         try:
-            q = sb.table("chat_sessions").delete().eq("id", session_id)
-            if uid:
-                q = q.eq("user_id", uid)
-            await anyio.to_thread.run_sync(lambda: q.execute())
+            # Delete by id only — user_id may be null for sessions created
+            # before auth was introduced, so we don't filter by user_id here.
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions").delete().eq("id", session_id).execute()
+            )
             return
         except Exception as e:
             print(f"[warn] delete_session error: {e}")
