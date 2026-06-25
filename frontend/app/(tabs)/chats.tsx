@@ -18,6 +18,7 @@ export default function Chats() {
   const router = useRouter();
   const [sessions, setSessions] = useState<any[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -34,8 +35,14 @@ export default function Chats() {
   );
 
   const startNew = async () => {
-    const s = await api.startSession({ script_key: "free" });
-    router.push(`/chat/${s.id}`);
+    if (creating) return;
+    setCreating(true);
+    try {
+      const s = await api.startSession({ script_key: "free" });
+      router.push(`/chat/${s.id}`);
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleMinusTap = (id: string) => {
@@ -79,10 +86,11 @@ export default function Chats() {
           )}
           <Pressable
             onPress={startNew}
-            style={styles.newBtn}
+            disabled={creating}
+            style={[styles.newBtn, creating && { opacity: 0.5 }]}
             testID="chats-new-btn"
           >
-            <Ionicons name="add" size={20} color="#fff" />
+            <Ionicons name={creating ? "ellipsis-horizontal" : "add"} size={20} color="#fff" />
           </Pressable>
         </View>
       </View>
