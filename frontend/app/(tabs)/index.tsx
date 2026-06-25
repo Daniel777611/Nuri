@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Modal,
   TextInput,
+  Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -87,17 +88,58 @@ export default function Home() {
     router.push(`/detail/${card.id}`);
   };
 
+  const topTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasScrolledAway = useRef(false);
+  const topProgress = useRef(new Animated.Value(0)).current;
+  const [topHolding, setTopHolding] = useState(false);
+  const [generatingAll, setGeneratingAll] = useState(false);
+
+  const cancelTopHold = () => {
+    if (topTimer.current) { clearTimeout(topTimer.current); topTimer.current = null; }
+    topProgress.stopAnimation();
+    topProgress.setValue(0);
+    setTopHolding(false);
+  };
+
+  const doGenerateAll = async () => {
+    setGeneratingAll(true);
+    try {
+      const newCards = await api.generateCards({ count: 6 });
+      if (newCards?.length > 0) {
+        setCards(newCards);
+        showToast(`已生成 ${newCards.length} 张新内容`);
+      }
+    } catch {
+      showToast("生成失败，稍后再试");
+    } finally {
+      setGeneratingAll(false);
+    }
+  };
+
   const onScroll = (e: any) => {
     const y = e.nativeEvent.contentOffset.y;
-    const idx = Math.floor(y / 220);
-    api.trackEvent("scroll_depth", { value: idx }).catch(() => {});
+    api.trackEvent("scroll_depth", { value: Math.floor(y / 220) }).catch(() => {});
+    if (y > 30) {
+      hasScrolledAway.current = true;
+      cancelTopHold();
+    } else if (y <= 0 && hasScrolledAway.current && !topTimer.current && !generatingAll) {
+      setTopHolding(true);
+      topProgress.setValue(0);
+      Animated.timing(topProgress, { toValue: 1, duration: 2000, useNativeDriver: false }).start();
+      topTimer.current = setTimeout(() => {
+        topTimer.current = null;
+        hasScrolledAway.current = false;
+        setTopHolding(false);
+        topProgress.setValue(0);
+        doGenerateAll();
+      }, 2000);
+    }
   };
 
   const [favIds, setFavIds] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [shareCardId, setShareCardId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const [pressingId, setPressingId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
@@ -159,24 +201,6 @@ export default function Home() {
     api.trackEvent("card_refresh", { card_id: card.id, card_type: card.type }).catch(() => {});
   };
 
-  const generateCard = async (card: FeedCard) => {
-    setPressingId(null);
-    setRefreshingId(card.id);
-    try {
-      const generated = await api.generateCards({ keywords: [card.title], count: 1 });
-      if (generated?.length > 0) {
-        setCards((p) => p.map((c) => (c.id === card.id ? generated[0] : c)));
-        showToast("已生成新内容");
-      } else {
-        showToast("生成失败，稍后再试");
-      }
-    } catch {
-      showToast("生成失败，稍后再试");
-    } finally {
-      setRefreshingId(null);
-    }
-    api.trackEvent("card_generate", { card_id: card.id, card_type: card.type }).catch(() => {});
-  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -240,6 +264,20 @@ export default function Home() {
           showsVerticalScrollIndicator={false}
           testID="home-feed-scroll"
         >
+          {topHolding && (
+            <View style={styles.topHoldBanner}>
+              <Animated.View style={[styles.topHoldBar, {
+                width: topProgress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
+              }]} />
+              <Text style={styles.topHoldText}>松手取消 · 停留2秒生成新内容</Text>
+            </View>
+          )}
+          {generatingAll && (
+            <View style={styles.topHoldBanner}>
+              <ActivityIndicator color={colors.brand} />
+              <Text style={styles.topHoldText}>生成中…</Text>
+            </View>
+          )}
           {searchResults !== null && searchResults.length === 0 ? (
             <View style={styles.emptySearch}>
               <Ionicons name="search-outline" size={40} color={colors.muted} />
@@ -252,19 +290,7 @@ export default function Home() {
               style={styles.card}
               testID={`feed-card-${card.id}`}
               onPress={() => onCardTap(card)}
-              onPressIn={() => setPressingId(card.id)}
-              onPressOut={() => setPressingId(null)}
-              onLongPress={() => generateCard(card)}
-              delayLongPress={2000}
             >
-              {(pressingId === card.id || refreshingId === card.id) && (
-                <View style={styles.pressOverlay}>
-                  <ActivityIndicator color={colors.brand} size="large" />
-                  <Text style={styles.pressHint}>
-                    {refreshingId === card.id ? "生成中…" : "长按2秒 · 生成新内容"}
-                  </Text>
-                </View>
-              )}
               <View style={styles.cardTopRow}>
                 <View
                   style={[
@@ -510,18 +536,24 @@ const styles = StyleSheet.create({
     fontSize: type.base,
     color: colors.muted,
   },
-  pressOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.92)",
-    borderRadius: radius.md,
+  topHoldBanner: {
+    overflow: "hidden",
+    backgroundColor: colors.brandTertiary,
+    borderRadius: radius.sm,
+    padding: spacing.md,
     alignItems: "center",
-    justifyContent: "center",
     gap: spacing.sm,
-    zIndex: 10,
+    marginBottom: spacing.md,
   },
-  pressHint: {
+  topHoldBar: {
+    height: 3,
+    backgroundColor: colors.brand,
+    alignSelf: "flex-start",
+    borderRadius: 2,
+  },
+  topHoldText: {
     fontSize: type.sm,
-    color: colors.muted,
+    color: colors.onBrandTertiary,
   },
   toast: {
     position: "absolute",
