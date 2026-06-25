@@ -197,7 +197,14 @@ export default function ChatDetail() {
             style={styles.input}
             multiline
             returnKeyType="send"
-            onSubmitEditing={() => send()}
+            blurOnSubmit={false}
+            onSubmitEditing={() => { if (input.trim() && !sending) send(); }}
+            onKeyPress={(e: any) => {
+              if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
+                e.preventDefault?.();
+                if (input.trim() && !sending) send();
+              }
+            }}
             testID="chat-input"
           />
           <Pressable
