@@ -82,6 +82,19 @@ export default function ChatDetail() {
     load();
   }, [load]);
 
+  // Auto-delete session if user leaves without sending any message
+  useEffect(() => {
+    return () => {
+      setMessages((current) => {
+        const hasUserMsg = current.some((m) => m.role === "user");
+        if (!hasUserMsg && id) {
+          api.deleteSession(id).catch(() => {});
+        }
+        return current;
+      });
+    };
+  }, [id]);
+
   useEffect(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages, typing]);

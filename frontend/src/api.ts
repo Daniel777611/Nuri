@@ -50,6 +50,8 @@ export const api = {
   startSession: (b: any) =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
+  deleteSession: (sid: string) =>
+    req(`/chat/sessions/${sid}`, { method: "DELETE" }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
   sendMessage: (sid: string, b: any) =>
     req(`/chat/sessions/${sid}/messages`, {

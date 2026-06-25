@@ -648,6 +648,21 @@ async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
         sessions = [s for s in sessions if s.get("user_id") == uid]
     return sorted(sessions, key=lambda s: s["created_at"], reverse=True)
 
+@api.delete("/chat/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb:
+        try:
+            q = sb.table("chat_sessions").delete().eq("id", session_id)
+            if uid:
+                q = q.eq("user_id", uid)
+            await anyio.to_thread.run_sync(lambda: q.execute())
+            return
+        except Exception as e:
+            print(f"[warn] delete_session error: {e}")
+    _sessions.pop(session_id, None)
+    _messages.pop(session_id, None)
+
 @api.get("/chat/sessions/{session_id}/messages")
 async def get_messages(session_id: str):
     sb = _get_supabase()
@@ -716,6 +731,34 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
         (m.get("transition") or {}).get("kind") == "tasks_generated"
         for m in msgs if m["role"] == "ai"
     )
+
+    # Auto-generate a short title on the first user message
+    if user_turns == 1:
+        first_text = body.text or ""
+        if oai and first_text:
+            try:
+                title_resp = await anyio.to_thread.run_sync(
+                    lambda: oai.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": f"用10字以内总结这句话的话题，只输出话题词，不加标点：{first_text}"}],
+                        temperature=0.3, max_tokens=20,
+                    )
+                )
+                new_title = title_resp.choices[0].message.content.strip()[:20]
+            except Exception:
+                new_title = first_text[:15]
+        else:
+            new_title = first_text[:15] if first_text else session.get("title", "")
+        if new_title:
+            if sb:
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda: sb.table("chat_sessions").update({"title": new_title}).eq("id", session_id).execute()
+                    )
+                except Exception:
+                    pass
+            elif session_id in _sessions:
+                _sessions[session_id]["title"] = new_title
 
     transition = None
     quick_replies: list = []
