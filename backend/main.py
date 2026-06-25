@@ -401,6 +401,39 @@ def _card_ctx(card_id: str) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
 
+# Curated Unsplash photo IDs by card type — same format as hardcoded cards
+_CARD_PHOTOS: dict[str, list[str]] = {
+    "tip": [
+        "photo-1604908554027-93fc287e8ba3",  # baby food / toddler eating
+        "photo-1566004100631-35d015d6a491",  # baby sleeping
+        "photo-1522771739844-6a9f6d5f14af",  # parent and child
+        "photo-1559757148-5c350d0d3c56",     # family together
+        "photo-1555252333-9f8e92e65df9",     # child development
+        "photo-1587652990100-ae7b3efdd4b4",  # toddler playing
+        "photo-1536765135654-9ce9e3c7bb4f",  # learning / reading
+    ],
+    "news": [
+        "photo-1503676260728-1c00da094a0b",  # books / education
+        "photo-1503602642458-232111445657",  # screen time / devices
+        "photo-1602030638412-bb8dcc0bc8b0",  # kids / tantrum
+        "photo-1587653263995-422546a7a569",  # daycare / school
+        "photo-1518091043644-c1d4457512c6",  # outdoor / winter
+        "photo-1488521787991-ed7bbaae773c",  # community / discussion
+    ],
+    "product": [
+        "photo-1515488042361-ee00e0ddd4e4",  # baby monitor
+        "photo-1584555613483-1c5f3ce97b9b",  # thermometer / health
+        "photo-1581952976147-5a2d15560349",  # car seat
+        "photo-1576091160550-2173dba999ef",  # potty training
+        "photo-1515023115689-589c33041d3c",  # baby products
+        "photo-1567620905732-2d1ec7ab7445",  # mother baby care
+    ],
+}
+
+def _pick_card_image(card_type: str) -> str:
+    pool = _CARD_PHOTOS.get(card_type, _CARD_PHOTOS["tip"])
+    return f"https://images.unsplash.com/{random.choice(pool)}?w=600&q=80&auto=format&fit=crop"
+
 def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
     if not oai:
         return []
@@ -412,8 +445,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             f"关键词：{', '.join(keywords)}\n\n"
             f'以JSON返回：{{"cards": [{{"type": "tip/news/product", "title": "标题（25字内）", '
             f'"summary": "摘要（50字内）", "body": "详细内容（150字内）", '
-            f'"tags": ["#标签"], "hook_line": "互动钩子（15字内）", '
-            f'"image_keyword": "2-3 english words for unsplash image search, parenting related"}}]}}\n\n'
+            f'"tags": ["#标签"], "hook_line": "互动钩子（15字内）"}}]}}\n\n'
             f"type: tip=科普知识 news=热点讨论 product=产品推荐\n"
             f"每张卡针对不同关键词，内容实用具体，有北美生活背景"
         }],
@@ -427,7 +459,6 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             card_type = card.get("type", "tip")
             if card_type not in type_labels:
                 card_type = "tip"
-            img_kw = card.get("image_keyword", "parenting baby toddler").replace(" ", ",")
             cards.append({
                 "id": f"gen_{uuid.uuid4().hex[:8]}",
                 "type": card_type,
@@ -438,7 +469,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
                 "body": card.get("body", ""),
                 "tags": card.get("tags", []),
                 "hook_line": card.get("hook_line", "想了解更多？"),
-                "image_url": f"https://source.unsplash.com/600x400/?{img_kw}",
+                "image_url": _pick_card_image(card_type),
                 "keywords": keywords,
                 "source": "ai",
             })
