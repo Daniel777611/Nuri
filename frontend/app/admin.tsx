@@ -52,6 +52,8 @@ export default function AdminPage() {
   const [unregistered, setUnregistered] = useState<Unregistered[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [feedMode, setFeedMode] = useState<"ai" | "alt">("ai");
+  const [feedModeLoading, setFeedModeLoading] = useState(false);
 
   // New book form
   const [newTitle, setNewTitle] = useState("");
@@ -123,12 +125,36 @@ export default function AdminPage() {
     );
   }, []);
 
+  const loadFeedMode = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/admin/settings`, {
+        headers: { "x-admin-key": key },
+      });
+      if (res.ok) { const d = await res.json(); setFeedMode(d.feed_gen_mode || "ai"); }
+    } catch {}
+  }, [key]);
+
+  const toggleFeedMode = async (isAI: boolean) => {
+    const mode = isAI ? "ai" : "alt";
+    setFeedModeLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/admin/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ mode }),
+      });
+      if (res.ok) { const d = await res.json(); setFeedMode(d.feed_gen_mode || mode); }
+    } catch {}
+    setFeedModeLoading(false);
+  };
+
   useEffect(() => {
     if (authed) {
       loadBooks();
       loadUnregistered();
+      loadFeedMode();
     }
-  }, [authed, loadBooks, loadUnregistered]);
+  }, [authed, loadBooks, loadUnregistered, loadFeedMode]);
 
   // ── Toggle enabled — direct Supabase write ────────────────────────────────
   const toggleBook = async (doc_id: string, enabled: boolean) => {
@@ -266,6 +292,30 @@ export default function AdminPage() {
           <StatBox label="未注册" value={unregistered.length} accent={unregistered.length > 0} />
         </View>
 
+        {/* Feed Generation Mode */}
+        <View style={styles.modeCard}>
+          <Text style={styles.modeTitle}>知识卡片生成模式</Text>
+          <View style={styles.modeRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.modeLabel}>
+                {feedMode === "ai" ? "🤖 AI 实时生成" : "📦 备选库随机"}
+              </Text>
+              <Text style={styles.modeHint}>
+                {feedMode === "ai"
+                  ? "滑到底触发时调 OpenAI 生成新卡片（含封面图）"
+                  : "从预设备选库随机抽取，不消耗 AI 配额"}
+              </Text>
+            </View>
+            <Switch
+              value={feedMode === "ai"}
+              onValueChange={toggleFeedMode}
+              disabled={feedModeLoading}
+              trackColor={{ false: "#ccc", true: colors.brand }}
+              thumbColor="#fff"
+            />
+          </View>
+        </View>
+
         {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
         <Pressable style={styles.refreshBtn} onPress={() => { loadBooks(); loadUnregistered(); }}>
@@ -394,6 +444,18 @@ const styles = StyleSheet.create({
   pageTitle: { fontSize: 22, fontWeight: "700" as const, color: colors.onSurface },
   logoutText: { color: colors.error, fontSize: 14, fontWeight: "500" },
 
+  modeCard: {
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  modeTitle: { fontSize: 13, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.sm },
+  modeRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  modeLabel: { fontSize: 14, fontWeight: "600", color: colors.onSurface },
+  modeHint: { fontSize: 12, color: colors.muted, marginTop: 2 },
   statsRow: { flexDirection: "row", gap: spacing.md },
   statBox: {
     flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md,

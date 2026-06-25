@@ -90,6 +90,7 @@ _favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
 _gen_cards:   list[dict]      = []     # AI-generated feed cards (in-memory)
+_feed_gen_mode: str           = "ai"  # "ai" | "alt"  — controlled by admin toggle
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -218,6 +219,9 @@ class GenerateCardsRequest(BaseModel):
     session_id: Optional[str]       = None
     keywords:   Optional[List[str]] = None
     count:      int                 = Field(default=3, ge=1, le=6)
+
+class FeedModeUpdate(BaseModel):
+    mode: Literal["ai", "alt"]
 
 def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
@@ -656,6 +660,10 @@ async def search_feed(q: str = "", type: Optional[str] = None):
 
 @api.post("/feed/generate")
 async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
+    if _feed_gen_mode == "alt":
+        pool = list(FEED_CARDS + ALT_FEED_CARDS)
+        random.shuffle(pool)
+        return pool[:body.count]
     keywords = list(body.keywords or [])
     if not keywords and body.session_id and oai:
         msgs = _messages.get(body.session_id, [])
@@ -1364,6 +1372,16 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
         raise HTTPException(503, "Supabase not configured")
     sb.table("books").delete().eq("doc_id", doc_id).execute()
     return {"ok": True}
+
+@app.get("/admin/settings")
+async def admin_get_settings(_: None = Depends(_require_admin)):
+    return {"feed_gen_mode": _feed_gen_mode}
+
+@app.put("/admin/settings")
+async def admin_update_settings(body: FeedModeUpdate, _: None = Depends(_require_admin)):
+    global _feed_gen_mode
+    _feed_gen_mode = body.mode
+    return {"feed_gen_mode": _feed_gen_mode}
 
 @app.get("/admin/discover")
 async def admin_discover(_: None = Depends(_require_admin)):
