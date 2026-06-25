@@ -12,6 +12,14 @@
       "destination": "/api/backend.py"
     },
     {
+      "source": "/index",
+      "destination": "/api/backend.py"
+    },
+    {
+      "source": "/ask",
+      "destination": "/api/backend.py"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

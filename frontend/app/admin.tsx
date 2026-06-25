@@ -19,8 +19,12 @@ const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ── Render backend (only needed for PDF indexing) ─────────────────────────────
-const BACKEND = (process.env.EXPO_PUBLIC_BACKEND_URL || "http://localhost:8000").replace(/\/api$/, "");
+// ── Backend base URL (PDF indexing only) ──────────────────────────────────────
+// On Vercel: same-origin (empty string), /index is routed to serverless backend.
+// On local dev: set EXPO_PUBLIC_BACKEND_URL=http://localhost:8000
+const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL
+  ? process.env.EXPO_PUBLIC_BACKEND_URL.replace(/\/api$/, "")
+  : "";
 
 // ── Admin password gate ───────────────────────────────────────────────────────
 const EXPECTED_KEY = process.env.EXPO_PUBLIC_ADMIN_KEY || "";
