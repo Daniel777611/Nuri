@@ -16,13 +16,22 @@ export const auth = {
 
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
   const token = await getToken();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+  // timeoutMs=0 means no timeout (used for long-running generation calls)
+  if (!timeoutMs) {
+    const res = await fetch(API + path, { ...init, headers });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API ${path} ${res.status}: ${text}`);
+    }
+    return res.json();
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(API + path, { ...init, headers, signal: controller.signal });
     if (!res.ok) {
@@ -49,7 +58,7 @@ export const api = {
   searchCards: (q: string, type?: string) =>
     req(`/feed/search?q=${encodeURIComponent(q)}${type ? `&type=${encodeURIComponent(type)}` : ""}`),
   generateCards: (b: { session_id?: string; keywords?: string[]; count?: number }) =>
-    req(`/feed/generate`, { method: "POST", body: JSON.stringify(b) }),
+    req(`/feed/generate`, { method: "POST", body: JSON.stringify(b) }, 0),
   listFavorites: () => req(`/favorites`),
   toggleFavorite: (card_id: string) =>
     req(`/favorites/toggle`, { method: "POST", body: JSON.stringify({ card_id }) }),

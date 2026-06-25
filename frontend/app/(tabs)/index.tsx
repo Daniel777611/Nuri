@@ -121,7 +121,7 @@ export default function Home() {
   const doGenerateAll = async () => {
     setGeneratingAll(true);
     try {
-      const newCards = await api.generateCards({ count: 6 });
+      const newCards = await api.generateCards({ count: 3 });
       if (newCards?.length > 0) {
         setCards(newCards);
         showToast(`已生成 ${newCards.length} 张新内容`);

@@ -151,10 +151,10 @@ async def _db_get_gen_cards() -> list[dict]:
 
 async def _db_save_gen_cards(cards: list[dict]):
     sb = _get_supabase()
-    if not sb:
+    if not sb or not cards:
         return
-    for card in cards:
-        row = {
+    rows = [
+        {
             "id": card["id"], "type": card["type"], "type_label": card["type_label"],
             "cta": card.get("cta", "问问AI →"), "title": card["title"],
             "summary": card.get("summary", ""), "body": card.get("body", ""),
@@ -162,12 +162,14 @@ async def _db_save_gen_cards(cards: list[dict]):
             "image_url": card.get("image_url", ""), "keywords": card.get("keywords", []),
             "source": card.get("source", "ai"), "created_at": _now(),
         }
-        try:
-            await anyio.to_thread.run_sync(
-                lambda r=row: sb.table("feed_cards").upsert(r, on_conflict="id").execute()
-            )
-        except Exception as e:
-            print(f"[warn] _db_save_gen_cards upsert: {e}")
+        for card in cards
+    ]
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("feed_cards").upsert(rows, on_conflict="id").execute()
+        )
+    except Exception as e:
+        print(f"[warn] _db_save_gen_cards: {e}")
 
 async def _db_get_feed_mode() -> str:
     sb = _get_supabase()
