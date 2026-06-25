@@ -510,25 +510,11 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
 
-# Unsplash photo IDs verified working — taken directly from FEED_CARDS & ALT_FEED_CARDS
+# Only IDs confirmed working in production via static FEED_CARDS
 _CARD_PHOTOS: dict[str, list[str]] = {
-    "tip": [
-        "photo-1604908554027-93fc287e8ba3",  # toddler food (card_food_picky)
-        "photo-1566004100631-35d015d6a491",  # baby sleeping (card_sleep_routine)
-        "photo-1602030638412-bb8dcc0bc8b0",  # toddler tantrum (alt_tantrum)
-        "photo-1576091160550-2173dba999ef",  # potty training (alt_potty)
-    ],
-    "news": [
-        "photo-1503676260728-1c00da094a0b",  # books/education (card_bilingual_school)
-        "photo-1503602642458-232111445657",  # screen time (card_screen_time)
-        "photo-1587653263995-422546a7a569",  # daycare (alt_daycare)
-        "photo-1518091043644-c1d4457512c6",  # outdoor winter (alt_winter)
-    ],
-    "product": [
-        "photo-1515488042361-ee00e0ddd4e4",  # baby monitor (card_baby_monitor)
-        "photo-1584555613483-1c5f3ce97b9b",  # thermometer (card_thermometer)
-        "photo-1581952976147-5a2d15560349",  # car seat (alt_carseat)
-    ],
+    "tip":     ["photo-1604908554027-93fc287e8ba3", "photo-1566004100631-35d015d6a491"],
+    "news":    ["photo-1503676260728-1c00da094a0b", "photo-1503602642458-232111445657"],
+    "product": ["photo-1515488042361-ee00e0ddd4e4", "photo-1584555613483-1c5f3ce97b9b"],
 }
 
 def _pick_card_image(card_type: str) -> str:
