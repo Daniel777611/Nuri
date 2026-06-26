@@ -510,16 +510,12 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
 
-# Only IDs confirmed working in production via static FEED_CARDS
-_CARD_PHOTOS: dict[str, list[str]] = {
-    "tip":     ["photo-1604908554027-93fc287e8ba3", "photo-1566004100631-35d015d6a491"],
-    "news":    ["photo-1503676260728-1c00da094a0b", "photo-1503602642458-232111445657"],
-    "product": ["photo-1515488042361-ee00e0ddd4e4", "photo-1584555613483-1c5f3ce97b9b"],
-}
+# Seed offsets per type so tip/news/product get visually distinct images
+_TYPE_SEED_OFFSET = {"tip": 0, "news": 100, "product": 200}
 
-def _pick_card_image(card_type: str) -> str:
-    pool = _CARD_PHOTOS.get(card_type, _CARD_PHOTOS["tip"])
-    return f"https://images.unsplash.com/{random.choice(pool)}?w=600&q=80&auto=format&fit=crop"
+def _pick_card_image(card_type: str, card_id: str = "") -> str:
+    seed = abs(hash(card_id or card_type)) % 1000 + _TYPE_SEED_OFFSET.get(card_type, 0)
+    return f"https://picsum.photos/seed/{seed}/600/400"
 
 def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
     if not oai:
@@ -546,8 +542,9 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             card_type = card.get("type", "tip")
             if card_type not in type_labels:
                 card_type = "tip"
+            cid = f"gen_{uuid.uuid4().hex[:8]}"
             cards.append({
-                "id": f"gen_{uuid.uuid4().hex[:8]}",
+                "id": cid,
                 "type": card_type,
                 "type_label": type_labels[card_type],
                 "cta": "问问AI →",
@@ -556,7 +553,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
                 "body": card.get("body", ""),
                 "tags": card.get("tags", []),
                 "hook_line": card.get("hook_line", "想了解更多？"),
-                "image_url": _pick_card_image(card_type),
+                "image_url": _pick_card_image(card_type, cid),
                 "keywords": keywords,
                 "source": "ai",
             })
@@ -752,7 +749,10 @@ async def get_feed(shuffle: bool = False):
 @api.get("/feed/alt")
 async def get_alt_card(exclude: str = ""):
     gen_cards = await _db_get_gen_cards()
-    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + gen_cards) if c["id"] != exclude]
+    exclude_ids = {e for e in exclude.split(",") if e}
+    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + gen_cards) if c["id"] not in exclude_ids]
+    if not pool:
+        pool = list(ALT_FEED_CARDS)
     return random.choice(pool)
 
 @api.get("/feed/search")

@@ -211,7 +211,8 @@ export default function Home() {
   const swapCard = async (card: FeedCard) => {
     setRefreshingId(card.id);
     try {
-      const alt = await api.getAltCard(card.id);
+      const allIds = cards.map((c) => c.id).join(",");
+      const alt = await api.getAltCard(allIds);
       setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
       showToast("已换一条");
     } catch { /* ignore */ } finally {
