@@ -10,6 +10,8 @@ import {
   Modal,
   TextInput,
   Animated,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -27,6 +29,14 @@ type FeedCard = {
   summary: string;
   image_url?: string;
 };
+
+type Collection = {
+  id: string;
+  name: string;
+  created_at: string;
+};
+
+const MAX_COLLECTIONS = 12;
 
 const ICON_BY_TYPE: Record<FeedCard["type"], any> = {
   tip: "bulb-outline",
@@ -156,6 +166,13 @@ export default function Home() {
   };
 
   const [favIds, setFavIds] = useState<Set<string>>(new Set());
+  // card_id → collection_id (which collection that card is saved in)
+  const [cardCollMap, setCardCollMap] = useState<Record<string, string>>({});
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [pickerCard, setPickerCard] = useState<FeedCard | null>(null);
+  const [newCollName, setNewCollName] = useState("");
+  const [creatingColl, setCreatingColl] = useState(false);
+  const [collSaving, setCollSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [shareCardId, setShareCardId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -186,7 +203,13 @@ export default function Home() {
   };
 
   useEffect(() => {
-    api.listFavorites().then((f) => setFavIds(new Set(f.map((x: any) => x.id))));
+    Promise.all([api.listFavorites(), api.listCollections()]).then(([favs, cols]) => {
+      setFavIds(new Set(favs.map((x: any) => x.id)));
+      const m: Record<string, string> = {};
+      favs.forEach((x: any) => { if (x.collection_id) m[x.id] = x.collection_id; });
+      setCardCollMap(m);
+      setCollections(cols);
+    });
   }, []);
 
   const showToast = (msg: string) => {
@@ -194,18 +217,53 @@ export default function Home() {
     setTimeout(() => setToast(null), 1500);
   };
 
-  const toggleFav = async (card: FeedCard) => {
-    const r = await api.toggleFavorite(card.id);
-    setFavIds((p) => {
-      const n = new Set(p);
-      if (r.favorited) n.add(card.id);
-      else n.delete(card.id);
-      return n;
-    });
-    showToast(r.favorited ? "已收藏" : "已取消收藏");
-    api
-      .trackEvent("favorite", { card_id: card.id, card_type: card.type })
-      .catch(() => {});
+  const openFavPicker = (card: FeedCard) => {
+    setNewCollName("");
+    setCreatingColl(false);
+    setPickerCard(card);
+  };
+
+  const closeFavPicker = () => {
+    setPickerCard(null);
+    setNewCollName("");
+    setCreatingColl(false);
+  };
+
+  const saveToCollection = async (card: FeedCard, col: Collection) => {
+    setCollSaving(true);
+    try {
+      const r = await api.saveFavorite(card.id, col.id);
+      setFavIds((p) => {
+        const n = new Set(p);
+        if (r.saved) n.add(card.id); else n.delete(card.id);
+        return n;
+      });
+      setCardCollMap((p) => {
+        const n = { ...p };
+        if (r.saved) n[card.id] = col.id; else delete n[card.id];
+        return n;
+      });
+      showToast(r.saved ? `已存入「${col.name}」` : "已取消收藏");
+      api.trackEvent("favorite", { card_id: card.id, card_type: card.type }).catch(() => {});
+      closeFavPicker();
+    } finally {
+      setCollSaving(false);
+    }
+  };
+
+  const handleCreateCollection = async (card: FeedCard) => {
+    const name = newCollName.trim();
+    if (!name) return;
+    setCollSaving(true);
+    try {
+      const col = await api.createCollection(name);
+      const updated = [...collections, col];
+      setCollections(updated);
+      await saveToCollection(card, col);
+    } catch (e: any) {
+      showToast(e?.message || "创建失败");
+      setCollSaving(false);
+    }
   };
 
   const swapCard = async (card: FeedCard) => {
@@ -344,7 +402,7 @@ export default function Home() {
                   hitSlop={8}
                   onPress={(e) => {
                     e.stopPropagation?.();
-                    toggleFav(card);
+                    openFavPicker(card);
                   }}
                   style={styles.actionBtn}
                   testID={`feed-fav-${card.id}`}
@@ -407,6 +465,99 @@ export default function Home() {
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       ) : null}
+
+      {/* Collection picker bottom sheet */}
+      <Modal
+        visible={!!pickerCard}
+        transparent
+        animationType="slide"
+        onRequestClose={closeFavPicker}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
+        >
+          <Pressable style={styles.sheetBackdrop} onPress={closeFavPicker} />
+          <View style={styles.shareSheet} testID="fav-picker-sheet">
+            <View style={styles.sheetHandle} />
+            <View style={styles.pickerHeader}>
+              <Text style={styles.sheetTitle}>存入收藏夹</Text>
+              <Pressable onPress={closeFavPicker} hitSlop={8}>
+                <Ionicons name="close" size={20} color={colors.muted} />
+              </Pressable>
+            </View>
+
+            {collections.length === 0 && !creatingColl ? (
+              <Text style={styles.pickerEmpty}>还没有收藏夹，点下方按钮新建一个吧</Text>
+            ) : (
+              collections.map((col) => {
+                const isInThis = pickerCard ? cardCollMap[pickerCard.id] === col.id : false;
+                return (
+                  <Pressable
+                    key={col.id}
+                    style={styles.pickerRow}
+                    onPress={() => pickerCard && !collSaving && saveToCollection(pickerCard, col)}
+                    testID={`picker-col-${col.id}`}
+                  >
+                    <Ionicons name="folder-outline" size={18} color={colors.brand} />
+                    <Text style={styles.pickerRowText} numberOfLines={1}>{col.name}</Text>
+                    {isInThis && (
+                      <Ionicons name="checkmark-circle" size={18} color={colors.brand} />
+                    )}
+                  </Pressable>
+                );
+              })
+            )}
+
+            {creatingColl ? (
+              <View style={styles.newCollRow}>
+                <TextInput
+                  style={styles.newCollInput}
+                  placeholder="收藏夹名称（最多20字）"
+                  placeholderTextColor={colors.muted}
+                  value={newCollName}
+                  onChangeText={setNewCollName}
+                  maxLength={20}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={() => pickerCard && !collSaving && handleCreateCollection(pickerCard)}
+                />
+                <Pressable
+                  style={[styles.newCollConfirm, (!newCollName.trim() || collSaving) && { opacity: 0.4 }]}
+                  onPress={() => pickerCard && !collSaving && handleCreateCollection(pickerCard)}
+                  disabled={!newCollName.trim() || collSaving}
+                >
+                  {collSaving
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Text style={styles.newCollConfirmText}>确认</Text>
+                  }
+                </Pressable>
+              </View>
+            ) : collections.length >= MAX_COLLECTIONS ? (
+              <View style={styles.maxLimitBox}>
+                <Text style={styles.maxLimitText}>
+                  已创建 {MAX_COLLECTIONS} 个收藏夹，已达上限。
+                </Text>
+                <Pressable
+                  onPress={() => { closeFavPicker(); router.push("/(tabs)/profile"); }}
+                  style={styles.maxLimitBtn}
+                >
+                  <Text style={styles.maxLimitBtnText}>前往管理收藏夹 →</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable
+                style={styles.newCollTrigger}
+                onPress={() => setCreatingColl(true)}
+                testID="picker-new-collection"
+              >
+                <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
+                <Text style={styles.newCollTriggerText}>新建收藏夹</Text>
+              </Pressable>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       <Modal
         visible={!!shareCardId}
@@ -637,4 +788,71 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
   },
   shareLabel: { fontSize: type.lg, color: colors.onSurface },
+  pickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.md,
+  },
+  pickerEmpty: {
+    fontSize: type.base,
+    color: colors.muted,
+    paddingVertical: spacing.md,
+    textAlign: "center",
+  },
+  pickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+  },
+  pickerRowText: { flex: 1, fontSize: type.lg, color: colors.onSurface },
+  newCollTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+  },
+  newCollTriggerText: { fontSize: type.lg, color: colors.brand, fontWeight: "600" },
+  newCollRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+  },
+  newCollInput: {
+    flex: 1,
+    height: 40,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    fontSize: type.base,
+    color: colors.onSurface,
+    backgroundColor: colors.surfaceSecondary,
+  },
+  newCollConfirm: {
+    height: 40,
+    paddingHorizontal: spacing.lg,
+    backgroundColor: colors.brand,
+    borderRadius: radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  newCollConfirmText: { color: "#fff", fontWeight: "700", fontSize: type.base },
+  maxLimitBox: {
+    paddingVertical: spacing.md,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
+    gap: spacing.sm,
+  },
+  maxLimitText: { fontSize: type.base, color: colors.muted },
+  maxLimitBtn: { alignSelf: "flex-start" },
+  maxLimitBtnText: { fontSize: type.base, color: colors.brand, fontWeight: "600" },
 });

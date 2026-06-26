@@ -7,6 +7,8 @@ import {
   Pressable,
   Switch,
   Modal,
+  TextInput,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,10 +17,13 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+type Collection = { id: string; name: string };
+
 export default function Profile() {
   const router = useRouter();
   const [children, setChildren] = useState<any[]>([]);
   const [favorites, setFavorites] = useState<any[]>([]);
+  const [collections, setCollections] = useState<Collection[]>([]);
   const [privacy, setPrivacy] = useState<any>({
     allow_history_training: true,
     daily_push: true,
@@ -26,17 +31,54 @@ export default function Profile() {
     language: "zh",
   });
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Collection | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   const load = useCallback(async () => {
-    const [ks, p, favs] = await Promise.all([
+    const [ks, p, favs, cols] = await Promise.all([
       api.listChildren(),
       api.getPrivacy(),
       api.listFavorites(),
+      api.listCollections(),
     ]);
     setChildren(ks);
     setPrivacy(p);
     setFavorites(favs);
+    setCollections(cols);
   }, []);
+
+  const openRename = (col: Collection) => {
+    setRenameDraft(col.name);
+    setRenameTarget(col);
+  };
+
+  const confirmRename = async () => {
+    if (!renameTarget) return;
+    const name = renameDraft.trim();
+    if (!name) return;
+    await api.renameCollection(renameTarget.id, name);
+    setCollections((p) => p.map((c) => c.id === renameTarget.id ? { ...c, name } : c));
+    setRenameTarget(null);
+  };
+
+  const deleteCollection = (col: Collection) => {
+    Alert.alert(
+      `删除「${col.name}」`,
+      "收藏夹将被删除，其中的收藏内容不会消失（变为未分类）。确认删除？",
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "删除",
+          style: "destructive",
+          onPress: async () => {
+            await api.deleteCollection(col.id);
+            setCollections((p) => p.filter((c) => c.id !== col.id));
+            setFavorites((p) => p.map((f) => f.collection_id === col.id ? { ...f, collection_id: null } : f));
+          },
+        },
+      ]
+    );
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -109,35 +151,99 @@ export default function Profile() {
           </Pressable>
         </Section>
 
-        <Section title="我的收藏">
-          {favorites.length === 0 ? (
-            <View style={{ padding: spacing.md }}>
-              <Text style={{ color: colors.muted, fontSize: 14 }}>
-                还没有收藏。在首页或详情页点击 ★ 即可收藏。
-              </Text>
-            </View>
-          ) : (
-            favorites.map((f) => (
-              <Pressable
-                key={f.id}
-                onPress={() => router.push(`/detail/${f.id}`)}
-                style={styles.child}
-                testID={`profile-fav-${f.id}`}
-              >
-                <View style={styles.childAvatar}>
-                  <Ionicons name="star" size={16} color={colors.brand} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.childName} numberOfLines={1}>
-                    {f.title}
+        {/* Collections with their favorites grouped */}
+        {collections.length > 0 ? (
+          collections.map((col) => {
+            const colFavs = favorites.filter((f) => f.collection_id === col.id);
+            return (
+              <Section key={col.id} title={col.name}>
+                {colFavs.length === 0 ? (
+                  <View style={{ padding: spacing.md }}>
+                    <Text style={{ color: colors.muted, fontSize: 14 }}>暂无内容</Text>
+                  </View>
+                ) : (
+                  colFavs.map((f) => (
+                    <Pressable
+                      key={f.id}
+                      onPress={() => router.push(`/detail/${f.id}`)}
+                      style={styles.child}
+                      testID={`profile-fav-${f.id}`}
+                    >
+                      <View style={styles.childAvatar}>
+                        <Ionicons name="star" size={16} color={colors.brand} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.childName} numberOfLines={1}>{f.title}</Text>
+                        <Text style={styles.childMeta}>{f.type_label}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                    </Pressable>
+                  ))
+                )}
+              </Section>
+            );
+          })
+        ) : null}
+
+        {/* Uncategorized favorites (no collection) */}
+        {(() => {
+          const uncategorized = favorites.filter((f) => !f.collection_id);
+          return (
+            <Section title="我的收藏">
+              {favorites.length === 0 ? (
+                <View style={{ padding: spacing.md }}>
+                  <Text style={{ color: colors.muted, fontSize: 14 }}>
+                    还没有收藏。在首页或详情页点击 ★ 可选择收藏夹保存。
                   </Text>
-                  <Text style={styles.childMeta}>{f.type_label}</Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-              </Pressable>
-            ))
-          )}
-        </Section>
+              ) : uncategorized.length === 0 && collections.length > 0 ? null : (
+                uncategorized.map((f) => (
+                  <Pressable
+                    key={f.id}
+                    onPress={() => router.push(`/detail/${f.id}`)}
+                    style={styles.child}
+                    testID={`profile-fav-${f.id}`}
+                  >
+                    <View style={styles.childAvatar}>
+                      <Ionicons name="star" size={16} color={colors.brand} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.childName} numberOfLines={1}>{f.title}</Text>
+                      <Text style={styles.childMeta}>{f.type_label}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                  </Pressable>
+                ))
+              )}
+            </Section>
+          );
+        })()}
+
+        {/* Manage collections — shown when there are collections */}
+        {collections.length > 0 && (
+          <Section title={`管理收藏夹 (${collections.length}/12)`}>
+            {collections.map((col) => (
+              <View key={col.id} style={styles.collManageRow}>
+                <Ionicons name="folder-outline" size={18} color={colors.brand} />
+                <Text style={styles.collManageName} numberOfLines={1}>{col.name}</Text>
+                <Pressable
+                  onPress={() => openRename(col)}
+                  hitSlop={8}
+                  testID={`profile-col-rename-${col.id}`}
+                >
+                  <Ionicons name="pencil-outline" size={16} color={colors.muted} />
+                </Pressable>
+                <Pressable
+                  onPress={() => deleteCollection(col)}
+                  hitSlop={8}
+                  testID={`profile-col-delete-${col.id}`}
+                >
+                  <Ionicons name="trash-outline" size={16} color={colors.error} />
+                </Pressable>
+              </View>
+            ))}
+          </Section>
+        )}
 
         <Section title="隐私设置">
           <View style={styles.policy} testID="privacy-policy-card">
@@ -200,6 +306,40 @@ export default function Profile() {
           </Pressable>
         </Section>
       </ScrollView>
+
+      {/* Rename collection modal */}
+      <Modal visible={!!renameTarget} transparent animationType="fade" onRequestClose={() => setRenameTarget(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setRenameTarget(null)} />
+        <View style={styles.confirm} testID="rename-col-modal">
+          <Text style={styles.confirmTitle}>重命名收藏夹</Text>
+          <TextInput
+            style={styles.renameInput}
+            value={renameDraft}
+            onChangeText={setRenameDraft}
+            maxLength={20}
+            autoFocus
+            placeholder="收藏夹名称"
+            placeholderTextColor={colors.muted}
+            returnKeyType="done"
+            onSubmitEditing={confirmRename}
+          />
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.lg }}>
+            <Pressable
+              style={[styles.confirmBtn, { backgroundColor: colors.surfaceTertiary }]}
+              onPress={() => setRenameTarget(null)}
+            >
+              <Text style={{ color: colors.onSurface, fontWeight: "600" }}>取消</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.confirmBtn, { backgroundColor: colors.brand }]}
+              onPress={confirmRename}
+              testID="rename-col-confirm"
+            >
+              <Text style={{ color: "#fff", fontWeight: "700" }}>确认</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={confirmWipe} transparent animationType="fade">
         <Pressable
@@ -419,5 +559,25 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     borderRadius: radius.md,
     alignItems: "center",
+  },
+  collManageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+    borderBottomColor: colors.divider,
+    borderBottomWidth: 1,
+  },
+  collManageName: { flex: 1, fontSize: type.base, color: colors.onSurface },
+  renameInput: {
+    marginTop: spacing.md,
+    height: 44,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    fontSize: type.base,
+    color: colors.onSurface,
+    backgroundColor: colors.surfaceSecondary,
   },
 });

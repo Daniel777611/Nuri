@@ -59,9 +59,19 @@ export const api = {
     req(`/feed/search?q=${encodeURIComponent(q)}${type ? `&type=${encodeURIComponent(type)}` : ""}`),
   generateCards: (b: { session_id?: string; keywords?: string[]; count?: number }) =>
     req(`/feed/generate`, { method: "POST", body: JSON.stringify(b) }, 0),
+  listCollections: () => req(`/collections`),
+  createCollection: (name: string) =>
+    req(`/collections`, { method: "POST", body: JSON.stringify({ name }) }),
+  renameCollection: (id: string, name: string) =>
+    req(`/collections/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
+  deleteCollection: (id: string) =>
+    req(`/collections/${id}`, { method: "DELETE" }),
+
   listFavorites: () => req(`/favorites`),
   toggleFavorite: (card_id: string) =>
     req(`/favorites/toggle`, { method: "POST", body: JSON.stringify({ card_id }) }),
+  saveFavorite: (card_id: string, collection_id: string) =>
+    req(`/favorites/save`, { method: "POST", body: JSON.stringify({ card_id, collection_id }) }),
 
   trackEvent: (event: string, payload: any = {}) =>
     req(`/analytics`, { method: "POST", body: JSON.stringify({ event, ...payload }) }),

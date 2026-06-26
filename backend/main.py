@@ -87,6 +87,8 @@ _sessions:    dict[str, dict] = {}     # session_id -> session doc
 _messages:    dict[str, list] = {}     # session_id -> [msg, ...]
 _tasks:       list[dict]      = []
 _favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
+_collections: dict[str, list] = {}     # uid_or_anon -> [{id, name, created_at}]
+_fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|None}
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
 _feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
@@ -244,6 +246,99 @@ async def _db_toggle_fav(uid: str, card_id: str) -> bool:
     _favorites[uid].add(card_id)
     return True
 
+async def _db_list_collections(uid: str) -> list:
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("collections").select("id,name,created_at").eq("user_id", uid).order("created_at").execute()
+            )
+            return res.data or []
+        except Exception as e:
+            print(f"[warn] _db_list_collections: {e}")
+    return _collections.get(uid, [])
+
+async def _db_create_collection(uid: str, name: str) -> dict:
+    now = _now()
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("collections").insert({"user_id": uid, "name": name}).execute()
+            )
+            return res.data[0]
+        except Exception as e:
+            print(f"[warn] _db_create_collection: {e}")
+    col = {"id": str(uuid.uuid4()), "name": name, "created_at": now}
+    _collections.setdefault(uid, []).append(col)
+    return col
+
+async def _db_rename_collection(uid: str, col_id: str, name: str) -> bool:
+    sb = _get_supabase()
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("collections").update({"name": name}).eq("id", col_id).eq("user_id", uid).execute()
+            )
+            return True
+        except Exception as e:
+            print(f"[warn] _db_rename_collection: {e}")
+    for col in _collections.get(uid, []):
+        if col["id"] == col_id:
+            col["name"] = name
+            return True
+    return False
+
+async def _db_delete_collection(uid: str, col_id: str) -> bool:
+    sb = _get_supabase()
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("collections").delete().eq("id", col_id).eq("user_id", uid).execute()
+            )
+            return True
+        except Exception as e:
+            print(f"[warn] _db_delete_collection: {e}")
+    cols = _collections.get(uid, [])
+    _collections[uid] = [c for c in cols if c["id"] != col_id]
+    return True
+
+async def _db_save_fav(uid: str, card_id: str, collection_id: str) -> bool:
+    """Save card to collection. If already in that collection, removes it (toggle). Returns saved state."""
+    sb = _get_supabase()
+    if sb:
+        try:
+            existing = await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").select("id,collection_id").eq("user_id", uid).eq("card_id", card_id).execute()
+            )
+            if existing.data:
+                row = existing.data[0]
+                if row.get("collection_id") == collection_id:
+                    await anyio.to_thread.run_sync(
+                        lambda: sb.table("favorites").delete().eq("user_id", uid).eq("card_id", card_id).execute()
+                    )
+                    return False
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("favorites").update({"collection_id": collection_id}).eq("user_id", uid).eq("card_id", card_id).execute()
+                )
+                return True
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").insert({"user_id": uid, "card_id": card_id, "collection_id": collection_id}).execute()
+            )
+            return True
+        except Exception as e:
+            print(f"[warn] _db_save_fav: {e}")
+    # fallback in-memory
+    _favorites.setdefault(uid, set())
+    _fav_cols.setdefault(uid, {})
+    if card_id in _favorites[uid] and _fav_cols[uid].get(card_id) == collection_id:
+        _favorites[uid].discard(card_id)
+        _fav_cols[uid].pop(card_id, None)
+        return False
+    _favorites[uid].add(card_id)
+    _fav_cols[uid][card_id] = collection_id
+    return True
+
 # ── Pydantic models ───────────────────────────────────────────────────────────
 ParentRole = Literal["mom", "dad", "grandparent", "other"]
 Concern    = Literal["sleep", "food", "emotion", "health", "education"]
@@ -275,6 +370,16 @@ class ChildCreate(BaseModel):
 
 class FavToggle(BaseModel):
     card_id: str
+
+class FavSave(BaseModel):
+    card_id:       str
+    collection_id: str
+
+class CollectionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=20)
+
+class CollectionRename(BaseModel):
+    name: str = Field(..., min_length=1, max_length=20)
 
 class AnalyticsIn(BaseModel):
     event:     str
@@ -827,20 +932,71 @@ async def get_card_detail(card_id: str):
             return {**c, **extra}
     raise HTTPException(404, "card not found")
 
+# ── Collections ───────────────────────────────────────────────────────────────
+MAX_COLLECTIONS = 12
+
+@api.get("/collections")
+async def list_collections(uid: Optional[str] = Depends(_opt_uid)):
+    return await _db_list_collections(uid or "anon")
+
+@api.post("/collections")
+async def create_collection(body: CollectionCreate, uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    existing = await _db_list_collections(key)
+    if len(existing) >= MAX_COLLECTIONS:
+        raise HTTPException(400, f"已达上限，最多创建 {MAX_COLLECTIONS} 个收藏夹")
+    col = await _db_create_collection(key, body.name)
+    return col
+
+@api.put("/collections/{col_id}")
+async def rename_collection(col_id: str, body: CollectionRename, uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    ok = await _db_rename_collection(key, col_id, body.name)
+    if not ok:
+        raise HTTPException(404, "收藏夹不存在")
+    return {"id": col_id, "name": body.name}
+
+@api.delete("/collections/{col_id}")
+async def delete_collection(col_id: str, uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    await _db_delete_collection(key, col_id)
+    return {"ok": True}
+
 # ── Favorites ─────────────────────────────────────────────────────────────────
 @api.get("/favorites")
 async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    ids = await _db_list_fav_ids(key)
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("favorites").select("card_id,collection_id").eq("user_id", key).execute()
+            )
+            rows = res.data or []
+            col_map = {r["card_id"]: r.get("collection_id") for r in rows}
+            ids = set(col_map.keys())
+        except Exception as e:
+            print(f"[warn] list_favorites: {e}")
+            ids = _favorites.get(key, set())
+            col_map = _fav_cols.get(key, {})
+    else:
+        ids = _favorites.get(key, set())
+        col_map = _fav_cols.get(key, {})
     gen_cards = await _db_get_gen_cards()
     by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards}
-    return [by_id[cid] for cid in ids if cid in by_id]
+    return [{**by_id[cid], "collection_id": col_map.get(cid)} for cid in ids if cid in by_id]
 
 @api.post("/favorites/toggle")
 async def toggle_favorite(body: FavToggle, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
     favorited = await _db_toggle_fav(key, body.card_id)
     return {"favorited": favorited, "card_id": body.card_id}
+
+@api.post("/favorites/save")
+async def save_favorite(body: FavSave, uid: Optional[str] = Depends(_opt_uid)):
+    key = uid or "anon"
+    saved = await _db_save_fav(key, body.card_id, body.collection_id)
+    return {"saved": saved, "card_id": body.card_id, "collection_id": body.collection_id}
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @api.post("/analytics")
