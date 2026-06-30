@@ -594,7 +594,7 @@ def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
         if content:
             msgs.append({"role": role, "content": content})
     resp = oai.chat.completions.create(
-        model="gpt-4o-mini", messages=msgs, temperature=0.75,
+        model="gpt-4.1", messages=msgs, temperature=0.75,
         response_format={"type": "json_object"},
     )
     try:
@@ -627,7 +627,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
         return []
     type_labels = {"tip": "科普", "news": "热点", "product": "推荐"}
     resp = oai.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1",
         messages=[{"role": "user", "content":
             f"你是育儿内容编辑，根据以下关键词为北美华人家长生成{count}条育儿知识卡片。\n\n"
             f"关键词：{', '.join(keywords)}\n\n"
@@ -676,7 +676,7 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
         if m.get("text") and not (m.get("transition") or {}).get("kind")
     )
     resp = oai.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1",
         messages=[{"role": "user", "content":
             f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
             '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week"}]}\n'
@@ -899,7 +899,7 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
             combined = " ".join(user_texts[-5:])
             try:
                 kw_resp = await anyio.to_thread.run_sync(lambda: oai.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4.1-mini",
                     messages=[{"role": "user", "content":
                         f"从以下育儿对话中提取3-5个关键词（名词短语，用逗号分隔）：\n{combined}\n\n只返回关键词，不要解释。"
                     }],
@@ -1205,7 +1205,7 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
             try:
                 title_resp = await anyio.to_thread.run_sync(
                     lambda: oai.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-mini",
                         messages=[{"role": "user", "content": f"用10字以内总结这句话的话题，只输出话题词，不加标点：{first_text}"}],
                         temperature=0.3, max_tokens=20,
                     )
@@ -1557,7 +1557,7 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
               + "\n\n以下是本次對話的參考文獻節錄，可作為輔助依據。NURI 應優先運用自身的兒童發展與育兒專業知識作答，文獻內容僅供參考補充。無論文獻是否涵蓋問題，都請盡力提供有幫助的回應，避免直接回答「我不知道」或「抱歉，我無法回答」。\n"
               + citation)
     resp = oai.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1",
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": f"問題：{question}\n\n參考文獻：\n{context}"}],
         temperature=0.7,
