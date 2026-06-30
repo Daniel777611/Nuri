@@ -595,7 +595,23 @@ def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
             msgs.append({"role": role, "content": content})
     resp = oai.chat.completions.create(
         model="gpt-5.5", messages=msgs, temperature=0.75,
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "nuri_reply",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "quick_replies": {"type": "array", "items": {"type": "string"}},
+                        "suggest_tasks": {"type": "boolean"},
+                    },
+                    "required": ["text", "quick_replies", "suggest_tasks"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     )
     try:
         data = json.loads(resp.choices[0].message.content)
@@ -638,7 +654,36 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             f"每张卡针对不同关键词，内容实用具体，有北美生活背景"
         }],
         temperature=0.8,
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "feed_cards",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "cards": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string", "enum": ["tip", "news", "product"]},
+                                    "title": {"type": "string"},
+                                    "summary": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "tags": {"type": "array", "items": {"type": "string"}},
+                                    "hook_line": {"type": "string"},
+                                },
+                                "required": ["type", "title", "summary", "body", "tags", "hook_line"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["cards"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     )
     try:
         data = json.loads(resp.choices[0].message.content)
@@ -685,7 +730,32 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
             "- 如果对话信息不足，返回空数组"
         }],
         temperature=0.4,
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "task_list",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "scope": {"type": "string", "enum": ["today", "week"]},
+                                },
+                                "required": ["title", "scope"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["tasks"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     )
     try:
         return json.loads(resp.choices[0].message.content).get("tasks", [])[:4]
