@@ -55,6 +55,14 @@ export default function AdminPage() {
   const [feedMode, setFeedMode] = useState<"ai" | "alt">("ai");
   const [feedModeLoading, setFeedModeLoading] = useState(false);
 
+  // Daily push state
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushLastSent, setPushLastSent] = useState<string | null>(null);
+  const [smtpOk, setSmtpOk] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [triggerLoading, setTriggerLoading] = useState(false);
+  const [triggerResult, setTriggerResult] = useState<string | null>(null);
+
   // New book form
   const [newTitle, setNewTitle] = useState("");
   const [newCategory, setNewCategory] = useState(CATEGORIES[0]);
@@ -148,13 +156,62 @@ export default function AdminPage() {
     setFeedModeLoading(false);
   };
 
+  const loadDailyPush = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/admin/daily-push`, {
+        headers: { "x-admin-key": key },
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setPushEnabled(!!d.enabled);
+        setPushLastSent(d.last_sent || null);
+        setSmtpOk(!!d.smtp_configured);
+      }
+    } catch {}
+  }, [key]);
+
+  const toggleDailyPush = async (enabled: boolean) => {
+    setPushLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/admin/daily-push`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ enabled }),
+      });
+      if (res.ok) setPushEnabled(enabled);
+    } catch {}
+    setPushLoading(false);
+  };
+
+  const triggerDailyPush = async () => {
+    setTriggerLoading(true);
+    setTriggerResult(null);
+    try {
+      const res = await fetch(`${BACKEND}/admin/daily-push/trigger`, {
+        method: "POST",
+        headers: { "x-admin-key": key },
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setTriggerResult(`发送成功 ${d.sent} 封，失败 ${d.failed} 封${d.errors?.length ? `\n${d.errors.slice(0, 3).join("\n")}` : ""}`);
+        loadDailyPush();
+      } else {
+        setTriggerResult(`错误: ${d.detail || "未知错误"}`);
+      }
+    } catch (e: any) {
+      setTriggerResult(`错误: ${e.message}`);
+    }
+    setTriggerLoading(false);
+  };
+
   useEffect(() => {
     if (authed) {
       loadBooks();
       loadUnregistered();
       loadFeedMode();
+      loadDailyPush();
     }
-  }, [authed, loadBooks, loadUnregistered, loadFeedMode]);
+  }, [authed, loadBooks, loadUnregistered, loadFeedMode, loadDailyPush]);
 
   // ── Toggle enabled — direct Supabase write ────────────────────────────────
   const toggleBook = async (doc_id: string, enabled: boolean) => {
@@ -314,6 +371,49 @@ export default function AdminPage() {
               thumbColor="#fff"
             />
           </View>
+        </View>
+
+        {/* Daily Email Push */}
+        <View style={styles.modeCard}>
+          <Text style={styles.modeTitle}>每日邮件推送</Text>
+          <View style={styles.modeRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.modeLabel}>
+                {pushEnabled ? "📧 推送已开启" : "📭 推送已关闭"}
+              </Text>
+              <Text style={styles.modeHint}>
+                {smtpOk
+                  ? "每位用户根据关注话题收到专属卡片，每天上午 10 点发送"
+                  : "⚠️ SMTP 未配置，请在服务器环境变量中设置 SMTP_USER / SMTP_PASSWORD"}
+              </Text>
+              {pushLastSent ? (
+                <Text style={[styles.modeHint, { marginTop: 4 }]}>
+                  上次发送：{new Date(pushLastSent).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}
+                </Text>
+              ) : null}
+            </View>
+            <Switch
+              value={pushEnabled}
+              onValueChange={toggleDailyPush}
+              disabled={pushLoading || !smtpOk}
+              trackColor={{ false: "#ccc", true: colors.brand }}
+              thumbColor="#fff"
+            />
+          </View>
+          {pushEnabled && smtpOk && (
+            <Pressable
+              style={[styles.triggerBtn, triggerLoading && styles.uploadBtnDisabled]}
+              onPress={triggerDailyPush}
+              disabled={triggerLoading}
+            >
+              <Text style={styles.triggerBtnText}>
+                {triggerLoading ? "发送中..." : "立即手动发送"}
+              </Text>
+            </Pressable>
+          )}
+          {triggerResult ? (
+            <Text style={styles.indexStatusText}>{triggerResult}</Text>
+          ) : null}
         </View>
 
         {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
@@ -511,6 +611,16 @@ const styles = StyleSheet.create({
   uploadBtn: { backgroundColor: colors.brand, borderRadius: radius.md, padding: spacing.md, alignItems: "center" },
   uploadBtnDisabled: { backgroundColor: "#D4D4D0" },
   uploadBtnText: { color: "#fff", fontWeight: "600", fontSize: 15 },
+  triggerBtn: {
+    marginTop: spacing.sm,
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+    alignItems: "center" as const,
+  },
+  triggerBtnText: { color: colors.brand, fontWeight: "600" as const, fontSize: 13 },
   indexStatusText: {
     fontSize: 13, color: colors.onSurfaceTertiary,
     backgroundColor: colors.surfaceTertiary, borderRadius: radius.sm, padding: spacing.sm,

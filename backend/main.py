@@ -49,6 +49,12 @@ ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
 JWT_ALG          = "HS256"
 JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
 EMBED_DIM        = 1024
+APP_URL          = os.getenv("APP_URL", "https://family-growth-ktm1oyan2-ordashlabs.vercel.app")
+SMTP_HOST        = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER        = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM        = os.getenv("SMTP_FROM", "")
 
 oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -437,6 +443,9 @@ class GenerateCardsRequest(BaseModel):
 class FeedModeUpdate(BaseModel):
     mode: Literal["ai", "alt"]
 
+class DailyPushToggle(BaseModel):
+    enabled: bool
+
 def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
         raise HTTPException(403, "Invalid or missing admin key")
@@ -516,6 +525,34 @@ CARD_TASKS = {
     "product_monitor":[{"title":"今天对比 Nanit / Owlet / VTech 的隐私政策","scope":"today"},{"title":"本周内完成购买决策","scope":"week","progress_total":7}],
     "free":           [{"title":"今天选一个小目标坚持10分钟","scope":"today"},{"title":"本周和孩子做一件\"专注陪伴\"的事","scope":"week","progress_total":7},{"title":"睡前花5分钟回顾今天3件好事","scope":"today"}],
 }
+
+# ── Daily email push helpers ──────────────────────────────────────────────────
+
+def _send_email_smtp(to_addr: str, subject: str, body: str) -> None:
+    import smtplib, ssl
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from email.header import Header
+
+    sender = SMTP_FROM or SMTP_USER
+    msg = MIMEMultipart()
+    msg["Subject"] = Header(subject, "utf-8").encode()
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    raw = msg.as_bytes()
+
+    ctx = ssl.create_default_context()
+    if SMTP_PORT == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as s:
+            s.login(SMTP_USER, SMTP_PASSWORD)
+            s.sendmail(sender, to_addr, raw)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+            s.ehlo()
+            s.starttls(context=ctx)
+            s.login(SMTP_USER, SMTP_PASSWORD)
+            s.sendmail(sender, to_addr, raw)
 
 # Fallback scripts (used when OpenAI is not configured)
 SCRIPTS: dict = {
@@ -791,18 +828,30 @@ async def register(body: UserRegister):
     if not sb:
         raise HTTPException(503, "Database not configured")
     email = body.email.lower()
-    existing = await anyio.to_thread.run_sync(
-        lambda: sb.table("users").select("id").eq("email", email).execute()
-    )
-    if existing.data:
-        raise HTTPException(400, "该邮箱已注册")
+    try:
+        existing = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("id").eq("email", email).execute()
+        )
+        if existing.data:
+            raise HTTPException(400, "该邮箱已注册")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[warn] register email-check error: {e}")
     doc = {
         "id": str(uuid.uuid4()), "email": email,
         "nickname": body.nickname, "city": body.city,
         "parent_role": body.parent_role, "top_concerns": list(body.top_concerns),
         "hashed_password": _hash_pw(body.password), "created_at": _now(),
     }
-    await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+    try:
+        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+    except Exception as e:
+        err = str(e)
+        if "23505" in err or "duplicate" in err.lower() or "unique" in err.lower():
+            raise HTTPException(400, "该邮箱已注册")
+        print(f"[error] register insert error: {e}")
+        raise HTTPException(500, "注册失败，请稍后重试")
     return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
 
 @api.post("/auth/login")
@@ -1743,3 +1792,175 @@ async def admin_discover(_: None = Depends(_require_admin)):
         if doc_id not in registered
     ]
     return {"unregistered": unregistered}
+
+# ── Daily email push admin endpoints ─────────────────────────────────────────
+
+@app.get("/admin/daily-push")
+async def admin_get_daily_push(_: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    enabled = False
+    last_sent = None
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings")
+                .select("key,value")
+                .in_("key", ["daily_push_enabled", "daily_push_last_sent"])
+                .execute()
+            )
+            for row in (res.data or []):
+                if row["key"] == "daily_push_enabled":
+                    enabled = str(row["value"]).lower() == "true"
+                elif row["key"] == "daily_push_last_sent":
+                    last_sent = row["value"]
+        except Exception as e:
+            print(f"[warn] admin_get_daily_push: {e}")
+    return {
+        "enabled": enabled,
+        "last_sent": last_sent,
+        "smtp_configured": bool(SMTP_USER and SMTP_PASSWORD),
+    }
+
+@app.put("/admin/daily-push")
+async def admin_set_daily_push(body: DailyPushToggle, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
+    await anyio.to_thread.run_sync(
+        lambda: sb.table("app_settings").upsert(
+            {"key": "daily_push_enabled", "value": str(body.enabled).lower(), "updated_at": _now()},
+            on_conflict="key",
+        ).execute()
+    )
+    return {"enabled": body.enabled}
+
+@app.post("/admin/daily-push/trigger")
+async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise HTTPException(400, "SMTP 未配置，请先在服务器环境变量中设置 SMTP_USER / SMTP_PASSWORD")
+    if not oai:
+        raise HTTPException(503, "OpenAI 未配置，无法生成个性化卡片")
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Database not configured")
+
+    users_res = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("id,email,nickname,top_concerns").execute()
+    )
+    users = users_res.data or []
+    if not users:
+        return {"sent": 0, "failed": 0, "errors": [], "message": "没有注册用户"}
+
+    sent, failed, errors = 0, 0, []
+    _concern_kw = {
+        "sleep": "婴幼儿睡眠", "food": "宝宝辅食",
+        "emotion": "儿童情绪管理", "health": "儿童健康", "education": "早期教育",
+    }
+
+    for user in users:
+        uid = user["id"]
+        try:
+            # 1. Collect recent user messages from the last 5 sessions
+            sessions_res = await anyio.to_thread.run_sync(
+                lambda _uid=uid: sb.table("chat_sessions")
+                .select("id")
+                .eq("user_id", _uid)
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            session_ids = [s["id"] for s in (sessions_res.data or [])]
+            user_texts: list[str] = []
+            for sid in session_ids:
+                msgs_res = await anyio.to_thread.run_sync(
+                    lambda _sid=sid: sb.table("chat_messages")
+                    .select("text")
+                    .eq("session_id", _sid)
+                    .eq("role", "user")
+                    .order("created_at", desc=True)
+                    .limit(10)
+                    .execute()
+                )
+                user_texts.extend(
+                    m["text"] for m in (msgs_res.data or [])
+                    if m.get("text") and m["text"] != "[图片]"
+                )
+                if len(user_texts) >= 20:
+                    break
+
+            # 2. Extract keywords from chat history; fall back to user concerns
+            keywords: list[str] = []
+            if user_texts:
+                combined = " ".join(user_texts[:15])
+                try:
+                    kw_resp = await anyio.to_thread.run_sync(
+                        lambda: oai.chat.completions.create(
+                            model="gpt-4.1-mini",
+                            messages=[{"role": "user", "content":
+                                f"从以下育儿对话中提取3-5个关键词（名词短语，用逗号分隔）：\n{combined}\n\n只返回关键词，不要解释。"
+                            }],
+                            max_completion_tokens=30,
+                        )
+                    )
+                    keywords = [k.strip() for k in kw_resp.choices[0].message.content.split(",") if k.strip()][:5]
+                except Exception as e:
+                    print(f"[warn] keyword extract {uid}: {e}")
+
+            if not keywords:
+                concerns = user.get("top_concerns") or []
+                keywords = [_concern_kw[c] for c in concerns if c in _concern_kw][:3]
+            if not keywords:
+                keywords = ["育儿健康", "儿童发展", "北美华人育儿"]
+
+            # 3. Generate 1 AI card tailored to this user's context
+            cards = await anyio.to_thread.run_sync(
+                lambda: _gen_feed_cards_sync(keywords, 1)
+            )
+            if not cards:
+                raise ValueError("AI 卡片生成失败")
+            card = cards[0]
+
+            # 4. Persist card so /detail/:id works
+            await _db_save_gen_cards([card])
+
+            # 5. Build and send email
+            preview_src = card.get("body") or card.get("summary", "")
+            preview = preview_src[:40].rstrip() + "..." if len(preview_src) > 40 else preview_src
+            link = f"{APP_URL}/detail/{card['id']}"
+            nickname = user.get("nickname") or "家长"
+            subject = f"今日育儿 | {card['title']}"
+            email_body = (
+                f"{nickname}，你好！\n\n"
+                f"{card['title']}\n\n"
+                f"{preview}\n\n"
+                f"点击查看完整内容并和 AI 深聊：\n{link}\n\n"
+                f"---\nFamily Growth Radar · 每日育儿内容"
+            )
+            await anyio.to_thread.run_sync(
+                lambda _to=user["email"], _s=subject, _b=email_body: _send_email_smtp(_to, _s, _b)
+            )
+
+            # 6. Log
+            log_row = {"user_id": uid, "email": user["email"], "card_id": card["id"], "sent_at": _now()}
+            await anyio.to_thread.run_sync(
+                lambda _r=log_row: sb.table("email_logs").insert(_r).execute()
+            )
+            sent += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"{user.get('email', uid)}: {str(e)[:100]}")
+            print(f"[error] daily push {uid}: {e}")
+
+    # Update last_sent timestamp
+    try:
+        now_str = _now()
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings").upsert(
+                {"key": "daily_push_last_sent", "value": now_str, "updated_at": now_str},
+                on_conflict="key",
+            ).execute()
+        )
+    except Exception as e:
+        print(f"[warn] daily_push update last_sent: {e}")
+
+    return {"sent": sent, "failed": failed, "errors": errors[:20]}
