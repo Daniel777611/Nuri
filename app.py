@@ -18,11 +18,10 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-# ----------------------------
-# Configuration
-# set_page_config should be called only once, at the beginning
-# its purpose is to set the title and layout of the Streamlit app
-# ----------------------------
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+# set_page_config should be called only once, at the beginning;
+# it sets the title and layout of the Streamlit app.
 st.set_page_config(page_title="My RAG App", layout="wide")
 
 AVAILABLE_BOOKS = {
@@ -35,13 +34,11 @@ API_BASE = os.getenv("API_BASE", "https://nasm-rag.onrender.com")
 ASK_URL = f"{API_BASE}/ask"
 INDEX_URL = f"{API_BASE}/index"
 
-# ----------------------------
-# UI
-# ----------------------------
+# ── UI: header ─────────────────────────────────────────────────────────────────
 st.title("RAG Demo")
 st.caption("Upload PDF → index via backend → ask questions via backend")
 
-# [Strict file based] This sections support openai only generate based on target PDF  
+# ── Session state: indexing (this app only answers from an indexed target PDF) ─
 if "indexed_docs" not in st.session_state:
     st.session_state["indexed_docs"] = set()
 
@@ -53,9 +50,7 @@ if "active_doc_id" not in st.session_state:
 if "doc_map" not in st.session_state:
     st.session_state["doc_map"] = {}
 
-# -----------------------------
-# Chat state
-# -----------------------------
+# ── Session state: chat ─────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
     # Each message: {"role": "user"|"assistant", "content": "..."}
     st.session_state["messages"] = [
@@ -66,9 +61,7 @@ if "messages" not in st.session_state:
 if "last_retrieved" not in st.session_state:
     st.session_state["last_retrieved"] = []
 
-# -----------------------------
-# Sidebar: Settings + 教材选择
-# -----------------------------
+# ── UI: sidebar — settings + 教材选择 ────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
     top_k = st.slider("Top K", 1, 10, 5)
@@ -81,9 +74,7 @@ with st.sidebar:
         selected_title = None
         st.warning("data/ 目录下未找到教材文件")
 
-# -----------------------------
-# PDF 加载：优先使用侧边栏选择，上传器用于自定义 PDF
-# -----------------------------
+# ── PDF selection: sidebar choice takes priority, uploader is for a custom PDF ─
 uploaded = st.file_uploader("上传自定义 PDF（可选）", type=["pdf"])
 
 pdf_bytes = None
@@ -104,10 +95,7 @@ elif selected_title and selected_title in _available:
     source = "default"
     st.info(f"当前教材：{selected_title}")
 
-# -----------------------------
-# When user changes PDF, reset backend_doc_id
-# avoid asking wrong document by accident
-# -----------------------------
+# ── PDF change guard: reset backend_doc_id so we never ask the wrong document ──
 if "last_local_doc_id" not in st.session_state:
     st.session_state["last_local_doc_id"] = None
 
@@ -124,10 +112,7 @@ if doc_id and doc_id in st.session_state["doc_map"]:
     st.session_state["active_doc_id"] = st.session_state["doc_map"][doc_id]
 
 
-# -----------------------------
-# Sidebar info
-# -----------------------------
-# Show current doc info (if any)
+# ── UI: current doc info + index status ─────────────────────────────────────────
 # TODO : hide this message if no PDF loaded
 if pdf_bytes is not None:
     st.success(f"Loaded: {filename} | doc_id: {doc_id} | source: {source}")
@@ -176,10 +161,7 @@ with st.sidebar:
          st.info("No PDF indexed in this session. Searching ALL indexed docs in Supabase.")
     #Guard end
 
-# -----------------------------
-# Supabase vector insert button
-# optimization: avoid re-indexing the same doc_id
-# -----------------------------
+# ── Indexing action: send PDF to backend (skips re-indexing the same doc_id) ───
 if pdf_bytes is not None:
     # If user already indexed current active_doc_id, we can skip.
     # But note: local_doc_id != backend_doc_id; backend decides doc_id.
@@ -246,17 +228,12 @@ if pdf_bytes is not None:
 
             st.rerun()
 
-# -----------------------------
-# Render chat history
-# -----------------------------
+# ── UI: render chat history ──────────────────────────────────────────────────────
 for msg in st.session_state["messages"]:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# -----------------------------
-# Prompt section
-# active_doc_id: 
-# -----------------------------
+# ── Chat input: ask backend /ask, append Q&A to history ────────────────────────
 prompt = st.chat_input("Ask a question about the PDF")
 if prompt:
     st.sidebar.write("DEBUG: got prompt")
@@ -310,9 +287,7 @@ if prompt:
     st.session_state["messages"].append({"role": "assistant", "content": answer})
 
 
-# -----------------------------
-# put last chunks in sidebar
-# -----------------------------
+# ── UI: sidebar — last retrieved chunks ─────────────────────────────────────────
 with st.sidebar:
     st.divider()
     st.subheader("Last Retrieved Chunks")

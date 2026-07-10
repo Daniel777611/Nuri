@@ -17,6 +17,7 @@ import { useFocusEffect } from "expo-router";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+// ── Types & constants ────────────────────────────────────────────────────────
 type Task = {
   id: string;
   title: string;
@@ -29,6 +30,7 @@ type Task = {
 
 const MOODS = ["😊", "😐", "😣"];
 
+// ── Main screen ────────────────────────────────────────────────────────────────
 export default function Tasks() {
   const [scope, setScope] = useState<"today" | "week">("today");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -262,6 +264,7 @@ export default function Tasks() {
   );
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   header: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },

@@ -21,6 +21,7 @@ import { useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+// ── Types ────────────────────────────────────────────────────────────────────
 type FeedCard = {
   id: string;
   type: "tip" | "news" | "product";
@@ -36,6 +37,7 @@ type Collection = {
   created_at: string;
 };
 
+// ── Constants ────────────────────────────────────────────────────────────────
 const MAX_COLLECTIONS = 12;
 
 const ICON_BY_TYPE: Record<FeedCard["type"], any> = {
@@ -57,6 +59,8 @@ const TAG_FG: Record<FeedCard["type"], string> = {
 
 export default function Home() {
   const router = useRouter();
+
+  // ── Feed loading ─────────────────────────────────────────────────────────
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -115,6 +119,7 @@ export default function Home() {
     router.push(`/detail/${card.id}`);
   };
 
+  // ── "Pull past the end" hold-to-generate-more gesture ────────────────────
   const topTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledAway = useRef(false);
   const topProgress = useRef(new Animated.Value(0)).current;
@@ -165,6 +170,7 @@ export default function Home() {
     }
   };
 
+  // ── Favorites & collections ───────────────────────────────────────────────
   const [favIds, setFavIds] = useState<Set<string>>(new Set());
   // card_id → collection_id (which collection that card is saved in)
   const [cardCollMap, setCardCollMap] = useState<Record<string, string>>({});
@@ -177,6 +183,7 @@ export default function Home() {
   const [shareCardId, setShareCardId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
+  // ── Search ────────────────────────────────────────────────────────────────
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -280,6 +287,7 @@ export default function Home() {
   };
 
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.header} testID="home-header">
@@ -592,6 +600,7 @@ export default function Home() {
   );
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function monthsOf(birth: string) {
   try {
     const b = new Date(birth);
@@ -605,6 +614,7 @@ function monthsOf(birth: string) {
   }
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   header: {

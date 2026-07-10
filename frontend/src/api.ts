@@ -1,6 +1,11 @@
+// Client for backend/main.py's /api/* routes. Grouped the same way as the
+// route sections there (Children, Feed, Collections, ...) so the two stay
+// easy to cross-reference.
+
 import { API } from "./theme";
 import { storage } from "./utils/storage";
 
+// ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
 
 async function getToken(): Promise<string | null> {
@@ -14,6 +19,7 @@ export const auth = {
   getToken,
 };
 
+// ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
   const token = await getToken();
   const headers: Record<string, string> = {
@@ -45,12 +51,14 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
 }
 
 export const api = {
+  // ── Children ──────────────────────────────────────────────────────────────
   listChildren: () => req("/children"),
   addChild: (b: any) => req("/children", { method: "POST", body: JSON.stringify(b) }),
   updateChild: (id: string, b: any) =>
     req(`/children/${id}`, { method: "PUT", body: JSON.stringify(b) }),
   deleteChild: (id: string) => req(`/children/${id}`, { method: "DELETE" }),
 
+  // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
   getCardDetail: (id: string) => req(`/feed/${id}/detail`),
   getAltCard: (exclude: string) =>
@@ -59,6 +67,8 @@ export const api = {
     req(`/feed/search?q=${encodeURIComponent(q)}${type ? `&type=${encodeURIComponent(type)}` : ""}`),
   generateCards: (b: { session_id?: string; keywords?: string[]; count?: number }) =>
     req(`/feed/generate`, { method: "POST", body: JSON.stringify(b) }, 0),
+
+  // ── Collections ───────────────────────────────────────────────────────────
   listCollections: () => req(`/collections`),
   createCollection: (name: string) =>
     req(`/collections`, { method: "POST", body: JSON.stringify({ name }) }),
@@ -67,15 +77,18 @@ export const api = {
   deleteCollection: (id: string) =>
     req(`/collections/${id}`, { method: "DELETE" }),
 
+  // ── Favorites ─────────────────────────────────────────────────────────────
   listFavorites: () => req(`/favorites`),
   toggleFavorite: (card_id: string) =>
     req(`/favorites/toggle`, { method: "POST", body: JSON.stringify({ card_id }) }),
   saveFavorite: (card_id: string, collection_id: string) =>
     req(`/favorites/save`, { method: "POST", body: JSON.stringify({ card_id, collection_id }) }),
 
+  // ── Analytics ─────────────────────────────────────────────────────────────
   trackEvent: (event: string, payload: any = {}) =>
     req(`/analytics`, { method: "POST", body: JSON.stringify({ event, ...payload }) }),
 
+  // ── Chat ──────────────────────────────────────────────────────────────────
   startSession: (b: any) =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
@@ -88,16 +101,19 @@ export const api = {
       body: JSON.stringify(b),
     }),
 
+  // ── Tasks ─────────────────────────────────────────────────────────────────
   listTasks: (scope?: "today" | "week") =>
     req(`/tasks${scope ? `?scope=${scope}` : ""}`),
   updateTask: (id: string, b: any) =>
     req(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
   taskInsights: () => req(`/tasks/insights`),
 
+  // ── Privacy ───────────────────────────────────────────────────────────────
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
 
+  // ── Auth ──────────────────────────────────────────────────────────────────
   register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),
   login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }),
   me: () => req(`/auth/me`),

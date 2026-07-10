@@ -17,8 +17,10 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+// ── Types ────────────────────────────────────────────────────────────────────
 type Collection = { id: string; name: string };
 
+// ── Main screen ────────────────────────────────────────────────────────────────
 export default function Profile() {
   const router = useRouter();
   const [children, setChildren] = useState<any[]>([]);
@@ -372,6 +374,7 @@ export default function Profile() {
   );
 }
 
+// ── Sub-components ────────────────────────────────────────────────────────────
 function Section({
   title,
   children,
@@ -412,6 +415,7 @@ function Toggle({
   );
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function monthsOf(birth: string) {
   try {
     const b = new Date(birth);
@@ -425,6 +429,7 @@ function monthsOf(birth: string) {
   }
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   header: {

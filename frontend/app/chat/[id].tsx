@@ -19,6 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+// ── Types & mock data ────────────────────────────────────────────────────────
 const MOCK_IMAGE_BASE64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAQUlEQVR42u3OMQEAAAQDMKr6V2N4DYBz1xCWxKsQKAQKgUKgECgECoFCoBAoBAqBQqAQKAQKgUKgECgECsHRBVbsAAGoVgrhAAAAAElFTkSuQmCC";
 
@@ -31,6 +32,7 @@ type Msg = {
   transition?: any;
 };
 
+// ── Sub-component: avatar ────────────────────────────────────────────────────
 function NuriAvatar({ size = 34 }: { size?: number }) {
   return (
     <View
@@ -63,6 +65,7 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
   );
 }
 
+// ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -221,6 +224,7 @@ export default function ChatDetail() {
   );
 }
 
+// ── Sub-component: message bubble (text, image, quick replies, transitions) ──
 function MessageBubble({
   msg,
   onQuick,
@@ -337,6 +341,7 @@ function MessageBubble({
   );
 }
 
+// ── Sub-component: animated "typing…" indicator ─────────────────────────────
 function TypingDots() {
   const dot1 = useRef(new Animated.Value(0)).current;
   const dot2 = useRef(new Animated.Value(0)).current;
@@ -396,6 +401,7 @@ function TypingDots() {
   );
 }
 
+// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
 

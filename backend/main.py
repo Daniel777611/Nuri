@@ -3,6 +3,32 @@ backend/main.py
 Unified backend for Family Growth Radar.
 - /api/*  : React Native frontend API (in-memory storage)
 - /index /ask : Supabase pgvector RAG endpoints (optional)
+
+Table of contents (search for the "── name ──" marker to jump to a section):
+  Setup                  imports, env vars, optional Supabase/pypdf deps
+  App                    FastAPI app, CORS, /api router
+  In-memory stores       fallback storage used when Supabase is unavailable
+  Auth helpers           password hashing, JWT issue/verify, uid dependencies
+  Supabase persistence   DB-backed helpers for feed cards / favorites / collections
+  Pydantic models        request/response schemas for /api/*
+  Admin models           request schemas for /admin/*
+  Static feed data       seed cards, chat scripts, per-card task templates
+  Daily email push       SMTP sender + fallback conversation scripts
+  NURI persona           system prompt for the NURI chat persona
+  NURI AI helpers        chat reply / card generation / task generation via OpenAI
+  Auth routes            /api/auth/*
+  Children               /api/children*
+  Feed                   /api/feed*
+  Collections            /api/collections*
+  Favorites              /api/favorites*
+  Analytics              /api/analytics
+  Chat                   /api/chat/sessions*
+  Tasks                  /api/tasks*
+  Privacy                /api/privacy*
+  Legacy RAG routes      /, /health, /index, /ask (static + PDF ingest)
+  RAG helper functions   PDF parsing, chunking, embeddings, retrieval
+  Admin endpoints        /admin/books, /admin/settings, /admin/discover
+  Daily push admin       /admin/daily-push*
 """
 
 import io, json, os, uuid, hashlib, random
@@ -1533,7 +1559,7 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
 # ── Mount /api router ─────────────────────────────────────────────────────────
 app.include_router(api)
 
-# ── Legacy RAG endpoints ──────────────────────────────────────────────────────
+# ── Legacy RAG routes: static & health ─────────────────────────────────────────
 @app.get("/")
 async def root():
     index = FRONTEND_DIST / "index.html"
@@ -1566,6 +1592,7 @@ async def health():
         "openai": oai is not None,
     }
 
+# ── RAG helper functions ───────────────────────────────────────────────────────
 def _read_pdf(pdf_bytes: bytes) -> str:
     if PdfReader is None:
         raise HTTPException(503, "pypdf not installed")
@@ -1680,6 +1707,7 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
     )
     return resp.choices[0].message.content
 
+# ── Legacy RAG routes: PDF ingest & ask ────────────────────────────────────────
 @app.post("/index")
 async def index_pdf(file: UploadFile = File(...)):
     if not _get_supabase():
