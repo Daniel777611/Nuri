@@ -15,6 +15,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Static feed data       seed cards, chat scripts, per-card task templates
   Daily email push       SMTP sender + fallback conversation scripts
   NURI persona           system prompt for the NURI chat persona
+  Input & memory         normalized_inputs logging + user_memories extraction/retrieval
   NURI AI helpers        chat reply / card generation / task generation via OpenAI
   Auth routes            /api/auth/*
   Children               /api/children*
@@ -40,7 +41,7 @@ import anyio
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File, status
+from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -644,10 +645,12 @@ suggest_tasks（只在全部条件满足时才设为true，否则一律false）�
 - 自然到了"我来帮你整理几件可以做的事"的时机
 - 本次对话还没生成过任务"""
 
-def _nuri_reply_sync(history: list[dict], card_ctx: str = "") -> dict:
+def _nuri_reply_sync(history: list[dict], card_ctx: str = "", memory_ctx: str = "") -> dict:
     if not oai:
         return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
+    if memory_ctx:
+        system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
     if card_ctx:
         system += f"\n\n本次对话相关内容：\n{card_ctx}"
     msgs = [{"role": "system", "content": system}]
@@ -694,6 +697,179 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
             body = d.get("body") or c.get("body", "")
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
     return ""
+
+# ── Input normalization & long-term memory ───────────────────────────────────
+_MEMORY_CATEGORY_LABELS = {
+    "preference": "家庭偏好",
+    "constraint": "约束条件",
+    "concern": "家长关注点",
+    "child_state": "孩子当前状态",
+    "fact": "其他信息",
+}
+
+async def _save_normalized_input(
+    *, user_id: Optional[str], session_id: Optional[str], source: str,
+    raw_text: str = "", raw_image_base64: Optional[str] = None,
+    card_ref: Optional[dict] = None, context_hints: Optional[dict] = None,
+    child_id: Optional[str] = None,
+) -> None:
+    """Log every user turn through one canonical shape before it reaches the router/LLM."""
+    sb = _get_supabase()
+    if not sb:
+        return
+    row = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "child_id": child_id,
+        "session_id": session_id,
+        "source": source,
+        "raw_text": raw_text,
+        "normalized_text": raw_text.strip(),
+        "normalization_version": "v1",
+        "raw_image_base64": raw_image_base64,
+        "card_ref": card_ref,
+        "context_hints": context_hints or {},
+        "created_at": _now(),
+    }
+    try:
+        await anyio.to_thread.run_sync(lambda: sb.table("normalized_inputs").insert(row).execute())
+    except Exception as e:
+        print(f"[warn] _save_normalized_input: {e}")
+
+def _extract_memories_sync(history: list[dict]) -> list[dict]:
+    """Ask a small model whether this conversation contains stable, reusable facts."""
+    if not oai:
+        return []
+    convo = "\n".join(
+        f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
+        for m in history[-8:] if m.get("text")
+    )
+    if not convo.strip():
+        return []
+    system = (
+        "从下面这段育儿助手对话里，提取值得长期记住的、稳定的事实。"
+        "只提取明确、稳定、以后有用的信息（长期偏好、过敏史、育儿理念上的坚持、孩子的持续性状态等），"
+        "不要提取一次性的、当下情绪化的、或还不确定的内容。没有就返回空数组，不要勉强凑数。"
+    )
+    try:
+        resp = oai.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": convo}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "memory_extraction",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "memories": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {
+                                            "type": "string",
+                                            "enum": ["preference", "concern", "child_state", "fact", "constraint"],
+                                        },
+                                        "key": {"type": "string"},
+                                        "value": {"type": "string"},
+                                        "confidence": {"type": "number"},
+                                    },
+                                    "required": ["category", "key", "value", "confidence"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["memories"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return data.get("memories", [])[:5]
+    except Exception as e:
+        print(f"[error] _extract_memories_sync failed: {type(e).__name__}: {e}")
+        return []
+
+async def _upsert_memories(
+    memories: list[dict], *, user_id: str, child_id: Optional[str],
+    source_type: str, source_id: Optional[str],
+) -> None:
+    """Write by (user_id, child_id, category, key); only replace value/confidence
+    when the new read is at least as confident, so a low-confidence guess can't
+    clobber an already-confirmed fact."""
+    sb = _get_supabase()
+    if not sb or not memories:
+        return
+    now = _now()
+    for m in memories:
+        key = (m.get("key") or "").strip()
+        value = (m.get("value") or "").strip()
+        category = m.get("category") or "fact"
+        confidence = float(m.get("confidence") or 0.7)
+        if not key or not value:
+            continue
+        try:
+            q = sb.table("user_memories").select("id,confidence").eq("user_id", user_id).eq("category", category).eq("key", key)
+            q = q.is_("child_id", "null") if child_id is None else q.eq("child_id", child_id)
+            existing = await anyio.to_thread.run_sync(lambda: q.execute())
+            if existing.data:
+                row_id = existing.data[0]["id"]
+                old_confidence = existing.data[0].get("confidence") or 0
+                updates = {"source_id": source_id, "last_confirmed_at": now, "updated_at": now}
+                if confidence >= old_confidence:
+                    updates["value"] = value
+                    updates["confidence"] = confidence
+                await anyio.to_thread.run_sync(lambda: sb.table("user_memories").update(updates).eq("id", row_id).execute())
+            else:
+                row = {
+                    "id": str(uuid.uuid4()), "user_id": user_id, "child_id": child_id,
+                    "category": category, "key": key, "value": value, "confidence": confidence,
+                    "source_type": source_type, "source_id": source_id, "status": "active",
+                    "created_at": now, "updated_at": now, "last_confirmed_at": now,
+                }
+                await anyio.to_thread.run_sync(lambda: sb.table("user_memories").insert(row).execute())
+        except Exception as e:
+            print(f"[warn] _upsert_memories key={key}: {e}")
+
+async def _extract_and_upsert_memories(
+    history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
+) -> None:
+    """Runs as a fire-and-forget background task so memory extraction never adds
+    latency to the chat reply (or task update) the user is waiting on."""
+    try:
+        memories = await anyio.to_thread.run_sync(lambda: _extract_memories_sync(history))
+        await _upsert_memories(memories, user_id=user_id, child_id=None, source_type=source_type, source_id=source_id)
+    except Exception as e:
+        print(f"[warn] _extract_and_upsert_memories: {e}")
+
+async def _get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
+    """Fetch active long-term memories for the Context Builder, grouped by category
+    so the prompt reads as a stable profile block rather than a flat dump."""
+    if not user_id:
+        return ""
+    sb = _get_supabase()
+    if not sb:
+        return ""
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("user_memories").select("category,key,value")
+            .eq("user_id", user_id).eq("status", "active")
+            .order("updated_at", desc=True).limit(limit).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        print(f"[warn] _get_memory_context: {e}")
+        return ""
+    if not rows:
+        return ""
+    grouped: dict[str, list[str]] = {}
+    for r in rows:
+        label = _MEMORY_CATEGORY_LABELS.get(r["category"], "其他信息")
+        grouped.setdefault(label, []).append(r["value"])
+    return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())
 
 # Seed offsets per type so tip/news/product get visually distinct images
 _TYPE_SEED_OFFSET = {"tip": 0, "news": 100, "product": 200}
@@ -1290,7 +1466,10 @@ async def get_messages(session_id: str):
     return _messages.get(session_id, [])
 
 @api.post("/chat/sessions/{session_id}/messages")
-async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] = Depends(_opt_uid)):
+async def post_message(
+    session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
+    uid: Optional[str] = Depends(_opt_uid),
+):
     sb = _get_supabase()
 
     # Load session
@@ -1308,6 +1487,8 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
     if not session:
         raise HTTPException(404, "session not found")
 
+    owner_uid = uid or session.get("user_id")
+
     user_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "user",
@@ -1315,6 +1496,24 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
         "image_base64": body.image_base64,
         "quick_replies": [], "transition": None, "created_at": _now(),
     }
+
+    context_hints: dict = {}
+    if owner_uid and sb:
+        try:
+            ur = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select("parent_role,top_concerns").eq("id", owner_uid).maybe_single().execute()
+            )
+            if ur and ur.data:
+                context_hints = {"parent_role": ur.data.get("parent_role"), "top_concerns": ur.data.get("top_concerns")}
+        except Exception:
+            pass
+    await _save_normalized_input(
+        user_id=owner_uid, session_id=session_id,
+        source="card_chat" if session.get("source_card_id") else "chat",
+        raw_text=body.text or "", raw_image_base64=body.image_base64,
+        card_ref={"card_id": session.get("source_card_id")} if session.get("source_card_id") else None,
+        context_hints=context_hints,
+    )
 
     # Persist user message and load full history for AI
     msgs: list = []
@@ -1375,7 +1574,8 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
     if oai:
         gen_cards = await _db_get_gen_cards()
         ctx = _card_ctx(session.get("source_card_id") or "", gen_cards)
-        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx))
+        memory_ctx = await _get_memory_context(owner_uid)
+        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx))
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
         # Let NURI decide when to generate tasks via suggest_tasks flag
@@ -1423,6 +1623,9 @@ async def post_message(session_id: str, body: UserMessageIn, uid: Optional[str] 
     else:
         msgs.append(ai_msg)
 
+    if oai and owner_uid:
+        background_tasks.add_task(_extract_and_upsert_memories, msgs + [ai_msg], owner_uid, session_id)
+
     return {"user_message": user_msg, "ai_messages": [ai_msg]}
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
@@ -1446,7 +1649,10 @@ async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
 
 @api.patch("/tasks/{task_id}")
-async def update_task(task_id: str, body: TaskUpdate, uid: Optional[str] = Depends(_opt_uid)):
+async def update_task(
+    task_id: str, body: TaskUpdate, background_tasks: BackgroundTasks,
+    uid: Optional[str] = Depends(_opt_uid),
+):
     sb = _get_supabase()
     if sb and uid:
         try:
@@ -1472,7 +1678,14 @@ async def update_task(task_id: str, body: TaskUpdate, uid: Optional[str] = Depen
                 res = await anyio.to_thread.run_sync(
                     lambda: sb.table("tasks").update(updates).eq("id", task_id).execute()
                 )
-                return res.data[0] if res.data else {**t, **updates}
+                result = res.data[0] if res.data else {**t, **updates}
+                if oai and body.note:
+                    reflection_text = f"任务「{t.get('title', '')}」的反馈：{body.note}"
+                    background_tasks.add_task(
+                        _extract_and_upsert_memories,
+                        [{"role": "user", "text": reflection_text}], uid, task_id, "task_reflection",
+                    )
+                return result
             return t
         except HTTPException:
             raise
@@ -1566,22 +1779,6 @@ async def root():
     if index.is_file():
         return FileResponse(index)
     return {"msg": "Family Growth Radar backend", "endpoints": ["/api", "/health", "/index", "/ask", "/docs"]}
-
-@app.get("/{full_path:path}", include_in_schema=False)
-async def frontend_fallback(full_path: str):
-    if full_path.startswith("api/"):
-        raise HTTPException(404, "API route not found")
-    candidate = (FRONTEND_DIST / full_path).resolve()
-    try:
-        candidate.relative_to(FRONTEND_DIST.resolve())
-    except ValueError:
-        raise HTTPException(404, "Not found")
-    if candidate.is_file():
-        return FileResponse(candidate)
-    index = FRONTEND_DIST / "index.html"
-    if index.is_file():
-        return FileResponse(index)
-    raise HTTPException(404, "Frontend build not found")
 
 @app.get("/health")
 async def health():
@@ -1795,6 +1992,22 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
     sb.table("books").delete().eq("doc_id", doc_id).execute()
     return {"ok": True}
 
+@app.get("/admin/memories")
+async def admin_list_memories(
+    user_id: str, status: Optional[str] = None, category: Optional[str] = None,
+    limit: int = 50, _: None = Depends(_require_admin),
+):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    q = sb.table("user_memories").select("*").eq("user_id", user_id)
+    if status:
+        q = q.eq("status", status)
+    if category:
+        q = q.eq("category", category)
+    res = q.order("updated_at", desc=True).limit(limit).execute()
+    return {"memories": getattr(res, "data", None) or []}
+
 @app.get("/admin/settings")
 async def admin_get_settings(_: None = Depends(_require_admin)):
     return {"feed_gen_mode": await _db_get_feed_mode()}
@@ -1992,3 +2205,23 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
         print(f"[warn] daily_push update last_sent: {e}")
 
     return {"sent": sent, "failed": failed, "errors": errors[:20]}
+
+# ── Frontend SPA fallback ─────────────────────────────────────────────────────
+# Must stay the LAST route registered: Starlette matches routes in registration
+# order, and this GET catch-all would otherwise shadow every literal GET route
+# defined after it (that's what happened to /health and /admin/* before this).
+@app.get("/{full_path:path}", include_in_schema=False)
+async def frontend_fallback(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "API route not found")
+    candidate = (FRONTEND_DIST / full_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST.resolve())
+    except ValueError:
+        raise HTTPException(404, "Not found")
+    if candidate.is_file():
+        return FileResponse(candidate)
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    raise HTTPException(404, "Frontend build not found")
