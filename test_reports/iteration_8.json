@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 8 no-tab-bar + new homepage feature fully verified on 390x844 mobile viewport with test@example.com. All 8 requested flows pass with zero critical bugs. Verified: (1) NO bottom tab bar on any screen — 0 tab labels (首页/对话/任务/我的) present on /, /tasks, /chats, /profile, /task/{id}; (2) Homepage renders full spec — logo + '欢迎，老用户妈！' + 40px round avatar, 3-card horizontal carousel with all testIDs home-hero-cta-c1/c2/c3 present + 3 page-indicator dots, streak text '您已坚持打卡17天！加油！', task inner card shows real backend data '6 件任务正在进行' with first 2 pending tasks in '亲子：...' prefix format from taskTypeMeta; (3) 提醒 button fires toast '提醒功能即将上线' WITHOUT navigating away (URL unchanged); (4) 知识图书馆 opens 🌱 sheet '知识图书馆即将上线，敬请期待' → 我知道了 closes; 社区中心 opens 🌻 sheet → mask-tap closes; 我的家 card AND 记录当下 button both open 🏡 sheet with '我的家即将上线，敬请期待'; (5) 今日任务 card body → /tasks; tasks-back-btn → / with home-avatar count=1 (no duplicate); after 3 tasks↔home cycles home-avatar=1 and home-tasks-card=1 (router.back strict-mode dedup fix verified); (6) Nuri的家 card → /chats; nuri-back-btn → /; regression send '测试消息' → typing dots (nuri-typing) → AI reply text bubble rendered ~2s later; (7) home-avatar → /profile; profile-back-btn → /; profile-logout-btn still present; (8) 浏览详情 hero CTA click issues Linking.openURL (no crash, current tab URL unchanged). Only console warnings observed are pre-existing from iter 7 (props.pointerEvents deprecation in detail/[id].tsx & useNativeDriver JS-fallback in chats TypingDots).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "profile.tsx <Modal>", "issue": "profile.tsx:213-239 still uses React Native <Modal> for the wipe-all confirmation dialog. Per agent context note RN-web <Modal> is broken in this env and all other overlays were refactored to inline absolute Views. Not tested in this iteration (no failure observed since wipe path not exercised) but flagged for consistency. Reference: /app/frontend/app/(tabs)/profile.tsx:213"}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_8.json"],
+  "action_items": [
+    "Optional consistency cleanup: replace <Modal> in profile.tsx:213-239 (wipe confirmation) with inline absolute-position View + Pressable mask (same pattern as DevSheet / nuri upload sheet) to match rest-of-app pattern.",
+    "Pre-existing (iter 7 not yet addressed): migrate `pointerEvents` prop → `style={{pointerEvents:'none'}}` in detail/[id].tsx and gate useNativeDriver behind Platform.OS !== 'web' in chats.tsx TypingDots. Cosmetic warnings only."
+  ],
+  "critical_code_review_comments": [
+    "(tabs)/index.tsx line 285: 我的家 card wraps the 记录当下 <Pressable> INSIDE the outer 我的家 card <Pressable> — this creates nested pressables. Web treats it OK (inner captures the tap first) and behavior verified correct in this run, but on native iOS this could be non-deterministic depending on RN version. Consider using onStartShouldSetResponder or moving the button out of the card Pressable.",
+    "(tabs)/index.tsx line 134-135: `previewCount = pendingTasks.length ? pendingCount : 3` — when the mock DEFAULT_TASKS (2 items) is used because no real tasks are loaded yet, the count shows '3 件任务正在进行' but only 2 mock task names are listed. Cosmetic mismatch (2 vs 3) between count and previewed rows. Consider using `DEFAULT_TASKS.length` for the mock count.",
+    "(tabs)/index.tsx line 71-97: DevSheet has NO safe-area bottom padding; on iPhone-with-home-indicator devices the 我知道了 button will sit against the gesture bar. Suggest wrapping sheet with SafeAreaView edges={['bottom']} or adding paddingBottom: insets.bottom + 32.",
+    "(tabs)/index.tsx line 158: avatar first-char via `nickname.slice(0,1)` — for multi-byte emoji or surrogate-pair nicknames (rare here since Chinese) this could render half a code point. Consider Array.from(nickname)[0]."
+  ],
+  "updated_files": ["/app/test_reports/iteration_8.json (new)"],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% (all 8 requested flows verified)"},
+  "seed_data_creation": "None. Used existing test@example.com account (nickname='老用户妈', 6 pending tasks in DB from prior iterations). Sent 1 chat message '测试消息' during regression test — no persistent side-effects worth noting.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 8 = 无底部导航栏 + 全新主页 (spec-replica). (tabs)/_layout.tsx is now a plain Stack with headerShown:false. Homepage testIDs (all verified): home-avatar, home-hero-cta-c1/c2/c3, home-tasks-card, home-remind-btn, home-nuri-card, home-library-card, home-community-card, home-myhome-card, home-record-btn, dev-sheet, dev-sheet-close, toast. Task preview reads real /api/tasks; falls back to DEFAULT_TASKS + count=3 when empty. STREAK_DAYS=17 hardcoded mock. 3 dev-sheet placeholders (知识图书馆🌱, 社区中心🌻, 我的家🏡) share single DevSheet component. All back navigation uses router.back() — verified no duplicate home instances after multi-cycle navigation. profile.tsx still uses <Modal> for wipe confirm — outstanding cleanup (not tested here). REGRESSION-SAFE: iter 5-7 backend contracts unchanged. Cannot verify NEW-user register→4-step-onboarding→homepage because test@example.com is already onboarding_completed=true; main agent should self-verify with a fresh e2e_<ts>@x.com if that path was intentionally changed.",
+  "rca_of_issue": "N/A — no failures encountered."
+}

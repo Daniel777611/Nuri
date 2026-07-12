@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 3 (real JWT email+password auth) verified end-to-end. Backend: 14/14 new auth tests pass (register, duplicate-email-400, short-password-422, login success/wrong-pw-401/no-user-401, GET/PUT /api/auth/me with valid/missing/invalid token, soft-scoping for children+tasks+favorites). All 21 iter1/iter2 tests still pass (35/35 total). Frontend (390x844 mobile viewport): unauthenticated user landing on / correctly redirects to /register. 4-step wizard (account → name+role → city → concerns) advances with progress bar; submission creates account, stores token, navigates to /onboarding. Adding child on /onboarding creates child scoped to user_id and lands on /(tabs) showing personalized greeting '你好，小满的家长'. Login screen shows '邮箱或密码错误' on wrong password (testID login-error), and correct credentials navigate to tabs. ⚠ Found ONE critical bug: profile-logout-btn has no onPress handler — the `logout` function is defined in /app/frontend/app/(tabs)/profile.tsx (lines 60-63) but never wired to the Pressable on line 198. Tapping 'Log out' does nothing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "JWT_SECRET length", "issue": "PyJWT logs InsecureKeyLengthWarning because JWT_SECRET in /app/backend/.env is only 41 chars — but on the bytes-counted side falls below 32 bytes (note: prototype-jwt-secret-change-in-prod-7f8a2c9e4b1d is fine; warning seems to come from a different code path during dev reload). Non-blocking but should be ≥32 bytes for production."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Profile / Logout", "issue": "profile-logout-btn Pressable has NO onPress handler. The `logout` async function (clearToken + router.replace('/login')) is defined but never bound. Tapping 'Log out' is a no-op.", "testID": "profile-logout-btn", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "auth.py:require_user_id", "issue": "Dead code line 108: `uid = (await get_optional_user_id(creds)) if False else None` — `if False` branch is never taken. Harmless but should be removed. Reference: /app/backend/auth.py:108"},
+      {"component": "expo / expo-font / expo-router", "issue": "Expo SDK reports outdated patch versions: expo@54.0.34 expected ~54.0.35, expo-font@14.0.11 expected ~14.0.12, expo-router@6.0.23 expected ~6.0.24. Run `npx expo install --check`. (Carried from iter2.)"},
+      {"component": "Home toast Modal", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents'. Carried from iter2."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter3_auth.py",
+    "/app/backend/tests/test_parenting_api.py",
+    "/app/backend/tests/test_iter2_detail_fav.py",
+    "/app/test_reports/pytest/iter3_auth.xml"
+  ],
+  "action_items": [
+    "HIGH: Wire up profile-logout-btn — add `onPress={logout}` to the Pressable on /app/frontend/app/(tabs)/profile.tsx line 198. (Verified the `logout` function on lines 60-63 is already correct: clearToken + router.replace('/login').)",
+    "LOW: Remove dead `if False` line at /app/backend/auth.py:108.",
+    "OPTIONAL (carried from iter2): bump expo patch versions; replace deprecated `pointerEvents` prop with style.pointerEvents."
+  ],
+  "critical_code_review_comments": [
+    "/app/frontend/app/(tabs)/profile.tsx line 198: Pressable testID='profile-logout-btn' is missing onPress; will fail acceptance criterion 'profile-logout-btn clears token and redirects to /login'.",
+    "/app/backend/auth.py:108: dead branch (if False) — clean up.",
+    "Backend uses fallback `mongodb://localhost:27017` and `parenting_ai` in os.environ.get (server.py:46-47) — works but per CRITICAL RULES the fallback should be removed so missing config fails fast.",
+    "JWT_SECRET in repo (.env committed) — fine for prototype but flag for production."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter3_auth.py (new — 14 tests)",
+    "/app/memory/test_credentials.md (recorded iter3 credential pattern)"
+  ],
+  "success_rate": {"backend": "100% (35/35; new iter3: 14/14)", "frontend": "~92% — register wizard, onboarding, login (success+failure), index-redirect all pass; logout broken"},
+  "seed_data_creation": "Each backend test creates fresh users with TEST_ prefix on email; cleanup not performed (users persist). UI test created e2e_1782095272214@x.com / test1234 with child 小满. iter1/iter2 legacy children/favorites/tasks (no user_id) intentionally remain visible to all authed users (soft-scope).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 3 backend auth is solid (14/14 + 21/21 regression). One frontend bug to fix: add onPress={logout} to profile-logout-btn at /app/frontend/app/(tabs)/profile.tsx:198. After fix, retest: tap profile-logout-btn → should clear secure-store token → redirect to /login. Also verify privacy-wipe-btn → wipe-confirm-yes still clears token AND redirects to /register (already coded correctly in wipeAll at line 53-58, untested here because it would destroy iter1/iter2 legacy fixtures). Token key in secure storage is 'auth_token'. Backend testing URL: EXPO_PUBLIC_BACKEND_URL. Sample working creds: e2e_1782095272214@x.com / test1234.",
+  "rca_of_issue": "profile-logout-btn no-op: The Pressable on line 198 only has style and testID, no onPress. Repro: log in, navigate to 我的 tab, tap '登出' — nothing happens, user stays on profile. Mitigation: change `<Pressable style={styles.logoutRow} testID=\"profile-logout-btn\">` to `<Pressable style={styles.logoutRow} onPress={logout} testID=\"profile-logout-btn\">`."
+}

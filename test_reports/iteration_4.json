@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 4 (simplified register + 4-step onboarding) verified end-to-end. Backend: 10/10 new onboarding tests pass and full regression 45/45 (iter1+iter2+iter3+iter4). POST /api/auth/register accepts ONLY {email,password}, returns user with onboarding_completed=false and all new fields defaulted to empty. PUT /api/auth/me persists nickname, city, top_concerns (accepts arbitrary strings incl. 'other' + Chinese), concern_other, hobbies, help_preference, info_source, content_frequency, onboarding_completed; GET returns them; partial updates preserve untouched fields; unauthenticated PUT → 401. Legacy user test@example.com/test1234 still exists with onboarding_completed=false. Frontend (390x844 mobile): new user flow /register (email+password only) → /onboarding step1 works; 下一步 correctly disabled until name+birth entered; birth picker overlay opens, year 2023 + month 6 selectable, 确定 closes it, field label shows '2023 年 6 月'; step2 requires nickname+city; step3 chip '其他' toggles a free-text input (both share testID 'onboarding-concern-other' — minor collision, still works); 跳过 header button advances step3→step4 and completes from step4; on completion routed to /(tabs) and feed greeting shows '你好，小满的家长'. Legacy login flow: test@example.com (onboarding_completed=false with pre-set nickname/city) → /onboarding; step2 nickname/city PREFILLED from profile ('老用户妈' / '多伦多'); completing routes to tabs with '你好，小明的家长'; second login of same user goes directly to /(tabs) (no onboarding). Regression: tabs 对话/任务/我的 all navigate; profile-logout-btn now clears token and redirects to /login (iter3 bug fixed). No blocking issues found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/auth/me", "issue": "top_concerns is List[str] with no validation against a canonical set — arbitrary strings persist. Matches PRD ('arbitrary strings') but if canonicalization matters later, consider validating."},
+      {"endpoint": "JWT_SECRET / .env", "issue": "PyJWT still logs InsecureKeyLengthWarning ('HMAC key is 10 bytes long') — non-blocking, but implies JWT_SECRET is only 10 bytes. Should be ≥32 bytes for production."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Onboarding step3 concerns", "issue": "The '其他' chip Pressable and the revealed free-text TextInput BOTH use testID='onboarding-concern-other'. Currently harmless (functional works), but a test looking up that selector gets two elements. Recommend renaming the input to 'onboarding-concern-other-input'.", "testID": "onboarding-concern-other", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Onboarding step1 birth picker", "issues": ["Bottom-sheet overlay is rendered inside the screen (not a Modal) due to RN-web height bug — works and is documented in main-agent note. No user-visible issue."]}
+    ],
+    "react_native_issues": [
+      {"component": "Home toast / RN-web Modal", "issue": "Console warning 'props.pointerEvents is deprecated. Use style.pointerEvents' still emitted on register/onboarding pages. Carried from iter3. Reference: unknown component in Modal/View subtree."},
+      {"component": "expo / expo-font / expo-router", "issue": "Expo SDK reports outdated patch versions: expo@54.0.34 (expected ~54.0.35), expo-font@14.0.11 (expected ~14.0.12), expo-router@6.0.23 (expected ~6.0.24). Run `npx expo install --check`. Carried from iter3."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_onboarding.py",
+    "/app/backend/tests/test_iter3_auth.py",
+    "/app/backend/tests/test_iter2_detail_fav.py",
+    "/app/backend/tests/test_parenting_api.py",
+    "/app/test_reports/pytest/iter4_onboarding.xml"
+  ],
+  "action_items": [
+    "LOW: Rename the concern-other TextInput testID to 'onboarding-concern-other-input' (frontend/app/onboarding.tsx line ~290) to avoid selector collision with the chip Pressable.",
+    "OPTIONAL (carried): bump expo patch versions via `npx expo install --check`; replace deprecated `pointerEvents` prop with `style.pointerEvents`; lengthen JWT_SECRET to ≥32 bytes."
+  ],
+  "critical_code_review_comments": [
+    "onboarding.tsx: 'onboarding-concern-other' testID is used on both the chip Pressable (line 272 template: `onboarding-concern-${c.key}` where c.key='other') and the conditional TextInput (line 290). RN-web renders both as data-testid='onboarding-concern-other' — collision.",
+    "onboarding.tsx: birth picker uses in-screen absolute overlay (not Modal). This is documented and intentional to work around an RN-web Modal height bug — but if a user rotates or the screen scrolls in-flight the overlay may not cover new content. Current tests pass.",
+    "auth.py:new_user_doc still accepts top_concerns from UserRegister payload, but register endpoint is now expected to only take email+password. Legacy field is harmless (defaults to []) but the Pydantic model UserRegister still allows nickname/city/parent_role/top_concerns — clients could still send them. Consider tightening if strictness required by PRD."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter4_onboarding.py (new — 10 tests, 5 classes)"
+  ],
+  "success_rate": {"backend": "100% (45/45 total; iter4: 10/10)", "frontend": "100% for tested flows — new-user 4-step onboarding, legacy-user prefill onboarding, second-login direct-to-tabs, tabs regression, profile logout"},
+  "seed_data_creation": "Each iter4 test creates a fresh user with TEST_ prefixed email; not cleaned up (users persist). UI tests: e2e_1783185526289@x.com/test1234 (with child 小满 / 2023-06-01), and reused legacy test@example.com (reset to onboarding_completed=false pre-test, then re-completed with child 小明 / 2024-01-01). Legacy iter1/iter2 mock data remains visible via soft-scope.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All acceptance criteria verified for iter4 (simplified register + 4-step onboarding + prefill for legacy users). Test scripts at /app/backend/tests/test_iter4_onboarding.py. The one minor UI cleanup (rename the concern-other TextInput testID) is non-blocking. Legacy user test@example.com has been left with onboarding_completed=true, child 小明 (2024-01) attached, nickname=老用户妈, city=多伦多 — for subsequent iterations that need a fully onboarded seed user, this account is ready. If you need to re-run iter4 legacy prefill test, PUT /api/auth/me first with {onboarding_completed:false}. Backend URL: EXPO_PUBLIC_BACKEND_URL. Token key in secure storage: 'auth_token'.",
+  "rca_of_issue": "N/A — no failures. Only nitpick: testID collision for 'onboarding-concern-other' is a naming issue, not a functional bug. Repro: `page.query_selector_all('[data-testid=\"onboarding-concern-other\"]')` returns 2 elements when step3 has '其他' selected (one DIV=chip Pressable, one INPUT=free text). Recommended fix: rename the TextInput to testID='onboarding-concern-other-input'."
+}

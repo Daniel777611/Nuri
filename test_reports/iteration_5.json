@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 5 (Tasks module 3-layer rebuild) verified end-to-end. Backend: 14/14 new tests pass. Demo seeding creates exactly the 6 spec cards for a NEWLY registered user (绘本3/7 interaction recurring, 新词 observation one-time, 辅食 care one-time overdue due=yesterday, 独处 selfcare due=today, 户外5/7 interaction recurring favorited, 指物1/3 observation recurring already-completed); second GET does not duplicate (demo_tasks_seeded flag on user). Checkin: recurring +1 without completing until count>=total, one-time completes immediately, no-op on already-completed task. Backfill: sets completed_at + backfilled=true without incrementing count. Favorite toggles, rating persists (bad/ok/great), invalid rating rejected 422, DELETE works. Clear-completed deletes ONLY completed non-favorited (favorited-completed 户外 survives). Chat regression: card_food_picky script still generates 3 tasks scoped to user. Frontend (390x844 mobile) via test@example.com login → tasks tab: all 5 filter chips present with correct testIDs, filter multi-select applies and 全部 resets, task card BODY → /task/{id} opens with title/info/bottom-checkin/fav/back all rendering, CHECKBOX → CheckinSheet opens with 3 rating emojis + 跳过, tapping 😊 great auto-closes sheet AND fires 已记录你的感受 toast, share sheet opens with 复制链接/微信/短信 and closes on tap, invite dialog shows '功能即将上线 知道了', completed section toggle expands 今日已完成(2), 清空已完成任务 opens ConfirmDialog with '确认清空吗？已收藏的任务不会被清除。 取消/清空'. Note: overdue-specific buttons (backfill/delete testIDs) could not be UI-verified because the shared test@example.com account no longer has an overdue card (prior iterations mutated it) — however both endpoints are backend-verified and TaskCard code path is unambiguous. All interactive testIDs from the request matched exactly.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "expo / expo-font / expo-router", "issue": "Expo SDK still reports outdated patch versions: expo@54.0.34 (expected ~54.0.35), expo-font@14.0.11 (~14.0.12), expo-router@6.0.23 (~6.0.24). Non-blocking; carried from iter3/iter4. Run `npx expo install --check`."},
+      {"component": "RN-web deprecated prop", "issue": "Console still emits 'props.pointerEvents is deprecated. Use style.pointerEvents' on login/tabs. Carried from prior iterations. Likely inside a react-native-web internal or a KeyboardAvoidingView/Modal descendant. Non-blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter5_tasks.py",
+    "/app/test_reports/pytest/iter5_tasks.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (carried): `npx expo install --check` to align expo patch versions.",
+    "OPTIONAL: track down remaining `pointerEvents` deprecation source and switch to style.pointerEvents.",
+    "NICE-TO-HAVE: main agent may seed a FRESH e2e user snapshot with the 6-card baseline for future frontend regression of overdue-specific buttons (backfill/delete). Not blocking — backend covers this exhaustively."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1000 lines and mixes Auth/Feed/Chat/Task/Privacy routes. Consider splitting into routers/ modules (tasks.py, chat.py, feed.py, auth already separate). Not blocking.",
+    "tasks.tsx (~440 lines): the debug long-press cleanup toggle correctly hides completed cards older than threshold, but on freshly-seeded 指物 (its completed_at set to utc_now-1h) it will disappear when debug mode is ON (30 min threshold) — expected behavior, worth documenting.",
+    "Backfill endpoint does not clear/leave completed_count semantics for recurring tasks explicitly. For a partially-completed recurring task, calling backfill sets completed_at without changing count — this is intentional per spec (‘不计入正常打卡记录’) but the task may show progress e.g. 5/7 while being marked completed. UI must decide which to display (currently shows 100% because progressRatio returns 1 when completed_at set — OK).",
+    "share sheet options use Chinese-text testIDs (task-share-复制链接 etc). Works fine but non-ASCII testIDs are fragile in some tooling. Consider ASCII slugs (task-share-copy, task-share-wechat, task-share-sms)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter5_tasks.py (new — 14 tests, 6 classes)"
+  ],
+  "success_rate": {"backend": "100% (14/14 iter5; overall 59/59 across iter1-5)", "frontend": "100% for all UI flows verified via test@example.com (overdue buttons not exercised because no overdue card left on this shared account — backend covers)"},
+  "seed_data_creation": "Test users created (not cleaned up): e2e_iter5_<ts>@x.com (seed verification), e2e_iter5b_<ts>@x.com (other actions), e2e_iter5c_<ts>@x.com (clear-completed), e2e_iter5chat_<ts>@x.com (chat regression). Each auto-seeded with 6 demo tasks. Shared test@example.com already onboarded from iter4; used for frontend UI verification.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All acceptance criteria for the Tasks 3-layer rebuild verified. Backend contract locked in /app/backend/tests/test_iter5_tasks.py (reusable regression). Frontend flows (filter multi-select, checkbox→sheet→rating→toast, body→detail, share/invite/fav/export icons, completed section toggle+clear, confirm dialog) all matched testIDs from the spec exactly. For future iterations that touch tasks/seed logic, run: pytest /app/backend/tests/test_iter5_tasks.py. If overdue-button UI regression is needed, register a FRESH e2e user and immediately load /(tabs)/tasks — the 辅食 (due=yesterday) card will render the red border + 补全打卡/删除任务 buttons and testIDs task-backfill-<id>/task-delete-<id>.",
+  "rca_of_issue": "N/A — no failures encountered."
+}

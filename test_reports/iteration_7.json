@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 7 Nuri single-perpetual-conversation feature (backend + frontend). Backend: 16/16 pytest passing across TestConversationBase, TestOpenTopic (incl. idempotency), TestScriptFlow (reply1=Food Neophobia text, reply2=[status, 2条辅食打卡计划 text, 2 task_cards], reply3=shrimp answer, reply4=fallback rotation), TestAddTaskFromCard (task persisted in /api/tasks, second-add returns already=True, added flag persists in convo), TestOtherScripts (card_bilingual_school + card_baby_monitor both produce 2 task_cards on step 2), TestErrorCases. Frontend: full mobile UI on 390x844 via test@example.com — chats tab shows gradient bg + '< 我的对话' header + '和 Nuri 说说今天的育儿日常吧' hint + pill input + ⊕/🎤 icons; ⊕ opens '图片上传功能即将上线' sheet w/ 关闭; 🎤 shows '语音输入即将上线' toast; typing dots appear ~600ms after send; AI reply lands after ~1.8-2s; second send produces status text (no bubble) + text bubble + horizontal task cards row with 2 cards + 添加计划 buttons; tap 添加计划 → '已添加' gray + '成功添加至\"我的任务\"' line; added task appears in tasks tab (confirmed 亲子:和孩子做一件专注陪伴的事 at top); state persists across tab switches; detail/card_food_picky → 问问AI navigates to /chats with card-specific opener '18个月宝宝突然只吃3种食物' appearing exactly once (idempotent); regression home tab bar (首页/对话/任务/我的) intact. NO bugs found. NOTE: reply generation is MOCKED via deterministic CONVO_SCRIPTS (per spec).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "chats.tsx TypingDots (useNativeDriver)", "issue": "Console warning 'useNativeDriver is not supported (JS-based animation fallback)' on RN-web — harmless in Expo web preview, will be native on device. Reference: /app/frontend/app/(tabs)/chats.tsx:59-60"},
+      {"component": "detail/[id].tsx (props.pointerEvents)", "issue": "Deprecation warning 'props.pointerEvents is deprecated. Use style.pointerEvents' in toast Animated.View. Reference: /app/frontend/app/detail/[id].tsx:162"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter7_nuri_convo.py",
+    "/app/test_reports/pytest/iter7_nuri.xml"
+  ],
+  "action_items": [
+    "OPTIONAL cleanup: migrate `pointerEvents` prop to `style={{ pointerEvents: 'none' }}` in detail/[id].tsx:162 to silence RN 0.74+ deprecation warning. Cosmetic only.",
+    "OPTIONAL: The `toast` param in chats.tsx TypingDots uses `useNativeDriver: true` which triggers a JS-fallback warning on web. Consider `Platform.OS !== 'web'` gating like detail/[id].tsx already does."
+  ],
+  "critical_code_review_comments": [
+    "server.py CONVO_SCRIPTS carries a subtle timing-coupling: reply2 emits status + text + task_cards as a SINGLE POST response — the frontend chats.tsx :211-217 iterates ai_messages sequentially with a 1s pause after status. Any change to CONVO_SCRIPTS[*].replies[1] ordering will silently break the visual pacing. Consider annotating the intent in a comment.",
+    "server.py add_task_from_card :826-827 checks `if card.get('added')` and returns {ok:True, already:True} WITHOUT the task_id. The frontend chats.tsx addPlan simply sets `added:true` locally regardless, so this is fine — but any future consumer that reads `task_id` from the response will break silently.",
+    "conversation open-topic idempotency check compares `last.get('content') == opener_text` — works when opener is the LAST message, but if the user has already sent messages after the opener, tapping 问问AI again from the SAME card WILL append a second opener. In this run, calling detail→问问AI from card_food_picky produced exactly one opener since chats hadn't had that opener yet, but this is fragile. Consider scanning all AI messages instead of just the last.",
+    "chats.tsx :189 uses `id: 'local_${Date.now()}'` for user messages then does NOT reconcile with server-returned user_message.id — this is fine cosmetically but means the message list has one temporary user id and one real server id might diverge if any future feature keys off message ids for user messages.",
+    "chats.tsx line 39 reads Dimensions.get('window').width at module init — on RN-web this is captured once and won't re-flow if the viewport resizes. Acceptable for mobile but be aware for tablet responsive design."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter7_nuri_convo.py (new)",
+    "/app/test_reports/pytest/iter7_nuri.xml (new)",
+    "/app/test_reports/iteration_7.json (this file)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100% (all 9 requested flows verified)"},
+  "seed_data_creation": "Backend tests register fresh e2e_nuri_<ts>@x.com and e2e_scripts_<ts>@x.com users each run. Frontend test used test@example.com (per request) — conversation grew from empty by: 2 user messages ('你好','孩子16个月'), 1 add-plan (亲子:专注陪伴). Test also called detail→问问AI on card_food_picky, appending 1 opener. Total messages ≈ 6-8 in test@example.com convo after run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Nuri chat is single perpetual conversation; NO chat sessions endpoints (removed by design). testIDs: nuri-back-btn, nuri-input, nuri-send-btn, nuri-plus-btn, nuri-mic-btn, nuri-typing, nuri-status, nuri-task-card-{i}, nuri-add-plan-{i}, nuri-add-success, nuri-upload-sheet, nuri-lightbox. Timing: 300ms→typing, 1.5-1.8s→AI reply, ~1s pause after status message. Backend script keys: card_food_picky→tip_food, card_bilingual_school→news_bilingual, card_baby_monitor→product_monitor, card_sleep_routine→tip_food, card_screen_time→news_bilingual, card_thermometer→product_monitor, default→free. Each script has exactly 3 reply steps (except free=2), then CONVO_FALLBACKS rotates. Full backend regression file at /app/backend/tests/test_iter7_nuri_convo.py — reuse for future iterations.",
+  "rca_of_issue": "N/A — no failures encountered."
+}
