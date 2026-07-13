@@ -3012,6 +3012,29 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
 
     return session
 
+async def _load_owned_session(session_id: str, uid: Optional[str], sb) -> dict:
+    """Load a chat session and enforce ownership. Sessions with a user_id can only
+    be touched by that same user; legacy/anonymous sessions (user_id is null) stay
+    open, matching how they're created. 404 (not 403) on mismatch so a guessed
+    session_id can't be used to tell "not yours" apart from "doesn't exist"."""
+    session = None
+    if sb:
+        try:
+            sr = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions").select("*").eq("id", session_id).execute()
+            )
+            session = sr.data[0] if sr.data else None
+        except Exception as e:
+            print(f"[warn] _load_owned_session: {e}")
+    if not session:
+        session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "session not found")
+    owner = session.get("user_id")
+    if owner and owner != uid:
+        raise HTTPException(404, "session not found")
+    return session
+
 @api.get("/chat/sessions")
 async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
@@ -3035,10 +3058,9 @@ async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
 @api.delete("/chat/sessions/{session_id}", status_code=204)
 async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
+    await _load_owned_session(session_id, uid, sb)
     if sb:
         try:
-            # Delete by id only — user_id may be null for sessions created
-            # before auth was introduced, so we don't filter by user_id here.
             await anyio.to_thread.run_sync(
                 lambda: sb.table("chat_sessions").delete().eq("id", session_id).execute()
             )
@@ -3049,8 +3071,9 @@ async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)
     memstore.messages.pop(session_id, None)
 
 @api.get("/chat/sessions/{session_id}/messages")
-async def get_messages(session_id: str):
+async def get_messages(session_id: str, uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
+    await _load_owned_session(session_id, uid, sb)
     if sb:
         try:
             res = await anyio.to_thread.run_sync(
@@ -3078,22 +3101,7 @@ class _Turn(NamedTuple):
 
 async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
     sb = _get_supabase()
-
-    # Load session
-    session = None
-    if sb:
-        try:
-            sr = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions").select("*").eq("id", session_id).execute()
-            )
-            session = sr.data[0] if sr.data else None
-        except Exception as e:
-            print(f"[warn] post_message load session: {e}")
-    if not session:
-        session = memstore.sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "session not found")
-
+    session = await _load_owned_session(session_id, uid, sb)
     owner_uid = uid or session.get("user_id")
 
     user_msg = {
