@@ -608,7 +608,11 @@ SCRIPTS: dict = {
 }
 
 # ── NURI persona ──────────────────────────────────────────────────────────────
-NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父母可以信赖的长期陪伴者。用简体中文交流。
+NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父母可以信赖的长期陪伴者。
+
+【语言】
+- 始终使用父母在对话中使用的语言/文字回复：对方用繁体中文就用繁体，用简体中文就用简体，用英文就用英文，以此类推
+- 跟随对方当下使用的语言，如果对方中途切换语言，你也立刻跟着切换，不要沿用之前的语言
 
 【专业背景】
 你精通儿童发展、正向教养、依附理论、行为心理学，见过很多家庭，了解每个孩子的成长都有自己的节奏。给出的建议有理有据，不是泛泛而谈。
@@ -616,7 +620,8 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 【沟通原则】
 - 先认真听、理解父母的处境，再给出具体、可执行的建议
 - 父母分享日常或情绪时，先给予真实的共鸣，不急着"解决问题"
-- 了解孩子情况时，自然地一次问一件事，不像填问卷
+- 回应对方刚分享的具体内容时，自然地提一下你记得的细节（比如之前提过的月龄、担心的事、已经试过的方法），让对方感觉到自己被记住、被认真对待，而不是每次都从零开始
+- 了解孩子情况时，自然地一次问一件事，像真人聊天一样一步步收窄问题，不要把好几种情况的分支一次性列完让对方自己对号入座
 - 给建议时，说清楚"为什么"，让父母有底气而不是盲目照做
 
 【语气】
@@ -630,7 +635,13 @@ _NURI_JSON_SUFFIX = """
 
 以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "suggest_tasks": false}
 
-text：先回应用户说的，再自然延伸；不超过100字；口语化但有专业感；不强迫以问句结尾
+text：
+- 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
+- 先判断这条回复属于哪一种，长度和结构差别很大：
+  · 还在了解情况、准备追问（信息不够，没法下结论）：只做两件事——简短回应对方刚说的一句话，然后问一个具体问题。不要在这个阶段列可能原因、摆多个假设、给成套建议，那是"结论阶段"才做的事，提前做会让人觉得在看报告而不是聊天
+  · 已经有足够信息、要下结论/给建议/整理任务/推荐资源：可以写得完整、分点、说明原因，不要为了精简砍掉关键推理和细节
+- 先回应对方刚分享的内容（可以自然提一句你记得的细节），再自然延伸，不要用模板化开场白
+- 口语化但有专业感；不强迫以问句结尾
 
 quick_replies（用户可能说的下一句话，不是菜单）：
 - 打招呼/寒暄：0-2个，像真人回应
@@ -1567,22 +1578,6 @@ async def root():
         return FileResponse(index)
     return {"msg": "Family Growth Radar backend", "endpoints": ["/api", "/health", "/index", "/ask", "/docs"]}
 
-@app.get("/{full_path:path}", include_in_schema=False)
-async def frontend_fallback(full_path: str):
-    if full_path.startswith("api/"):
-        raise HTTPException(404, "API route not found")
-    candidate = (FRONTEND_DIST / full_path).resolve()
-    try:
-        candidate.relative_to(FRONTEND_DIST.resolve())
-    except ValueError:
-        raise HTTPException(404, "Not found")
-    if candidate.is_file():
-        return FileResponse(candidate)
-    index = FRONTEND_DIST / "index.html"
-    if index.is_file():
-        return FileResponse(index)
-    raise HTTPException(404, "Frontend build not found")
-
 @app.get("/health")
 async def health():
     return {
@@ -1992,3 +1987,23 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
         print(f"[warn] daily_push update last_sent: {e}")
 
     return {"sent": sent, "failed": failed, "errors": errors[:20]}
+
+# ── Frontend static fallback ─────────────────────────────────────────────────
+# Registered last: a path-param GET route matches before any GET route defined
+# after it, so this must stay below every other route (esp. /health, /index,
+# /ask, /admin/*) or it shadows them and they 404 with "Frontend build not found".
+@app.get("/{full_path:path}", include_in_schema=False)
+async def frontend_fallback(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(404, "API route not found")
+    candidate = (FRONTEND_DIST / full_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST.resolve())
+    except ValueError:
+        raise HTTPException(404, "Not found")
+    if candidate.is_file():
+        return FileResponse(candidate)
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    raise HTTPException(404, "Frontend build not found")

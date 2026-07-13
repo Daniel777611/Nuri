@@ -20,6 +20,10 @@ chroma_db/
 # data files (PDFs, etc.)
 data/
 
+# golden agent transcripts (real customer PII, never commit data — scripts are fine)
+backend/golden_agent/raw/
+backend/golden_agent/processed/
+
 # OS/editor
 .DS_Store
 Thumbs.db
