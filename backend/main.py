@@ -164,7 +164,16 @@ async def _req_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bear
     return uid
 
 def _to_public(doc: dict) -> dict:
-    return {k: doc[k] for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
+    base = {k: doc[k] for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
+    base.update({
+        "concern_other":        doc.get("concern_other", ""),
+        "hobbies":              doc.get("hobbies", ""),
+        "help_preference":      doc.get("help_preference", ""),
+        "info_source":          doc.get("info_source", ""),
+        "content_frequency":    doc.get("content_frequency", ""),
+        "onboarding_completed": bool(doc.get("onboarding_completed", False)),
+    })
+    return base
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -374,7 +383,10 @@ async def _db_save_fav(uid: str, card_id: str, collection_id: str) -> bool:
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 ParentRole = Literal["mom", "dad", "grandparent", "other"]
-Concern    = Literal["sleep", "food", "emotion", "health", "education"]
+Concern    = Literal[
+    "sleep", "food", "emotion", "development", "parenting",
+    "health", "childcare", "family", "unknown", "other",
+]
 
 class UserRegister(BaseModel):
     email: EmailStr
@@ -393,6 +405,12 @@ class UserUpdate(BaseModel):
     city:         Optional[str]          = None
     parent_role:  Optional[ParentRole]   = None
     top_concerns: Optional[List[Concern]] = None
+    concern_other:      Optional[str]  = None
+    hobbies:            Optional[str]  = None
+    help_preference:    Optional[str]  = None
+    info_source:        Optional[str]  = None
+    content_frequency:  Optional[str]  = None
+    onboarding_completed: Optional[bool] = None
 
 class ChildCreate(BaseModel):
     nickname:   str
@@ -2209,8 +2227,9 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
 
     sent, failed, errors = 0, 0, []
     _concern_kw = {
-        "sleep": "婴幼儿睡眠", "food": "宝宝辅食",
-        "emotion": "儿童情绪管理", "health": "儿童健康", "education": "早期教育",
+        "sleep": "婴幼儿睡眠", "food": "宝宝辅食", "emotion": "儿童情绪管理",
+        "development": "儿童发展", "parenting": "正向教养", "health": "儿童健康",
+        "childcare": "托育与幼儿园", "family": "家庭教养观念",
     }
 
     for user in users:
