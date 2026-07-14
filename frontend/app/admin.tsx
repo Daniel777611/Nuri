@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,9 +15,17 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, radius, spacing } from "@/src/theme";
 
 // ── Supabase client (anon key — safe to expose, RLS controls access) ──────────
+// Built lazily (not at module scope): expo-router's "single" web output requires
+// every route file eagerly to build the navigation tree, so a top-level
+// createClient() with a missing/empty URL would throw during app boot and blank
+// out the entire app, not just this admin screen.
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let _supabase: SupabaseClient | null = null;
+function getSupabase() {
+  if (!_supabase) _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return _supabase;
+}
 
 // ── Backend base URL (PDF indexing only) ──────────────────────────────────────
 // On Vercel: same-origin (empty string), /index is routed to serverless backend.
@@ -109,7 +117,7 @@ export default function AdminPage() {
   const loadBooks = useCallback(async () => {
     setLoading(true);
     setError("");
-    const { data, error: err } = await supabase
+    const { data, error: err } = await getSupabase()
       .from("books")
       .select("*")
       .order("created_at", { ascending: false });
@@ -120,10 +128,10 @@ export default function AdminPage() {
 
   // ── Discover unregistered doc_ids via RPC ─────────────────────────────────
   const loadUnregistered = useCallback(async () => {
-    const { data: chunksData } = await supabase.rpc("distinct_chunk_doc_ids", {
+    const { data: chunksData } = await getSupabase().rpc("distinct_chunk_doc_ids", {
       p_namespace: "pdf",
     });
-    const { data: booksData } = await supabase.from("books").select("doc_id");
+    const { data: booksData } = await getSupabase().from("books").select("doc_id");
     if (!chunksData) return;
     const registered = new Set((booksData || []).map((b: any) => b.doc_id));
     setUnregistered(
@@ -216,7 +224,7 @@ export default function AdminPage() {
   // ── Toggle enabled — direct Supabase write ────────────────────────────────
   const toggleBook = async (doc_id: string, enabled: boolean) => {
     setBooks((bs) => bs.map((b) => (b.doc_id === doc_id ? { ...b, enabled } : b)));
-    const { error: err } = await supabase
+    const { error: err } = await getSupabase()
       .from("books")
       .update({ enabled })
       .eq("doc_id", doc_id);
@@ -229,7 +237,7 @@ export default function AdminPage() {
   // ── Register unregistered doc — direct Supabase upsert ───────────────────
   const registerDoc = async (doc_id: string, chunk_count: number) => {
     const title = regTitles[doc_id]?.trim() || doc_id;
-    const { error: err } = await supabase
+    const { error: err } = await getSupabase()
       .from("books")
       .upsert({ doc_id, title, chunk_count, enabled: true }, { onConflict: "doc_id" });
     if (err) { setError(`注册失败: ${err.message}`); return; }
@@ -240,7 +248,7 @@ export default function AdminPage() {
   // ── Delete book — direct Supabase delete ──────────────────────────────────
   const deleteBook = async (doc_id: string) => {
     if (Platform.OS === "web" && !window.confirm("确定从书籍表中删除此条目？\n（rag_chunks 向量数据不受影响）")) return;
-    const { error: err } = await supabase.from("books").delete().eq("doc_id", doc_id);
+    const { error: err } = await getSupabase().from("books").delete().eq("doc_id", doc_id);
     if (err) { setError(`删除失败: ${err.message}`); return; }
     setBooks((bs) => bs.filter((b) => b.doc_id !== doc_id));
   };
@@ -262,13 +270,13 @@ export default function AdminPage() {
         // Step 1: Upload to Supabase Storage
         setIndexStatus("正在上传 PDF 到 Supabase Storage……");
         const storagePath = `${Date.now()}_${file.name.replace(/\s+/g, "_")}`;
-        const { error: uploadErr } = await supabase.storage
+        const { error: uploadErr } = await getSupabase().storage
           .from("pdfs")
           .upload(storagePath, file, { contentType: "application/pdf", upsert: true });
         if (uploadErr) throw new Error(`Storage 上传失败: ${uploadErr.message}`);
 
         // Step 2: Get public URL
-        const { data: urlData } = supabase.storage.from("pdfs").getPublicUrl(storagePath);
+        const { data: urlData } = getSupabase().storage.from("pdfs").getPublicUrl(storagePath);
         const pdfUrl = urlData.publicUrl;
 
         // Step 3: Ask backend to download & vectorize
@@ -282,11 +290,11 @@ export default function AdminPage() {
         const data = await res.json();
 
         // Step 4: Clean up storage (fire and forget)
-        supabase.storage.from("pdfs").remove([storagePath]);
+        getSupabase().storage.from("pdfs").remove([storagePath]);
 
         // Step 5: Register in books table
         setIndexStatus(`向量化完成 ${data.total_chunks} 个 chunk，正在注册……`);
-        await supabase.from("books").upsert(
+        await getSupabase().from("books").upsert(
           { doc_id: data.doc_id, title: newTitle.trim(), category: newCategory, chunk_count: data.total_chunks, enabled: true },
           { onConflict: "doc_id" }
         );
