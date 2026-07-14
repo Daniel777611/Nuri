@@ -106,6 +106,8 @@ export const api = {
     req(`/tasks${scope ? `?scope=${scope}` : ""}`),
   updateTask: (id: string, b: any) =>
     req(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
+  deleteTask: (id: string) => req(`/tasks/${id}`, { method: "DELETE" }),
+  clearCompletedTasks: () => req(`/tasks/clear-completed`, { method: "POST" }),
   taskInsights: () => req(`/tasks/insights`),
 
   // ── Privacy ───────────────────────────────────────────────────────────────
@@ -117,4 +119,5 @@ export const api = {
   register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),
   login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }),
   me: () => req(`/auth/me`),
+  updateMe: (b: any) => req(`/auth/me`, { method: "PUT", body: JSON.stringify(b) }),
 };

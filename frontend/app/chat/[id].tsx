@@ -15,9 +15,13 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
+
+// 对话背景渐变（复刻高保真设计稿的粉紫渐变）
+const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
 
 // ── Types & mock data ────────────────────────────────────────────────────────
 const MOCK_IMAGE_BASE64 =
@@ -139,88 +143,97 @@ export default function ChatDetail() {
   const goTasks = () => router.push("/(tabs)/tasks");
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <Stack.Screen options={{ headerShown: false }} />
+    <LinearGradient
+      colors={GRADIENT}
+      start={{ x: 1, y: 0 }}
+      end={{ x: 0, y: 1 }}
+      style={{ flex: 1 }}
+    >
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <Stack.Screen options={{ headerShown: false }} />
 
-      <View style={styles.header}>
-        <Pressable
-          onPress={() => router.back()}
-          style={styles.backBtn}
-          testID="chat-back-btn"
-        >
-          <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
-        </Pressable>
-        <View style={styles.headerCenter}>
-          <NuriAvatar size={36} />
-          <View style={{ marginLeft: spacing.sm }}>
-            <Text style={styles.headerName}>NURI</Text>
-            <View style={styles.onlineRow}>
-              <View style={styles.onlineDot} />
-              <Text style={styles.headerSub}>育儿助手 · 在线</Text>
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => router.back()}
+            style={styles.backBtn}
+            testID="chat-back-btn"
+          >
+            <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
+          </Pressable>
+          <View style={styles.headerCenter}>
+            <NuriAvatar size={36} />
+            <View style={{ marginLeft: spacing.sm }}>
+              <Text style={styles.headerName}>NURI</Text>
+              <View style={styles.onlineRow}>
+                <View style={styles.onlineDot} />
+                <Text style={styles.headerSub}>育儿助手 · 在线</Text>
+              </View>
             </View>
           </View>
+          <View style={{ width: 36 }} />
         </View>
-        <View style={{ width: 36 }} />
-      </View>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          ref={scrollRef}
-          contentContainerStyle={styles.scroll}
-          testID="chat-scroll"
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={{ flex: 1 }}
         >
-          {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              msg={m}
-              onQuick={(q) => send(q)}
-              onTasks={goTasks}
-            />
-          ))}
-          {typing ? <TypingDots /> : null}
-        </ScrollView>
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={styles.scroll}
+            testID="chat-scroll"
+          >
+            {messages.map((m) => (
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                onQuick={(q) => send(q)}
+                onTasks={goTasks}
+              />
+            ))}
+            {typing ? <TypingDots /> : null}
+          </ScrollView>
 
-        <View style={styles.composer} testID="chat-composer">
-          <Pressable
-            onPress={sendImage}
-            style={styles.iconBtn}
-            disabled={sending}
-            testID="chat-image-btn"
-          >
-            <Ionicons name="camera-outline" size={22} color={colors.brand} />
-          </Pressable>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder="说点什么..."
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-            multiline
-            returnKeyType="send"
-            blurOnSubmit={false}
-            onSubmitEditing={() => { if (input.trim() && !sending) send(); }}
-            onKeyPress={(e: any) => {
-              if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
-                e.preventDefault?.();
-                if (input.trim() && !sending) send();
-              }
-            }}
-            testID="chat-input"
-          />
-          <Pressable
-            onPress={() => send()}
-            disabled={sending || !input.trim()}
-            style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
-            testID="chat-send-btn"
-          >
-            <Ionicons name="arrow-up" size={18} color="#fff" />
-          </Pressable>
-        </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+          <View style={styles.composer} testID="chat-composer">
+            <View style={styles.inputPill}>
+              <Pressable
+                onPress={sendImage}
+                style={styles.iconBtn}
+                disabled={sending}
+                testID="chat-image-btn"
+              >
+                <Ionicons name="camera-outline" size={22} color={colors.brand} />
+              </Pressable>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder="说点什么..."
+                placeholderTextColor={colors.muted}
+                style={styles.input}
+                multiline
+                returnKeyType="send"
+                blurOnSubmit={false}
+                onSubmitEditing={() => { if (input.trim() && !sending) send(); }}
+                onKeyPress={(e: any) => {
+                  if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
+                    e.preventDefault?.();
+                    if (input.trim() && !sending) send();
+                  }
+                }}
+                testID="chat-input"
+              />
+              <Pressable
+                onPress={() => send()}
+                disabled={sending || !input.trim()}
+                style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
+                testID="chat-send-btn"
+              >
+                <Ionicons name="arrow-up" size={18} color="#fff" />
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
@@ -403,16 +416,13 @@ function TypingDots() {
 
 // ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.surface },
+  safe: { flex: 1, backgroundColor: "transparent" },
 
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    borderBottomColor: colors.divider,
-    borderBottomWidth: 1,
-    backgroundColor: "#fff",
   },
   backBtn: {
     width: 36,
@@ -579,14 +589,17 @@ const styles = StyleSheet.create({
   hospitalMeta: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
 
   composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
+  },
+  inputPill: {
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: "#fff",
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
+    borderRadius: radius.pill,
+    paddingLeft: 6,
+    paddingRight: 6,
     gap: spacing.sm,
   },
   iconBtn: {
@@ -601,10 +614,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 38,
     maxHeight: 110,
-    paddingHorizontal: spacing.md,
     paddingVertical: Platform.OS === "ios" ? 10 : 6,
-    backgroundColor: colors.surfaceTertiary,
-    borderRadius: radius.pill,
     fontSize: type.base,
     color: colors.onSurface,
   },

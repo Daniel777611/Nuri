@@ -33,7 +33,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 """
 
 import io, json, os, uuid, hashlib, random
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -433,6 +433,8 @@ class TaskUpdate(BaseModel):
     done: Optional[bool] = None
     mood: Optional[str]  = None
     note: Optional[str]  = None
+    is_favorited: Optional[bool] = None
+    backfilled: Optional[bool] = None
 
 class PrivacySettings(BaseModel):
     allow_history_training:   bool = True
@@ -547,10 +549,53 @@ CARD_TO_SCRIPT = {
 }
 
 CARD_TASKS = {
-    "tip_food":       [{"title":"今天晚餐桌上放一样新食物（不强迫吃）","scope":"today"},{"title":"记录宝宝今日实际进食的种类","scope":"today"},{"title":"本周连续7天，每天尝试一次新食物","scope":"week","progress_total":7}],
-    "news_bilingual": [{"title":"今晚和伴侣聊10分钟，列出你们最在意的3件事","scope":"today"},{"title":"联系1位已经送孩子去双语学校的朋友","scope":"today"},{"title":"本周收集3所候选学校的真实家长反馈","scope":"week","progress_total":7},{"title":"本周参观至少1所学校","scope":"week","progress_total":7},{"title":"周末和伴侣坐下来做一次结构化讨论","scope":"today"}],
-    "product_monitor":[{"title":"今天对比 Nanit / Owlet / VTech 的隐私政策","scope":"today"},{"title":"本周内完成购买决策","scope":"week","progress_total":7}],
-    "free":           [{"title":"今天选一个小目标坚持10分钟","scope":"today"},{"title":"本周和孩子做一件\"专注陪伴\"的事","scope":"week","progress_total":7},{"title":"睡前花5分钟回顾今天3件好事","scope":"today"}],
+    "tip_food": [
+        {"title": "今天晚餐桌上放一样新食物（不强迫吃）", "scope": "today", "task_type": "care",
+         "description": "食物新恐惧期很正常，重点是让孩子看到、接触，不强求吃下去。",
+         "steps": ["挑一样孩子没吃过的食物", "和大人的餐食一起摆盘，不单独强调", "孩子不吃也不催促，收走即可"]},
+        {"title": "记录宝宝今日实际进食的种类", "scope": "today", "task_type": "observation",
+         "description": "先摸清孩子真实的饮食范围，再决定要不要调整。",
+         "steps": ["三餐+加餐都记一下吃了什么", "标注是主动吃还是被喂"]},
+        {"title": "本周连续7天，每天尝试一次新食物", "scope": "week", "progress_total": 7, "task_type": "care",
+         "description": "重复暴露是克服挑食最有效的办法之一，通常需要8-10次接触。",
+         "steps": ["每天固定一餐加入1样新食物", "记录孩子的反应（尝了/拒绝/爱吃）"]},
+    ],
+    "news_bilingual": [
+        {"title": "今晚和伴侣聊10分钟，列出你们最在意的3件事", "scope": "today", "task_type": "interaction",
+         "description": "教育选择是家庭决定，先对齐彼此最在意的点，避免后面反复拉扯。",
+         "steps": ["各自写下最在意的3件事", "对照看哪些一致、哪些有分歧"]},
+        {"title": "联系1位已经送孩子去双语学校的朋友", "scope": "today", "task_type": "observation",
+         "description": "真实家长的反馈比宣传资料更可靠。",
+         "steps": ["列出认识的相关家长", "发消息约个10分钟电话"]},
+        {"title": "本周收集3所候选学校的真实家长反馈", "scope": "week", "progress_total": 7, "task_type": "observation",
+         "description": "多方交叉验证，避免只看到学校一面之词。",
+         "steps": ["每所学校至少找1位在读家长", "问入学后最意外的一点是什么"]},
+        {"title": "本周参观至少1所学校", "scope": "week", "progress_total": 7, "task_type": "observation",
+         "description": "实地看比资料更能感受到氛围是否合适。",
+         "steps": ["预约开放日或参观时段", "留意课堂氛围和师生互动"]},
+        {"title": "周末和伴侣坐下来做一次结构化讨论", "scope": "today", "task_type": "interaction",
+         "description": "把这周收集到的信息汇总，做一次有结论的讨论，而不是零散聊。",
+         "steps": ["带着收集到的反馈和参观笔记", "列出仍需要确认的问题"]},
+    ],
+    "product_monitor": [
+        {"title": "今天对比 Nanit / Owlet / VTech 的隐私政策", "scope": "today", "task_type": "observation",
+         "description": "婴儿监视器涉及家庭隐私数据，选购前先看清数据怎么存、谁能访问。",
+         "steps": ["查每家的数据存储位置和加密方式", "看是否支持本地存储、无需云端"]},
+        {"title": "本周内完成购买决策", "scope": "week", "progress_total": 7, "task_type": "care",
+         "description": "给自己一个明确期限，避免选择困难拖太久。",
+         "steps": ["列出3个候选的优先级", "对照预算和隐私顾虑做最终决定"]},
+    ],
+    "free": [
+        {"title": "今天选一个小目标坚持10分钟", "scope": "today", "task_type": "selfcare",
+         "description": "小而具体的目标更容易真正完成。",
+         "steps": ["挑一件今天想做的小事", "设10分钟专注去做"]},
+        {"title": "本周和孩子做一件\"专注陪伴\"的事", "scope": "week", "progress_total": 7, "task_type": "interaction",
+         "description": "放下手机，全情投入的陪伴比时长更重要。",
+         "steps": ["每天挑10-15分钟不被打断的时间", "让孩子主导玩什么"]},
+        {"title": "睡前花5分钟回顾今天3件好事", "scope": "today", "task_type": "selfcare",
+         "description": "简单的感恩记录有助于缓解育儿疲惫感。",
+         "steps": ["睡前想3件今天顺利/开心的小事", "写下来或者说给伴侣听"]},
+    ],
 }
 
 # ── Daily email push helpers ──────────────────────────────────────────────────
@@ -974,9 +1019,13 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
         model="gpt-5.5",
         messages=[{"role": "user", "content":
             f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
-            '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week"}]}\n'
+            '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
+            '"task_type": "interaction|observation|care|selfcare", "description": "一句话任务说明", '
+            '"steps": ["具体做法1", "具体做法2"]}]}\n'
             "- 任务必须针对对话中的具体情况，不要泛泛的通用任务\n"
             "- today=今天完成，week=本周持续追踪\n"
+            "- task_type：interaction=亲子互动，observation=发展观察，care=照顾陪伴，selfcare=自我照顾\n"
+            "- steps 给1-3条具体做法，不是套话\n"
             "- 如果对话信息不足，返回空数组"
         }],
         response_format={
@@ -994,8 +1043,14 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
                                 "properties": {
                                     "title": {"type": "string"},
                                     "scope": {"type": "string", "enum": ["today", "week"]},
+                                    "task_type": {
+                                        "type": "string",
+                                        "enum": ["interaction", "observation", "care", "selfcare"],
+                                    },
+                                    "description": {"type": "string"},
+                                    "steps": {"type": "array", "items": {"type": "string"}},
                                 },
-                                "required": ["title", "scope"],
+                                "required": ["title", "scope", "task_type", "description", "steps"],
                                 "additionalProperties": False,
                             },
                         }
@@ -1017,11 +1072,18 @@ async def _gen_tasks(task_list: list[dict], uid: Optional[str]):
     sb = _get_supabase()
     for t in task_list:
         scope = t.get("scope", "today")
+        due = date.today() + timedelta(days=0 if scope == "today" else 7)
         task = {
             "id": str(uuid.uuid4()), "title": t["title"], "scope": scope,
             "source": src, "done": False, "progress_done": 0,
             "progress_total": 7 if scope == "week" else 1,
             "reflection": None, "created_at": _now(), "completed_at": None,
+            "task_type": t.get("task_type") or "interaction",
+            "description": t.get("description") or "",
+            "steps": t.get("steps") or [],
+            "due_date": due.isoformat(),
+            "is_favorited": False,
+            "backfilled": False,
         }
         if uid:
             task["user_id"] = uid
@@ -1609,8 +1671,7 @@ async def post_message(
             ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
             new_step = step
         if transition and transition.get("kind") == "tasks_generated" and not already_generated:
-            fallback_tasks = [{"title": t["title"], "scope": t["scope"]} for t in CARD_TASKS.get(script_key, CARD_TASKS["free"])]
-            await _gen_tasks(fallback_tasks, uid)
+            await _gen_tasks(CARD_TASKS.get(script_key, CARD_TASKS["free"]), uid)
         if sb:
             try:
                 await anyio.to_thread.run_sync(
@@ -1685,6 +1746,10 @@ async def update_task(
                     "mood": body.mood or prev.get("mood"),
                     "note": body.note or prev.get("note", ""),
                 }
+            if body.is_favorited is not None:
+                updates["is_favorited"] = body.is_favorited
+            if body.backfilled is not None:
+                updates["backfilled"] = body.backfilled
             if updates:
                 res = await anyio.to_thread.run_sync(
                     lambda: sb.table("tasks").update(updates).eq("id", task_id).execute()
@@ -1716,8 +1781,47 @@ async def update_task(
         if body.mood is not None or body.note is not None:
             prev = t.get("reflection") or {}
             t["reflection"] = {"mood": body.mood or prev.get("mood"), "note": body.note or prev.get("note", "")}
+        if body.is_favorited is not None:
+            t["is_favorited"] = body.is_favorited
+        if body.backfilled is not None:
+            t["backfilled"] = body.backfilled
         return t
     raise HTTPException(404, "task not found")
+
+@api.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: str, uid: Optional[str] = Depends(_opt_uid)):
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("tasks").delete().eq("id", task_id).eq("user_id", uid).execute()
+            )
+            return
+        except Exception as e:
+            print(f"[warn] delete_task error: {e}")
+    global _tasks
+    _tasks = [t for t in _tasks if t["id"] != task_id]
+
+@api.post("/tasks/clear-completed")
+async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
+    """Delete completed, non-favorited tasks. Favorited tasks are kept."""
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("tasks").delete()
+                .eq("user_id", uid).eq("done", True).eq("is_favorited", False)
+                .execute()
+            )
+            return {"ok": True}
+        except Exception as e:
+            print(f"[warn] clear_completed_tasks error: {e}")
+    global _tasks
+    _tasks = [
+        t for t in _tasks
+        if not (t.get("user_id", uid) == uid and t.get("done") and not t.get("is_favorited"))
+    ]
+    return {"ok": True}
 
 @api.get("/tasks/insights")
 async def task_insights(uid: Optional[str] = Depends(_opt_uid)):

@@ -11,6 +11,7 @@ import {
   taskTypeMeta,
   formatSlashDate,
   progressRatio,
+  toTaskItem,
 } from "@/src/taskMeta";
 import CheckinSheet from "@/src/components/CheckinSheet";
 import Toast from "@/src/components/Toast";
@@ -24,7 +25,14 @@ export default function TaskDetail() {
 
   useFocusEffect(
     useCallback(() => {
-      api.getTask(id).then(setTask).catch(() => {});
+      // No single-task fetch on the backend — list + find by id.
+      api
+        .listTasks()
+        .then((all: any[]) => {
+          const raw = all.find((t) => t.id === id);
+          setTask(raw ? toTaskItem(raw) : null);
+        })
+        .catch(() => {});
     }, [id])
   );
 
@@ -44,15 +52,15 @@ export default function TaskDetail() {
 
   const checkin = async () => {
     if (completed) return;
-    const updated = await api.checkinTask(task.id);
-    setTask(updated);
+    const updated = await api.updateTask(task.id, { done: true });
+    setTask(toTaskItem(updated));
     setSheetOpen(true);
   };
 
   const onSheetDone = (rating: string | null) => {
     setSheetOpen(false);
     if (rating && task) {
-      api.rateTask(task.id, rating);
+      api.updateTask(task.id, { mood: rating });
       setToastMsg("已记录你的感受 ✓");
       setTimeout(() => setToastMsg(null), 2000);
     }

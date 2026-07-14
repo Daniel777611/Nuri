@@ -1,868 +1,534 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
   Pressable,
-  ActivityIndicator,
-  Modal,
-  TextInput,
-  Animated,
-  KeyboardAvoidingView,
-  Platform,
+  Image,
+  Dimensions,
+  Linking,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
-import { colors, radius, spacing, type } from "@/src/theme";
+import { taskTypeMeta } from "@/src/taskMeta";
+import Toast from "@/src/components/Toast";
 
-// ── Types ────────────────────────────────────────────────────────────────────
-type FeedCard = {
-  id: string;
-  type: "tip" | "news" | "product";
-  type_label: string;
-  title: string;
-  summary: string;
-  image_url?: string;
+// 主页配色（复刻高保真设计稿）
+const C = {
+  bg: "#EEF0F8",
+  text: "#1A1A2E",
+  sub: "#5A5A7A",
+  cardFrom: "#4B6FE8",
+  cardTo: "#7B5CE7",
+  taskBg: "#DCE8F8",
+  nuriFrom: "#F5A855",
+  nuriTo: "#F07A9A",
+  btn: "#2D2080",
+  taskPreview: "#3A3A5A",
+  streak: "#5A7AC8",
 };
 
-type Collection = {
-  id: string;
+const SCREEN_W = Dimensions.get("window").width;
+const PAGE_W = Math.min(SCREEN_W, 430);
+const CAROUSEL_W = PAGE_W - 32;
+
+// 内容推荐轮播 mock（浏览详情跳外部链接）
+const CAROUSEL = [
+  {
+    id: "c1",
+    source: "来自Amber的育儿播客分享",
+    title: "如何培养孩子的\n情绪管理能力？",
+    sub: "探索属于你的家庭策略",
+    url: "https://www.youtube.com",
+  },
+  {
+    id: "c2",
+    source: "来自丁香妈妈的科普文章",
+    title: "18个月宝宝挑食怎么办？\n专家这样说",
+    sub: "食物新恐惧期的应对指南",
+    url: "https://www.dxy.cn",
+  },
+  {
+    id: "c3",
+    source: "来自北美儿科医生播客",
+    title: "睡眠训练到底\n有没有用？",
+    sub: "聊聊哭声免疫法的争议",
+    url: "https://www.youtube.com",
+  },
+];
+
+// 坚持打卡天数（mock 默认 17）
+const STREAK_DAYS = 17;
+
+// 任务预览默认 mock（任务数据为空时展示）
+const DEFAULT_TASKS = ["自我：今天给自己留30分钟独处", "亲子：每日户外活动20分钟"];
+
+// 待开发占位 bottom sheet（统一规范）
+function DevSheet({
+  visible,
+  emoji,
+  name,
+  onClose,
+}: {
+  visible: boolean;
+  emoji: string;
   name: string;
-  created_at: string;
-};
-
-// ── Constants ────────────────────────────────────────────────────────────────
-const MAX_COLLECTIONS = 12;
-
-const ICON_BY_TYPE: Record<FeedCard["type"], any> = {
-  tip: "bulb-outline",
-  news: "flame-outline",
-  product: "pricetag-outline",
-};
-
-const TAG_BG: Record<FeedCard["type"], string> = {
-  tip: "#EEF6F1",
-  news: "#FFF1EE",
-  product: "#FEF9E7",
-};
-const TAG_FG: Record<FeedCard["type"], string> = {
-  tip: "#2F7A4B",
-  news: colors.onBrandTertiary,
-  product: "#8A6D1B",
-};
+  onClose: () => void;
+}) {
+  if (!visible) return null;
+  return (
+    <View style={styles.sheetRoot}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      <View style={styles.sheet} testID="dev-sheet">
+        <View style={styles.sheetHandle} />
+        <Text style={styles.sheetEmoji}>{emoji}</Text>
+        <Text style={styles.sheetTitle}>{name}即将上线，敬请期待</Text>
+        <Pressable onPress={onClose} style={styles.sheetBtn} testID="dev-sheet-close">
+          <Text style={styles.sheetBtnText}>我知道了</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 export default function Home() {
   const router = useRouter();
+  const [nickname, setNickname] = useState("Momo妈妈");
+  const [pendingTasks, setPendingTasks] = useState<string[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Feed loading ─────────────────────────────────────────────────────────
-  const [cards, setCards] = useState<FeedCard[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [child, setChild] = useState<any>(null);
-
-  const load = useCallback(async (shuffle = false) => {
-    const [feed, children] = await Promise.all([
-      api.getFeed(shuffle),
-      api.listChildren(),
-    ]);
-    setCards(feed);
-    setChild(children[0] || null);
-    feed.forEach((c: FeedCard) =>
-      api.trackEvent("impression", { card_id: c.id, card_type: c.type }).catch(() => {})
-    );
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        setLoadError(false);
-        await load(false);
-      } catch {
-        setLoadError(true);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [load]);
-
-  const retryLoad = () => {
-    setLoading(true);
-    setLoadError(false);
-    (async () => {
-      try {
-        await load(false);
-      } catch {
-        setLoadError(true);
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const showToast = (m: string) => {
+    setToastMsg(m);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await load(true);
-    setRefreshing(false);
-  };
+  useFocusEffect(
+    useCallback(() => {
+      api
+        .me()
+        .then((me: any) => me?.nickname && setNickname(me.nickname))
+        .catch(() => {});
+      api
+        .listTasks()
+        .then((ts: any[]) => {
+          const pending = ts.filter((t) => !t.completed_at);
+          setPendingCount(pending.length);
+          setPendingTasks(
+            pending.slice(0, 2).map((t) => `${taskTypeMeta(t.task_type).prefix}：${t.title}`)
+          );
+        })
+        .catch(() => {});
+    }, [])
+  );
 
-  const onCardTap = (card: FeedCard) => {
-    api
-      .trackEvent("click_card", { card_id: card.id, card_type: card.type })
-      .catch(() => {});
-    router.push(`/detail/${card.id}`);
-  };
+  const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
+  const previewCount = pendingTasks.length ? pendingCount : 3;
 
-  // ── "Pull past the end" hold-to-generate-more gesture ────────────────────
-  const topTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasScrolledAway = useRef(false);
-  const topProgress = useRef(new Animated.Value(0)).current;
-  const [topHolding, setTopHolding] = useState(false);
-  const [generatingAll, setGeneratingAll] = useState(false);
-
-  const cancelTopHold = () => {
-    if (topTimer.current) { clearTimeout(topTimer.current); topTimer.current = null; }
-    topProgress.stopAnimation();
-    topProgress.setValue(0);
-    setTopHolding(false);
-  };
-
-  const doGenerateAll = async () => {
-    setGeneratingAll(true);
-    try {
-      const newCards = await api.generateCards({ count: 3 });
-      if (newCards?.length > 0) {
-        setCards(prev => [...prev, ...newCards]);
-        showToast(`已生成 ${newCards.length} 张新内容`);
-      }
-    } catch {
-      showToast("生成失败，稍后再试");
-    } finally {
-      setGeneratingAll(false);
-    }
-  };
-
-  const onScroll = (e: any) => {
-    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    const y = contentOffset.y;
-    const atBottom = y + layoutMeasurement.height >= contentSize.height - 20;
-    api.trackEvent("scroll_depth", { value: Math.floor(y / 220) }).catch(() => {});
-    if (y > 50) hasScrolledAway.current = true;
-    if (!atBottom) {
-      cancelTopHold();
-    } else if (atBottom && hasScrolledAway.current && !topTimer.current && !generatingAll) {
-      setTopHolding(true);
-      topProgress.setValue(0);
-      Animated.timing(topProgress, { toValue: 1, duration: 2000, useNativeDriver: false }).start();
-      topTimer.current = setTimeout(() => {
-        topTimer.current = null;
-        hasScrolledAway.current = false;
-        setTopHolding(false);
-        topProgress.setValue(0);
-        doGenerateAll();
-      }, 2000);
-    }
-  };
-
-  // ── Favorites & collections ───────────────────────────────────────────────
-  const [favIds, setFavIds] = useState<Set<string>>(new Set());
-  // card_id → collection_id (which collection that card is saved in)
-  const [cardCollMap, setCardCollMap] = useState<Record<string, string>>({});
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [pickerCard, setPickerCard] = useState<FeedCard | null>(null);
-  const [newCollName, setNewCollName] = useState("");
-  const [creatingColl, setCreatingColl] = useState(false);
-  const [collSaving, setCollSaving] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const [shareCardId, setShareCardId] = useState<string | null>(null);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
-
-  // ── Search ────────────────────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<FeedCard[] | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const onSearchChange = (text: string) => {
-    setSearchQuery(text);
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    if (!text.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    searchTimer.current = setTimeout(async () => {
-      setSearchLoading(true);
-      try {
-        const results = await api.searchCards(text.trim());
-        setSearchResults(results);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 400);
-  };
-
-  useEffect(() => {
-    Promise.all([api.listFavorites(), api.listCollections()]).then(([favs, cols]) => {
-      setFavIds(new Set(favs.map((x: any) => x.id)));
-      const m: Record<string, string> = {};
-      favs.forEach((x: any) => { if (x.collection_id) m[x.id] = x.collection_id; });
-      setCardCollMap(m);
-      setCollections(cols);
-    });
-  }, []);
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 1500);
-  };
-
-  const openFavPicker = (card: FeedCard) => {
-    setNewCollName("");
-    setCreatingColl(false);
-    setPickerCard(card);
-  };
-
-  const closeFavPicker = () => {
-    setPickerCard(null);
-    setNewCollName("");
-    setCreatingColl(false);
-  };
-
-  const saveToCollection = async (card: FeedCard, col: Collection) => {
-    setCollSaving(true);
-    try {
-      const r = await api.saveFavorite(card.id, col.id);
-      setFavIds((p) => {
-        const n = new Set(p);
-        if (r.saved) n.add(card.id); else n.delete(card.id);
-        return n;
-      });
-      setCardCollMap((p) => {
-        const n = { ...p };
-        if (r.saved) n[card.id] = col.id; else delete n[card.id];
-        return n;
-      });
-      showToast(r.saved ? `已存入「${col.name}」` : "已取消收藏");
-      api.trackEvent("favorite", { card_id: card.id, card_type: card.type }).catch(() => {});
-      closeFavPicker();
-    } finally {
-      setCollSaving(false);
-    }
-  };
-
-  const handleCreateCollection = async (card: FeedCard) => {
-    const name = newCollName.trim();
-    if (!name) return;
-    setCollSaving(true);
-    try {
-      const col = await api.createCollection(name);
-      const updated = [...collections, col];
-      setCollections(updated);
-      await saveToCollection(card, col);
-    } catch (e: any) {
-      showToast(e?.message || "创建失败");
-      setCollSaving(false);
-    }
-  };
-
-  const swapCard = async (card: FeedCard) => {
-    setRefreshingId(card.id);
-    try {
-      const allIds = cards.map((c) => c.id).join(",");
-      const alt = await api.getAltCard(allIds);
-      setCards((p) => p.map((c) => (c.id === card.id ? alt : c)));
-      showToast("已换一条");
-    } catch { /* ignore */ } finally {
-      setRefreshingId(null);
-    }
-    api.trackEvent("card_refresh", { card_id: card.id, card_type: card.type }).catch(() => {});
-  };
-
-
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header} testID="home-header">
-        <View>
-          <Text style={styles.hello}>你好{child ? `，${child.nickname}的家长` : ""}</Text>
-          <Text style={styles.headerSub}>
-            {child
-              ? `${monthsOf(child.birth_date)}月龄 · 今天为你准备了 ${cards.length} 条`
-              : "今天为你准备了一些内容"}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 32 }}
+      >
+        {/* 顶部栏：logo + 欢迎语 + 头像 */}
+        <View style={styles.topBar}>
+          <Image
+            source={require("../../assets/images/nuri-logo.png")}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+          <Text style={styles.welcome} numberOfLines={1}>
+            欢迎，{nickname}！
           </Text>
-        </View>
-        <Pressable
-          testID="home-free-chat-btn"
-          onPress={async () => {
-            const s = await api.startSession({ script_key: "free" });
-            router.push(`/chat/${s.id}`);
-          }}
-          style={styles.headerBtn}
-        >
-          <Ionicons name="sparkles-outline" size={18} color={colors.brand} />
-        </Pressable>
-      </View>
-
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={15} color={colors.muted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="搜索育儿内容…"
-          placeholderTextColor={colors.muted}
-          value={searchQuery}
-          onChangeText={onSearchChange}
-          returnKeyType="search"
-          clearButtonMode="never"
-        />
-        {searchLoading ? (
-          <ActivityIndicator size="small" color={colors.brand} />
-        ) : searchQuery ? (
-          <Pressable onPress={() => { setSearchQuery(""); setSearchResults(null); }}>
-            <Ionicons name="close-circle" size={15} color={colors.muted} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.brand} />
-        </View>
-      ) : loadError ? (
-        <View style={styles.center}>
-          <Ionicons name="cloud-offline-outline" size={44} color={colors.muted} />
-          <Text style={styles.errorText}>加载失败，请检查网络</Text>
-          <Pressable onPress={retryLoad} style={styles.retryBtn}>
-            <Text style={styles.retryText}>重试</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={colors.brand}
-            />
-          }
-          onScroll={onScroll}
-          scrollEventThrottle={200}
-          showsVerticalScrollIndicator={false}
-          testID="home-feed-scroll"
-        >
-          {searchResults !== null && searchResults.length === 0 ? (
-            <View style={styles.emptySearch}>
-              <Ionicons name="search-outline" size={40} color={colors.muted} />
-              <Text style={styles.emptyText}>没有找到相关内容</Text>
+          <Pressable
+            onPress={() => router.push("/(tabs)/profile")}
+            testID="home-avatar"
+            hitSlop={6}
+          >
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{nickname.slice(0, 1)}</Text>
             </View>
-          ) : null}
-          {(searchResults !== null ? searchResults : cards).map((card) => (
-            <Pressable
-              key={card.id}
-              style={styles.card}
-              testID={`feed-card-${card.id}`}
-              onPress={() => onCardTap(card)}
+          </Pressable>
+        </View>
+
+        {/* 内容推荐轮播 */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          snapToInterval={CAROUSEL_W + 12}
+          decelerationRate="fast"
+          contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+          onScroll={(e) =>
+            setPage(Math.round(e.nativeEvent.contentOffset.x / (CAROUSEL_W + 12)))
+          }
+          scrollEventThrottle={16}
+        >
+          {CAROUSEL.map((c) => (
+            <LinearGradient
+              key={c.id}
+              colors={[C.cardFrom, C.cardTo]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.heroCard}
             >
-              <View style={styles.cardTopRow}>
-                <View
-                  style={[
-                    styles.typeChip,
-                    { backgroundColor: TAG_BG[card.type] },
-                  ]}
-                  testID={`feed-card-tag-${card.type}`}
-                >
-                  <Ionicons
-                    name={ICON_BY_TYPE[card.type]}
-                    size={12}
-                    color={TAG_FG[card.type]}
-                  />
-                  <Text style={[styles.typeChipText, { color: TAG_FG[card.type] }]}>
-                    {card.type_label}
+              {/* 装饰性 3D 图形占位 */}
+              <View style={styles.decoBig} />
+              <View style={styles.decoSmall} />
+              <Text style={styles.heroTitle}>{c.title}</Text>
+              <Text style={styles.heroSub}>
+                {c.source}，{c.sub}
+              </Text>
+              <View style={{ flex: 1 }} />
+              <Pressable
+                onPress={() => Linking.openURL(c.url)}
+                style={styles.heroBtn}
+                testID={`home-hero-cta-${c.id}`}
+              >
+                <Text style={styles.heroBtnText}>浏览详情</Text>
+              </Pressable>
+            </LinearGradient>
+          ))}
+        </ScrollView>
+        {/* 分页指示器 */}
+        <View style={styles.dots}>
+          {CAROUSEL.map((_, i) => (
+            <View key={i} style={[styles.dot, page === i && styles.dotActive]} />
+          ))}
+        </View>
+
+        {/* 第一行：今日任务 + Nuri的家 */}
+        <View style={styles.row}>
+          <Pressable
+            style={[styles.moduleCard, { backgroundColor: C.taskBg }]}
+            onPress={() => router.push("/(tabs)/tasks")}
+            testID="home-tasks-card"
+          >
+            <Text style={styles.moduleTitle}>今日任务</Text>
+            <Text style={styles.moduleSub}>
+              您已坚持打卡{STREAK_DAYS}天！加油！
+            </Text>
+            <View style={[styles.innerCard, { flex: 1 }]}>
+              <Text style={styles.taskCount}>{previewCount} 件任务正在进行</Text>
+              {previewTasks.map((t, i) => (
+                <View key={i} style={styles.taskRow}>
+                  <View style={styles.checkbox} />
+                  <Text style={styles.taskName} numberOfLines={1}>
+                    {t}
                   </Text>
                 </View>
-                {card.type === "product" && (
-                  <Text style={styles.sponsored}>赞助</Text>
-                )}
-              </View>
-
-              {card.image_url ? (
-                <Image
-                  source={{ uri: card.image_url }}
-                  style={styles.cardImg}
-                  contentFit="cover"
-                  transition={200}
-                />
-              ) : null}
-
-              <Text style={styles.cardTitle}>{card.title}</Text>
-              <Text style={styles.cardSummary}>{card.summary}</Text>
-
-              <View style={styles.actionsRow}>
-                <Pressable
-                  hitSlop={8}
-                  onPress={(e) => {
-                    e.stopPropagation?.();
-                    openFavPicker(card);
-                  }}
-                  style={styles.actionBtn}
-                  testID={`feed-fav-${card.id}`}
-                >
-                  <Ionicons
-                    name={favIds.has(card.id) ? "star" : "star-outline"}
-                    size={18}
-                    color={favIds.has(card.id) ? colors.brand : colors.muted}
-                  />
-                </Pressable>
-                <Pressable
-                  hitSlop={8}
-                  onPress={(e) => {
-                    e.stopPropagation?.();
-                    setShareCardId(card.id);
-                  }}
-                  style={styles.actionBtn}
-                  testID={`feed-share-${card.id}`}
-                >
-                  <Ionicons name="share-outline" size={18} color={colors.muted} />
-                </Pressable>
-                <Pressable
-                  hitSlop={8}
-                  onPress={(e) => {
-                    e.stopPropagation?.();
-                    if (!refreshingId) swapCard(card);
-                  }}
-                  style={styles.actionBtn}
-                  testID={`feed-refresh-${card.id}`}
-                >
-                  {refreshingId === card.id ? (
-                    <ActivityIndicator size="small" color={colors.brand} />
-                  ) : (
-                    <Ionicons name="refresh-outline" size={18} color={colors.muted} />
-                  )}
-                </Pressable>
-              </View>
-            </Pressable>
-          ))}
-          {topHolding && (
-            <View style={styles.topHoldBanner}>
-              <Animated.View style={[styles.topHoldBar, {
-                width: topProgress.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }),
-              }]} />
-              <Text style={styles.topHoldText}>继续上划 · 2秒后生成新内容</Text>
-            </View>
-          )}
-          {generatingAll && (
-            <View style={styles.topHoldBanner}>
-              <ActivityIndicator color={colors.brand} />
-              <Text style={styles.topHoldText}>生成中…</Text>
-            </View>
-          )}
-          <View style={{ height: spacing.xxxl }} />
-        </ScrollView>
-      )}
-
-      {toast ? (
-        <View style={[styles.toast, { pointerEvents: "none" }]} testID="home-toast">
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
-      ) : null}
-
-      {/* Collection picker bottom sheet */}
-      <Modal
-        visible={!!pickerCard}
-        transparent
-        animationType="slide"
-        onRequestClose={closeFavPicker}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1 }}
-        >
-          <Pressable style={styles.sheetBackdrop} onPress={closeFavPicker} />
-          <View style={styles.shareSheet} testID="fav-picker-sheet">
-            <View style={styles.sheetHandle} />
-            <View style={styles.pickerHeader}>
-              <Text style={styles.sheetTitle}>存入收藏夹</Text>
-              <Pressable onPress={closeFavPicker} hitSlop={8}>
-                <Ionicons name="close" size={20} color={colors.muted} />
-              </Pressable>
-            </View>
-
-            {collections.length === 0 && !creatingColl ? (
-              <Text style={styles.pickerEmpty}>还没有收藏夹，点下方按钮新建一个吧</Text>
-            ) : (
-              collections.map((col) => {
-                const isInThis = pickerCard ? cardCollMap[pickerCard.id] === col.id : false;
-                return (
-                  <Pressable
-                    key={col.id}
-                    style={styles.pickerRow}
-                    onPress={() => pickerCard && !collSaving && saveToCollection(pickerCard, col)}
-                    testID={`picker-col-${col.id}`}
-                  >
-                    <Ionicons name="folder-outline" size={18} color={colors.brand} />
-                    <Text style={styles.pickerRowText} numberOfLines={1}>{col.name}</Text>
-                    {isInThis && (
-                      <Ionicons name="checkmark-circle" size={18} color={colors.brand} />
-                    )}
-                  </Pressable>
-                );
-              })
-            )}
-
-            {creatingColl ? (
-              <View style={styles.newCollRow}>
-                <TextInput
-                  style={styles.newCollInput}
-                  placeholder="收藏夹名称（最多20字）"
-                  placeholderTextColor={colors.muted}
-                  value={newCollName}
-                  onChangeText={setNewCollName}
-                  maxLength={20}
-                  autoFocus
-                  returnKeyType="done"
-                  onSubmitEditing={() => pickerCard && !collSaving && handleCreateCollection(pickerCard)}
-                />
-                <Pressable
-                  style={[styles.newCollConfirm, (!newCollName.trim() || collSaving) && { opacity: 0.4 }]}
-                  onPress={() => pickerCard && !collSaving && handleCreateCollection(pickerCard)}
-                  disabled={!newCollName.trim() || collSaving}
-                >
-                  {collSaving
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.newCollConfirmText}>确认</Text>
-                  }
-                </Pressable>
-              </View>
-            ) : collections.length >= MAX_COLLECTIONS ? (
-              <View style={styles.maxLimitBox}>
-                <Text style={styles.maxLimitText}>
-                  已创建 {MAX_COLLECTIONS} 个收藏夹，已达上限。
-                </Text>
-                <Pressable
-                  onPress={() => { closeFavPicker(); router.push("/(tabs)/profile"); }}
-                  style={styles.maxLimitBtn}
-                >
-                  <Text style={styles.maxLimitBtnText}>前往管理收藏夹 →</Text>
-                </Pressable>
-              </View>
-            ) : (
+              ))}
+              <Text style={styles.taskEllipsis}>……</Text>
+              <View style={{ flex: 1, minHeight: 8 }} />
               <Pressable
-                style={styles.newCollTrigger}
-                onPress={() => setCreatingColl(true)}
-                testID="picker-new-collection"
+                onPress={() => showToast("提醒功能即将上线")}
+                style={styles.primaryBtn}
+                testID="home-remind-btn"
               >
-                <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
-                <Text style={styles.newCollTriggerText}>新建收藏夹</Text>
+                <Text style={styles.primaryBtnText}>开启提醒</Text>
               </Pressable>
-            )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+            </View>
+          </Pressable>
 
-      <Modal
-        visible={!!shareCardId}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShareCardId(null)}
-      >
-        <Pressable style={styles.sheetBackdrop} onPress={() => setShareCardId(null)} />
-        <View style={styles.shareSheet} testID="home-share-sheet">
-          <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>分享到</Text>
-          {["复制链接", "微信", "短信", "更多…"].map((label) => (
-            <Pressable
-              key={label}
-              onPress={() => {
-                const cid = shareCardId;
-                setShareCardId(null);
-                showToast("已分享 (mock)");
-                if (cid)
-                  api.trackEvent("share", { card_id: cid }).catch(() => {});
-              }}
-              style={styles.shareRow}
-              testID={`home-share-${label}`}
+          <Pressable
+            style={styles.moduleCardNoBg}
+            onPress={() => router.push("/(tabs)/chats")}
+            testID="home-nuri-card"
+          >
+            <LinearGradient
+              colors={[C.nuriFrom, C.nuriTo]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.nuriCard}
             >
-              <Ionicons name="share-social-outline" size={18} color={colors.onSurface} />
-              <Text style={styles.shareLabel}>{label}</Text>
-            </Pressable>
-          ))}
+              <Text style={styles.moduleTitle}>Nuri的家</Text>
+              <Text style={styles.nuriMemo}>
+                Hi！早上好，{nickname}，你还记得我们上次聊到了宝宝的睡眠策略吗？最新的进展如何？
+              </Text>
+              <View style={{ flex: 1 }} />
+              <View style={styles.continueCard}>
+                <View style={styles.continueRow}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Ionicons name="chatbox-ellipses-outline" size={18} color={C.text} />
+                    <Text style={styles.continueText}>继续对话</Text>
+                  </View>
+                  <Ionicons name="arrow-forward" size={18} color={C.text} />
+                </View>
+              </View>
+            </LinearGradient>
+          </Pressable>
         </View>
-      </Modal>
+
+        {/* 第二/三行：左列（知识图书馆 + 我的家）、右列（社区中心） */}
+        <View style={styles.row}>
+          <View style={{ flex: 1, gap: 12 }}>
+            <Pressable
+              style={[styles.moduleCard, styles.lightCard, { minHeight: 88 }]}
+              onPress={() => setDevSheet({ emoji: "🌱", name: "知识图书馆" })}
+              testID="home-library-card"
+            >
+              <Text style={styles.moduleTitle}>知识图书馆</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.moduleCard, styles.lightCard]}
+              onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
+              testID="home-myhome-card"
+            >
+              <Text style={styles.moduleTitle}>我的家</Text>
+              <Text style={styles.moduleSub}>灵感：试着写下今天的心情。</Text>
+              <View style={{ height: 12 }} />
+              <Pressable
+                onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
+                style={styles.primaryBtn}
+                testID="home-record-btn"
+              >
+                <Text style={styles.primaryBtnText}>记录当下</Text>
+              </Pressable>
+            </Pressable>
+          </View>
+
+          <Pressable
+            style={[styles.moduleCard, { backgroundColor: C.taskBg, flex: 1 }]}
+            onPress={() => setDevSheet({ emoji: "🌻", name: "社区中心" })}
+            testID="home-community-card"
+          >
+            <Text style={styles.moduleTitle}>社区中心</Text>
+            <Text style={styles.moduleSub}>您上次关于牙医的回答得到了17个人的赞！</Text>
+            <View style={{ flex: 1 }} />
+            <View style={styles.innerCard}>
+              <Text style={styles.communityTopic}>
+                “宝宝18个月饮食”的问题也许可以和他们交流
+              </Text>
+              <View style={styles.avatarRow}>
+                {["#F5A855", "#7B8FE8", "#A87CC5"].map((color, i) => (
+                  <View
+                    key={i}
+                    style={[
+                      styles.miniAvatar,
+                      { backgroundColor: color, marginLeft: i === 0 ? 0 : -10 },
+                    ]}
+                  />
+                ))}
+                <View style={styles.plusAvatar}>
+                  <Ionicons name="add" size={18} color={C.btn} />
+                </View>
+              </View>
+            </View>
+          </Pressable>
+        </View>
+      </ScrollView>
+
+      <DevSheet
+        visible={!!devSheet}
+        emoji={devSheet?.emoji || ""}
+        name={devSheet?.name || ""}
+        onClose={() => setDevSheet(null)}
+      />
+      <Toast message={toastMsg} />
     </SafeAreaView>
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function monthsOf(birth: string) {
-  try {
-    const b = new Date(birth);
-    const n = new Date();
-    return Math.max(
-      0,
-      (n.getFullYear() - b.getFullYear()) * 12 + (n.getMonth() - b.getMonth())
-    );
-  } catch {
-    return 0;
-  }
-}
-
-// ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.surface },
-  header: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.md,
+  safe: { flex: 1, backgroundColor: C.bg },
+  topBar: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 12,
+    gap: 10,
   },
-  hello: { fontSize: type.xl, fontWeight: "700", color: colors.onSurface },
-  headerSub: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
-  headerBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.pill,
-    backgroundColor: colors.brandTertiary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md },
-  errorText: { fontSize: type.base, color: colors.muted },
-  retryBtn: {
-    marginTop: spacing.sm,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.sm + 2,
-    backgroundColor: colors.brand,
-    borderRadius: radius.pill,
-  },
-  retryText: { fontSize: type.base, fontWeight: "600", color: "#fff" },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
-  card: {
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    marginBottom: spacing.md,
-  },
-  cardTopRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: spacing.sm,
-  },
-  typeChip: {
-    flexDirection: "row",
-    gap: 4,
-    alignItems: "center",
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-  },
-  typeChipText: { fontSize: type.sm, fontWeight: "600" },
-  sponsored: { fontSize: 10, color: colors.muted, fontStyle: "italic" },
-  cardImg: {
-    width: "100%",
-    height: 140,
-    borderRadius: radius.sm,
-    marginBottom: spacing.md,
-    backgroundColor: colors.surfaceTertiary,
-  },
-  cardTitle: {
-    fontSize: type.lg,
-    fontWeight: "700",
-    color: colors.onSurface,
-    lineHeight: 22,
-  },
-  cardSummary: {
-    fontSize: type.base,
-    color: colors.muted,
-    lineHeight: 20,
-    marginTop: spacing.sm,
-  },
-  actionBtn: {
+  logo: { width: 30, height: 35 },
+  welcome: { flex: 1, fontSize: 20, fontWeight: "700", color: C.text },
+  avatar: {
     width: 36,
     height: 36,
-    borderRadius: radius.pill,
+    borderRadius: 18,
+    backgroundColor: "#7B5CE7",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
-  actionsRow: {
-    marginTop: spacing.md,
-    paddingTop: spacing.sm,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: spacing.sm,
-  },
-  searchBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: spacing.sm,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: type.base,
-    color: colors.onSurface,
-    padding: 0,
-  },
-  emptySearch: {
-    alignItems: "center",
-    paddingTop: 60,
-    gap: spacing.md,
-  },
-  emptyText: {
-    fontSize: type.base,
-    color: colors.muted,
-  },
-  topHoldBanner: {
+  avatarText: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  heroCard: {
+    width: CAROUSEL_W,
+    minHeight: 172,
+    borderRadius: 20,
+    padding: 18,
     overflow: "hidden",
-    backgroundColor: colors.brandTertiary,
-    borderRadius: radius.sm,
-    padding: spacing.md,
-    alignItems: "center",
-    gap: spacing.sm,
-    marginBottom: spacing.md,
   },
-  topHoldBar: {
-    height: 3,
-    backgroundColor: colors.brand,
+  decoBig: {
+    position: "absolute",
+    right: -30,
+    top: -14,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  decoSmall: {
+    position: "absolute",
+    right: 42,
+    top: 84,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(255,255,255,0.10)",
+  },
+  heroTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 27,
+    marginTop: 2,
+  },
+  heroSub: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 6,
+    maxWidth: "88%",
+  },
+  heroBtn: {
     alignSelf: "flex-start",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginTop: 12,
+  },
+  heroBtnText: { color: C.text, fontSize: 12, fontWeight: "700" },
+  dots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 6,
+    marginTop: 8,
+    marginBottom: 2,
+  },
+  dot: {
+    width: 18,
+    height: 4,
     borderRadius: 2,
+    borderWidth: 1,
+    borderColor: "#C6C9D8",
+    backgroundColor: "transparent",
   },
-  topHoldText: {
-    fontSize: type.sm,
-    color: colors.onBrandTertiary,
+  dotActive: { backgroundColor: "#3A3A5A", borderColor: "#3A3A5A" },
+  row: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    gap: 12,
+    marginTop: 12,
   },
-  toast: {
-    position: "absolute",
-    top: 80,
-    alignSelf: "center",
-    backgroundColor: "rgba(28,25,23,0.92)",
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm + 2,
-    borderRadius: radius.pill,
+  moduleCard: { flex: 1, borderRadius: 20, padding: 14 },
+  moduleCardNoBg: { flex: 1 },
+  lightCard: { backgroundColor: "#FFFFFF" },
+  nuriCard: { flex: 1, borderRadius: 20, padding: 14 },
+  moduleTitle: { fontSize: 14, fontWeight: "700", color: C.text },
+  moduleSub: { fontSize: 10, color: C.sub, marginTop: 5, lineHeight: 15 },
+  innerCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
   },
-  toastText: { color: "#fff", fontSize: type.base, fontWeight: "600" },
-  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.32)" },
-  shareSheet: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: "#fff",
+  taskCount: { fontSize: 11, fontWeight: "700", color: C.text },
+  taskRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 },
+  checkbox: {
+    width: 11,
+    height: 11,
+    borderRadius: 3,
+    borderWidth: 1.2,
+    borderColor: "#9AA2B8",
+  },
+  taskName: { flex: 1, fontSize: 10, color: C.taskPreview, lineHeight: 14 },
+  taskEllipsis: { fontSize: 10, color: C.taskPreview, marginTop: 3, marginLeft: 17 },
+  primaryBtn: {
+    backgroundColor: C.btn,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    alignSelf: "flex-start",
+  },
+  primaryBtnText: { color: "#FFFFFF", fontSize: 11, fontWeight: "600" },
+  nuriMemo: { fontSize: 10, color: "#3A2A3E", lineHeight: 15, marginTop: 7 },
+  continueCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    marginTop: 10,
+  },
+  continueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  continueText: { fontSize: 12, fontWeight: "700", color: C.text },
+  communityTopic: { fontSize: 10, color: C.taskPreview, lineHeight: 15 },
+  avatarRow: { flexDirection: "row", alignItems: "center", marginTop: 10 },
+  miniAvatar: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
+  plusAvatar: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.2,
+    borderColor: C.btn,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  sheetRoot: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.32)",
+    justifyContent: "flex-end",
+    zIndex: 50,
+  },
+  sheet: {
+    backgroundColor: "#FFFFFF",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    padding: spacing.lg,
-    paddingBottom: spacing.xxl,
+    padding: 24,
+    paddingBottom: 32,
+    alignItems: "center",
+    gap: 10,
   },
   sheetHandle: {
     width: 36,
     height: 4,
-    backgroundColor: colors.border,
+    backgroundColor: "#E0E0E8",
     borderRadius: 2,
-    alignSelf: "center",
-    marginBottom: spacing.md,
+    marginBottom: 4,
   },
-  sheetTitle: {
-    fontSize: type.lg,
-    fontWeight: "700",
-    color: colors.onSurface,
-    marginBottom: spacing.md,
-  },
-  shareRow: {
-    flexDirection: "row",
+  sheetEmoji: { fontSize: 36 },
+  sheetTitle: { fontSize: 16, fontWeight: "700", color: C.text },
+  sheetBtn: {
+    marginTop: 10,
+    backgroundColor: C.btn,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignSelf: "stretch",
     alignItems: "center",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
   },
-  shareLabel: { fontSize: type.lg, color: colors.onSurface },
-  pickerHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.md,
-  },
-  pickerEmpty: {
-    fontSize: type.base,
-    color: colors.muted,
-    paddingVertical: spacing.md,
-    textAlign: "center",
-  },
-  pickerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-  },
-  pickerRowText: { flex: 1, fontSize: type.lg, color: colors.onSurface },
-  newCollTrigger: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-  },
-  newCollTriggerText: { fontSize: type.lg, color: colors.brand, fontWeight: "600" },
-  newCollRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-  },
-  newCollInput: {
-    flex: 1,
-    height: 40,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    fontSize: type.base,
-    color: colors.onSurface,
-    backgroundColor: colors.surfaceSecondary,
-  },
-  newCollConfirm: {
-    height: 40,
-    paddingHorizontal: spacing.lg,
-    backgroundColor: colors.brand,
-    borderRadius: radius.sm,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  newCollConfirmText: { color: "#fff", fontWeight: "700", fontSize: type.base },
-  maxLimitBox: {
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-    gap: spacing.sm,
-  },
-  maxLimitText: { fontSize: type.base, color: colors.muted },
-  maxLimitBtn: { alignSelf: "flex-start" },
-  maxLimitBtnText: { fontSize: type.base, color: colors.brand, fontWeight: "600" },
+  sheetBtnText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
 });

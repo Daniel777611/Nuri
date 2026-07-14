@@ -102,20 +102,22 @@ export default function TaskCard({
         </View>
       </Pressable>
 
-      {/* 底部操作行：删除 icon（左）+ 打卡按钮（右） */}
+      {/* 底部操作行：删除 icon（左，仅在传入 onDelete 时显示）+ 打卡按钮（右） */}
       <View style={styles.actionRow}>
-        <Pressable
-          onPress={onDelete}
-          style={[styles.trashBtn, overdue && styles.trashBtnOverdue]}
-          hitSlop={6}
-          testID={`task-delete-${task.id}`}
-        >
-          <Ionicons
-            name="trash-outline"
-            size={18}
-            color={overdue ? c.overdue : c.textSecondary}
-          />
-        </Pressable>
+        {onDelete ? (
+          <Pressable
+            onPress={onDelete}
+            style={[styles.trashBtn, overdue && styles.trashBtnOverdue]}
+            hitSlop={6}
+            testID={`task-delete-${task.id}`}
+          >
+            <Ionicons
+              name="trash-outline"
+              size={18}
+              color={overdue ? c.overdue : c.textSecondary}
+            />
+          </Pressable>
+        ) : null}
         {overdue ? (
           <Pressable
             onPress={onBackfill}

@@ -9,9 +9,6 @@ import {
   Modal,
   Animated,
   Easing,
-  KeyboardAvoidingView,
-  Platform,
-  TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -21,8 +18,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-type Collection = { id: string; name: string; created_at: string };
-const MAX_COLLECTIONS = 12;
+import { Platform } from "react-native";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 
@@ -42,12 +38,6 @@ export default function Detail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [card, setCard] = useState<any>(null);
   const [favorited, setFavorited] = useState(false);
-  const [currentCollId, setCurrentCollId] = useState<string | null>(null);
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [newCollName, setNewCollName] = useState("");
-  const [creatingColl, setCreatingColl] = useState(false);
-  const [collSaving, setCollSaving] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -75,59 +65,25 @@ export default function Detail() {
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const [d, favs, cols] = await Promise.all([
+      const [d, favs] = await Promise.all([
         api.getCardDetail(id as string),
         api.listFavorites(),
-        api.listCollections(),
       ]);
       setCard(d);
-      const fav = favs.find((f: any) => f.id === id);
-      setFavorited(!!fav);
-      setCurrentCollId(fav?.collection_id ?? null);
-      setCollections(cols);
+      setFavorited(favs.some((f: any) => f.id === id));
+      // analytics: detail view
       api.trackEvent("detail_view", { card_id: id, card_type: d.type }).catch(() => {});
     })();
   }, [id]);
 
-  const openPicker = () => {
-    setNewCollName("");
-    setCreatingColl(false);
-    setPickerOpen(true);
-  };
-
-  const closePicker = () => {
-    setPickerOpen(false);
-    setNewCollName("");
-    setCreatingColl(false);
-  };
-
-  const saveToCollection = async (col: Collection) => {
-    if (!id || collSaving) return;
-    setCollSaving(true);
-    try {
-      const r = await api.saveFavorite(id as string, col.id);
-      setFavorited(r.saved);
-      setCurrentCollId(r.saved ? col.id : null);
-      showToast(r.saved ? `已存入「${col.name}」` : "已取消收藏");
-      api.trackEvent("favorite", { card_id: id, card_type: card?.type, value: r.saved ? 1 : 0 }).catch(() => {});
-      closePicker();
-    } finally {
-      setCollSaving(false);
-    }
-  };
-
-  const handleCreateCollection = async () => {
-    const name = newCollName.trim();
-    if (!name || !id) return;
-    setCollSaving(true);
-    try {
-      const col = await api.createCollection(name);
-      setCollections((p) => [...p, col]);
-      await saveToCollection(col);
-    } catch (e: any) {
-      showToast(e?.message || "创建失败");
-      setCollSaving(false);
-    }
+  const toggleFav = async () => {
+    if (!id) return;
+    const r = await api.toggleFavorite(id as string);
+    setFavorited(r.favorited);
+    showToast(r.favorited ? "已收藏" : "已取消收藏");
+    api
+      .trackEvent("favorite", { card_id: id, card_type: card?.type, value: r.favorited ? 1 : 0 })
+      .catch(() => {});
   };
 
   const askAI = async () => {
@@ -152,7 +108,7 @@ export default function Detail() {
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
         <View style={{ flex: 1 }} />
-        <Pressable onPress={openPicker} style={styles.iconBtn} testID="detail-fav-btn">
+        <Pressable onPress={toggleFav} style={styles.iconBtn} testID="detail-fav-btn">
           <Ionicons
             name={favorited ? "star" : "star-outline"}
             size={20}
@@ -207,89 +163,6 @@ export default function Detail() {
           <Text style={styles.toastText}>{toast}</Text>
         </Animated.View>
       ) : null}
-
-      {/* Collection picker bottom sheet */}
-      <Modal visible={pickerOpen} transparent animationType="slide" onRequestClose={closePicker}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
-          <Pressable style={styles.sheetBackdrop} onPress={closePicker} />
-          <View style={styles.shareSheet} testID="detail-fav-picker-sheet">
-            <View style={styles.sheetHandle} />
-            <View style={styles.pickerHeader}>
-              <Text style={styles.sheetTitle}>存入收藏夹</Text>
-              <Pressable onPress={closePicker} hitSlop={8}>
-                <Ionicons name="close" size={20} color={colors.muted} />
-              </Pressable>
-            </View>
-
-            {collections.length === 0 && !creatingColl ? (
-              <Text style={styles.pickerEmpty}>还没有收藏夹，点下方按钮新建一个吧</Text>
-            ) : (
-              collections.map((col) => {
-                const isInThis = currentCollId === col.id;
-                return (
-                  <Pressable
-                    key={col.id}
-                    style={styles.shareRow}
-                    onPress={() => !collSaving && saveToCollection(col)}
-                    testID={`detail-picker-col-${col.id}`}
-                  >
-                    <Ionicons name="folder-outline" size={18} color={colors.brand} />
-                    <Text style={[styles.shareLabel, { flex: 1 }]} numberOfLines={1}>{col.name}</Text>
-                    {isInThis && <Ionicons name="checkmark-circle" size={18} color={colors.brand} />}
-                  </Pressable>
-                );
-              })
-            )}
-
-            {creatingColl ? (
-              <View style={styles.newCollRow}>
-                <TextInput
-                  style={styles.newCollInput}
-                  placeholder="收藏夹名称（最多20字）"
-                  placeholderTextColor={colors.muted}
-                  value={newCollName}
-                  onChangeText={setNewCollName}
-                  maxLength={20}
-                  autoFocus
-                  returnKeyType="done"
-                  onSubmitEditing={() => !collSaving && handleCreateCollection()}
-                />
-                <Pressable
-                  style={[styles.newCollConfirm, (!newCollName.trim() || collSaving) && { opacity: 0.4 }]}
-                  onPress={() => !collSaving && handleCreateCollection()}
-                  disabled={!newCollName.trim() || collSaving}
-                >
-                  {collSaving
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={styles.newCollConfirmText}>确认</Text>
-                  }
-                </Pressable>
-              </View>
-            ) : collections.length >= MAX_COLLECTIONS ? (
-              <View style={styles.maxLimitBox}>
-                <Text style={styles.pickerEmpty}>
-                  已创建 {MAX_COLLECTIONS} 个收藏夹，已达上限。
-                </Text>
-                <Pressable
-                  onPress={() => { closePicker(); router.back(); }}
-                  style={styles.maxLimitBtn}
-                >
-                  <Text style={styles.maxLimitBtnText}>前往管理收藏夹 →</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <Pressable
-                style={styles.shareRow}
-                onPress={() => setCreatingColl(true)}
-                testID="detail-picker-new-collection"
-              >
-                <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
-                <Text style={[styles.shareLabel, { color: colors.brand, fontWeight: "600" }]}>新建收藏夹</Text>
-              </Pressable>
-            )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
       <Modal visible={shareOpen} transparent animationType="slide" onRequestClose={() => setShareOpen(false)}>
         <Pressable style={styles.sheetBackdrop} onPress={() => setShareOpen(false)} />
@@ -451,42 +324,4 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
   },
   shareLabel: { fontSize: type.lg, color: colors.onSurface },
-  pickerHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: spacing.md,
-  },
-  pickerEmpty: { fontSize: type.base, color: colors.muted, paddingVertical: spacing.md, textAlign: "center" },
-  newCollRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-    borderTopColor: colors.divider,
-    borderTopWidth: 1,
-  },
-  newCollInput: {
-    flex: 1,
-    height: 40,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    fontSize: type.base,
-    color: colors.onSurface,
-    backgroundColor: colors.surfaceSecondary,
-  },
-  newCollConfirm: {
-    height: 40,
-    paddingHorizontal: spacing.lg,
-    backgroundColor: colors.brand,
-    borderRadius: radius.sm,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  newCollConfirmText: { color: "#fff", fontWeight: "700", fontSize: type.base },
-  maxLimitBox: { paddingVertical: spacing.md, borderTopColor: colors.divider, borderTopWidth: 1, gap: spacing.sm },
-  maxLimitBtn: { alignSelf: "flex-start" },
-  maxLimitBtnText: { fontSize: type.base, color: colors.brand, fontWeight: "600" },
 });

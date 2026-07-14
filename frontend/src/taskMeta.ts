@@ -90,3 +90,28 @@ export function progressRatio(t: TaskItem): number {
   if (t.total_count <= 0) return 0;
   return Math.min(1, t.completed_count / t.total_count);
 }
+
+// backend/main.py's /api/tasks returns {id,title,scope,done,progress_done,progress_total,
+// completed_at,reflection,source,created_at,task_type,description,steps,due_date,
+// is_favorited,backfilled} — map scope/progress/reflection onto the shape this UI expects.
+// Falls back to generic defaults for any pre-migration rows missing the newer columns.
+export function toTaskItem(t: any): TaskItem {
+  return {
+    id: t.id,
+    title: t.title,
+    task_type: t.task_type || "interaction",
+    is_recurring: t.scope === "week",
+    total_count: t.progress_total ?? 1,
+    completed_count: t.progress_done ?? (t.done ? 1 : 0),
+    frequency_label: t.scope === "week" ? "每周" : "",
+    due_date: t.due_date ?? null,
+    completed_at: t.completed_at ?? null,
+    is_favorited: t.is_favorited ?? false,
+    last_rating: t.reflection?.mood ?? null,
+    backfilled: t.backfilled ?? false,
+    description: t.description ?? "",
+    steps: t.steps ?? [],
+    source: t.source ?? "",
+    created_at: t.created_at,
+  };
+}
