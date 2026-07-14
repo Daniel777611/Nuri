@@ -20,6 +20,18 @@
       "destination": "/api/backend.py"
     },
     {
+      "source": "/health",
+      "destination": "/api/backend.py"
+    },
+    {
+      "source": "/admin",
+      "destination": "/api/backend.py"
+    },
+    {
+      "source": "/admin/(.*)",
+      "destination": "/api/backend.py"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
