@@ -4,11 +4,14 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  Image,
   ScrollView,
   Pressable,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { BlurView } from "expo-blur";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
@@ -25,8 +28,12 @@ import CheckinSheet from "@/src/components/CheckinSheet";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import Toast from "@/src/components/Toast";
 
+const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
+
 export default function Tasks() {
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  const phoneWidth = Math.min(viewportWidth, 402);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [filters, setFilters] = useState<string[]>([]); // 空 = 全部（支持多选）
@@ -171,10 +178,15 @@ export default function Tasks() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
+      <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+      <Image source={blurredTaskBackground} style={styles.backgroundImage} resizeMode="cover" />
+      <View pointerEvents="none" style={styles.haloBlue} />
+      <View pointerEvents="none" style={styles.haloRed} />
+      <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
       {/* 顶部：返回 + 我的任务 */}
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => router.replace("/(tabs)")}
           hitSlop={8}
           testID="tasks-back-btn"
         >
@@ -248,7 +260,11 @@ export default function Tasks() {
         ListEmptyComponent={
           loaded ? (
             <View style={styles.empty}>
-              <Ionicons name="leaf-outline" size={36} color={c.textSecondary} />
+              <Image
+                source={require("../../assets/images/nuri-logo.png")}
+                style={{ width: 36, height: 36 }}
+                resizeMode="contain"
+              />
               <Text style={styles.emptyTitle}>没有待办任务</Text>
               <Text style={styles.emptySub}>先去和AI聊一聊，TA会帮你生成清单</Text>
             </View>
@@ -266,13 +282,13 @@ export default function Tasks() {
         )}
         ListFooterComponent={renderCompletedSection()}
       />
-
-      {/* 记录任务感想 bottom sheet */}
+      {/* 记录任务感想 bottom sheet：与页面共用同一个手机画板。 */}
       <CheckinSheet
         visible={!!sheetFor}
         taskType={sheetFor?.task_type || "interaction"}
         onDone={onSheetDone}
       />
+      </View>
 
       <ConfirmDialog
         visible={!!confirm}
@@ -292,7 +308,11 @@ export default function Tasks() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: c.bg },
+  safe: { flex: 1, backgroundColor: "#FBF9FC" },
+  phoneCanvas: { flex: 1, alignSelf: "center", overflow: "hidden" },
+  backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", opacity: 1 },
+  haloBlue: { position: "absolute", width: 396, height: 396, borderRadius: 198, backgroundColor: "rgba(123,166,255,0.82)", left: -188, top: 142 },
+  haloRed: { position: "absolute", width: 384, height: 384, borderRadius: 192, backgroundColor: "rgba(255,118,139,0.74)", right: -204, bottom: -58 },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -301,17 +321,19 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 12,
   },
-  h1: { fontSize: 20, fontWeight: "700", color: c.text },
-  filterRow: { paddingHorizontal: 16, gap: 8, paddingBottom: 4 },
+  h1: { fontSize: 24, fontWeight: "900", color: "#3A2F5A" },
+  filterRow: { paddingHorizontal: 16, gap: 10, paddingBottom: 4 },
   filterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#fff",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.6)",
   },
-  filterChipActive: { backgroundColor: c.primary },
-  filterText: { fontSize: 14, color: c.textSecondary },
-  filterTextActive: { color: "#fff", fontWeight: "600" },
+  filterChipActive: { backgroundColor: "#3A2F5A" },
+  filterText: { fontSize: 14, fontWeight: "900", color: "#3A2F5A" },
+  filterTextActive: { color: "#fff", fontWeight: "900" },
   dateRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -319,8 +341,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-  dateBig: { fontSize: 26, fontWeight: "800", color: c.text },
-  dateSmall: { fontSize: 12, color: c.textSecondary, lineHeight: 16 },
+  dateBig: { fontSize: 24, fontWeight: "900", color: "#3A2F5A" },
+  dateSmall: { fontSize: 12, color: "#3A2F5A", lineHeight: 14 },
   empty: { alignItems: "center", paddingTop: 64 },
   emptyTitle: { fontSize: 16, fontWeight: "600", color: c.text, marginTop: 12 },
   emptySub: { fontSize: 13, color: c.textSecondary, marginTop: 6 },
@@ -332,11 +354,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 8,
   },
-  doneHeaderText: { fontSize: 14, fontWeight: "700", color: c.text },
+  doneHeaderText: { fontSize: 16, fontWeight: "900", color: "#3A2F5A" },
   clearBtn: { alignItems: "center", paddingVertical: 14, marginTop: 4 },
   clearText: {
-    color: c.textSecondary,
-    fontSize: 14,
+    color: "#3A2F5A",
+    fontSize: 16,
     textDecorationLine: "underline",
   },
 });

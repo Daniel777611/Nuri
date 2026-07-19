@@ -6,6 +6,7 @@ import {
   ScrollView,
   Pressable,
   Switch,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,8 +16,17 @@ import { api, auth } from "@/src/api";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { colors, radius, spacing, type } from "@/src/theme";
 
+const LANGUAGES = [
+  { value: "zh-CN", label: "简中" },
+  { value: "zh-TW", label: "繁中" },
+  { value: "en", label: "English" },
+] as const;
+const FIGMA_FRAME_WIDTH = 402;
+
 export default function Profile() {
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const [children, setChildren] = useState<any[]>([]);
   const [favorites, setFavorites] = useState<any[]>([]);
   const [privacy, setPrivacy] = useState<any>({
@@ -59,15 +69,17 @@ export default function Profile() {
 
   const logout = async () => {
     await auth.clearToken();
-    router.replace("/login");
+    // 统一回到已按 Figma 更新的注册入口；已有账号可从该页进入登录。
+    router.replace("/register");
   };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <ScrollView
+      <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+        <ScrollView
         contentContainerStyle={{ paddingBottom: spacing.xxxl }}
         showsVerticalScrollIndicator={false}
-      >
+        >
         <Pressable
           onPress={() => router.back()}
           style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.md, paddingTop: spacing.sm }}
@@ -190,35 +202,40 @@ export default function Profile() {
         </Section>
 
         <Section title="账户">
-          <Pressable
-            style={styles.langRow}
-            onPress={() =>
-              updatePrivacy({
-                language: privacy.language === "zh" ? "en" : "zh",
-              })
-            }
-            testID="profile-lang-btn"
-          >
+          <View style={styles.langRow}>
             <Text style={styles.langLabel}>语言偏好</Text>
-            <Text style={styles.langVal}>
-              {privacy.language === "zh" ? "中文" : "English (mock)"}
-            </Text>
-          </Pressable>
+            <View style={styles.languageOptions}>
+              {LANGUAGES.map((language) => {
+                const active = (privacy.language === "zh" ? "zh-CN" : privacy.language) === language.value;
+                return (
+                  <Pressable
+                    key={language.value}
+                    onPress={() => updatePrivacy({ language: language.value })}
+                    style={[styles.languageOption, active && styles.languageOptionActive]}
+                    testID={`profile-language-${language.value}`}
+                  >
+                    <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>{language.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
           <Pressable style={styles.logoutRow} testID="profile-logout-btn" onPress={logout}>
             <Text style={styles.logoutText}>登出</Text>
           </Pressable>
         </Section>
-      </ScrollView>
+        </ScrollView>
 
-      <ConfirmDialog
-        visible={confirmWipe}
-        title="确认删除所有数据？"
-        message="包括孩子档案、对话记录、任务和反思。此操作不可恢复。"
-        confirmText="确认删除"
-        danger
-        onConfirm={wipeAll}
-        onCancel={() => setConfirmWipe(false)}
-      />
+        <ConfirmDialog
+          visible={confirmWipe}
+          title="确认删除所有数据？"
+          message="包括孩子档案、对话记录、任务和反思。此操作不可恢复。"
+          confirmText="确认删除"
+          danger
+          onConfirm={wipeAll}
+          onCancel={() => setConfirmWipe(false)}
+        />
+      </View>
     </SafeAreaView>
   );
 }
@@ -255,7 +272,8 @@ function Toggle({
       <Switch
         value={value}
         onValueChange={onChange}
-        trackColor={{ true: colors.brand, false: colors.border }}
+        trackColor={{ true: "#3A2F5A", false: "#D6D3D1" }}
+        ios_backgroundColor="#D6D3D1"
         thumbColor="#fff"
         testID={testID}
       />
@@ -278,6 +296,7 @@ function monthsOf(birth: string) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
+  phoneCanvas: { flex: 1, alignSelf: "center", overflow: "hidden" },
   header: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
@@ -374,11 +393,21 @@ const styles = StyleSheet.create({
   dangerText: { color: colors.error, fontWeight: "600", fontSize: type.base },
   langRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "space-between",
     padding: spacing.md,
   },
   langLabel: { fontSize: type.base, color: colors.onSurface },
-  langVal: { fontSize: type.base, color: colors.muted },
+  languageOptions: { flexDirection: "row", alignItems: "center", gap: 6 },
+  languageOption: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 9,
+    backgroundColor: "rgba(104, 84, 149, 0.10)",
+  },
+  languageOptionActive: { backgroundColor: "#3A2F5A" },
+  languageOptionText: { fontSize: 12, fontWeight: "600", color: colors.muted },
+  languageOptionTextActive: { color: "#FFFFFF" },
   logoutRow: {
     padding: spacing.md,
     borderTopWidth: 1,

@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
@@ -16,6 +17,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
+import Toast from "@/src/components/Toast";
+
+const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 import { api } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -24,9 +29,6 @@ import { colors, radius, spacing, type } from "@/src/theme";
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
 
 // ── Types & mock data ────────────────────────────────────────────────────────
-const MOCK_IMAGE_BASE64 =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAQUlEQVR42u3OMQEAAAQDMKr6V2N4DYBz1xCWxKsQKAQKgUKgECgECoFCoBAoBAqBQqAQKAQKgUKgECgECsHRBVbsAAGoVgrhAAAAAElFTkSuQmCC";
-
 type Msg = {
   id: string;
   role: "ai" | "user";
@@ -72,11 +74,15 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  const phoneWidth = Math.min(viewportWidth, 402);
   const { id } = useLocalSearchParams<{ id: string }>();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [approvedTaskIds, setApprovedTaskIds] = useState<string[]>([]);
   const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
@@ -139,8 +145,17 @@ export default function ChatDetail() {
     }
   };
 
-  const sendImage = () => send("（上传了一张照片）", MOCK_IMAGE_BASE64);
-  const goTasks = () => router.push("/(tabs)/tasks");
+  const showToast = (message: string) => {
+    setToastMsg(message);
+    setTimeout(() => setToastMsg(null), 1800);
+  };
+  const addGeneratedTask = async (msg: Msg, task: any, index: number) => {
+    const approvalId = `${msg.id}-${index}`;
+    if (approvedTaskIds.includes(approvalId)) return;
+    await api.createTask(task);
+    setApprovedTaskIds((ids) => [...ids, approvalId]);
+    showToast("已添加至“我的任务”");
+  };
 
   return (
     <LinearGradient
@@ -150,27 +165,18 @@ export default function ChatDetail() {
       style={{ flex: 1 }}
     >
       <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+        <Image source={blurredTaskBackground} style={styles.backgroundImage} contentFit="cover" />
+        <View pointerEvents="none" style={styles.haloBlue} />
+        <View pointerEvents="none" style={styles.haloRed} />
+        <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
         <Stack.Screen options={{ headerShown: false }} />
 
         <View style={styles.header}>
-          <Pressable
-            onPress={() => router.back()}
-            style={styles.backBtn}
-            testID="chat-back-btn"
-          >
-            <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
+          <Pressable onPress={() => router.replace("/(tabs)")} style={styles.backBtn} testID="chat-back-btn">
+            <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
           </Pressable>
-          <View style={styles.headerCenter}>
-            <NuriAvatar size={36} />
-            <View style={{ marginLeft: spacing.sm }}>
-              <Text style={styles.headerName}>NURI</Text>
-              <View style={styles.onlineRow}>
-                <View style={styles.onlineDot} />
-                <Text style={styles.headerSub}>育儿助手 · 在线</Text>
-              </View>
-            </View>
-          </View>
-          <View style={{ width: 36 }} />
+          <Text style={styles.headerName}>我的对话</Text>
         </View>
 
         <KeyboardAvoidingView
@@ -187,7 +193,8 @@ export default function ChatDetail() {
                 key={m.id}
                 msg={m}
                 onQuick={(q) => send(q)}
-                onTasks={goTasks}
+                onAddTask={(task, index) => addGeneratedTask(m, task, index)}
+                isTaskAdded={(index) => approvedTaskIds.includes(`${m.id}-${index}`)}
               />
             ))}
             {typing ? <TypingDots /> : null}
@@ -196,12 +203,12 @@ export default function ChatDetail() {
           <View style={styles.composer} testID="chat-composer">
             <View style={styles.inputPill}>
               <Pressable
-                onPress={sendImage}
+                onPress={() => showToast("图片上传功能即将上线")}
                 style={styles.iconBtn}
                 disabled={sending}
                 testID="chat-image-btn"
               >
-                <Ionicons name="camera-outline" size={22} color={colors.brand} />
+                <Ionicons name="add" size={26} color="#3A2F5A" />
               </Pressable>
               <TextInput
                 value={input}
@@ -221,17 +228,14 @@ export default function ChatDetail() {
                 }}
                 testID="chat-input"
               />
-              <Pressable
-                onPress={() => send()}
-                disabled={sending || !input.trim()}
-                style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
-                testID="chat-send-btn"
-              >
-                <Ionicons name="arrow-up" size={18} color="#fff" />
+              <Pressable onPress={() => showToast("语音输入功能即将上线")} style={styles.micBtn} testID="chat-voice-btn">
+                <Ionicons name="mic-outline" size={22} color="#3A2F5A" />
               </Pressable>
             </View>
           </View>
         </KeyboardAvoidingView>
+        <Toast message={toastMsg} />
+        </View>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -241,38 +245,42 @@ export default function ChatDetail() {
 function MessageBubble({
   msg,
   onQuick,
-  onTasks,
+  onAddTask,
+  isTaskAdded,
 }: {
   msg: Msg;
   onQuick: (q: string) => void;
-  onTasks: () => void;
+  onAddTask: (task: any, index: number) => void;
+  isTaskAdded: (index: number) => boolean;
 }) {
   const isAI = msg.role === "ai";
 
-  if (msg.transition?.kind === "tasks_generated") {
+  if (msg.transition?.kind === "task_suggestion") {
+    const suggestedTasks = msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []);
     return (
       <View style={[styles.row, { justifyContent: "flex-start" }]}>
-        <View style={styles.avatarSlot}>
-          <NuriAvatar size={30} />
-        </View>
         <View style={styles.transitionCard} testID="chat-transition-tasks">
-          <View style={styles.transitionTop}>
-            <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-            <Text style={styles.transitionTitle}>
-              已为你生成 {msg.transition.count} 个任务
-            </Text>
-          </View>
-          <Text style={styles.transitionSub}>
-            涵盖今日小动作和本周追踪，NURI 会持续帮你检查进度。
-          </Text>
-          <Pressable
-            onPress={onTasks}
-            style={styles.transitionBtn}
-            testID="chat-go-tasks"
-          >
-            <Text style={styles.transitionBtnText}>查看任务清单</Text>
-            <Ionicons name="arrow-forward" size={14} color="#fff" />
-          </Pressable>
+          <Text style={styles.transitionPrompt}>{msg.text}</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={276} decelerationRate="fast" contentContainerStyle={styles.taskCarousel}>
+            {suggestedTasks.map((task: any, taskIndex: number) => {
+              const added = isTaskAdded(taskIndex);
+              return <View key={`${msg.id}-${taskIndex}`} style={styles.generatedSlide}>
+                <LinearGradient colors={["#A6AEFF", "#FFD092"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.generatedCard}>
+                  <Text style={styles.generatedType}>观察：{task.title}</Text>
+                  <View style={styles.generatedInner}>
+                    <Text style={styles.generatedSection}>任务介绍</Text>
+                    <Text style={styles.generatedBody}>{task.description}</Text>
+                    <Text style={styles.generatedSection}>做法：</Text>
+                    {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
+                    <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>
+                      <Text style={styles.addTaskText}>{added ? "已添加至任务" : "添加计划"}</Text>
+                    </Pressable>
+                  </View>
+                </LinearGradient>
+                {added ? <Text style={styles.addedHint}>成功添加至“我的任务”</Text> : null}
+              </View>;
+            })}
+          </ScrollView>
         </View>
       </View>
     );
@@ -313,11 +321,6 @@ function MessageBubble({
         { justifyContent: isAI ? "flex-start" : "flex-end" },
       ]}
     >
-      {isAI && (
-        <View style={styles.avatarSlot}>
-          <NuriAvatar size={30} />
-        </View>
-      )}
       <View
         style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}
         testID={`bubble-${msg.role}`}
@@ -417,32 +420,21 @@ function TypingDots() {
 // ── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: "transparent" },
+  phoneCanvas: { flex: 1, alignSelf: "center", overflow: "hidden" },
+  backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  haloBlue: { position: "absolute", width: 396, height: 396, borderRadius: 198, backgroundColor: "rgba(123,166,255,0.82)", left: -188, top: 142 },
+  haloRed: { position: "absolute", width: 384, height: 384, borderRadius: 192, backgroundColor: "rgba(255,118,139,0.74)", right: -204, bottom: -58 },
 
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14, gap: 4,
   },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.pill,
+    width: 28, height: 36,
     alignItems: "center",
     justifyContent: "center",
-  },
-  headerCenter: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 36,
   },
   headerName: {
-    fontSize: type.lg,
-    fontWeight: "700",
-    color: colors.onSurface,
-    letterSpacing: 0.3,
+    fontSize: 24, fontWeight: "900", color: "#3A2F5A",
   },
   onlineRow: {
     flexDirection: "row",
@@ -458,24 +450,16 @@ const styles = StyleSheet.create({
   },
   headerSub: { fontSize: type.sm, color: colors.muted },
 
-  scroll: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    paddingBottom: spacing.lg,
-    gap: spacing.sm,
-  },
+  scroll: { paddingHorizontal: 18, paddingVertical: 16, paddingBottom: 18, gap: 12 },
   row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
   avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
 
   bubble: {
-    maxWidth: "78%",
-    paddingVertical: spacing.sm + 2,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.lg,
+    maxWidth: "88%", paddingVertical: 14, paddingHorizontal: 18, borderRadius: 25,
   },
   bubbleAI: {
     backgroundColor: "#fff",
-    borderTopLeftRadius: 4,
+    borderTopLeftRadius: 25,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.06,
@@ -483,17 +467,11 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   bubbleUser: {
-    backgroundColor: colors.brand,
-    borderTopRightRadius: 4,
+    borderTopRightRadius: 25,
+    backgroundColor: "#5D86E8",
   },
-  senderLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: colors.brand,
-    marginBottom: 4,
-    letterSpacing: 0.5,
-  },
-  bubbleText: { color: colors.onSurface, fontSize: type.lg, lineHeight: 23 },
+  senderLabel: { display: "none" },
+  bubbleText: { color: "#241C3F", fontSize: 16, lineHeight: 21 },
   bubbleImage: {
     width: 160,
     height: 120,
@@ -532,18 +510,16 @@ const styles = StyleSheet.create({
   },
 
   transitionCard: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderColor: colors.brand,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    shadowColor: colors.brand,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 3,
+    flex: 1, gap: 12,
   },
+  transitionPrompt: { backgroundColor: "#fff", borderRadius: 24, padding: 16, color: "#241C3F", fontSize: 16, lineHeight: 21, shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 5, elevation: 2 },
+  taskCarousel: { gap: 10, paddingRight: 18 }, generatedSlide: { width: 266 }, generatedCard: { borderRadius: 28, padding: 6 },
+  generatedType: { color: "#3A2F5A", fontSize: 16, fontWeight: "900", paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
+  generatedInner: { backgroundColor: "#fff", borderRadius: 20, padding: 12 },
+  generatedSection: { color: "#3A2F5A", fontSize: 14, fontWeight: "900", marginTop: 2 },
+  generatedBody: { color: "#3A2F5A", fontSize: 12, lineHeight: 17 },
+  addTaskBtn: { alignSelf: "flex-start", backgroundColor: "#3A2F5A", borderRadius: 10, marginTop: 8, paddingHorizontal: 14, paddingVertical: 8 },
+  addTaskDone: { opacity: 0.5 }, addTaskText: { color: "#fff", fontSize: 12, fontWeight: "900" }, addedHint: { color: "#3A2F5A", fontSize: 12, textAlign: "center" },
   transitionTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   transitionTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface },
   transitionSub: {
@@ -597,7 +573,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#fff",
-    borderRadius: radius.pill,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#3A2F5A",
     paddingLeft: 6,
     paddingRight: 6,
     gap: spacing.sm,
@@ -606,7 +584,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: radius.pill,
-    backgroundColor: colors.brandTertiary,
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -618,13 +596,12 @@ const styles = StyleSheet.create({
     fontSize: type.base,
     color: colors.onSurface,
   },
-  sendBtn: {
+  micBtn: {
     width: 38,
     height: 38,
     borderRadius: radius.pill,
-    backgroundColor: colors.brand,
+    backgroundColor: "transparent",
     alignItems: "center",
     justifyContent: "center",
   },
-  sendBtnDisabled: { opacity: 0.45 },
 });

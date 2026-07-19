@@ -6,17 +6,19 @@ import {
   ScrollView,
   Pressable,
   Image,
-  Dimensions,
-  Linking,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
+
+const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 // 主页配色（复刻高保真设计稿）
 const C = {
@@ -33,33 +35,34 @@ const C = {
   streak: "#5A7AC8",
 };
 
-const SCREEN_W = Dimensions.get("window").width;
-const PAGE_W = Math.min(SCREEN_W, 430);
-const CAROUSEL_W = PAGE_W - 32;
+const FIGMA_FRAME_WIDTH = 402;
 
-// 内容推荐轮播 mock（浏览详情跳外部链接）
+// 内容推荐轮播 mock：六页均为前端演示，不依赖后端或外部链接。
 const CAROUSEL = [
   {
     id: "c1",
     source: "来自Amber的育儿播客分享",
     title: "如何培养孩子的\n情绪管理能力？",
     sub: "探索属于你的家庭策略",
-    url: "https://www.youtube.com",
+    colors: ["#4F4B9C", "#ADD2FD"] as const,
   },
   {
     id: "c2",
     source: "来自丁香妈妈的科普文章",
     title: "18个月宝宝挑食怎么办？\n专家这样说",
     sub: "食物新恐惧期的应对指南",
-    url: "https://www.dxy.cn",
+    colors: ["#4B72B9", "#9ED8F0"] as const,
   },
   {
     id: "c3",
     source: "来自北美儿科医生播客",
     title: "睡眠训练到底\n有没有用？",
     sub: "聊聊哭声免疫法的争议",
-    url: "https://www.youtube.com",
+    colors: ["#8861B1", "#E8B7D1"] as const,
   },
+  { id: "c4", source: "来自NURI精选文章", title: "宝宝总说“不”？\n试试这样回应", sub: "把对抗变成一次合作练习", colors: ["#9A5B83", "#F3B992"] as const },
+  { id: "c5", source: "来自家庭成长通讯", title: "给自己留一点\n不被打扰的时间", sub: "照顾孩子前，先照顾好自己", colors: ["#385E87", "#9FC5DD"] as const },
+  { id: "c6", source: "来自真实家长经验", title: "出门总是拖很久？\n试试出发仪式", sub: "让每天的小事更有掌控感", colors: ["#52685E", "#B7D6AF"] as const },
 ];
 
 // 坚持打卡天数（mock 默认 17）
@@ -98,6 +101,11 @@ function DevSheet({
 
 export default function Home() {
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  // Keep the same content geometry as the 402px Figma phone frame. On a real
+  // phone the frame shrinks with the viewport; on desktop it remains centered.
+  const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
+  const carouselWidth = phoneWidth - 32;
   const [nickname, setNickname] = useState("Momo妈妈");
   const [pendingTasks, setPendingTasks] = useState<string[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -136,6 +144,11 @@ export default function Home() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
+      <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+      <Image source={blurredTaskBackground} style={styles.backgroundImage} resizeMode="cover" />
+      <View pointerEvents="none" style={styles.haloBlue} />
+      <View pointerEvents="none" style={styles.haloRed} />
+      <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 32 }}
@@ -165,32 +178,34 @@ export default function Home() {
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          snapToInterval={CAROUSEL_W + 12}
+          snapToInterval={carouselWidth + 12}
           decelerationRate="fast"
+          disableIntervalMomentum
           contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
           onScroll={(e) =>
-            setPage(Math.round(e.nativeEvent.contentOffset.x / (CAROUSEL_W + 12)))
+            setPage(Math.round(e.nativeEvent.contentOffset.x / (carouselWidth + 12)))
           }
           scrollEventThrottle={16}
         >
           {CAROUSEL.map((c) => (
             <LinearGradient
               key={c.id}
-              colors={[C.cardFrom, C.cardTo]}
+              colors={c.colors}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
-              style={styles.heroCard}
+              style={[styles.heroCard, { width: carouselWidth }]}
             >
-              {/* 装饰性 3D 图形占位 */}
-              <View style={styles.decoBig} />
-              <View style={styles.decoSmall} />
+              {/* 前端模拟的云朵/树冠装饰；不绑定后端内容。 */}
+              <View style={styles.decoCloudOne} />
+              <View style={styles.decoCloudTwo} />
+              <View style={styles.decoCloudThree} />
               <Text style={styles.heroTitle}>{c.title}</Text>
               <Text style={styles.heroSub}>
                 {c.source}，{c.sub}
               </Text>
               <View style={{ flex: 1 }} />
               <Pressable
-                onPress={() => Linking.openURL(c.url)}
+                onPress={() => showToast(`「${c.title.replace("\n", "")}」详情即将上线`)}
                 style={styles.heroBtn}
                 testID={`home-hero-cta-${c.id}`}
               >
@@ -241,7 +256,7 @@ export default function Home() {
 
           <Pressable
             style={styles.moduleCardNoBg}
-            onPress={() => router.push("/(tabs)/chats")}
+            onPress={() => router.push("/chat/chat-1")}
             testID="home-nuri-card"
           >
             <LinearGradient
@@ -327,6 +342,7 @@ export default function Home() {
           </Pressable>
         </View>
       </ScrollView>
+      </View>
 
       <DevSheet
         visible={!!devSheet}
@@ -340,7 +356,12 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.bg },
+  safe: { flex: 1, backgroundColor: "#F6F4FA" },
+  phoneCanvas: { alignSelf: "center", flex: 1, overflow: "hidden" },
+  backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  // 两枚居中的超大椭圆营造上蓝下红、带弧度的日落式背景。
+  haloBlue: { position: "absolute", width: 520, height: 300, borderRadius: 260, backgroundColor: "rgba(123,166,255,0.68)", left: "50%", marginLeft: -260, top: -155 },
+  haloRed: { position: "absolute", width: 520, height: 300, borderRadius: 260, backgroundColor: "rgba(255,118,139,0.62)", left: "50%", marginLeft: -260, bottom: -155 },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -349,12 +370,12 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 10,
   },
-  logo: { width: 30, height: 35 },
-  welcome: { flex: 1, fontSize: 20, fontWeight: "700", color: C.text },
+  logo: { width: 39, height: 46 },
+  welcome: { flex: 1, fontSize: 24, fontWeight: "900", color: "#3A2F5A" },
   avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 33,
+    height: 33,
+    borderRadius: 17,
     backgroundColor: "#7B5CE7",
     borderWidth: 2,
     borderColor: "#FFFFFF",
@@ -363,49 +384,62 @@ const styles = StyleSheet.create({
   },
   avatarText: { color: "#fff", fontSize: 14, fontWeight: "700" },
   heroCard: {
-    width: CAROUSEL_W,
-    minHeight: 172,
-    borderRadius: 20,
-    padding: 18,
+    height: 213,
+    borderRadius: 12,
+    padding: 23,
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 2, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 2,
   },
-  decoBig: {
+  decoCloudOne: {
     position: "absolute",
-    right: -30,
-    top: -14,
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: "rgba(255,255,255,0.16)",
+    right: -20,
+    top: -4,
+    width: 132,
+    height: 96,
+    borderRadius: 52,
+    backgroundColor: "rgba(50,72,175,0.28)",
   },
-  decoSmall: {
+  decoCloudTwo: {
     position: "absolute",
-    right: 42,
-    top: 84,
+    right: 18,
+    top: 32,
+    width: 110,
+    height: 100,
+    borderRadius: 55,
+    backgroundColor: "rgba(56,64,160,0.32)",
+  },
+  decoCloudThree: {
+    position: "absolute",
+    right: 46,
+    top: 15,
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.15)",
   },
   heroTitle: {
     color: "#FFFFFF",
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: "700",
     lineHeight: 27,
-    marginTop: 2,
+    marginTop: 18,
   },
   heroSub: {
     color: "rgba(255,255,255,0.85)",
     fontSize: 11,
     lineHeight: 16,
-    marginTop: 6,
-    maxWidth: "88%",
+    marginTop: 4,
+    maxWidth: 205,
   },
   heroBtn: {
     alignSelf: "flex-start",
     backgroundColor: "#FFFFFF",
     borderRadius: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     marginTop: 12,
   },
@@ -413,29 +447,27 @@ const styles = StyleSheet.create({
   dots: {
     flexDirection: "row",
     justifyContent: "center",
-    gap: 6,
+    gap: 2,
     marginTop: 8,
     marginBottom: 2,
   },
   dot: {
-    width: 18,
-    height: 4,
+    width: 41,
+    height: 3,
     borderRadius: 2,
-    borderWidth: 1,
-    borderColor: "#C6C9D8",
-    backgroundColor: "transparent",
+    backgroundColor: "rgba(218,218,218,0.63)",
   },
-  dotActive: { backgroundColor: "#3A3A5A", borderColor: "#3A3A5A" },
+  dotActive: { backgroundColor: "#3A2F5A" },
   row: {
     flexDirection: "row",
     paddingHorizontal: 16,
     gap: 12,
     marginTop: 12,
   },
-  moduleCard: { flex: 1, borderRadius: 20, padding: 14 },
+  moduleCard: { flex: 1, borderRadius: 12, padding: 14, shadowColor: "#000", shadowOffset: { width: -2, height: 1 }, shadowOpacity: 0.08, shadowRadius: 5, elevation: 2 },
   moduleCardNoBg: { flex: 1 },
   lightCard: { backgroundColor: "#FFFFFF" },
-  nuriCard: { flex: 1, borderRadius: 20, padding: 14 },
+  nuriCard: { flex: 1, borderRadius: 12, padding: 14, minHeight: 224 },
   moduleTitle: { fontSize: 14, fontWeight: "700", color: C.text },
   moduleSub: { fontSize: 10, color: C.sub, marginTop: 5, lineHeight: 15 },
   innerCard: {

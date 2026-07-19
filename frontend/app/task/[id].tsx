@@ -1,284 +1,103 @@
 import { useCallback, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
-import {
-  TaskItem,
-  taskColors as c,
-  taskTypeMeta,
-  formatSlashDate,
-  progressRatio,
-  toTaskItem,
-} from "@/src/taskMeta";
+import { TaskItem, taskColors as c, taskTypeMeta, formatSlashDate, progressRatio, toTaskItem } from "@/src/taskMeta";
 import CheckinSheet from "@/src/components/CheckinSheet";
 import Toast from "@/src/components/Toast";
+
+const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { width: viewportWidth } = useWindowDimensions();
+  const phoneWidth = Math.min(viewportWidth, 402);
   const [task, setTask] = useState<TaskItem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
-  useFocusEffect(
-    useCallback(() => {
-      // No single-task fetch on the backend — list + find by id.
-      api
-        .listTasks()
-        .then((all: any[]) => {
-          const raw = all.find((t) => t.id === id);
-          setTask(raw ? toTaskItem(raw) : null);
-        })
-        .catch(() => {});
-    }, [id])
-  );
+  useFocusEffect(useCallback(() => {
+    api.listTasks().then((all: any[]) => {
+      const raw = all.find((item) => item.id === id);
+      setTask(raw ? toTaskItem(raw) : null);
+    }).catch(() => {});
+  }, [id]));
 
-  if (!task) {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.loading}>
-          <Text style={{ color: c.textSecondary }}>加载中...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  if (!task) return <SafeAreaView style={styles.safe}><View style={styles.loading}><Text style={styles.muted}>加载中...</Text></View></SafeAreaView>;
 
   const meta = taskTypeMeta(task.task_type);
   const ratio = progressRatio(task);
   const completed = !!task.completed_at;
-
   const checkin = async () => {
     if (completed) return;
     const updated = await api.updateTask(task.id, { done: true });
     setTask(toTaskItem(updated));
     setSheetOpen(true);
   };
-
   const onSheetDone = (rating: string | null) => {
     setSheetOpen(false);
-    if (rating && task) {
-      api.updateTask(task.id, { mood: rating });
-      setToastMsg("已记录你的感受 ✓");
-      setTimeout(() => setToastMsg(null), 2000);
-    }
-    // 任务全部完成 → 回到列表（卡片归入已完成区）
-    if (task?.completed_at) {
-      setTimeout(() => router.back(), rating ? 900 : 400);
-    }
+    if (rating) { api.updateTask(task.id, { mood: rating }); setToastMsg("已记录你的感受 ✓"); setTimeout(() => setToastMsg(null), 2000); }
+    if (task.completed_at) setTimeout(() => router.back(), rating ? 900 : 400);
   };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      {/* 顶部：返回「任务卡」 */}
-      <View style={styles.topBar}>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={8}
-          style={styles.backRow}
-          testID="task-detail-back"
-        >
-          <Ionicons name="chevron-back" size={24} color={c.text} />
-          <Text style={styles.topTitle}>任务卡</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        <View style={styles.card}>
-          {/* 任务名 + 类型 pill */}
-          <View style={styles.titleRow}>
-            <Text style={styles.title} testID="task-detail-title">
-              {task.title}
-            </Text>
-            <View style={styles.pill}>
-              <Text style={styles.pillText}>{meta.label}</Text>
-            </View>
-          </View>
-
-          {/* 三栏信息行：开始日期 / 结束日期 / 任务频率 */}
-          <View style={styles.infoRow} testID="task-detail-info">
-            <View style={styles.infoCol}>
-              <Text style={styles.infoLabel}>开始日期</Text>
-              <Text style={styles.infoValue}>{formatSlashDate(task.created_at)}</Text>
-            </View>
-            <View style={styles.infoDivider} />
-            <View style={styles.infoCol}>
-              <Text style={styles.infoLabel}>结束日期</Text>
-              <Text style={styles.infoValue}>{formatSlashDate(task.due_date)}</Text>
-            </View>
-            <View style={styles.infoDivider} />
-            <View style={styles.infoCol}>
-              <Text style={styles.infoLabel}>任务频率</Text>
-              <Text style={styles.infoValueSmall}>
-                {task.is_recurring ? task.frequency_label || "重复性" : "一次性"}
-              </Text>
-            </View>
-          </View>
-
-          {/* 当前进度 */}
-          <Text style={styles.sectionTitle}>当前进度</Text>
-          <View style={styles.progressWrap}>
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${ratio * 100}%` }]} />
-            </View>
-            <Text style={styles.progressNum}>
-              {completed && !task.is_recurring
-                ? "1/1"
-                : `${task.completed_count}/${task.total_count}`}
-            </Text>
-          </View>
-
-          {/* 任务介绍 */}
-          {task.description ? (
-            <>
-              <Text style={styles.sectionTitle}>任务介绍</Text>
-              <Text style={styles.desc}>{task.description}</Text>
-            </>
-          ) : null}
-
-          {/* 指引 */}
-          {task.steps?.length ? (
-            <>
-              <Text style={styles.sectionTitle}>指引</Text>
-              {task.steps.map((s, i) => (
-                <View key={i} style={styles.stepRow}>
-                  <Text style={styles.stepNum}>{i + 1}.</Text>
-                  <Text style={styles.stepText}>{s}</Text>
-                </View>
-              ))}
-            </>
-          ) : null}
+      <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+        <Image source={blurredTaskBackground} style={styles.backgroundImage} resizeMode="cover" />
+        <View pointerEvents="none" style={styles.haloBlue} />
+        <View pointerEvents="none" style={styles.haloRed} />
+        <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
+        <View style={styles.topBar}>
+          <Pressable onPress={() => router.replace("/tasks")} style={styles.backRow} testID="task-detail-back"><Ionicons name="chevron-back" size={26} color="#3A2F5A" /><Text style={styles.topTitle}>任务卡</Text></Pressable>
         </View>
-      </ScrollView>
-
-      {/* 底部固定区：导出 icon（左）+ 打卡完成（右） */}
-      <View style={styles.footer}>
-        <Pressable
-          onPress={() => {
-            setToastMsg("图片已保存到相册");
-            setTimeout(() => setToastMsg(null), 2000);
-          }}
-          style={styles.exportBtn}
-          hitSlop={6}
-          testID="task-detail-export"
-        >
-          <Ionicons name="download-outline" size={20} color={c.textSecondary} />
-        </Pressable>
-        <Pressable
-          onPress={checkin}
-          disabled={completed}
-          style={[styles.cta, completed && styles.ctaDone]}
-          testID="task-detail-checkin"
-        >
-          <Ionicons
-            name="checkmark-circle-outline"
-            size={18}
-            color={completed ? c.textSecondary : "#fff"}
-          />
-          <Text style={[styles.ctaText, completed && { color: c.textSecondary }]}>
-            {completed ? "已完成" : "打卡完成"}
-          </Text>
-        </Pressable>
+        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+          <View style={styles.card}>
+            <View style={styles.titleRow}>
+              <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
+              <View style={styles.typePill}><Text style={styles.typeText}>{meta.label}</Text></View>
+            </View>
+            <View style={styles.infoRow}>
+              <Info label="开始日期" value={formatSlashDate(task.created_at)} />
+              <View style={styles.divider} />
+              <Info label="结束日期" value={formatSlashDate(task.due_date)} />
+              <View style={styles.divider} />
+              <Info label="任务频率" value={task.is_recurring ? task.frequency_label || "重复性" : "一次性"} compact />
+            </View>
+            <Text style={styles.sectionTitle}>当前进度</Text>
+            <View style={styles.progressTrack}><LinearGradient colors={["#422D7E", "#7751E4"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.progressFill, { width: `${ratio * 100}%` }]} /></View>
+            <Text style={styles.progressNumber}>{completed && !task.is_recurring ? "1/1" : `${task.completed_count}/${task.total_count}`}</Text>
+            {task.description ? <><Text style={styles.sectionTitle}>任务介绍</Text><Text style={styles.description}>{task.description}</Text></> : null}
+            {task.steps?.length ? <><Text style={styles.sectionTitle}>指引</Text><View style={styles.steps}>{task.steps.map((step, index) => <Text key={step} style={styles.stepText}>{index + 1}. {step}</Text>)}</View></> : null}
+            <Pressable onPress={() => { setToastMsg("图片已保存到相册"); setTimeout(() => setToastMsg(null), 2000); }} style={styles.download} testID="task-detail-export"><Ionicons name="download-outline" size={28} color="#3A2F5A" /></Pressable>
+          </View>
+        </ScrollView>
+        <View style={styles.footer}>
+          <Pressable onPress={checkin} disabled={completed} style={[styles.checkinBtn, completed && styles.checkinDone]} testID="task-detail-checkin"><Ionicons name="checkmark-circle-outline" size={25} color="#3A2F5A" /><Text style={styles.checkinText}>{completed ? "已完成" : "打卡完成"}</Text></Pressable>
+        </View>
+        <CheckinSheet visible={sheetOpen} taskType={task.task_type} onDone={onSheetDone} />
       </View>
-
-      <CheckinSheet visible={sheetOpen} taskType={task.task_type} onDone={onSheetDone} />
       <Toast message={toastMsg} />
     </SafeAreaView>
   );
 }
 
+function Info({ label, value, compact = false }: { label: string; value: string; compact?: boolean }) { return <View style={styles.infoCol}><Text style={styles.infoLabel}>{label}</Text><Text style={[styles.infoValue, compact && styles.infoValueCompact]}>{value}</Text></View>; }
+
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: c.bg },
-  loading: { flex: 1, alignItems: "center", justifyContent: "center" },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  backRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  topTitle: { fontSize: 20, fontWeight: "700", color: c.text },
-  scroll: { paddingHorizontal: 16, paddingBottom: 24 },
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    padding: 16,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  title: { flex: 1, fontSize: 20, fontWeight: "700", color: c.text, lineHeight: 28 },
-  pill: {
-    backgroundColor: c.primaryLight,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-  pillText: { fontSize: 12, fontWeight: "700", color: c.primary },
-  infoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 16,
-    paddingVertical: 10,
-  },
-  infoCol: { flex: 1, gap: 4 },
-  infoDivider: { width: 1, height: 30, backgroundColor: c.track, marginHorizontal: 10 },
-  infoLabel: { fontSize: 12, color: c.textSecondary },
-  infoValue: { fontSize: 18, fontWeight: "800", color: c.text },
-  infoValueSmall: { fontSize: 13, fontWeight: "700", color: c.text, lineHeight: 18 },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: c.text,
-    marginTop: 18,
-    marginBottom: 8,
-  },
-  progressWrap: { flexDirection: "row", alignItems: "center", gap: 10 },
-  progressTrack: {
-    flex: 1,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: c.track,
-    overflow: "hidden",
-  },
-  progressFill: { height: 10, borderRadius: 5, backgroundColor: c.primary },
-  progressNum: { fontSize: 13, fontWeight: "700", color: c.text },
-  desc: { fontSize: 14, color: "#4A4A4E", lineHeight: 22 },
-  stepRow: { flexDirection: "row", gap: 6, marginBottom: 8 },
-  stepNum: { fontSize: 14, color: "#4A4A4E", lineHeight: 22 },
-  stepText: { flex: 1, fontSize: 14, color: "#4A4A4E", lineHeight: 22 },
-  footer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
-    backgroundColor: c.bg,
-  },
-  exportBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cta: {
-    flex: 1,
-    height: 46,
-    borderRadius: 8,
-    backgroundColor: c.primary,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  ctaDone: { backgroundColor: c.track },
-  ctaText: { color: "#fff", fontWeight: "600", fontSize: 14 },
+  safe: { flex: 1, backgroundColor: "#FCFAFC" }, phoneCanvas: { flex: 1, alignSelf: "center", overflow: "hidden" }, backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" }, haloBlue: { position: "absolute", width: 396, height: 396, borderRadius: 198, backgroundColor: "rgba(123,166,255,0.82)", left: -188, top: 142 }, haloRed: { position: "absolute", width: 384, height: 384, borderRadius: 192, backgroundColor: "rgba(255,118,139,0.74)", right: -204, bottom: -58 },
+  loading: { flex: 1, alignItems: "center", justifyContent: "center" }, muted: { color: c.textSecondary },
+  topBar: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 10 }, backRow: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 34 }, topTitle: { color: "#3A2F5A", fontSize: 24, fontWeight: "900" },
+  scroll: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 114 },
+  card: { minHeight: 551, backgroundColor: "rgba(255,255,255,0.68)", borderRadius: 24, paddingHorizontal: 16, paddingTop: 20, paddingBottom: 18, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 15, elevation: 4 },
+  titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }, title: { flex: 1, color: "#3A2F5A", fontSize: 24, lineHeight: 29, fontWeight: "900" }, typePill: { backgroundColor: "#3A2F5A", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 }, typeText: { color: "#fff", fontSize: 11, fontWeight: "900" },
+  infoRow: { flexDirection: "row", alignItems: "center", marginTop: 24, paddingRight: 8 }, infoCol: { flex: 1, minWidth: 0 }, infoLabel: { color: "#3A2F5A", fontSize: 12 }, infoValue: { color: "#3A2F5A", fontSize: 24, lineHeight: 28, fontWeight: "900" }, infoValueCompact: { fontSize: 12, lineHeight: 18, marginTop: 4, fontWeight: "900" }, divider: { width: 1, height: 38, backgroundColor: "rgba(58,47,90,0.45)", marginHorizontal: 12 },
+  sectionTitle: { color: "#3A2F5A", fontSize: 16, fontWeight: "900", marginTop: 24 }, progressTrack: { height: 30, backgroundColor: "rgba(204,204,204,0.46)", borderRadius: 8, overflow: "hidden", marginTop: 12 }, progressFill: { height: 30, borderRadius: 2 }, progressNumber: { color: "#3A2F5A", fontSize: 16, fontWeight: "900", textAlign: "right", marginTop: -26, paddingRight: 8, height: 26 },
+  description: { color: "#3A2F5A", fontSize: 16, lineHeight: 21, marginTop: 10 }, steps: { marginTop: 10, gap: 2 }, stepText: { color: "#3A2F5A", fontSize: 16, lineHeight: 20 }, download: { alignSelf: "center", marginTop: 18, padding: 6 },
+  footer: { height: 102, alignItems: "center", justifyContent: "center" }, checkinBtn: { width: 245, height: 64, borderRadius: 33, backgroundColor: "#fff", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, shadowColor: "#000", shadowOffset: { width: 3, height: 3 }, shadowOpacity: 0.08, shadowRadius: 10, elevation: 4 }, checkinDone: { opacity: 0.56 }, checkinText: { color: "#3A2F5A", fontSize: 24, fontWeight: "900" },
 });

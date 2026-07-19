@@ -3,6 +3,7 @@
 // easy to cross-reference.
 
 import { API } from "./theme";
+import { isPreviewMode, previewRequest } from "./preview-api";
 import { storage } from "./utils/storage";
 
 // ── Token storage ────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ export const auth = {
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
+  if (isPreviewMode) return previewRequest(path, init) as Promise<T>;
   const token = await getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -104,6 +106,7 @@ export const api = {
   // ── Tasks ─────────────────────────────────────────────────────────────────
   listTasks: (scope?: "today" | "week") =>
     req(`/tasks${scope ? `?scope=${scope}` : ""}`),
+  createTask: (b: any) => req("/tasks", { method: "POST", body: JSON.stringify(b) }),
   updateTask: (id: string, b: any) =>
     req(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
   deleteTask: (id: string) => req(`/tasks/${id}`, { method: "DELETE" }),
