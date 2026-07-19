@@ -29,3 +29,5 @@ backend/golden_agent/processed/
 Thumbs.db
 .vscode/4
 .idea/
+.vercel
+.env*
