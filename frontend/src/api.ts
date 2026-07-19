@@ -94,6 +94,15 @@ export const api = {
   startSession: (b: any) =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
+  // Product only has one ongoing "Nuri的家" conversation (as opposed to the
+  // per-card sessions started from a feed card): reuse it if one already
+  // exists instead of creating a new session every time the tab is opened.
+  getOrStartMainSession: async () => {
+    const sessions = await req<any[]>(`/chat/sessions`);
+    const existing = sessions.find((s) => !s.source_card_id);
+    if (existing) return existing;
+    return req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) });
+  },
   deleteSession: (sid: string) =>
     req(`/chat/sessions/${sid}`, { method: "DELETE" }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),

@@ -447,6 +447,14 @@ class UserMessageIn(BaseModel):
     text:         Optional[str] = ""
     image_base64: Optional[str] = None
 
+class TaskCreate(BaseModel):
+    title:       str
+    description: Optional[str] = ""
+    steps:       Optional[list[str]] = None
+    task_type:   Optional[str] = "interaction"
+    scope:       Literal["today", "week"] = "today"
+    due_date:    Optional[str] = None
+
 class TaskUpdate(BaseModel):
     done: Optional[bool] = None
     mood: Optional[str]  = None
@@ -1737,6 +1745,33 @@ async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_
     if scope in ("today", "week"):
         tasks = [t for t in tasks if t["scope"] == scope]
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
+
+@api.post("/tasks", status_code=201)
+async def create_task(body: TaskCreate, uid: Optional[str] = Depends(_opt_uid)):
+    due = date.today() + timedelta(days=0 if body.scope == "today" else 7)
+    task = {
+        "id": str(uuid.uuid4()), "title": body.title, "scope": body.scope,
+        "source": "手动添加", "done": False, "progress_done": 0,
+        "progress_total": 7 if body.scope == "week" else 1,
+        "reflection": None, "created_at": _now(), "completed_at": None,
+        "task_type": body.task_type or "interaction",
+        "description": body.description or "",
+        "steps": body.steps or [],
+        "due_date": body.due_date or due.isoformat(),
+        "is_favorited": False,
+        "backfilled": False,
+    }
+    if uid:
+        task["user_id"] = uid
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            await anyio.to_thread.run_sync(lambda: sb.table("tasks").insert(task).execute())
+            return task
+        except Exception as e:
+            print(f"[warn] create_task insert error: {e}")
+    _tasks.append(task)
+    return task
 
 @api.patch("/tasks/{task_id}")
 async def update_task(

@@ -120,6 +120,11 @@ export default function Home() {
     toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
   };
 
+  const openNuriChat = async () => {
+    const s = await api.getOrStartMainSession();
+    router.push(`/chat/${s.id}`);
+  };
+
   useFocusEffect(
     useCallback(() => {
       api
@@ -256,7 +261,7 @@ export default function Home() {
 
           <Pressable
             style={styles.moduleCardNoBg}
-            onPress={() => router.push("/chat/chat-1")}
+            onPress={openNuriChat}
             testID="home-nuri-card"
           >
             <LinearGradient
