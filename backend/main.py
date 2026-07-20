@@ -511,6 +511,9 @@ class StyleRuleUpdate(BaseModel):
     category: Optional[str]  = None
     active:   Optional[bool] = None
 
+class FixReviewerAdd(BaseModel):
+    email: EmailStr
+
 def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
         raise HTTPException(403, "Invalid or missing admin key")
@@ -1001,10 +1004,27 @@ async def _get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
         grouped.setdefault(label, []).append(r["value"])
     return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())
 
-# Chat command Linda (or any admin reviewer) types inline to correct a reply:
-# "#fix <什么地方不对>". It never reaches the user — it gets distilled into a
-# reusable rule instead. See _distill_style_rule_sync / nuri_style_rules.
+# Chat command Linda (or any whitelisted reviewer) types inline to correct a
+# reply: "#fix <什么地方不对>". It never reaches the user — it gets distilled
+# into a reusable rule instead. See _distill_style_rule_sync / nuri_style_rules.
+# Only accounts listed in fix_reviewers can trigger it — otherwise any real
+# parent who happens to type "#fix ..." would get hijacked instead of a reply.
 FIX_KEYWORD = "#fix"
+
+async def _is_fix_reviewer(uid: Optional[str]) -> bool:
+    if not uid:
+        return False
+    sb = _get_supabase()
+    if not sb:
+        return False
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("fix_reviewers").select("user_id").eq("user_id", uid).maybe_single().execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        print(f"[warn] _is_fix_reviewer: {e}")
+        return False
 
 def _distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
     """Turn a raw #fix correction into a reusable rule that generalizes to
@@ -1727,7 +1747,7 @@ async def post_message(
     # _distill_style_rule_sync / nuri_style_rules.
     fix_text = None
     stripped_text = (body.text or "").strip()
-    if stripped_text.startswith(FIX_KEYWORD):
+    if stripped_text.startswith(FIX_KEYWORD) and await _is_fix_reviewer(owner_uid):
         fix_text = stripped_text[len(FIX_KEYWORD):].strip()
 
     user_turns = sum(1 for m in msgs if m["role"] == "user")
@@ -2325,6 +2345,44 @@ async def admin_delete_style_rule(rule_id: str, _: None = Depends(_require_admin
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     sb.table("nuri_style_rules").delete().eq("id", rule_id).execute()
+    return {"ok": True}
+
+# 允许使用聊天里 "#fix" 指令的账号白名单，见 _is_fix_reviewer。
+@app.get("/admin/fix-reviewers")
+async def admin_list_fix_reviewers(_: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    res = sb.table("fix_reviewers").select("user_id,added_at").order("added_at", desc=True).execute()
+    rows = res.data or []
+    if not rows:
+        return {"reviewers": []}
+    uids = [r["user_id"] for r in rows]
+    ures = sb.table("users").select("id,email,nickname").in_("id", uids).execute()
+    umap = {u["id"]: u for u in (ures.data or [])}
+    return {"reviewers": [
+        {**r, "email": umap.get(r["user_id"], {}).get("email"), "nickname": umap.get(r["user_id"], {}).get("nickname")}
+        for r in rows
+    ]}
+
+@app.post("/admin/fix-reviewers", status_code=201)
+async def admin_add_fix_reviewer(body: FixReviewerAdd, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    ur = sb.table("users").select("id,email,nickname").eq("email", body.email.lower()).maybe_single().execute()
+    if not ur.data:
+        raise HTTPException(404, "找不到这个邮箱对应的账号")
+    uid = ur.data["id"]
+    sb.table("fix_reviewers").upsert({"user_id": uid}).execute()
+    return {"user_id": uid, "email": ur.data["email"], "nickname": ur.data.get("nickname")}
+
+@app.delete("/admin/fix-reviewers/{user_id}")
+async def admin_remove_fix_reviewer(user_id: str, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    sb.table("fix_reviewers").delete().eq("user_id", user_id).execute()
     return {"ok": True}
 
 @app.get("/admin/memories")

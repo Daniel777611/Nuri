@@ -62,6 +62,13 @@ type StyleRule = {
   created_at: string;
 };
 
+type FixReviewer = {
+  user_id: string;
+  email?: string | null;
+  nickname?: string | null;
+  added_at: string;
+};
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [key, setKey] = useState("");
@@ -96,6 +103,12 @@ export default function AdminPage() {
   const [newRuleText, setNewRuleText] = useState("");
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+
+  // "#fix" 白名单：只有这里列出的账号在聊天里发 #fix 才会被当成指令
+  const [reviewers, setReviewers] = useState<FixReviewer[]>([]);
+  const [reviewersLoading, setReviewersLoading] = useState(false);
+  const [newReviewerEmail, setNewReviewerEmail] = useState("");
+  const [reviewerError, setReviewerError] = useState("");
 
   // ── Auth persistence ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -290,6 +303,41 @@ export default function AdminPage() {
     } catch {}
   };
 
+  // ── "#fix" 白名单 ──────────────────────────────────────────────────────────
+  const loadReviewers = useCallback(async () => {
+    setReviewersLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/admin/fix-reviewers`, { headers: { "x-admin-key": key } });
+      if (res.ok) { const d = await res.json(); setReviewers(d.reviewers || []); }
+    } catch {}
+    setReviewersLoading(false);
+  }, [key]);
+
+  const addReviewer = async () => {
+    const email = newReviewerEmail.trim();
+    if (!email) return;
+    setReviewerError("");
+    try {
+      const res = await fetch(`${BACKEND}/admin/fix-reviewers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) { setNewReviewerEmail(""); loadReviewers(); }
+      else { const d = await res.json().catch(() => ({})); setReviewerError(d.detail || "添加失败"); }
+    } catch { setReviewerError("添加失败"); }
+  };
+
+  const removeReviewer = async (userId: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/admin/fix-reviewers/${userId}`, {
+        method: "DELETE",
+        headers: { "x-admin-key": key },
+      });
+      if (res.ok) setReviewers((rs) => rs.filter((r) => r.user_id !== userId));
+    } catch {}
+  };
+
   useEffect(() => {
     if (authed) {
       loadBooks();
@@ -297,8 +345,9 @@ export default function AdminPage() {
       loadFeedMode();
       loadDailyPush();
       loadRules();
+      loadReviewers();
     }
-  }, [authed, loadBooks, loadUnregistered, loadFeedMode, loadDailyPush, loadRules]);
+  }, [authed, loadBooks, loadUnregistered, loadFeedMode, loadDailyPush, loadRules, loadReviewers]);
 
   // ── Toggle enabled — direct Supabase write ────────────────────────────────
   const toggleBook = async (doc_id: string, enabled: boolean) => {
@@ -581,6 +630,50 @@ export default function AdminPage() {
                   </View>
                 </>
               )}
+            </View>
+          ))}
+        </View>
+
+        {/* "#fix" 白名单 */}
+        <View style={styles.modeCard}>
+          <Text style={styles.modeTitle}>#fix 白名单（{reviewers.length} 人）</Text>
+          <Text style={styles.modeHint}>
+            只有下面这些账号在聊天里发的 #fix 才会被当成指令，其他人打出 #fix 开头的消息会当成普通对话正常回复。
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+            <TextInput
+              style={[styles.input, { flex: 1 }]}
+              placeholder="账号邮箱"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              value={newReviewerEmail}
+              onChangeText={setNewReviewerEmail}
+              onSubmitEditing={addReviewer}
+            />
+            <Pressable
+              style={[styles.smallBtn, !newReviewerEmail.trim() && styles.smallBtnDisabled]}
+              onPress={addReviewer}
+              disabled={!newReviewerEmail.trim()}
+            >
+              <Text style={styles.smallBtnText}>添加</Text>
+            </Pressable>
+          </View>
+          {reviewerError ? <Text style={styles.errorText}>{reviewerError}</Text> : null}
+          {reviewersLoading && <ActivityIndicator color={colors.brand} style={{ marginVertical: spacing.md }} />}
+          {!reviewersLoading && reviewers.length === 0 && (
+            <Text style={styles.emptyText}>还没有人能用 #fix。</Text>
+          )}
+          {reviewers.map((r) => (
+            <View key={r.user_id} style={styles.ruleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bookTitle}>{r.nickname || r.email || r.user_id}</Text>
+                <Text style={styles.bookMeta}>
+                  {[r.email, new Date(r.added_at).toLocaleDateString("zh-CN")].filter(Boolean).join("  ·  ")}
+                </Text>
+              </View>
+              <Pressable onPress={() => removeReviewer(r.user_id)} hitSlop={8}>
+                <Text style={styles.deleteText}>移除</Text>
+              </Pressable>
             </View>
           ))}
         </View>
