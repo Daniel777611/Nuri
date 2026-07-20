@@ -24,10 +24,6 @@
       "destination": "/api/backend.py"
     },
     {
-      "source": "/admin",
-      "destination": "/api/backend.py"
-    },
-    {
       "source": "/admin/(.*)",
       "destination": "/api/backend.py"
     },
