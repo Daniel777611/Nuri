@@ -28,7 +28,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Privacy                /api/privacy*
   Legacy RAG routes      /, /health, /index, /ask (static + PDF ingest)
   RAG helper functions   PDF parsing, chunking, embeddings, retrieval
-  Admin endpoints        /admin/books, /admin/settings, /admin/discover
+  Admin endpoints        /admin/books, /admin/settings, /admin/discover, /admin/style-rules
   Daily push admin       /admin/daily-push*
 """
 
@@ -501,6 +501,16 @@ class FeedModeUpdate(BaseModel):
 class DailyPushToggle(BaseModel):
     enabled: bool
 
+class StyleRuleCreate(BaseModel):
+    rule:        str
+    category:    Optional[str] = None
+    source_note: Optional[str] = None
+
+class StyleRuleUpdate(BaseModel):
+    rule:     Optional[str]  = None
+    category: Optional[str]  = None
+    active:   Optional[bool] = None
+
 def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
         raise HTTPException(403, "Invalid or missing admin key")
@@ -727,16 +737,29 @@ suggest_tasks（只在全部条件满足时才设为true，否则一律false）�
 - 自然到了"我来帮你整理几件可以做的事"的时机
 - 本次对话还没生成过任务"""
 
-def _nuri_reply_sync(history: list[dict], card_ctx: str = "", memory_ctx: str = "") -> dict:
+# 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
+# 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
+# 更早的重要信息依赖 memory_ctx（user_memories，每轮都在后台持续提炼）保留，
+# 而不是逐字重放整段历史。
+_HISTORY_WINDOW = 40
+
+def _nuri_reply_sync(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "",
+) -> dict:
     if not oai:
         return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
+    if style_ctx:
+        system += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
+    if profile_ctx:
+        system += f"\n\n这位家长的基本情况（来自注册信息）：\n{profile_ctx}"
     if memory_ctx:
         system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
     if card_ctx:
         system += f"\n\n本次对话相关内容：\n{card_ctx}"
     msgs = [{"role": "system", "content": system}]
-    for m in history:
+    for m in history[-_HISTORY_WINDOW:]:
         role = "user" if m["role"] == "user" else "assistant"
         content = m.get("text") or ""
         if content:
@@ -788,6 +811,31 @@ _MEMORY_CATEGORY_LABELS = {
     "child_state": "孩子当前状态",
     "fact": "其他信息",
 }
+
+_PARENT_ROLE_LABELS = {
+    "mom": "妈妈", "dad": "爸爸", "grandparent": "祖父母/外祖父母", "other": "其他家庭照顾者",
+}
+_CONCERN_LABELS = {
+    "sleep": "睡眠", "food": "饮食", "emotion": "情绪", "development": "发展",
+    "parenting": "教养方式", "health": "健康", "childcare": "托育",
+    "family": "家庭关系", "unknown": "还不确定", "other": "其他",
+}
+
+def _profile_ctx(row: dict) -> str:
+    """Turn a parent's onboarding answers (role/city/concerns) into a short
+    prompt block, so NURI knows who it's talking to from the first reply
+    instead of only picking this up after enough chat history accumulates."""
+    parts = []
+    role = _PARENT_ROLE_LABELS.get(row.get("parent_role"))
+    if role:
+        parts.append(f"身份：{role}")
+    city = row.get("city")
+    if city:
+        parts.append(f"所在城市：{city}")
+    concerns = [_CONCERN_LABELS.get(c, c) for c in (row.get("top_concerns") or [])]
+    if concerns:
+        parts.append(f"主要关心：{'、'.join(concerns)}")
+    return "；".join(parts)
 
 async def _save_normalized_input(
     *, user_id: Optional[str], session_id: Optional[str], source: str,
@@ -953,6 +1001,71 @@ async def _get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
         grouped.setdefault(label, []).append(r["value"])
     return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())
 
+# Chat command Linda (or any admin reviewer) types inline to correct a reply:
+# "#fix <什么地方不对>". It never reaches the user — it gets distilled into a
+# reusable rule instead. See _distill_style_rule_sync / nuri_style_rules.
+FIX_KEYWORD = "#fix"
+
+def _distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
+    """Turn a raw #fix correction into a reusable rule that generalizes to
+    similar situations, rather than a one-off patch quoting this exact reply."""
+    if not oai:
+        return {"rule": feedback, "category": "other"}
+    system = (
+        "你在帮 NURI（一个育儿顾问 AI）的运营人员，把她对某条 AI 回复的具体修改意见，"
+        "转写成一条可以长期复用、适用于类似场景的行为规则。规则要泛化，不要照抄这一次的具体内容，"
+        "用一句话说清楚以后遇到类似情况该怎么做。"
+    )
+    user_content = f"AI 刚才的回复：\n{prior_ai_text or '（无）'}\n\n运营人员的修改意见：\n{feedback}"
+    try:
+        resp = oai.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "style_rule",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "rule": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": ["tone", "length", "empathy", "accuracy", "other"],
+                            },
+                        },
+                        "required": ["rule", "category"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return {"rule": (data.get("rule") or "").strip(), "category": data.get("category", "other")}
+    except Exception as e:
+        print(f"[error] _distill_style_rule_sync failed: {type(e).__name__}: {e}")
+        return {"rule": feedback, "category": "other"}
+
+async def _get_style_rules_ctx(limit: int = 50) -> str:
+    """Fetch the active, accumulated style rules for injection into every
+    reply — this is what makes a #fix correction 'stick' going forward."""
+    sb = _get_supabase()
+    if not sb:
+        return ""
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("nuri_style_rules").select("rule")
+            .eq("active", True).order("created_at", desc=True).limit(limit).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        print(f"[warn] _get_style_rules_ctx: {e}")
+        return ""
+    if not rows:
+        return ""
+    return "\n".join(f"- {r['rule']}" for r in rows)
+
 # Seed offsets per type so tip/news/product get visually distinct images
 _TYPE_SEED_OFFSET = {"tip": 0, "news": 100, "product": 200}
 
@@ -1092,35 +1205,6 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
     except Exception:
         return []
 
-async def _gen_tasks(task_list: list[dict], uid: Optional[str]):
-    """Persist a list of task dicts to Supabase or in-memory."""
-    src = f"来自你和AI的对话 · {datetime.now().strftime('%m月%d日')}"
-    sb = _get_supabase()
-    for t in task_list:
-        scope = t.get("scope", "today")
-        due = date.today() + timedelta(days=0 if scope == "today" else 7)
-        task = {
-            "id": str(uuid.uuid4()), "title": t["title"], "scope": scope,
-            "source": src, "done": False, "progress_done": 0,
-            "progress_total": 7 if scope == "week" else 1,
-            "reflection": None, "created_at": _now(), "completed_at": None,
-            "task_type": t.get("task_type") or "interaction",
-            "description": t.get("description") or "",
-            "steps": t.get("steps") or [],
-            "due_date": due.isoformat(),
-            "is_favorited": False,
-            "backfilled": False,
-        }
-        if uid:
-            task["user_id"] = uid
-        if sb and uid:
-            try:
-                await anyio.to_thread.run_sync(lambda: sb.table("tasks").insert(task).execute())
-            except Exception as e:
-                print(f"[warn] _gen_tasks insert error: {e}")
-                _tasks.append(task)
-        else:
-            _tasks.append(task)
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @api.post("/auth/register", status_code=201)
@@ -1454,19 +1538,24 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         _sessions[session["id"]] = session
         _messages[session["id"]] = []
 
-    # Fetch user nickname for personalised greeting
+    # Fetch profile info for a personalised greeting and ongoing context
     nickname = ""
+    profile_ctx = ""
     if uid and sb:
         try:
             nr = await anyio.to_thread.run_sync(
-                lambda: sb.table("users").select("nickname").eq("id", uid).maybe_single().execute()
+                lambda: sb.table("users").select("nickname,city,parent_role,top_concerns")
+                .eq("id", uid).maybe_single().execute()
             )
-            nickname = (nr.data or {}).get("nickname", "")
+            row = nr.data or {}
+            nickname = row.get("nickname", "")
+            profile_ctx = _profile_ctx(row)
         except Exception:
             pass
 
     gen_cards = await _db_get_gen_cards()
     ctx = _card_ctx(card_id, gen_cards) if card_id else ""
+    style_ctx = await _get_style_rules_ctx()
     name_part = f"用户的名字是{nickname}，" if nickname else ""
     quick_replies: list = []
     if oai:
@@ -1486,7 +1575,7 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
                 "语气温暖但沉稳，不油腻，不问问题，控制在3句话以内。"
             )
         reply = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync([{"role": "user", "text": intro_prompt}])
+            lambda: _nuri_reply_sync([{"role": "user", "text": intro_prompt}], "", "", profile_ctx, style_ctx)
         )
         first_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
@@ -1633,14 +1722,22 @@ async def post_message(
         msgs = _messages.setdefault(session_id, [])
         msgs.append(user_msg)
 
+    # "#fix <反馈>" is an internal command for reviewers to correct the AI's
+    # last reply — it never reaches the parent as a normal turn. See
+    # _distill_style_rule_sync / nuri_style_rules.
+    fix_text = None
+    stripped_text = (body.text or "").strip()
+    if stripped_text.startswith(FIX_KEYWORD):
+        fix_text = stripped_text[len(FIX_KEYWORD):].strip()
+
     user_turns = sum(1 for m in msgs if m["role"] == "user")
     already_generated = any(
-        (m.get("transition") or {}).get("kind") == "tasks_generated"
+        (m.get("transition") or {}).get("kind") == "task_suggestion"
         for m in msgs if m["role"] == "ai"
     )
 
     # Auto-generate a short title on the first user message
-    if user_turns == 1:
+    if not fix_text and user_turns == 1:
         first_text = body.text or ""
         if oai and first_text:
             try:
@@ -1670,19 +1767,41 @@ async def post_message(
     transition = None
     quick_replies: list = []
 
-    if oai:
+    if fix_text:
+        prior_ai_text = next(
+            (m.get("text", "") for m in reversed(msgs[:-1]) if m.get("role") == "ai"), ""
+        )
+        rule = await anyio.to_thread.run_sync(lambda: _distill_style_rule_sync(prior_ai_text, fix_text))
+        if sb and rule.get("rule"):
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("nuri_style_rules").insert({
+                        "id": str(uuid.uuid4()), "rule": rule["rule"], "category": rule.get("category"),
+                        "source_note": fix_text, "active": True, "created_by": "chat:#fix",
+                    }).execute()
+                )
+                ai_text = f"已记录调整：{rule['rule']}"
+            except Exception as e:
+                print(f"[warn] #fix insert error: {e}")
+                ai_text = "调整没能存上，稍后在后台重试一下。"
+        else:
+            ai_text = "没能提炼出规则，换个说法再试一次？"
+    elif oai:
         gen_cards = await _db_get_gen_cards()
         ctx = _card_ctx(session.get("source_card_id") or "", gen_cards)
         memory_ctx = await _get_memory_context(owner_uid)
-        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx))
+        profile_ctx = _profile_ctx(context_hints)
+        style_ctx = await _get_style_rules_ctx()
+        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx, profile_ctx, style_ctx))
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
-        # Let NURI decide when to generate tasks via suggest_tasks flag
+        # Let NURI decide when to suggest tasks via suggest_tasks flag. These
+        # are only drafts — nothing is persisted to the tasks table until the
+        # parent taps "添加计划" on a specific card (POST /tasks).
         if reply.get("suggest_tasks") and not already_generated:
             task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
             if task_list:
-                await _gen_tasks(task_list, uid)
-                transition = {"kind": "tasks_generated", "count": len(task_list)}
+                transition = {"kind": "task_suggestion", "tasks": task_list}
     else:
         script_key = session.get("script_key", "free")
         script = SCRIPTS.get(script_key, SCRIPTS["free"])
@@ -1697,7 +1816,12 @@ async def post_message(
             ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
             new_step = step
         if transition and transition.get("kind") == "tasks_generated" and not already_generated:
-            await _gen_tasks(CARD_TASKS.get(script_key, CARD_TASKS["free"]), uid)
+            transition = {
+                "kind": "task_suggestion",
+                "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
+            }
+        elif transition and transition.get("kind") == "tasks_generated":
+            transition = None
         if sb:
             try:
                 await anyio.to_thread.run_sync(
@@ -2158,6 +2282,49 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     sb.table("books").delete().eq("doc_id", doc_id).execute()
+    return {"ok": True}
+
+# NURI 的"规则文档"：由 #fix 聊天指令自动写入，也可以在这里直接管理。
+# 每次生成回复都会把 active=true 的规则整段注入 system prompt（见
+# _get_style_rules_ctx / _nuri_reply_sync）。
+@app.get("/admin/style-rules")
+async def admin_list_style_rules(_: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    res = sb.table("nuri_style_rules").select("*").order("created_at", desc=True).execute()
+    return {"rules": getattr(res, "data", None) or []}
+
+@app.post("/admin/style-rules", status_code=201)
+async def admin_create_style_rule(body: StyleRuleCreate, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    row = {
+        "id": str(uuid.uuid4()), "rule": body.rule, "category": body.category,
+        "source_note": body.source_note, "active": True, "created_by": "admin",
+    }
+    sb.table("nuri_style_rules").insert(row).execute()
+    return row
+
+@app.patch("/admin/style-rules/{rule_id}")
+async def admin_update_style_rule(rule_id: str, update: StyleRuleUpdate, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    patch = {k: v for k, v in update.dict().items() if v is not None}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    patch["updated_at"] = _now()
+    sb.table("nuri_style_rules").update(patch).eq("id", rule_id).execute()
+    return {"ok": True}
+
+@app.delete("/admin/style-rules/{rule_id}")
+async def admin_delete_style_rule(rule_id: str, _: None = Depends(_require_admin)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    sb.table("nuri_style_rules").delete().eq("id", rule_id).execute()
     return {"ok": True}
 
 @app.get("/admin/memories")

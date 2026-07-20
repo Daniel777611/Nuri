@@ -52,6 +52,16 @@ type Book = {
 
 type Unregistered = { doc_id: string; chunk_count: number };
 
+type StyleRule = {
+  id: string;
+  rule: string;
+  category?: string | null;
+  source_note?: string | null;
+  active: boolean;
+  created_by?: string | null;
+  created_at: string;
+};
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [key, setKey] = useState("");
@@ -79,6 +89,13 @@ export default function AdminPage() {
 
   // Inline titles for unregistered docs
   const [regTitles, setRegTitles] = useState<Record<string, string>>({});
+
+  // NURI 规则文档（#fix 聊天指令自动写入，也支持在这里直接改）
+  const [rules, setRules] = useState<StyleRule[]>([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [newRuleText, setNewRuleText] = useState("");
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
 
   // ── Auth persistence ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -212,14 +229,76 @@ export default function AdminPage() {
     setTriggerLoading(false);
   };
 
+  // ── NURI 规则文档 ──────────────────────────────────────────────────────────
+  const loadRules = useCallback(async () => {
+    setRulesLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules`, { headers: { "x-admin-key": key } });
+      if (res.ok) { const d = await res.json(); setRules(d.rules || []); }
+    } catch {}
+    setRulesLoading(false);
+  }, [key]);
+
+  const addRule = async () => {
+    const rule = newRuleText.trim();
+    if (!rule) return;
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ rule }),
+      });
+      if (res.ok) { setNewRuleText(""); loadRules(); }
+    } catch {}
+  };
+
+  const toggleRule = async (id: string, active: boolean) => {
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, active } : r)));
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ active }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setRules((rs) => rs.map((r) => (r.id === id ? { ...r, active: !active } : r)));
+    }
+  };
+
+  const saveRuleEdit = async (id: string) => {
+    const rule = editingText.trim();
+    if (!rule) return;
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ rule }),
+      });
+      if (res.ok) { setEditingRuleId(null); loadRules(); }
+    } catch {}
+  };
+
+  const deleteRule = async (id: string) => {
+    if (Platform.OS === "web" && !window.confirm("确定删除这条规则？")) return;
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules/${id}`, {
+        method: "DELETE",
+        headers: { "x-admin-key": key },
+      });
+      if (res.ok) setRules((rs) => rs.filter((r) => r.id !== id));
+    } catch {}
+  };
+
   useEffect(() => {
     if (authed) {
       loadBooks();
       loadUnregistered();
       loadFeedMode();
       loadDailyPush();
+      loadRules();
     }
-  }, [authed, loadBooks, loadUnregistered, loadFeedMode, loadDailyPush]);
+  }, [authed, loadBooks, loadUnregistered, loadFeedMode, loadDailyPush, loadRules]);
 
   // ── Toggle enabled — direct Supabase write ────────────────────────────────
   const toggleBook = async (doc_id: string, enabled: boolean) => {
@@ -424,6 +503,88 @@ export default function AdminPage() {
           ) : null}
         </View>
 
+        {/* NURI 规则文档 */}
+        <View style={styles.modeCard}>
+          <Text style={styles.modeTitle}>
+            NURI 规则文档（{rules.filter((r) => r.active).length} 条生效）
+          </Text>
+          <Text style={styles.modeHint}>
+            聊天里发 #fix 会自动写入一条规则；这里也可以直接增删改。停用的规则不会进入 AI 的 prompt。
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+            <TextInput
+              style={[styles.input, { flex: 1 }]}
+              placeholder="新增一条规则……"
+              value={newRuleText}
+              onChangeText={setNewRuleText}
+              onSubmitEditing={addRule}
+            />
+            <Pressable
+              style={[styles.smallBtn, !newRuleText.trim() && styles.smallBtnDisabled]}
+              onPress={addRule}
+              disabled={!newRuleText.trim()}
+            >
+              <Text style={styles.smallBtnText}>添加</Text>
+            </Pressable>
+          </View>
+          {rulesLoading && <ActivityIndicator color={colors.brand} style={{ marginVertical: spacing.md }} />}
+          {!rulesLoading && rules.length === 0 && (
+            <Text style={styles.emptyText}>还没有规则，等 #fix 用起来或者手动加一条。</Text>
+          )}
+          {rules.map((r) => (
+            <View key={r.id} style={styles.ruleRow}>
+              {editingRuleId === r.id ? (
+                <>
+                  <TextInput
+                    style={[styles.miniInput, { flex: 1 }]}
+                    value={editingText}
+                    onChangeText={setEditingText}
+                    multiline
+                    autoFocus
+                  />
+                  <Pressable style={styles.smallBtn} onPress={() => saveRuleEdit(r.id)}>
+                    <Text style={styles.smallBtnText}>保存</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setEditingRuleId(null)} hitSlop={8}>
+                    <Text style={styles.deleteText}>取消</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <>
+                  <Pressable
+                    style={{ flex: 1 }}
+                    onPress={() => { setEditingRuleId(r.id); setEditingText(r.rule); }}
+                  >
+                    <Text
+                      style={[
+                        styles.bookTitle,
+                        !r.active && { color: colors.onSurfaceTertiary, textDecorationLine: "line-through" },
+                      ]}
+                    >
+                      {r.rule}
+                    </Text>
+                    <Text style={styles.bookMeta}>
+                      {[r.category, r.created_by, new Date(r.created_at).toLocaleDateString("zh-CN")]
+                        .filter(Boolean).join("  ·  ")}
+                    </Text>
+                  </Pressable>
+                  <View style={styles.bookActions}>
+                    <Switch
+                      value={r.active}
+                      onValueChange={(v) => toggleRule(r.id, v)}
+                      trackColor={{ true: colors.brand, false: "#D4D4D0" }}
+                      thumbColor="#fff"
+                    />
+                    <Pressable onPress={() => deleteRule(r.id)} hitSlop={8}>
+                      <Text style={styles.deleteText}>删除</Text>
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </View>
+          ))}
+        </View>
+
         {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
         <Pressable style={styles.refreshBtn} onPress={() => { loadBooks(); loadUnregistered(); }}>
@@ -591,6 +752,11 @@ const styles = StyleSheet.create({
   bookMeta: { fontSize: 12, color: colors.onSurfaceTertiary, marginTop: 2 },
   bookActions: { alignItems: "center", gap: spacing.xs },
   deleteText: { color: colors.error, fontSize: 12, fontWeight: "500" },
+
+  ruleRow: {
+    flexDirection: "row", alignItems: "flex-start", backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md, padding: spacing.md, gap: spacing.sm, marginTop: spacing.sm,
+  },
 
   unregRow: {
     backgroundColor: colors.surfaceTertiary, borderRadius: radius.md, padding: spacing.md, gap: spacing.sm,
