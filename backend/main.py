@@ -391,8 +391,8 @@ Concern    = Literal[
 class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
-    nickname: str = Field(..., min_length=1)
-    city: str     = Field(..., min_length=1)
+    nickname: str = ""
+    city: str = ""
     parent_role: ParentRole = "mom"
     top_concerns: List[Concern] = Field(default_factory=list)
 
