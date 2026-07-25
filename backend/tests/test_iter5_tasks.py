@@ -19,8 +19,8 @@ from datetime import date, timedelta
 BASE_URL = os.environ.get("EXPO_PUBLIC_BACKEND_URL", "").rstrip("/") or \
            os.environ.get("EXPO_BACKEND_URL", "").rstrip("/")
 if not BASE_URL:
-    # Fallback for pytest environment
-    BASE_URL = "https://chinese-parent-app.preview.emergentagent.com"
+    # Fallback for local pytest runs (matches start.bat's uvicorn port)
+    BASE_URL = "http://localhost:8000"
 
 API = BASE_URL + "/api"
 
