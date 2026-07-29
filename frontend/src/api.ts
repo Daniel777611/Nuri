@@ -20,6 +20,11 @@ export const auth = {
   getToken,
 };
 
+// Budget for a full chat turn. Must exceed the backend's own OpenAI timeout,
+// otherwise the client gives up while the server is still working — which just
+// makes users resend and stack duplicate work.
+const CHAT_TIMEOUT_MS = 90000;
+
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
   if (isPreviewMode) return previewRequest(path, init) as Promise<T>;
@@ -50,6 +55,163 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ── SSE chat streaming ───────────────────────────────────────────────────────
+// Thrown when the stream never started (no such route, non-200, wrong content
+// type). Nothing was persisted server-side, so the caller can safely retry
+// against the non-streaming endpoint. A failure *mid*-stream throws a plain
+// Error instead: the user message is already saved, and retrying would double
+// post it, so the caller should reload the thread rather than resend.
+// Carries an explicit flag rather than relying on `instanceof`: subclassing
+// Error survives transpilation poorly under Hermes/Babel, and a missed check
+// here would silently disable the fallback.
+export class StreamUnsupportedError extends Error {
+  readonly streamUnsupported = true;
+}
+
+export function isStreamUnsupported(err: unknown): boolean {
+  return !!(err && typeof err === "object" && (err as any).streamUnsupported);
+}
+
+// React Native's fetch resolves without a `body` stream; only web/RNW has one.
+const SUPPORTS_FETCH_STREAM = (() => {
+  try {
+    return typeof TextDecoder !== "undefined" && !!new Response("").body;
+  } catch {
+    return false;
+  }
+})();
+
+type SseEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; user_message: any; ai_messages: any[] }
+  | { type: "error"; message?: string };
+
+/** Feed raw response text in; get whole `data:` events out. */
+function makeSseParser(onEvent: (e: SseEvent) => void) {
+  let buffered = "";
+  return (chunk: string) => {
+    buffered += chunk;
+    const frames = buffered.split("\n\n");
+    buffered = frames.pop() ?? "";
+    for (const frame of frames) {
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(6)));
+        } catch {
+          // A truncated frame is not worth failing the whole turn over.
+        }
+      }
+    }
+  };
+}
+
+/** Native transport: XHR exposes the response incrementally via onprogress. */
+function xhrStream(
+  url: string,
+  headers: Record<string, string>,
+  payload: string,
+  feed: (chunk: string) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    let consumed = 0;
+    let started = false;
+    const drain = () => {
+      const text: string = xhr.responseText ?? "";
+      if (text.length > consumed) {
+        feed(text.slice(consumed));
+        consumed = text.length;
+      }
+    };
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === xhr.HEADERS_RECEIVED) {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          xhr.abort();
+          reject(new StreamUnsupportedError(`stream HTTP ${xhr.status}`));
+          return;
+        }
+        started = true;
+      }
+    };
+    xhr.onprogress = drain;
+    xhr.onload = () => {
+      drain();
+      resolve();
+    };
+    xhr.onerror = () =>
+      reject(started ? new Error("stream failed") : new StreamUnsupportedError("stream failed"));
+    xhr.ontimeout = () => reject(new Error("stream timed out"));
+    xhr.timeout = CHAT_TIMEOUT_MS;
+    xhr.send(payload);
+  });
+}
+
+/**
+ * Stream one chat turn, invoking `onDelta` as text arrives. Resolves with the
+ * same shape as the non-streaming endpoint.
+ */
+async function streamMessage(
+  sid: string,
+  body: any,
+  onDelta: (chunk: string) => void,
+): Promise<{ user_message: any; ai_messages: any[] }> {
+  if (isPreviewMode) throw new StreamUnsupportedError("preview mode");
+
+  const token = await getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const url = `${API}/chat/sessions/${sid}/messages/stream`;
+  const payload = JSON.stringify(body);
+
+  let result: { user_message: any; ai_messages: any[] } | null = null;
+  let failure: string | null = null;
+  const feed = makeSseParser((e) => {
+    if (e.type === "delta") onDelta(e.text);
+    else if (e.type === "done") result = { user_message: e.user_message, ai_messages: e.ai_messages };
+    else if (e.type === "error") failure = e.message || "stream error";
+  });
+
+  if (!SUPPORTS_FETCH_STREAM) {
+    await xhrStream(url, headers, payload, feed);
+  } else {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new StreamUnsupportedError(`stream HTTP ${res.status}`);
+      // A host that buffers the response (or an old backend) won't send SSE.
+      if (!res.body || !(res.headers.get("content-type") || "").includes("text/event-stream")) {
+        throw new StreamUnsupportedError("stream not supported by host");
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        feed(decoder.decode(value, { stream: true }));
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  if (failure) throw new Error(failure);
+  if (!result) throw new Error("stream ended without a result");
+  return result;
 }
 
 export const api = {
@@ -106,11 +268,16 @@ export const api = {
   deleteSession: (sid: string) =>
     req(`/chat/sessions/${sid}`, { method: "DELETE" }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
+  // A model turn can legitimately run past the 12s default. Aborting early
+  // doesn't stop the backend, it just makes users resend and stack more work,
+  // so this has to stay above the backend's own OpenAI timeout budget.
   sendMessage: (sid: string, b: any) =>
-    req(`/chat/sessions/${sid}/messages`, {
-      method: "POST",
-      body: JSON.stringify(b),
-    }),
+    req(
+      `/chat/sessions/${sid}/messages`,
+      { method: "POST", body: JSON.stringify(b) },
+      CHAT_TIMEOUT_MS,
+    ),
+  streamMessage,
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
   listTasks: (scope?: "today" | "week") =>

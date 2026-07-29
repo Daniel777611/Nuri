@@ -22,7 +22,7 @@ import Toast from "@/src/components/Toast";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
-import { api } from "@/src/api";
+import { api, isStreamUnsupported } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
@@ -80,7 +80,13 @@ export default function ChatDetail() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // Mirrors `sending` for the re-entrancy check: state updates are async, so
+  // rapid taps would otherwise all read the stale `false`.
+  const sendingRef = useRef(false);
   const [typing, setTyping] = useState(false);
+  // Reply text accumulated from the SSE stream, rendered as a live bubble until
+  // the persisted message arrives and replaces it.
+  const [streamingText, setStreamingText] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [approvedTaskIds, setApprovedTaskIds] = useState<string[]>([]);
   const scrollRef = useRef<ScrollView>(null);
@@ -110,13 +116,14 @@ export default function ChatDetail() {
 
   useEffect(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-  }, [messages, typing]);
+  }, [messages, typing, streamingText]);
 
   const send = async (textOverride?: string, imageBase64?: string | null) => {
-    if (!id) return;
+    if (!id || sendingRef.current) return;
     const text = (textOverride ?? input).trim();
     if (!text && !imageBase64) return;
     setInput("");
+    sendingRef.current = true;
     setSending(true);
 
     const optimistic: Msg = {
@@ -128,20 +135,38 @@ export default function ChatDetail() {
     setMessages((p) => [...p, optimistic]);
 
     setTyping(true);
+    const payload = { text, image_base64: imageBase64 || null };
     try {
-      await new Promise((r) => setTimeout(r, 900));
-      const res = await api.sendMessage(id, {
-        text,
-        image_base64: imageBase64 || null,
-      });
+      let res;
+      try {
+        res = await api.streamMessage(id, payload, (chunk) => {
+          // First token replaces the typing dots with the live bubble.
+          setTyping(false);
+          setStreamingText((prev) => prev + chunk);
+        });
+      } catch (err) {
+        if (!isStreamUnsupported(err)) throw err;
+        // The stream never started, so nothing was persisted — the plain
+        // endpoint can serve this turn instead.
+        setTyping(true);
+        res = await api.sendMessage(id, payload);
+      }
       setMessages((p) => [
         ...p.filter((m) => m.id !== optimistic.id),
         res.user_message,
         ...res.ai_messages,
       ]);
+    } catch {
+      // Mid-stream failures may have already persisted the user message, so
+      // resending would duplicate it — reload the thread instead of guessing.
+      setMessages((p) => p.filter((m) => m.id !== optimistic.id));
+      showToast("发送失败，请重试");
+      await load().catch(() => {});
     } finally {
+      setStreamingText("");
       setTyping(false);
       setSending(false);
+      sendingRef.current = false;
     }
   };
 
@@ -197,6 +222,14 @@ export default function ChatDetail() {
                 isTaskAdded={(index) => approvedTaskIds.includes(`${m.id}-${index}`)}
               />
             ))}
+            {streamingText ? (
+              <MessageBubble
+                msg={{ id: "__streaming__", role: "ai", text: streamingText }}
+                onQuick={() => {}}
+                onAddTask={() => {}}
+                isTaskAdded={() => false}
+              />
+            ) : null}
             {typing ? <TypingDots /> : null}
           </ScrollView>
 

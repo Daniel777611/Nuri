@@ -32,10 +32,11 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import io, json, os, uuid, hashlib, random
+import asyncio, io, json, os, uuid, hashlib, random
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import List, Literal, NamedTuple, Optional
 
 import anyio
 import bcrypt
@@ -43,10 +44,11 @@ import jwt
 from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel, EmailStr, Field
+from starlette.background import BackgroundTask
 
 load_dotenv()
 
@@ -89,7 +91,29 @@ SMTP_USER        = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM        = os.getenv("SMTP_FROM", "")
 
-oai = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# The SDK defaults (timeout=600s, max_retries=2) let a single stalled call hold
+# a worker thread for ~30 minutes, which starves the shared thread pool and
+# freezes the whole app.
+#
+# These ceilings are sized against the Vercel function's maxDuration (see
+# vercel.json) so a pathological turn is cut short by us, with a usable error,
+# rather than by the platform mid-response. They are ceilings for stalls, not
+# expected timings — a normal turn returns in a few seconds.
+OPENAI_TIMEOUT_S       = float(os.getenv("OPENAI_TIMEOUT_S", "45"))   # main chat reply
+OPENAI_FAST_TIMEOUT_S  = float(os.getenv("OPENAI_FAST_TIMEOUT_S", "15"))  # titles, embeddings, #fix
+OPENAI_TASKS_TIMEOUT_S = float(os.getenv("OPENAI_TASKS_TIMEOUT_S", "25"))  # task suggestions
+OPENAI_MAX_RETRIES     = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
+
+oai = (
+    OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_S, max_retries=OPENAI_MAX_RETRIES)
+    if OPENAI_API_KEY else None
+)
+# Used by the streaming chat path. Being natively async, it holds no worker
+# thread for the length of the call, unlike the blocking client above.
+aoai = (
+    AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_S, max_retries=OPENAI_MAX_RETRIES)
+    if OPENAI_API_KEY else None
+)
 
 supabase_client = None
 
@@ -107,7 +131,18 @@ def _get_supabase() -> Optional["Client"]:
     return None
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Family Growth Radar API")
+# Every blocking call (Supabase queries and OpenAI alike) shares anyio's
+# process-wide thread limiter, which defaults to 40. A handful of in-flight LLM
+# calls would otherwise hold every token and stall unrelated DB queries, so a
+# slow model turn reads as a total app freeze.
+THREAD_LIMIT = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_LIMIT
+    yield
+
+app = FastAPI(title="Family Growth Radar API", lifespan=_lifespan)
 api = APIRouter(prefix="/api")
 
 app.add_middleware(
@@ -752,12 +787,34 @@ suggest_tasks（只在全部条件满足时才设为true，否则一律false）�
 # 而不是逐字重放整段历史。
 _HISTORY_WINDOW = 40
 
-def _nuri_reply_sync(
+_NURI_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "nuri_reply",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                # `text` is declared first so it also streams first: the
+                # streaming path surfaces it while the rest is still arriving.
+                "text": {"type": "string"},
+                "quick_replies": {"type": "array", "items": {"type": "string"}},
+                "suggest_tasks": {"type": "boolean"},
+            },
+            "required": ["text", "quick_replies", "suggest_tasks"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_NURI_FALLBACK = {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "suggest_tasks": False}
+
+def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
-) -> dict:
-    if not oai:
-        return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+) -> list[dict]:
+    """Assemble the system prompt and history window. Shared by the blocking and
+    streaming reply paths so the two can't drift apart."""
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
     if internal_ctx:
         system += f"\n\n{internal_ctx}"
@@ -775,36 +832,131 @@ def _nuri_reply_sync(
         content = m.get("text") or ""
         if content:
             msgs.append({"role": role, "content": content})
+    return msgs
+
+def _parse_nuri_reply(raw: str) -> dict:
+    data = json.loads(raw)
+    return {
+        "text": data.get("text", ""),
+        "quick_replies": data.get("quick_replies", [])[:3],
+        "suggest_tasks": bool(data.get("suggest_tasks", False)),
+    }
+
+def _nuri_reply_sync(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+) -> dict:
+    if not oai:
+        return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
     try:
         resp = oai.chat.completions.create(
-            model="gpt-5.5", messages=msgs,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "nuri_reply",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "text": {"type": "string"},
-                            "quick_replies": {"type": "array", "items": {"type": "string"}},
-                            "suggest_tasks": {"type": "boolean"},
-                        },
-                        "required": ["text", "quick_replies", "suggest_tasks"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
+            model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT,
         )
-        data = json.loads(resp.choices[0].message.content)
-        return {
-            "text": data.get("text", ""),
-            "quick_replies": data.get("quick_replies", [])[:3],
-            "suggest_tasks": bool(data.get("suggest_tasks", False)),
-        }
+        return _parse_nuri_reply(resp.choices[0].message.content)
     except Exception as e:
         print(f"[error] _nuri_reply_sync failed: {type(e).__name__}: {e}")
-        return {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "suggest_tasks": False}
+        return dict(_NURI_FALLBACK)
+
+_JSON_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+def _partial_json_string(buf: str, key: str) -> str:
+    """Decode as much of the string value of `key` as `buf` currently contains.
+
+    The model streams a JSON object, so mid-flight the buffer holds a truncated
+    document that json.loads can't touch. This reads just the one field, stopping
+    cleanly at a half-arrived escape sequence rather than emitting a broken
+    character that would have to be corrected on the next chunk.
+    """
+    marker = f'"{key}"'
+    i = buf.find(marker)
+    if i < 0:
+        return ""
+    i += len(marker)
+    while i < len(buf) and buf[i].isspace():
+        i += 1
+    if i >= len(buf) or buf[i] != ":":
+        return ""
+    i += 1
+    while i < len(buf) and buf[i].isspace():
+        i += 1
+    if i >= len(buf) or buf[i] != '"':
+        return ""
+    i += 1
+
+    out: list[str] = []
+    while i < len(buf):
+        c = buf[i]
+        if c == '"':
+            break
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= len(buf):
+            break
+        esc = buf[i + 1]
+        if esc != "u":
+            out.append(_JSON_ESCAPES.get(esc, esc))
+            i += 2
+            continue
+        if i + 6 > len(buf):
+            break
+        try:
+            cp = int(buf[i + 2:i + 6], 16)
+        except ValueError:
+            break
+        # A high surrogate is only meaningful once its partner has arrived;
+        # emitting it alone would produce an unencodable lone surrogate.
+        if 0xD800 <= cp <= 0xDBFF:
+            if i + 12 > len(buf) or buf[i + 6:i + 8] != "\\u":
+                break
+            try:
+                low = int(buf[i + 8:i + 12], 16)
+            except ValueError:
+                break
+            out.append(chr(0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)))
+            i += 12
+            continue
+        out.append(chr(cp))
+        i += 6
+    return "".join(out)
+
+async def _nuri_reply_stream(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+):
+    """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
+    if not aoai:
+        yield "final", {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+        return
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    buf = ""
+    sent = 0
+    try:
+        stream = await aoai.chat.completions.create(
+            model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT, stream=True,
+        )
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            piece = chunk.choices[0].delta.content or ""
+            if not piece:
+                continue
+            buf += piece
+            text = _partial_json_string(buf, "text")
+            if len(text) > sent:
+                yield "delta", text[sent:]
+                sent = len(text)
+        yield "final", _parse_nuri_reply(buf)
+    except Exception as e:
+        print(f"[error] _nuri_reply_stream failed: {type(e).__name__}: {e}")
+        # Anything already streamed stays on screen; only the tail is lost.
+        salvaged = _partial_json_string(buf, "text")
+        if salvaged:
+            yield "final", {"text": salvaged, "quick_replies": [], "suggest_tasks": False}
+        else:
+            yield "final", dict(_NURI_FALLBACK)
 
 def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
     for c in FEED_CARDS + ALT_FEED_CARDS + (gen_cards or []):
@@ -1068,6 +1220,7 @@ def _distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
                     },
                 },
             },
+            timeout=OPENAI_FAST_TIMEOUT_S,
         )
         data = json.loads(resp.choices[0].message.content)
         return {"rule": (data.get("rule") or "").strip(), "category": data.get("category", "other")}
@@ -1227,6 +1380,7 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
                 },
             },
         },
+        timeout=OPENAI_TASKS_TIMEOUT_S,
     )
     try:
         return json.loads(resp.choices[0].message.content).get("tasks", [])[:4]
@@ -1681,11 +1835,19 @@ async def get_messages(session_id: str):
             print(f"[warn] get_messages error: {e}")
     return _messages.get(session_id, [])
 
-@api.post("/chat/sessions/{session_id}/messages")
-async def post_message(
-    session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
-    uid: Optional[str] = Depends(_opt_uid),
-):
+class _Turn(NamedTuple):
+    """Everything established about a chat turn before the AI reply is produced.
+    Shared by the blocking and streaming endpoints."""
+    session: dict
+    owner_uid: Optional[str]
+    user_msg: dict
+    msgs: list
+    context_hints: dict
+    fix_text: Optional[str]
+    already_generated: bool
+
+
+async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
     sb = _get_supabase()
 
     # Load session
@@ -1764,6 +1926,15 @@ async def post_message(
         for m in msgs if m["role"] == "ai"
     )
 
+    await _maybe_set_title(session, session_id, body, fix_text, user_turns)
+    return _Turn(session, owner_uid, user_msg, msgs, context_hints, fix_text, already_generated)
+
+
+async def _maybe_set_title(
+    session: dict, session_id: str, body: "UserMessageIn",
+    fix_text: Optional[str], user_turns: int,
+) -> None:
+    sb = _get_supabase()
     # Auto-generate a short title on the first user message
     if not fix_text and user_turns == 1:
         first_text = body.text or ""
@@ -1774,6 +1945,7 @@ async def post_message(
                         model="gpt-5.4-mini",
                         messages=[{"role": "user", "content": f"用10字以内总结这句话的话题，只输出话题词，不加标点：{first_text}"}],
                         max_completion_tokens=20,
+                        timeout=OPENAI_FAST_TIMEOUT_S,
                     )
                 )
                 new_title = title_resp.choices[0].message.content.strip()[:20]
@@ -1792,75 +1964,107 @@ async def post_message(
             elif session_id in _sessions:
                 _sessions[session_id]["title"] = new_title
 
+async def _fix_reply(msgs: list, fix_text: str) -> str:
+    """Handle a reviewer's `#fix` correction: distil it into a reusable style
+    rule instead of answering the parent."""
+    sb = _get_supabase()
+    prior_ai_text = next(
+        (m.get("text", "") for m in reversed(msgs[:-1]) if m.get("role") == "ai"), ""
+    )
+    rule = await anyio.to_thread.run_sync(lambda: _distill_style_rule_sync(prior_ai_text, fix_text))
+    if sb and rule.get("rule"):
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("nuri_style_rules").insert({
+                    "id": str(uuid.uuid4()), "rule": rule["rule"], "category": rule.get("category"),
+                    "source_note": fix_text, "active": True, "created_by": "chat:#fix",
+                }).execute()
+            )
+            return f"已记录调整：{rule['rule']}"
+        except Exception as e:
+            print(f"[warn] #fix insert error: {e}")
+            return "调整没能存上，稍后在后台重试一下。"
+    return "没能提炼出规则，换个说法再试一次？"
+
+
+async def _scripted_reply(session: dict, session_id: str, already_generated: bool) -> tuple:
+    """Canned script used when no OpenAI key is configured."""
+    sb = _get_supabase()
+    script_key = session.get("script_key", "free")
+    script = SCRIPTS.get(script_key, SCRIPTS["free"])
+    step = session.get("step", 0)
     transition = None
     quick_replies: list = []
-
-    if fix_text:
-        prior_ai_text = next(
-            (m.get("text", "") for m in reversed(msgs[:-1]) if m.get("role") == "ai"), ""
-        )
-        rule = await anyio.to_thread.run_sync(lambda: _distill_style_rule_sync(prior_ai_text, fix_text))
-        if sb and rule.get("rule"):
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("nuri_style_rules").insert({
-                        "id": str(uuid.uuid4()), "rule": rule["rule"], "category": rule.get("category"),
-                        "source_note": fix_text, "active": True, "created_by": "chat:#fix",
-                    }).execute()
-                )
-                ai_text = f"已记录调整：{rule['rule']}"
-            except Exception as e:
-                print(f"[warn] #fix insert error: {e}")
-                ai_text = "调整没能存上，稍后在后台重试一下。"
-        else:
-            ai_text = "没能提炼出规则，换个说法再试一次？"
-    elif oai:
-        gen_cards = await _db_get_gen_cards()
-        ctx = _card_ctx(session.get("source_card_id") or "", gen_cards)
-        memory_ctx = await _get_memory_context(owner_uid)
-        profile_ctx = _profile_ctx(context_hints)
-        style_ctx = await _get_style_rules_ctx()
-        internal_ctx = await anyio.to_thread.run_sync(_internal_rules_ctx, body.text or "")
-        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx))
-        ai_text = reply["text"]
-        quick_replies = reply.get("quick_replies", [])
-        # Let NURI decide when to suggest tasks via suggest_tasks flag. These
-        # are only drafts — nothing is persisted to the tasks table until the
-        # parent taps "添加计划" on a specific card (POST /tasks).
-        if reply.get("suggest_tasks") and not already_generated:
-            task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
-            if task_list:
-                transition = {"kind": "task_suggestion", "tasks": task_list}
+    if step < len(script):
+        nxt = script[step]
+        ai_text = nxt["text"]
+        transition = nxt.get("transition")
+        quick_replies = nxt.get("quick_replies", [])
+        new_step = step + 1
     else:
-        script_key = session.get("script_key", "free")
-        script = SCRIPTS.get(script_key, SCRIPTS["free"])
-        step = session.get("step", 0)
-        if step < len(script):
-            nxt = script[step]
-            ai_text = nxt["text"]
-            transition = nxt.get("transition")
-            quick_replies = nxt.get("quick_replies", [])
-            new_step = step + 1
-        else:
-            ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
-            new_step = step
-        if transition and transition.get("kind") == "tasks_generated" and not already_generated:
-            transition = {
-                "kind": "task_suggestion",
-                "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
-            }
-        elif transition and transition.get("kind") == "tasks_generated":
-            transition = None
-        if sb:
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("chat_sessions").update({"step": new_step}).eq("id", session_id).execute()
-                )
-            except Exception:
-                pass
-        else:
-            session["step"] = new_step
+        ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
+        new_step = step
+    if transition and transition.get("kind") == "tasks_generated" and not already_generated:
+        transition = {
+            "kind": "task_suggestion",
+            "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
+        }
+    elif transition and transition.get("kind") == "tasks_generated":
+        transition = None
+    if sb:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions").update({"step": new_step}).eq("id", session_id).execute()
+            )
+        except Exception:
+            pass
+    else:
+        session["step"] = new_step
+    return ai_text, quick_replies, transition
 
+
+async def _reply_context(turn: _Turn, body: "UserMessageIn") -> tuple:
+    """Gather the five prompt context blocks. The four I/O-bound ones run
+    concurrently rather than as serial round trips before the reply starts."""
+    gen_cards, memory_ctx, style_ctx, internal_ctx = await asyncio.gather(
+        _db_get_gen_cards(),
+        _get_memory_context(turn.owner_uid),
+        _get_style_rules_ctx(),
+        anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
+    )
+    return (
+        _card_ctx(turn.session.get("source_card_id") or "", gen_cards),
+        memory_ctx,
+        _profile_ctx(turn.context_hints),
+        style_ctx,
+        internal_ctx,
+    )
+
+
+async def _task_suggestion(reply: dict, msgs: list, already_generated: bool) -> Optional[dict]:
+    """NURI decides when to suggest tasks via the suggest_tasks flag. These are
+    only drafts — nothing is persisted to the tasks table until the parent taps
+    "添加计划" on a specific card (POST /tasks).
+
+    On the streaming path this runs *after* the reply is already on the parent's
+    screen, so a failure here must never take the reply down with it — the turn
+    just arrives without task cards.
+    """
+    if not reply.get("suggest_tasks") or already_generated:
+        return None
+    try:
+        task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
+    except Exception as e:
+        print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
+        return None
+    return {"kind": "task_suggestion", "tasks": task_list} if task_list else None
+
+
+async def _persist_ai_turn(
+    session_id: str, turn: _Turn, ai_text: str,
+    quick_replies: list, transition: Optional[dict],
+) -> dict:
+    sb = _get_supabase()
     ai_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": ai_text,
@@ -1872,12 +2076,126 @@ async def post_message(
         except Exception as e:
             print(f"[warn] post_message ai_msg insert: {e}")
     else:
-        msgs.append(ai_msg)
+        turn.msgs.append(ai_msg)
+    return ai_msg
 
-    if oai and owner_uid:
-        background_tasks.add_task(_extract_and_upsert_memories, msgs + [ai_msg], owner_uid, session_id)
 
-    return {"user_message": user_msg, "ai_messages": [ai_msg]}
+@api.post("/chat/sessions/{session_id}/messages")
+async def post_message(
+    session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
+    uid: Optional[str] = Depends(_opt_uid),
+):
+    """Non-streaming turn. Kept as the fallback for clients that can't consume
+    the SSE endpoint below (and for hosts that buffer streamed responses)."""
+    turn = await _prepare_turn(session_id, body, uid)
+    transition = None
+    quick_replies: list = []
+
+    if turn.fix_text:
+        ai_text = await _fix_reply(turn.msgs, turn.fix_text)
+    elif oai:
+        ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body)
+        reply = await anyio.to_thread.run_sync(
+            lambda: _nuri_reply_sync(turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+        )
+        ai_text = reply["text"]
+        quick_replies = reply.get("quick_replies", [])
+        transition = await _task_suggestion(reply, turn.msgs, turn.already_generated)
+    else:
+        ai_text, quick_replies, transition = await _scripted_reply(
+            turn.session, session_id, turn.already_generated
+        )
+
+    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+
+    if oai and turn.owner_uid:
+        background_tasks.add_task(
+            _extract_and_upsert_memories, turn.msgs + [ai_msg], turn.owner_uid, session_id
+        )
+
+    return {"user_message": turn.user_msg, "ai_messages": [ai_msg]}
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@api.post("/chat/sessions/{session_id}/messages/stream")
+async def post_message_stream(
+    session_id: str, body: UserMessageIn, uid: Optional[str] = Depends(_opt_uid),
+):
+    """Same turn as post_message, delivered as Server-Sent Events so the reply
+    renders as it's generated instead of after a several-second wait.
+
+    Events are `{"type": "delta"|"done"|"error", ...}`. The turn is prepared
+    before the response starts so a bad session can still 404 normally; once
+    streaming begins, failures arrive as an error event.
+    """
+    turn = await _prepare_turn(session_id, body, uid)
+    # Filled in once the turn is complete; read by the background task below.
+    finished: dict = {}
+
+    async def events():
+        transition = None
+        quick_replies: list = []
+        try:
+            if turn.fix_text:
+                ai_text = await _fix_reply(turn.msgs, turn.fix_text)
+                yield _sse({"type": "delta", "text": ai_text})
+            elif aoai:
+                ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body)
+                reply = None
+                async for kind, value in _nuri_reply_stream(
+                    turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx
+                ):
+                    if kind == "delta":
+                        yield _sse({"type": "delta", "text": value})
+                    else:
+                        reply = value
+                reply = reply or dict(_NURI_FALLBACK)
+                ai_text = reply["text"]
+                quick_replies = reply.get("quick_replies", [])
+                # Only runs once the text is on screen, so the extra model call
+                # no longer sits in front of the parent's first visible token.
+                transition = await _task_suggestion(reply, turn.msgs, turn.already_generated)
+            else:
+                ai_text, quick_replies, transition = await _scripted_reply(
+                    turn.session, session_id, turn.already_generated
+                )
+                yield _sse({"type": "delta", "text": ai_text})
+
+            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+            yield _sse({
+                "type": "done",
+                "user_message": turn.user_msg,
+                "ai_messages": [ai_msg],
+            })
+
+            if oai and turn.owner_uid:
+                finished["memory_args"] = (turn.msgs + [ai_msg], turn.owner_uid, session_id)
+        except Exception as e:
+            print(f"[error] post_message_stream failed: {type(e).__name__}: {e}")
+            yield _sse({"type": "error", "message": "AI 暂时无法回应，请稍后再试。"})
+
+    async def extract_memories():
+        """Runs after the stream closes. Starlette awaits this, so it still
+        completes on hosts that freeze the process once a response is done —
+        which a bare asyncio task would not survive."""
+        args = finished.get("memory_args")
+        if args:
+            await _extract_and_upsert_memories(*args)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        background=BackgroundTask(extract_memories),
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # Tells nginx-style proxies not to buffer, which would defeat streaming.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 @api.get("/tasks")
@@ -2132,11 +2450,15 @@ def _chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
     return chunks
 
 def _embed_batch(texts: List[str]) -> List[List[float]]:
+    # Ingest-time only, and batches can be large — keep the longer client default.
     resp = oai.embeddings.create(model="text-embedding-3-large", input=texts, dimensions=EMBED_DIM)
     return [d.embedding for d in resp.data]
 
 def _embed_one(text: str) -> List[float]:
-    resp = oai.embeddings.create(model="text-embedding-3-large", input=text, dimensions=EMBED_DIM)
+    resp = oai.embeddings.create(
+        model="text-embedding-3-large", input=text, dimensions=EMBED_DIM,
+        timeout=OPENAI_FAST_TIMEOUT_S,
+    )
     return resp.data[0].embedding
 
 def _is_indexed(doc_id: str, namespace: str = VECTOR_NAMESPACE):
