@@ -71,6 +71,12 @@ SUPABASE_KEY     = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE
 VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
 FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
+# Internal knowledge base: NURI-authored guidance treated as mandatory rules,
+# distinct from VECTOR_NAMESPACE (external reference books). Ingested via
+# backend/scripts/ingest_internal_docs.py, not the /admin/books flow.
+INTERNAL_NAMESPACE      = os.getenv("INTERNAL_VECTOR_NAMESPACE", "internal")
+INTERNAL_TOP_K          = int(os.getenv("INTERNAL_TOP_K", "3"))
+INTERNAL_MIN_SIMILARITY = float(os.getenv("INTERNAL_MIN_SIMILARITY", "0.5"))
 JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
 ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
 JWT_ALG          = "HS256"
@@ -748,11 +754,13 @@ _HISTORY_WINDOW = 40
 
 def _nuri_reply_sync(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
-    profile_ctx: str = "", style_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
 ) -> dict:
     if not oai:
         return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
+    if internal_ctx:
+        system += f"\n\n{internal_ctx}"
     if style_ctx:
         system += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
     if profile_ctx:
@@ -1812,7 +1820,8 @@ async def post_message(
         memory_ctx = await _get_memory_context(owner_uid)
         profile_ctx = _profile_ctx(context_hints)
         style_ctx = await _get_style_rules_ctx()
-        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx, profile_ctx, style_ctx))
+        internal_ctx = await anyio.to_thread.run_sync(_internal_rules_ctx, body.text or "")
+        reply = await anyio.to_thread.run_sync(lambda: _nuri_reply_sync(msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx))
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
         # Let NURI decide when to suggest tasks via suggest_tasks flag. These
@@ -2106,7 +2115,8 @@ def _read_pdf(pdf_bytes: bytes) -> str:
     if PdfReader is None:
         raise HTTPException(503, "pypdf not installed")
     reader = PdfReader(io.BytesIO(pdf_bytes))
-    return "\n".join(p.extract_text() or "" for p in reader.pages)
+    text = "\n".join(p.extract_text() or "" for p in reader.pages)
+    return text.replace("\x00", "")  # postgres text columns reject NUL bytes
 
 def _chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
     text = text.replace("\r\n", "\n")
@@ -2129,14 +2139,14 @@ def _embed_one(text: str) -> List[float]:
     resp = oai.embeddings.create(model="text-embedding-3-large", input=text, dimensions=EMBED_DIM)
     return resp.data[0].embedding
 
-def _is_indexed(doc_id: str):
+def _is_indexed(doc_id: str, namespace: str = VECTOR_NAMESPACE):
     sb = _get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     res = (
         sb.table(VECTOR_TABLE)
         .select("id", count="exact")
-        .eq("namespace", VECTOR_NAMESPACE)
+        .eq("namespace", namespace)
         .eq("doc_id", doc_id)
         .limit(1)
         .execute()
@@ -2144,20 +2154,21 @@ def _is_indexed(doc_id: str):
     total = int(getattr(res, "count", 0) or 0)
     return total > 0, total or None
 
-def _upsert_doc(doc_id: str, chunks: List[str]) -> int:
+def _upsert_doc(doc_id: str, chunks: List[str], namespace: str = VECTOR_NAMESPACE, extra_metadata: Optional[dict] = None) -> int:
     sb = _get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     vecs_data = _embed_batch(chunks)
+    base_meta = extra_metadata or {}
     rows = [
         {
             "id": f"{doc_id}-{i}",
-            "namespace": VECTOR_NAMESPACE,
+            "namespace": namespace,
             "doc_id": doc_id,
             "chunk_id": i,
             "content": c,
             "embedding": v,
-            "metadata": {"doc_id": doc_id, "chunk_id": i},
+            "metadata": {**base_meta, "doc_id": doc_id, "chunk_id": i},
         }
         for i, (c, v) in enumerate(zip(chunks, vecs_data))
     ]
@@ -2202,13 +2213,61 @@ def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
             scores.append(float((m or {}).get("similarity", 0)))
     return chunks, scores
 
+def _retrieve_internal(question: str, top_k: int = INTERNAL_TOP_K):
+    """Top-k similarity search over the internal (must-follow) namespace.
+    Unlike _retrieve, there's no books/enabled gating — every ingested
+    internal doc is eligible. Matches below INTERNAL_MIN_SIMILARITY are
+    dropped so an off-topic message doesn't drag in unrelated internal
+    guidance mislabeled as mandatory."""
+    sb = _get_supabase()
+    if not sb or not oai:
+        return [], []
+    qv = _embed_one(question)
+    # No filter_doc_ids here (unlike _retrieve): internal docs have no
+    # books-style enable/disable toggle, every ingested doc is eligible.
+    res = sb.rpc(
+        "match_rag_chunks",
+        {
+            "query_embedding": qv,
+            "match_count": top_k,
+            "filter_doc_id": None,
+            "filter_namespace": INTERNAL_NAMESPACE,
+        },
+    ).execute()
+    matches = getattr(res, "data", None) or []
+    chunks, scores = [], []
+    for m in (matches or []):
+        score = float((m or {}).get("similarity", 0))
+        text = (m or {}).get("content", "")
+        if text and score >= INTERNAL_MIN_SIMILARITY:
+            chunks.append(text)
+            scores.append(score)
+    return chunks, scores
+
+def _internal_rules_ctx(question: str, top_k: int = INTERNAL_TOP_K) -> str:
+    if not question or not question.strip():
+        return ""
+    try:
+        chunks, _ = _retrieve_internal(question, top_k)
+    except Exception as e:
+        print(f"[warn] _internal_rules_ctx: {e}")
+        return ""
+    if not chunks:
+        return ""
+    body = "\n\n".join(f"[內部準則 {i+1}]\n{c}" for i, c in enumerate(chunks))
+    return ("以下是內部知識庫中與本次對話相關的準則，必須嚴格遵守，其優先級高於任何外部參考文獻、書籍引用，"
+            "以及你自身的一般知識。若內部準則與其他資料衝突，一律以內部準則為準：\n" + body)
+
 def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
     context = "\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks))
     citation = ('\n在回答結束時，另起一行，僅引用上方參考文獻中明確出現的理論或概念名稱，格式為：參考自「[文獻中出現的理論或概念名稱]」理論。若文獻未明確提及任何理論名稱，則省略此行。'
                 if book_name else "")
+    internal_ctx = _internal_rules_ctx(question)
     system = (NURI_PERSONA
               + "\n\n以下是本次對話的參考文獻節錄，可作為輔助依據。NURI 應優先運用自身的兒童發展與育兒專業知識作答，文獻內容僅供參考補充。無論文獻是否涵蓋問題，都請盡力提供有幫助的回應，避免直接回答「我不知道」或「抱歉，我無法回答」。\n"
               + citation)
+    if internal_ctx:
+        system += f"\n\n{internal_ctx}"
     resp = oai.chat.completions.create(
         model="gpt-5.5",
         messages=[{"role": "system", "content": system},
