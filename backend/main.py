@@ -434,7 +434,10 @@ class UserRegister(BaseModel):
     password: str = Field(..., min_length=6)
     nickname: str = ""
     city: str = ""
-    parent_role: ParentRole = "mom"
+    # Nothing in the signup or onboarding flow asks for this, so it has no
+    # default: guessing "mom" put a wrong fact in the prompt for every dad and
+    # grandparent. Left unset, the profile block simply omits the role.
+    parent_role: Optional[ParentRole] = None
     top_concerns: List[Concern] = Field(default_factory=list)
 
 class UserLogin(BaseModel):
@@ -983,22 +986,136 @@ _CONCERN_LABELS = {
     "parenting": "教养方式", "health": "健康", "childcare": "托育",
     "family": "家庭关系", "unknown": "还不确定", "other": "其他",
 }
+# Onboarding asks the parent how they want to be answered, so these map to
+# instructions rather than to descriptions.
+_HELP_PREF_LABELS = {
+    "research": "希望看到专业研究和知识依据，可以适度引用理论",
+    "experience": "希望听到真实家长的经验分享，多用具体情境而不是理论",
+    "analysis": "希望一步一步分析原因，先讲清楚为什么再给做法",
+    "actionable": "希望直接拿到可执行的方法，少铺垫",
+}
+_INFO_SOURCE_LABELS = {
+    "research": "专业研究／论文", "expert": "医师或专家",
+    "parents": "其他家长经验", "all": "都会参考",
+}
+_GENDER_LABELS = {"boy": "男孩", "girl": "女孩"}
 
-def _profile_ctx(row: dict) -> str:
-    """Turn a parent's onboarding answers (role/city/concerns) into a short
-    prompt block, so NURI knows who it's talking to from the first reply
-    instead of only picking this up after enough chat history accumulates."""
+
+def _age_label(birth_date: str) -> str:
+    """Render a birth date as an age NURI can reason about. Advice for a
+    6-month-old and a 6-year-old share almost nothing, so this is the single
+    most load-bearing fact in the profile."""
+    try:
+        born = date.fromisoformat(str(birth_date)[:10])
+    except (ValueError, TypeError):
+        return ""
+    today = date.today()
+    months = (today.year - born.year) * 12 + (today.month - born.month)
+    if today.day < born.day:
+        months -= 1
+    if months < 0:
+        return ""
+    if months < 24:
+        return f"{months}个月" if months else "未满1个月"
+    years, rest = divmod(months, 12)
+    return f"{years}岁{rest}个月" if rest else f"{years}岁"
+
+
+def _profile_ctx(row: dict, children: Optional[list] = None) -> str:
+    """Turn the onboarding answers into a prompt block, so NURI knows who it's
+    talking to from the first reply instead of only picking this up once enough
+    chat history has accumulated.
+
+    Everything the questionnaire collects belongs here — anything omitted is a
+    question the parent answered for nothing.
+    """
     parts = []
+    nickname = (row.get("nickname") or "").strip()
+    if nickname:
+        parts.append(f"称呼：{nickname}")
     role = _PARENT_ROLE_LABELS.get(row.get("parent_role"))
     if role:
         parts.append(f"身份：{role}")
-    city = row.get("city")
+    city = (row.get("city") or "").strip()
     if city:
         parts.append(f"所在城市：{city}")
+
     concerns = [_CONCERN_LABELS.get(c, c) for c in (row.get("top_concerns") or [])]
+    other = (row.get("concern_other") or "").strip()
+    if other:
+        concerns = [c for c in concerns if c != "其他"] + [other]
     if concerns:
         parts.append(f"主要关心：{'、'.join(concerns)}")
-    return "；".join(parts)
+
+    hobbies = (row.get("hobbies") or "").strip()
+    if hobbies:
+        parts.append(f"没带孩子时喜欢：{hobbies}")
+    info_source = _INFO_SOURCE_LABELS.get(row.get("info_source"))
+    if info_source:
+        parts.append(f"比较信任的信息来源：{info_source}")
+
+    for child in children or []:
+        desc = []
+        name = (child.get("nickname") or "").strip()
+        age = _age_label(child.get("birth_date"))
+        if age:
+            desc.append(age)
+        gender = _GENDER_LABELS.get(child.get("gender"))
+        if gender:
+            desc.append(gender)
+        allergies = [a for a in (child.get("allergies") or []) if a]
+        if allergies:
+            desc.append(f"过敏：{'、'.join(allergies)}")
+        notes = (child.get("notes") or "").strip()
+        if notes:
+            desc.append(notes)
+        if desc:
+            parts.append(f"孩子{('（' + name + '）') if name else ''}：{'，'.join(desc)}")
+
+    block = "；".join(parts)
+    help_pref = _HELP_PREF_LABELS.get(row.get("help_preference"))
+    if help_pref:
+        block += f"\n这位家长{help_pref}。在不违反上述规则的前提下，按这个偏好来组织回答。"
+    return block
+
+_PROFILE_FIELDS = (
+    "nickname,city,parent_role,top_concerns,concern_other,hobbies,"
+    "help_preference,info_source"
+)
+
+async def _load_profile(user_id: Optional[str]) -> tuple[dict, list]:
+    """Fetch the profile answers and children behind the prompt block.
+
+    One loader for every caller: the chat path used to select a narrower column
+    set than _profile_ctx reads, so answers the parent had given were silently
+    dropped in chat while showing up in the intro message.
+    """
+    sb = _get_supabase()
+    if not user_id or not sb:
+        return {}, []
+    async def _user():
+        try:
+            r = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select(_PROFILE_FIELDS)
+                .eq("id", user_id).maybe_single().execute()
+            )
+            return (r.data if r else None) or {}
+        except Exception as e:
+            print(f"[warn] _load_profile user: {e}")
+            return {}
+    async def _children():
+        try:
+            r = await anyio.to_thread.run_sync(
+                lambda: sb.table("children").select("nickname,birth_date,gender,allergies,notes")
+                .eq("user_id", user_id).execute()
+            )
+            return r.data or []
+        except Exception as e:
+            print(f"[warn] _load_profile children: {e}")
+            return []
+    profile, children = await asyncio.gather(_user(), _children())
+    return profile, children
+
 
 async def _save_normalized_input(
     *, user_id: Optional[str], session_id: Optional[str], source: str,
@@ -1721,19 +1838,9 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         _messages[session["id"]] = []
 
     # Fetch profile info for a personalised greeting and ongoing context
-    nickname = ""
-    profile_ctx = ""
-    if uid and sb:
-        try:
-            nr = await anyio.to_thread.run_sync(
-                lambda: sb.table("users").select("nickname,city,parent_role,top_concerns")
-                .eq("id", uid).maybe_single().execute()
-            )
-            row = nr.data or {}
-            nickname = row.get("nickname", "")
-            profile_ctx = _profile_ctx(row)
-        except Exception:
-            pass
+    profile, children = await _load_profile(uid)
+    nickname = profile.get("nickname", "")
+    profile_ctx = _profile_ctx(profile, children)
 
     gen_cards = await _db_get_gen_cards()
     ctx = _card_ctx(card_id, gen_cards) if card_id else ""
@@ -1875,16 +1982,10 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         "quick_replies": [], "transition": None, "created_at": _now(),
     }
 
-    context_hints: dict = {}
-    if owner_uid and sb:
-        try:
-            ur = await anyio.to_thread.run_sync(
-                lambda: sb.table("users").select("parent_role,top_concerns").eq("id", owner_uid).maybe_single().execute()
-            )
-            if ur and ur.data:
-                context_hints = {"parent_role": ur.data.get("parent_role"), "top_concerns": ur.data.get("top_concerns")}
-        except Exception:
-            pass
+    profile, children = await _load_profile(owner_uid)
+    context_hints = dict(profile)
+    if children:
+        context_hints["children"] = children
     await _save_normalized_input(
         user_id=owner_uid, session_id=session_id,
         source="card_chat" if session.get("source_card_id") else "chat",
@@ -2035,7 +2136,7 @@ async def _reply_context(turn: _Turn, body: "UserMessageIn") -> tuple:
     return (
         _card_ctx(turn.session.get("source_card_id") or "", gen_cards),
         memory_ctx,
-        _profile_ctx(turn.context_hints),
+        _profile_ctx(turn.context_hints, turn.context_hints.get("children")),
         style_ctx,
         internal_ctx,
     )
