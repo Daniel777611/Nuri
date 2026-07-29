@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { View, ActivityIndicator } from "react-native";
 
-import { api, auth } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import { colors } from "@/src/theme";
 
 export default function Index() {
@@ -17,17 +17,28 @@ export default function Index() {
           router.replace("/register");
           return;
         }
-        // Validate token by fetching /me
+
         let me: any = null;
         try {
           me = await api.me();
-        } catch {
-          await auth.clearToken();
-          router.replace("/register");
+        } catch (err) {
+          // Only a rejected token means signed out. A timeout, a network drop
+          // or a 5xx says nothing about the credentials — clearing the token
+          // there turned every serverless cold start into a forced logout.
+          if (isAuthError(err)) {
+            await auth.clearToken();
+            router.replace("/register");
+            return;
+          }
+          // Stay signed in and route on the last known state. Individual
+          // screens surface their own errors if the backend is really down.
+          router.replace((await auth.getOnboarded()) ? "/(tabs)" : "/onboarding");
           return;
         }
-        if (me?.onboarding_completed) router.replace("/(tabs)");
-        else router.replace("/onboarding");
+
+        const onboarded = !!me?.onboarding_completed;
+        await auth.setOnboarded(onboarded);
+        router.replace(onboarded ? "/(tabs)" : "/onboarding");
       } finally {
         setChecking(false);
       }

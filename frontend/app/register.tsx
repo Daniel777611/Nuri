@@ -46,6 +46,7 @@ export default function Register() {
         password,
       });
       await auth.setToken(res.access_token);
+      await auth.setOnboarded(false);
       router.replace("/onboarding");
     } catch (e: any) {
       const msg = String(e?.message || "");

@@ -12,7 +12,7 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api, auth } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Login() {
@@ -32,11 +32,12 @@ export default function Login() {
       });
       await auth.setToken(res.access_token);
       // Old users must also complete the basic-info flow before entering tabs
-      if (res.user?.onboarding_completed) router.replace("/(tabs)");
-      else router.replace("/onboarding");
+      const onboarded = !!res.user?.onboarding_completed;
+      await auth.setOnboarded(onboarded);
+      router.replace(onboarded ? "/(tabs)" : "/onboarding");
     } catch (e: any) {
       const msg = String(e?.message || "");
-      if (msg.includes("401")) setError("邮箱或密码错误");
+      if (isAuthError(e) || msg.includes("401")) setError("邮箱或密码错误");
       else setError("登录失败，请重试");
     } finally {
       setSubmitting(false);

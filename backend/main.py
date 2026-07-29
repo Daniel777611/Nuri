@@ -205,7 +205,9 @@ async def _req_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bear
     return uid
 
 def _to_public(doc: dict) -> dict:
-    base = {k: doc[k] for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
+    # .get, not [k]: parent_role is absent when unanswered, and a KeyError here
+    # would 500 /auth/me — which the client reads as a dead session.
+    base = {k: doc.get(k) for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
     base.update({
         "concern_other":        doc.get("concern_other", ""),
         "hobbies":              doc.get("hobbies", ""),
@@ -1525,9 +1527,15 @@ async def register(body: UserRegister):
     doc = {
         "id": str(uuid.uuid4()), "email": email,
         "nickname": body.nickname, "city": body.city,
-        "parent_role": body.parent_role, "top_concerns": list(body.top_concerns),
+        "top_concerns": list(body.top_concerns),
         "hashed_password": _hash_pw(body.password), "created_at": _now(),
     }
+    # Omitted rather than sent as null: the column is still NOT NULL on
+    # databases that haven't run parent_role_nullable_migration.sql, where an
+    # explicit null fails the insert. Omitting works either way — the old
+    # schema falls back to its default, the migrated one stores null.
+    if body.parent_role:
+        doc["parent_role"] = body.parent_role
     try:
         await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
     except Exception as e:

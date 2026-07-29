@@ -8,6 +8,10 @@ import { storage } from "./utils/storage";
 
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
+// Last known onboarding state. Lets the launch route send a returning user to
+// the right screen even when /auth/me is briefly unreachable, instead of
+// treating an unanswered server as a signed-out user.
+const ONBOARDED_KEY = "onboarding_completed";
 
 async function getToken(): Promise<string | null> {
   return (await storage.secureGet(TOKEN_KEY, "")) || null;
@@ -16,14 +20,33 @@ async function getToken(): Promise<string | null> {
 export const auth = {
   TOKEN_KEY,
   setToken: (t: string) => storage.secureSet(TOKEN_KEY, t),
-  clearToken: () => storage.secureRemove(TOKEN_KEY),
+  clearToken: () =>
+    Promise.all([storage.secureRemove(TOKEN_KEY), storage.removeItem(ONBOARDED_KEY)]),
   getToken,
+  setOnboarded: (done: boolean) => storage.setItem(ONBOARDED_KEY, done),
+  getOnboarded: () => storage.getItem(ONBOARDED_KEY, false),
 };
 
 // Budget for a full chat turn. Must exceed the backend's own OpenAI timeout,
 // otherwise the client gives up while the server is still working — which just
 // makes users resend and stack duplicate work.
 const CHAT_TIMEOUT_MS = 90000;
+
+// Carries the HTTP status so callers can tell "the server rejected this" from
+// "the request never landed". Without it, a timeout is indistinguishable from a
+// 401 — and treating the two alike is how a cold start became a forced logout.
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, path: string, detail: string) {
+    super(`API ${path} ${status}: ${detail}`);
+    this.status = status;
+  }
+}
+
+/** True only when the server actively rejected the credentials. */
+export function isAuthError(err: unknown): boolean {
+  return !!(err && typeof err === "object" && (err as any).status === 401);
+}
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
@@ -34,24 +57,21 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
-  // timeoutMs=0 means no timeout (used for long-running generation calls)
-  if (!timeoutMs) {
-    const res = await fetch(API + path, { ...init, headers });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`API ${path} ${res.status}: ${text}`);
-    }
+
+  const check = async (res: Response) => {
+    if (!res.ok) throw new ApiError(res.status, path, await res.text());
     return res.json();
-  }
+  };
+
+  // timeoutMs=0 means no timeout (used for long-running generation calls)
+  if (!timeoutMs) return check(await fetch(API + path, { ...init, headers }));
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(API + path, { ...init, headers, signal: controller.signal });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`API ${path} ${res.status}: ${text}`);
-    }
-    return res.json();
+    return await check(
+      await fetch(API + path, { ...init, headers, signal: controller.signal }),
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -297,6 +317,8 @@ export const api = {
   // ── Auth ──────────────────────────────────────────────────────────────────
   register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),
   login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }),
-  me: () => req(`/auth/me`),
+  // Generous timeout: this is the launch check, and it's the request most
+  // likely to hit a serverless cold start.
+  me: () => req(`/auth/me`, undefined, 30000),
   updateMe: (b: any) => req(`/auth/me`, { method: "PUT", body: JSON.stringify(b) }),
 };

@@ -20,7 +20,7 @@ import { useFonts } from "expo-font";
 import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
-import { api } from "@/src/api";
+import { api, auth } from "@/src/api";
 
 const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
@@ -30,6 +30,10 @@ const CONCERNS = [
   ["development", "发展与学习"], ["parenting", "教养方式"], ["health", "生病与健康"],
   ["childcare", "托育／幼儿园"], ["family", "家人教养观念不同"], ["unknown", "我不知道从哪开始"], ["other", "其他"],
 ] as const;
+// NURI addresses the parent by role, so an unanswered role used to be stored
+// as "mom" for everyone. Asked here rather than at signup to keep signup to
+// just email and password.
+const PARENT_ROLES = [["mom", "妈妈"], ["dad", "爸爸"], ["grandparent", "祖父母／外祖父母"], ["other", "其他照顾者"]] as const;
 const HELP_PREFS = [["research", "专业研究与知识"], ["experience", "真实家长经验分享"], ["analysis", "一步一步分析原因"], ["actionable", "直接给我可执行的方法"]] as const;
 const INFO_SOURCES = [["research", "专业研究／论文"], ["expert", "医师或专家"], ["parents", "其他家长经验"], ["all", "都会参考"]] as const;
 const FREQUENCIES = [["daily", "每天一次"], ["weekly_2_3", "每周 2～3 次"], ["weekly", "每周一次"], ["on_demand", "有需要时再推播"]] as const;
@@ -49,6 +53,7 @@ export default function Onboarding() {
   const [birthMonth, setBirthMonth] = useState<number | null>(null);
   const [nickname, setNickname] = useState("");
   const [city, setCity] = useState("");
+  const [parentRole, setParentRole] = useState("");
   const [concerns, setConcerns] = useState<string[]>([]);
   const [concernOther, setConcernOther] = useState("");
   const [hobbies, setHobbies] = useState("");
@@ -63,7 +68,7 @@ export default function Onboarding() {
     (async () => {
       try {
         const [me, kids] = await Promise.all([api.me(), api.listChildren()]);
-        setNickname(me?.nickname || ""); setCity(me?.city || "");
+        setNickname(me?.nickname || ""); setCity(me?.city || ""); setParentRole(me?.parent_role || "");
         setConcerns(me?.top_concerns || []); setConcernOther(me?.concern_other || "");
         setHobbies(me?.hobbies || ""); setHelpPref(me?.help_preference || "");
         setInfoSource(me?.info_source || ""); setFrequency(me?.content_frequency || "");
@@ -79,7 +84,7 @@ export default function Onboarding() {
   const stepNumber = page < 3 ? page + 1 : 4;
   const canNext = page === 0
     ? !!childName.trim() && !!birthYear && !!birthMonth
-    : page === 1 ? !!nickname.trim() && !!city.trim() : true;
+    : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true;
   const birthLabel = birthYear && birthMonth ? `${birthYear} 年 ${birthMonth} 月` : "请选择孩子的出生年月";
 
   const save = async () => {
@@ -88,7 +93,8 @@ export default function Onboarding() {
     try {
       const child = { nickname: childName.trim(), birth_date: `${birthYear}-${String(birthMonth).padStart(2, "0")}-01`, gender: existingChild?.gender || "other", allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
       if (existingChild?.id) await api.updateChild(existingChild.id, child); else await api.addChild(child);
-      await api.updateMe({ nickname: nickname.trim(), city: city.trim(), top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
+      await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
+      await auth.setOnboarded(true);
       router.replace("/(tabs)");
     } finally { setSaving(false); }
   };
@@ -118,7 +124,7 @@ export default function Onboarding() {
             <Hero page={page} />
             <View style={[styles.form, page >= 3 && styles.preferenceForm]}>
               {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} openPicker={() => setPickerOpen(true)} />}
-              {page === 1 && <ParentPage nickname={nickname} setNickname={setNickname} city={city} setCity={setCity} />}
+              {page === 1 && <ParentPage nickname={nickname} setNickname={setNickname} city={city} setCity={setCity} parentRole={parentRole} setParentRole={setParentRole} />}
               {page === 2 && <ConcernPage concerns={concerns} toggle={toggleConcern} other={concernOther} setOther={setConcernOther} />}
               {page === 3 && <TextPage title="了解你的教养方式" subtitle="帮助 NURI 了解你的最佳陪伴方式"><Field label="平常没带小孩时喜欢做的事"><TextInput value={hobbies} onChangeText={setHobbies} placeholder="例如：看剧、健身、和朋友聚会……" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>}
               {page === 4 && <ChoicePage title="遇到教养问题时" subtitle="你希望 NURI 提供什么样的帮助？" options={HELP_PREFS} value={helpPref} onChange={setHelpPref} />}
@@ -146,7 +152,7 @@ function Hero({ page }: { page: number }) {
 }
 function TextPage({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) { return <><Text style={styles.title}>{title}</Text><Text style={styles.subtitle}>{subtitle}</Text><View style={styles.pageBody}>{children}</View></>; }
 function ChildPage({ childName, setChildName, birthLabel, openPicker }: any) { return <TextPage title="孩子基本信息" subtitle="这些信息只用来给你更个性化的建议，永远不会分享给第三方"><Field label="孩子怎么称呼？"><TextInput value={childName} onChangeText={setChildName} placeholder="例如：小满" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label="孩子的出生日期"><Pressable onPress={openPicker} style={[styles.input, styles.picker]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !childName && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable></Field></TextPage>; }
-function ParentPage({ nickname, setNickname, city, setCity }: any) { return <TextPage title="家长基本信息" subtitle="AI 会用这个名字给你打招呼"><Field label="我应该怎么称呼你？"><TextInput value={nickname} onChangeText={setNickname} placeholder="例如：小满妈" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label="您目前居住在哪里？"><TextInput value={city} onChangeText={setCity} placeholder="例如：San Francisco／多伦多" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
+function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParentRole }: any) { return <TextPage title="家长基本信息" subtitle="AI 会用这个名字给你打招呼"><Field label="我应该怎么称呼你？"><TextInput value={nickname} onChangeText={setNickname} placeholder="例如：小满妈" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label="您是孩子的？"><View style={styles.chipWrap}>{PARENT_ROLES.map(([key, label]) => { const active = parentRole === key; return <Pressable key={key} onPress={() => setParentRole(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-role-${key}`}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View></Field><Field label="您目前居住在哪里？"><TextInput value={city} onChangeText={setCity} placeholder="例如：San Francisco／多伦多" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
 function ConcernPage({ concerns, toggle, other, setOther }: any) { return <TextPage title="目前最想要解决的育儿问题" subtitle="目前最困扰你的事情是什么？（可多选）"><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View>{concerns.includes("other") && <TextInput value={other} onChangeText={setOther} placeholder="请描述你的困扰..." placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
 function ChoicePage({ title, subtitle, options, value, onChange }: any) { return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{label}</Text></Pressable>)}</View></TextPage>; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <View style={styles.field}><Text style={styles.label}>{label}</Text>{children}</View>; }
