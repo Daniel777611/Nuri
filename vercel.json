@@ -29,6 +29,10 @@
       "destination": "/api/backend.py"
     },
     {
+      "source": "/admin/logs",
+      "destination": "/index.html"
+    },
+    {
       "source": "/admin/(.*)",
       "destination": "/api/backend.py"
     },

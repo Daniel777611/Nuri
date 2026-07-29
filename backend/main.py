@@ -32,7 +32,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, io, json, os, uuid, hashlib, random
+import asyncio, io, json, os, time, uuid, hashlib, random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -850,17 +850,32 @@ def _parse_nuri_reply(raw: str) -> dict:
 def _nuri_reply_sync(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    metrics: Optional["_TurnMetrics"] = None,
 ) -> dict:
     if not oai:
         return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    if metrics:
+        metrics.set(model="gpt-5.5")
+        metrics.record_prompt(msgs, {
+            "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
+            "style": style_ctx, "internal": internal_ctx,
+        })
+    started = time.perf_counter()
     try:
         resp = oai.chat.completions.create(
             model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT,
         )
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.record_usage(getattr(resp, "usage", None))
+            metrics.set(finish_reason=getattr(resp.choices[0], "finish_reason", None))
         return _parse_nuri_reply(resp.choices[0].message.content)
     except Exception as e:
         print(f"[error] _nuri_reply_sync failed: {type(e).__name__}: {e}")
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
         return dict(_NURI_FALLBACK)
 
 _JSON_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
@@ -930,32 +945,58 @@ def _partial_json_string(buf: str, key: str) -> str:
 async def _nuri_reply_stream(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    metrics: Optional["_TurnMetrics"] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
         yield "final", {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
         return
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    if metrics:
+        metrics.set(model="gpt-5.5")
+        metrics.record_prompt(msgs, {
+            "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
+            "style": style_ctx, "internal": internal_ctx,
+        })
     buf = ""
     sent = 0
+    started = time.perf_counter()
     try:
         stream = await aoai.chat.completions.create(
             model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT, stream=True,
+            # Without this the streamed response reports no token usage at all.
+            stream_options={"include_usage": True},
         )
         async for chunk in stream:
+            # The usage-bearing chunk carries no choices, so read it before the
+            # skip below or the token counts are silently dropped.
+            if metrics and getattr(chunk, "usage", None):
+                metrics.record_usage(chunk.usage)
             if not chunk.choices:
                 continue
+            # getattr: metrics must never be the reason a turn dies, so don't
+            # assume every chunk shape carries this field.
+            reason = getattr(chunk.choices[0], "finish_reason", None)
+            if metrics and reason:
+                metrics.set(finish_reason=reason)
             piece = chunk.choices[0].delta.content or ""
             if not piece:
                 continue
             buf += piece
             text = _partial_json_string(buf, "text")
             if len(text) > sent:
+                if metrics and not sent:
+                    metrics.mark("first_token_ms", started)
                 yield "delta", text[sent:]
                 sent = len(text)
+        if metrics:
+            metrics.mark("model_ms", started)
         yield "final", _parse_nuri_reply(buf)
     except Exception as e:
         print(f"[error] _nuri_reply_stream failed: {type(e).__name__}: {e}")
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
         # Anything already streamed stays on screen; only the tail is lost.
         salvaged = _partial_json_string(buf, "text")
         if salvaged:
@@ -1117,6 +1158,75 @@ async def _load_profile(user_id: Optional[str]) -> tuple[dict, list]:
             return []
     profile, children = await asyncio.gather(_user(), _children())
     return profile, children
+
+
+def _ms(start: float) -> int:
+    """Elapsed milliseconds since a perf_counter() reading."""
+    return int((time.perf_counter() - start) * 1000)
+
+
+class _TurnMetrics:
+    """Collects one chat turn's cost while the turn runs.
+
+    Nothing here may raise or add latency: it's a plain accumulator, and the
+    single write happens after the reply has already reached the parent.
+    """
+
+    def __init__(self, *, streamed: bool):
+        self.row: dict = {
+            "id": str(uuid.uuid4()),
+            "streamed": streamed,
+            "model": "",
+            "status": "ok",
+            "suggested_tasks": False,
+        }
+        self._t0 = time.perf_counter()
+
+    def mark(self, key: str, start: float) -> None:
+        self.row[key] = _ms(start)
+
+    def set(self, **fields) -> None:
+        self.row.update(fields)
+
+    def record_prompt(self, msgs: list[dict], blocks: dict) -> None:
+        system = msgs[0]["content"] if msgs else ""
+        history = msgs[1:]
+        self.row.update({
+            "system_chars": len(system),
+            "history_msgs": len(history),
+            "history_chars": sum(len(m.get("content") or "") for m in history),
+            "memory_chars": len(blocks.get("memory") or ""),
+            "style_chars": len(blocks.get("style") or ""),
+            "internal_chars": len(blocks.get("internal") or ""),
+            "profile_chars": len(blocks.get("profile") or ""),
+            "card_chars": len(blocks.get("card") or ""),
+        })
+
+    def record_usage(self, usage) -> None:
+        if not usage:
+            return
+        self.row["prompt_tokens"] = getattr(usage, "prompt_tokens", None)
+        self.row["completion_tokens"] = getattr(usage, "completion_tokens", None)
+
+    async def flush(self, *, session_id: str, user_id: Optional[str], reply_text: str) -> None:
+        sb = _get_supabase()
+        if not sb:
+            return
+        self.row.update({
+            "session_id": session_id,
+            "user_id": user_id,
+            "reply_chars": len(reply_text or ""),
+            "total_ms": _ms(self._t0),
+            "created_at": _now(),
+        })
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_turn_logs").insert(self.row).execute()
+            )
+        except Exception as e:
+            # A metrics table must never cost a turn. Most likely cause is the
+            # migration not having been run yet.
+            print(f"[warn] chat_turn_logs insert: {e}")
 
 
 async def _save_normalized_input(
@@ -2132,15 +2242,20 @@ async def _scripted_reply(session: dict, session_id: str, already_generated: boo
     return ai_text, quick_replies, transition
 
 
-async def _reply_context(turn: _Turn, body: "UserMessageIn") -> tuple:
+async def _reply_context(
+    turn: _Turn, body: "UserMessageIn", metrics: Optional["_TurnMetrics"] = None,
+) -> tuple:
     """Gather the five prompt context blocks. The four I/O-bound ones run
     concurrently rather than as serial round trips before the reply starts."""
+    started = time.perf_counter()
     gen_cards, memory_ctx, style_ctx, internal_ctx = await asyncio.gather(
         _db_get_gen_cards(),
         _get_memory_context(turn.owner_uid),
         _get_style_rules_ctx(),
         anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
     )
+    if metrics:
+        metrics.mark("context_ms", started)
     return (
         _card_ctx(turn.session.get("source_card_id") or "", gen_cards),
         memory_ctx,
@@ -2150,7 +2265,10 @@ async def _reply_context(turn: _Turn, body: "UserMessageIn") -> tuple:
     )
 
 
-async def _task_suggestion(reply: dict, msgs: list, already_generated: bool) -> Optional[dict]:
+async def _task_suggestion(
+    reply: dict, msgs: list, already_generated: bool,
+    metrics: Optional["_TurnMetrics"] = None,
+) -> Optional[dict]:
     """NURI decides when to suggest tasks via the suggest_tasks flag. These are
     only drafts — nothing is persisted to the tasks table until the parent taps
     "添加计划" on a specific card (POST /tasks).
@@ -2161,11 +2279,17 @@ async def _task_suggestion(reply: dict, msgs: list, already_generated: bool) -> 
     """
     if not reply.get("suggest_tasks") or already_generated:
         return None
+    started = time.perf_counter()
     try:
         task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
     except Exception as e:
         print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
+        if metrics:
+            metrics.mark("tasks_ms", started)
         return None
+    if metrics:
+        metrics.mark("tasks_ms", started)
+        metrics.set(suggested_tasks=bool(task_list))
     return {"kind": "task_suggestion", "tasks": task_list} if task_list else None
 
 
@@ -2196,6 +2320,7 @@ async def post_message(
 ):
     """Non-streaming turn. Kept as the fallback for clients that can't consume
     the SSE endpoint below (and for hosts that buffer streamed responses)."""
+    metrics = _TurnMetrics(streamed=False)
     turn = await _prepare_turn(session_id, body, uid)
     transition = None
     quick_replies: list = []
@@ -2203,19 +2328,28 @@ async def post_message(
     if turn.fix_text:
         ai_text = await _fix_reply(turn.msgs, turn.fix_text)
     elif oai:
-        ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body)
+        ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
         reply = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync(turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+            lambda: _nuri_reply_sync(
+                turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
+            )
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
-        transition = await _task_suggestion(reply, turn.msgs, turn.already_generated)
+        transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
     else:
         ai_text, quick_replies, transition = await _scripted_reply(
             turn.session, session_id, turn.already_generated
         )
 
     ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+
+    # Logged after the reply is built, and only for real model turns — a #fix
+    # command or the canned script isn't a generation worth measuring.
+    if oai and not turn.fix_text:
+        background_tasks.add_task(
+            metrics.flush, session_id=session_id, user_id=turn.owner_uid, reply_text=ai_text,
+        )
 
     if oai and turn.owner_uid:
         background_tasks.add_task(
@@ -2240,6 +2374,7 @@ async def post_message_stream(
     before the response starts so a bad session can still 404 normally; once
     streaming begins, failures arrive as an error event.
     """
+    metrics = _TurnMetrics(streamed=True)
     turn = await _prepare_turn(session_id, body, uid)
     # Filled in once the turn is complete; read by the background task below.
     finished: dict = {}
@@ -2252,10 +2387,10 @@ async def post_message_stream(
                 ai_text = await _fix_reply(turn.msgs, turn.fix_text)
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
-                ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body)
+                ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
                 reply = None
                 async for kind, value in _nuri_reply_stream(
-                    turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx
+                    turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})
@@ -2266,7 +2401,7 @@ async def post_message_stream(
                 quick_replies = reply.get("quick_replies", [])
                 # Only runs once the text is on screen, so the extra model call
                 # no longer sits in front of the parent's first visible token.
-                transition = await _task_suggestion(reply, turn.msgs, turn.already_generated)
+                transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
             else:
                 ai_text, quick_replies, transition = await _scripted_reply(
                     turn.session, session_id, turn.already_generated
@@ -2280,16 +2415,25 @@ async def post_message_stream(
                 "ai_messages": [ai_msg],
             })
 
+            if aoai and not turn.fix_text:
+                finished["metrics_reply"] = ai_text
             if oai and turn.owner_uid:
                 finished["memory_args"] = (turn.msgs + [ai_msg], turn.owner_uid, session_id)
         except Exception as e:
             print(f"[error] post_message_stream failed: {type(e).__name__}: {e}")
+            metrics.set(status="error", error=f"{type(e).__name__}: {e}"[:500])
+            finished["metrics_reply"] = ""
             yield _sse({"type": "error", "message": "AI 暂时无法回应，请稍后再试。"})
 
-    async def extract_memories():
+    async def after_stream():
         """Runs after the stream closes. Starlette awaits this, so it still
         completes on hosts that freeze the process once a response is done —
         which a bare asyncio task would not survive."""
+        reply_text = finished.get("metrics_reply")
+        if reply_text is not None:
+            await metrics.flush(
+                session_id=session_id, user_id=turn.owner_uid, reply_text=reply_text,
+            )
         args = finished.get("memory_args")
         if args:
             await _extract_and_upsert_memories(*args)
@@ -2297,7 +2441,7 @@ async def post_message_stream(
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
-        background=BackgroundTask(extract_memories),
+        background=BackgroundTask(after_stream),
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
@@ -2890,6 +3034,217 @@ async def admin_list_memories(
         q = q.eq("category", category)
     res = q.order("updated_at", desc=True).limit(limit).execute()
     return {"memories": getattr(res, "data", None) or []}
+
+# ── Chat turn logs (performance monitoring) ──────────────────────────────────
+# Named turn-logs, not logs: vercel.json routes /admin/logs to the SPA page that
+# reads these, so the two must not share a path.
+
+def _percentile(values: list[int], pct: float) -> Optional[int]:
+    """Nearest-rank percentile. Small samples here, so no interpolation."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, int(round(pct / 100 * (len(ordered) - 1))))
+    return ordered[idx]
+
+
+@app.get("/admin/turn-logs")
+async def admin_list_turn_logs(
+    user_id: Optional[str] = None, status: Optional[str] = None,
+    limit: int = 50, offset: int = 0, _: None = Depends(_require_admin),
+):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    def _query():
+        q = sb.table("chat_turn_logs").select("*", count="exact")
+        if user_id:
+            q = q.eq("user_id", user_id)
+        if status:
+            q = q.eq("status", status)
+        # One extra beyond the page so the client knows there's a next page
+        # without needing the count to be exact.
+        return q.order("created_at", desc=True).range(offset, offset + limit).execute()
+
+    try:
+        res = await anyio.to_thread.run_sync(_query)
+    except Exception as e:
+        raise HTTPException(503, f"turn logs unavailable: {e}")
+    rows = getattr(res, "data", None) or []
+    return {
+        "logs": rows[:limit],
+        "has_more": len(rows) > limit,
+        "total": getattr(res, "count", None),
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@app.get("/admin/turn-logs/summary")
+async def admin_turn_logs_summary(
+    user_id: Optional[str] = None, days: int = 7, sample: int = 1000,
+    _: None = Depends(_require_admin),
+):
+    """Aggregate recent turns. Computed in Python over a bounded sample rather
+    than in SQL, so it needs no extra database views to stay in sync."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days = max(1, min(days, 90))
+    sample = max(1, min(sample, 5000))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    def _query():
+        q = sb.table("chat_turn_logs").select(
+            "total_ms,model_ms,context_ms,first_token_ms,tasks_ms,reply_chars,"
+            "prompt_tokens,completion_tokens,history_msgs,history_chars,system_chars,"
+            "status,streamed,suggested_tasks,created_at"
+        ).gte("created_at", since)
+        if user_id:
+            q = q.eq("user_id", user_id)
+        return q.order("created_at", desc=True).limit(sample).execute()
+
+    try:
+        res = await anyio.to_thread.run_sync(_query)
+    except Exception as e:
+        raise HTTPException(503, f"turn logs unavailable: {e}")
+    rows = getattr(res, "data", None) or []
+
+    def nums(field: str) -> list[int]:
+        return [r[field] for r in rows if isinstance(r.get(field), (int, float))]
+
+    def stats(field: str) -> dict:
+        vals = nums(field)
+        return {
+            "count": len(vals),
+            "avg": round(sum(vals) / len(vals)) if vals else None,
+            "p50": _percentile(vals, 50),
+            "p95": _percentile(vals, 95),
+            "max": max(vals) if vals else None,
+        }
+
+    total = len(rows)
+    return {
+        "window_days": days,
+        "turns": total,
+        "streamed": sum(1 for r in rows if r.get("streamed")),
+        "failed": sum(1 for r in rows if r.get("status") != "ok"),
+        "suggested_tasks": sum(1 for r in rows if r.get("suggested_tasks")),
+        "latency_ms": {
+            "total": stats("total_ms"),
+            "model": stats("model_ms"),
+            "context": stats("context_ms"),
+            "first_token": stats("first_token_ms"),
+            "tasks": stats("tasks_ms"),
+        },
+        "length": {
+            "reply_chars": stats("reply_chars"),
+            "history_msgs": stats("history_msgs"),
+            "history_chars": stats("history_chars"),
+            "system_chars": stats("system_chars"),
+        },
+        "tokens": {
+            "prompt": stats("prompt_tokens"),
+            "completion": stats("completion_tokens"),
+        },
+    }
+
+
+# ── Account administration ───────────────────────────────────────────────────
+
+@app.get("/admin/accounts")
+async def admin_list_accounts(
+    q: Optional[str] = None, limit: int = 50, offset: int = 0,
+    _: None = Depends(_require_admin),
+):
+    """Search accounts by email or nickname, with per-account activity counts so
+    a test account can be told apart from a real one before deleting it."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    def _query():
+        sel = sb.table("users").select(
+            "id,email,nickname,city,parent_role,top_concerns,onboarding_completed,created_at",
+            count="exact",
+        )
+        if q:
+            safe = q.replace(",", " ").replace("*", " ").strip()
+            if safe:
+                sel = sel.or_(f"email.ilike.%{safe}%,nickname.ilike.%{safe}%")
+        return sel.order("created_at", desc=True).range(offset, offset + limit).execute()
+
+    try:
+        res = await anyio.to_thread.run_sync(_query)
+    except Exception as e:
+        raise HTTPException(503, f"accounts unavailable: {e}")
+    rows = getattr(res, "data", None) or []
+    page = rows[:limit]
+
+    async def _counts(uid: str) -> dict:
+        async def one(table: str) -> int:
+            try:
+                r = await anyio.to_thread.run_sync(
+                    lambda: sb.table(table).select("id", count="exact")
+                    .eq("user_id", uid).limit(1).execute()
+                )
+                return getattr(r, "count", None) or 0
+            except Exception:
+                return 0
+        children, sessions, turns = await asyncio.gather(
+            one("children"), one("chat_sessions"), one("chat_turn_logs")
+        )
+        return {"children": children, "sessions": sessions, "turns": turns}
+
+    if page:
+        counts = await asyncio.gather(*(_counts(r["id"]) for r in page))
+        for row, c in zip(page, counts):
+            row.update(c)
+    return {
+        "accounts": page,
+        "has_more": len(rows) > limit,
+        "total": getattr(res, "count", None),
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@app.delete("/admin/accounts/{user_id}")
+async def admin_delete_account(user_id: str, _: None = Depends(_require_admin)):
+    """Delete an account and everything belonging to it.
+
+    Foreign keys cascade users -> chat_sessions -> chat_messages, and cover
+    children, tasks, normalized_inputs, user_memories, email_logs and
+    chat_turn_logs, so this single delete leaves nothing behind. It is not
+    recoverable — the caller is responsible for confirming intent.
+    """
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    try:
+        found = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("id,email").eq("id", user_id).execute()
+        )
+    except Exception as e:
+        raise HTTPException(503, f"lookup failed: {e}")
+    rows = getattr(found, "data", None) or []
+    if not rows:
+        raise HTTPException(404, "account not found")
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("users").delete().eq("id", user_id).execute()
+        )
+    except Exception as e:
+        print(f"[error] admin_delete_account {user_id}: {e}")
+        raise HTTPException(500, "delete failed")
+    print(f"[admin] deleted account {user_id} <{rows[0].get('email')}>")
+    return {"deleted": user_id, "email": rows[0].get("email")}
+
 
 @app.get("/admin/settings")
 async def admin_get_settings(_: None = Depends(_require_admin)):

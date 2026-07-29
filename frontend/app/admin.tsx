@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Link } from "expo-router";
 import { colors, radius, spacing } from "@/src/theme";
 
 // ── Supabase client (anon key — safe to expose, RLS controls access) ──────────
@@ -62,6 +63,19 @@ type StyleRule = {
   created_at: string;
 };
 
+type Account = {
+  id: string;
+  email: string;
+  nickname: string;
+  city?: string;
+  parent_role?: string | null;
+  onboarding_completed?: boolean;
+  created_at: string;
+  children?: number;
+  sessions?: number;
+  turns?: number;
+};
+
 type FixReviewer = {
   user_id: string;
   email?: string | null;
@@ -103,6 +117,16 @@ export default function AdminPage() {
   const [newRuleText, setNewRuleText] = useState("");
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [ruleError, setRuleError] = useState("");
+
+  // 账号查删：删除会级联清空该账号的全部数据
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountQuery, setAccountQuery] = useState("");
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  // Holds the id awaiting confirmation, so deletion always takes two taps.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // "#fix" 白名单：只有这里列出的账号在聊天里发 #fix 才会被当成指令
   const [reviewers, setReviewers] = useState<FixReviewer[]>([]);
@@ -245,10 +269,16 @@ export default function AdminPage() {
   // ── NURI 规则文档 ──────────────────────────────────────────────────────────
   const loadRules = useCallback(async () => {
     setRulesLoading(true);
+    setRuleError("");
     try {
       const res = await fetch(`${BACKEND}/admin/style-rules`, { headers: { "x-admin-key": key } });
       if (res.ok) { const d = await res.json(); setRules(d.rules || []); }
-    } catch {}
+      // Swallowing this is what made a missing table read as "0 条生效" for days,
+      // instead of as the failure it was.
+      else setRuleError(`加载失败 (${res.status})：${(await res.text()).slice(0, 140)}`);
+    } catch (e: any) {
+      setRuleError(`加载失败：${String(e?.message || e).slice(0, 140)}`);
+    }
     setRulesLoading(false);
   }, [key]);
 
@@ -301,6 +331,41 @@ export default function AdminPage() {
       });
       if (res.ok) setRules((rs) => rs.filter((r) => r.id !== id));
     } catch {}
+  };
+
+  // ── 账号查删 ───────────────────────────────────────────────────────────────
+  const loadAccounts = useCallback(async () => {
+    setAccountsLoading(true);
+    setAccountError("");
+    try {
+      const res = await fetch(
+        `${BACKEND}/admin/accounts?limit=50&q=${encodeURIComponent(accountQuery.trim())}`,
+        { headers: { "x-admin-key": key } },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      setAccounts(d.accounts || []);
+    } catch (e: any) {
+      setAccountError(`加载失败: ${String(e?.message || e).slice(0, 160)}`);
+    }
+    setAccountsLoading(false);
+  }, [key, accountQuery]);
+
+  const deleteAccount = async (id: string) => {
+    setDeletingId(id);
+    setAccountError("");
+    try {
+      const res = await fetch(`${BACKEND}/admin/accounts/${id}`, {
+        method: "DELETE",
+        headers: { "x-admin-key": key },
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setAccounts((as) => as.filter((a) => a.id !== id));
+      setConfirmDeleteId(null);
+    } catch (e: any) {
+      setAccountError(`删除失败: ${String(e?.message || e).slice(0, 160)}`);
+    }
+    setDeletingId(null);
   };
 
   // ── "#fix" 白名单 ──────────────────────────────────────────────────────────
@@ -473,6 +538,9 @@ export default function AdminPage() {
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.pageTitle}>Books Admin</Text>
+          <Link href="/admin/logs" style={styles.navLink}>
+            对话性能日志 →
+          </Link>
           <Pressable onPress={logout}>
             <Text style={styles.logoutText}>退出</Text>
           </Pressable>
@@ -576,8 +644,9 @@ export default function AdminPage() {
               <Text style={styles.smallBtnText}>添加</Text>
             </Pressable>
           </View>
+          {ruleError ? <Text style={styles.errorText}>{ruleError}</Text> : null}
           {rulesLoading && <ActivityIndicator color={colors.brand} style={{ marginVertical: spacing.md }} />}
-          {!rulesLoading && rules.length === 0 && (
+          {!rulesLoading && !ruleError && rules.length === 0 && (
             <Text style={styles.emptyText}>还没有规则，等 #fix 用起来或者手动加一条。</Text>
           )}
           {rules.map((r) => (
@@ -629,6 +698,71 @@ export default function AdminPage() {
                     </Pressable>
                   </View>
                 </>
+              )}
+            </View>
+          ))}
+        </View>
+
+        {/* 账号查删 */}
+        <View style={styles.modeCard}>
+          <Text style={styles.modeTitle}>账号管理</Text>
+          <Text style={styles.modeHint}>
+            删除会连带清空该账号的孩子档案、对话、任务、长期记忆和性能日志，且不可恢复。
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
+            <TextInput
+              style={[styles.input, { flex: 1 }]}
+              placeholder="邮箱或昵称（留空列出全部）"
+              autoCapitalize="none"
+              value={accountQuery}
+              onChangeText={setAccountQuery}
+              onSubmitEditing={loadAccounts}
+            />
+            <Pressable style={styles.smallBtn} onPress={loadAccounts} testID="admin-search-accounts">
+              <Text style={styles.smallBtnText}>搜索</Text>
+            </Pressable>
+          </View>
+          {accountError ? <Text style={styles.errorText}>{accountError}</Text> : null}
+          {accountsLoading && <ActivityIndicator color={colors.brand} style={{ marginVertical: spacing.md }} />}
+          {!accountsLoading && accounts.length === 0 && (
+            <Text style={styles.emptyText}>还没有搜索结果。</Text>
+          )}
+          {accounts.map((a) => (
+            <View key={a.id} style={styles.ruleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bookTitle}>{a.nickname || "(无昵称)"}</Text>
+                <Text style={styles.bookMeta}>{a.email}</Text>
+                <Text style={styles.bookMeta}>
+                  {[
+                    `${a.children ?? 0} 个孩子`,
+                    `${a.sessions ?? 0} 个会话`,
+                    `${a.turns ?? 0} 轮对话`,
+                    a.onboarding_completed ? "已完成引导" : "未完成引导",
+                    a.parent_role ? a.parent_role : "身份未填",
+                    new Date(a.created_at).toLocaleDateString("zh-CN"),
+                  ].join("  ·  ")}
+                </Text>
+              </View>
+              {confirmDeleteId === a.id ? (
+                <View style={{ flexDirection: "row", gap: spacing.sm, alignItems: "center" }}>
+                  <Pressable
+                    onPress={() => deleteAccount(a.id)}
+                    disabled={deletingId === a.id}
+                    hitSlop={8}
+                    testID={`admin-confirm-delete-${a.id}`}
+                  >
+                    <Text style={styles.deleteText}>
+                      {deletingId === a.id ? "删除中…" : "确认删除"}
+                    </Text>
+                  </Pressable>
+                  <Pressable onPress={() => setConfirmDeleteId(null)} hitSlop={8} testID={`admin-cancel-delete-${a.id}`}>
+                    <Text style={styles.smallBtnText}>取消</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable onPress={() => setConfirmDeleteId(a.id)} hitSlop={8} testID={`admin-delete-${a.id}`}>
+                  <Text style={styles.deleteText}>删除</Text>
+                </Pressable>
               )}
             </View>
           ))}
@@ -805,6 +939,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   pageTitle: { fontSize: 22, fontWeight: "700" as const, color: colors.onSurface },
   logoutText: { color: colors.error, fontSize: 14, fontWeight: "500" },
+  navLink: { color: colors.brand, fontSize: 14, fontWeight: "600" },
 
   modeCard: {
     backgroundColor: colors.surfaceSecondary,
