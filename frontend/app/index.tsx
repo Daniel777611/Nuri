@@ -14,7 +14,9 @@ export default function Index() {
       try {
         const token = await auth.getToken();
         if (!token) {
-          router.replace("/register");
+          // Returning users are the common case, so land on login. New users
+          // reach register via the "立即注册" link there.
+          router.replace("/login");
           return;
         }
 
@@ -27,7 +29,7 @@ export default function Index() {
           // there turned every serverless cold start into a forced logout.
           if (isAuthError(err)) {
             await auth.clearToken();
-            router.replace("/register");
+            router.replace("/login");
             return;
           }
           // Stay signed in and route on the last known state. Individual
