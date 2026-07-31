@@ -217,7 +217,8 @@ def test_preferred_language_wins_within_a_tier():
 
 def test_provider_order_is_preserved_within_a_tier_and_language():
     out = rank_results(
-        [_result(f"https://cdc.gov/{i}", title=str(i)) for i in range(4)], rules=RULES
+        [_result(f"https://cdc.gov/{i}", title=str(i)) for i in range(4)],
+        rules=RULES, max_results=4,
     )
     assert [r.title for r in out] == ["0", "1", "2", "3"]
 

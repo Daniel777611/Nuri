@@ -60,9 +60,12 @@ _TIER_RANK: dict[str, int] = {"authority": 0, "good": 1, "neutral": 2}
 #: longer query are involved — 2.5s and 4.0s both timed out on real turns.
 DEFAULT_TIMEOUT_S = float(os.getenv("WEB_SEARCH_TIMEOUT_S", "6.0"))
 
-#: Results handed to the prompt after ranking. More than a handful is prompt
-#: budget spent on links the model won't cite.
-DEFAULT_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+#: Results handed to the prompt after ranking. Three, because this — not the
+#: domain list — is what Tavily's latency tracks: measured at 2.3-2.4s for five
+#: results and 0.72-0.74s for three, with or without an include-list. The best
+#: replies cited three sources anyway, so the extra two bought nothing but a
+#: second and a half in front of the parent's first token.
+DEFAULT_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3"))
 
 #: When true, general (non-medical) questions search the open web minus the
 #: block-list instead of the curated authority+good list. Off by default — see

@@ -872,6 +872,19 @@ _NURI_RESPONSE_FORMAT = {
 # the reply model no longer votes on it. See backend/router.py.
 _NURI_FALLBACK = {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "cited": []}
 
+#: The reply model's deliberation budget. Measured on gpt-5.5 with the full
+#: persona and a source list: 22.2s at the default, 12.5s at "low" — for
+#: output that was structurally identical (same three distinct approaches, the
+#: same three citations, the same closing question). "minimal" is not accepted
+#: by this model. Set to "" to send no parameter at all.
+REPLY_REASONING_EFFORT = os.getenv("REPLY_REASONING_EFFORT", "low")
+
+
+def _reply_model_kwargs() -> dict:
+    return {"reasoning_effort": REPLY_REASONING_EFFORT} if REPLY_REASONING_EFFORT else {}
+
+
+
 def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
@@ -952,6 +965,7 @@ def _nuri_reply_sync(
     try:
         resp = oai.chat.completions.create(
             model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT,
+            **_reply_model_kwargs(),
         )
         if metrics:
             metrics.mark("model_ms", started)
@@ -1053,6 +1067,7 @@ async def _nuri_reply_stream(
     try:
         stream = await aoai.chat.completions.create(
             model="gpt-5.5", messages=msgs, response_format=_NURI_RESPONSE_FORMAT, stream=True,
+            **_reply_model_kwargs(),
             # Without this the streamed response reports no token usage at all.
             stream_options={"include_usage": True},
         )
