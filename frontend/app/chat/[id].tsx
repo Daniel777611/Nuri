@@ -19,11 +19,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import Toast from "@/src/components/Toast";
+import { api, isStreamUnsupported } from "@/src/api";
+import { taskTypeMeta } from "@/src/taskMeta";
+import { colors, radius, spacing, type } from "@/src/theme";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
-
-import { api, isStreamUnsupported } from "@/src/api";
-import { colors, radius, spacing, type } from "@/src/theme";
+const taskApprovalId = (messageId: string, index: number) => `${messageId}-${index}`;
+const taskSourceKey = (messageId: string, index: number) => `NURI 对话:${messageId}:${index}`;
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
@@ -89,12 +91,29 @@ export default function ChatDetail() {
   const [streamingText, setStreamingText] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [approvedTaskIds, setApprovedTaskIds] = useState<string[]>([]);
+  const addingTaskIdsRef = useRef(new Set<string>());
   const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
-    const msgs = await api.getMessages(id);
+    const [msgs, tasks] = await Promise.all([
+      api.getMessages(id),
+      api.listTasks().catch(() => []),
+    ]);
     setMessages(msgs);
+    const savedSources = new Set(tasks.map((task: any) => task.source));
+    setApprovedTaskIds(
+      msgs.flatMap((msg: Msg) => {
+        const suggested = msg.transition?.kind === "task_suggestion"
+          ? (msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []))
+          : [];
+        return suggested.flatMap((_: any, index: number) =>
+          savedSources.has(taskSourceKey(msg.id, index))
+            ? [taskApprovalId(msg.id, index)]
+            : []
+        );
+      })
+    );
   }, [id]);
 
   useEffect(() => {
@@ -175,11 +194,22 @@ export default function ChatDetail() {
     setTimeout(() => setToastMsg(null), 1800);
   };
   const addGeneratedTask = async (msg: Msg, task: any, index: number) => {
-    const approvalId = `${msg.id}-${index}`;
-    if (approvedTaskIds.includes(approvalId)) return;
-    await api.createTask(task);
-    setApprovedTaskIds((ids) => [...ids, approvalId]);
-    showToast("已添加至“我的任务”");
+    const approvalId = taskApprovalId(msg.id, index);
+    if (approvedTaskIds.includes(approvalId) || addingTaskIdsRef.current.has(approvalId)) return;
+    addingTaskIdsRef.current.add(approvalId);
+    try {
+      await api.createTask({
+        ...task,
+        source_message_id: msg.id,
+        suggestion_index: index,
+      });
+      setApprovedTaskIds((ids) => [...ids, approvalId]);
+      showToast("已添加至“我的任务”");
+    } catch {
+      showToast("任务添加失败，请重试");
+    } finally {
+      addingTaskIdsRef.current.delete(approvalId);
+    }
   };
 
   return (
@@ -293,12 +323,15 @@ function MessageBubble({
           <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={276} decelerationRate="fast" contentContainerStyle={styles.taskCarousel}>
             {suggestedTasks.map((task: any, taskIndex: number) => {
               const added = isTaskAdded(taskIndex);
+              const taskType = taskTypeMeta(task.task_type);
               return <View key={`${msg.id}-${taskIndex}`} style={styles.generatedSlide}>
                 <LinearGradient colors={["#A6AEFF", "#FFD092"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.generatedCard}>
-                  <Text style={styles.generatedType}>观察：{task.title}</Text>
+                  <Text style={styles.generatedType}>{taskType.prefix}：{task.title}</Text>
                   <View style={styles.generatedInner}>
                     <Text style={styles.generatedSection}>任务介绍</Text>
                     <Text style={styles.generatedBody}>{task.description}</Text>
+                    <Text style={styles.generatedSection}>频率：</Text>
+                    <Text style={styles.generatedBody}>{task.scope === "week" ? "本周持续" : "今天一次"}</Text>
                     <Text style={styles.generatedSection}>做法：</Text>
                     {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
                     <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>

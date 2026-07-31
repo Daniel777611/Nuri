@@ -32,7 +32,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, io, json, os, time, uuid, hashlib, random
+import asyncio, io, json, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -500,6 +500,8 @@ class TaskCreate(BaseModel):
     task_type:   Optional[str] = "interaction"
     scope:       Literal["today", "week"] = "today"
     due_date:    Optional[str] = None
+    source_message_id: Optional[str] = Field(None, max_length=128)
+    suggestion_index: Optional[int] = Field(None, ge=0, le=20)
 
 class TaskUpdate(BaseModel):
     done: Optional[bool] = None
@@ -764,7 +766,8 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 _NURI_JSON_SUFFIX = """
 
-以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "suggest_tasks": false}
+以合法 JSON 格式回复：
+{"text": "...", "quick_replies": [...], "suggest_tasks": false, "task_proposals": []}
 
 text：
 - 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
@@ -780,11 +783,20 @@ quick_replies（用户可能说的下一句话，不是菜单）：
 - 刚给结论/建议：0个也行
 - 每个不超过10字
 
-suggest_tasks（只在全部条件满足时才设为true，否则一律false）：
-- 对话里出现了具体的育儿场景、困扰或目标（不是泛泛聊天）
-- 你已充分了解了背景，知道给什么任务有意义
-- 自然到了"我来帮你整理几件可以做的事"的时机
-- 本次对话还没生成过任务"""
+suggest_tasks 和 task_proposals：
+- 每一轮都独立判断；历史上生成过任务，不妨碍这轮生成新的任务
+- 以下两种情况必须设 suggest_tasks=true，并填写1-4个 task_proposals：
+  1. 用户明确要求生成任务、任务卡、待办、行动清单或计划
+  2. 你的本轮 text 已经给出了用户今天或本周可以实际执行/观察的具体方案
+- task_proposals 必须忠实对应本轮 text 中的方案，不能另起话题；用户指定数量时遵守其数量
+- 仍在了解情况、只是共情/解释、只提出澄清问题时，suggest_tasks=false 且 task_proposals=[]
+- 紧急医疗、安全风险或需要立即寻求专业帮助的场景，不生成普通任务卡
+- task_proposals 字段：
+  · title：20字内的清楚行动名称
+  · scope：today（今天做一次）或 week（本周持续）
+  · task_type：interaction（亲子互动）、observation（发展观察）、care（照顾陪伴）或 selfcare（家长自我照顾）
+  · description：一句具体、可衡量、低负担的说明
+  · steps：1-3条可以直接照做的步骤"""
 
 # 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
@@ -805,14 +817,40 @@ _NURI_RESPONSE_FORMAT = {
                 "text": {"type": "string"},
                 "quick_replies": {"type": "array", "items": {"type": "string"}},
                 "suggest_tasks": {"type": "boolean"},
+                "task_proposals": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "scope": {"type": "string", "enum": ["today", "week"]},
+                            "task_type": {
+                                "type": "string",
+                                "enum": ["interaction", "observation", "care", "selfcare"],
+                            },
+                            "description": {"type": "string"},
+                            "steps": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["title", "scope", "task_type", "description", "steps"],
+                        "additionalProperties": False,
+                    },
+                },
             },
-            "required": ["text", "quick_replies", "suggest_tasks"],
+            "required": ["text", "quick_replies", "suggest_tasks", "task_proposals"],
             "additionalProperties": False,
         },
     },
 }
 
-_NURI_FALLBACK = {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "suggest_tasks": False}
+_NURI_FALLBACK = {
+    "text": "抱歉，AI 暂时无法回应，请稍后再试。",
+    "quick_replies": [],
+    "suggest_tasks": False,
+    "task_proposals": [],
+}
 
 def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
@@ -839,12 +877,190 @@ def _nuri_messages(
             msgs.append({"role": role, "content": content})
     return msgs
 
+_TASK_REQUEST_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:请|請|帮我|幫我|麻烦|麻煩|可以|能不能|给我|給我|替我|为我|為我).{0,12}"
+        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,10}"
+        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
+        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,8}"
+        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
+        r"(?:给|給).{0,6}(?:我|我们|我們)?.{0,6}(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"(?:我想要|我要|我需要|来个|來個)\s*"
+        r"(?:一|一个|一個|两|兩|二|三|四|[1-4])?\s*"
+        r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"(?:帮我|幫我|替我|为我|為我).{0,6}(?:做|做成|布置).{0,6}"
+        r"(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"\b(?:make|create|generate|give|build|add|turn|organize|schedule)\b.{0,32}"
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b",
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b.{0,24}"
+        r"\b(?:for me|from this|from that|out of this|please)\b",
+    )
+)
+_TASK_NEGATION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:不要|不用|无需|無需|先别|先別|别|別)\s*(?:再\s*)?(?:"
+        r"(?:(?:给|給)\s*)?(?:我|我们|我們)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
+        r"|(?:生成|创建|創建|添加|安排|布置|整理成|转成|轉成|转为|轉為|变成|變成|做成)"
+        r".{0,5}(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
+        r"|把.{0,8}(?:整理成|转成|轉成|转为|轉為|变成|變成|做成)"
+        r".{0,4}(?:任[务務](?:卡)?|计[划劃]|待[办辦]))",
+        r"\b(?:do not|don't|dont|no need to|without)\b.{0,32}"
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?)\b",
+    )
+)
+_TASK_META_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:列出|分析|评价|評價|比较|比較|讲讲|講講|解释|解釋|介绍|介紹)"
+        r"[^，。！？,;!?\n]{0,12}(?:任[务務](?:卡)?|计[划劃])"
+        r"[^，。！？,;!?\n]{0,12}(?:优缺点|優缺點|利弊|详情|詳情|细节|細節|内容|內容)?",
+        r"(?:给|給)[^，。！？,;!?\n]{0,5}(?:我|我们|我們)?"
+        r"[^，。！？,;!?\n]{0,8}(?:讲讲|講講|解释|解釋|介绍|介紹)"
+        r"[^，。！？,;!?\n]{0,8}"
+        r"(?:任[务務](?:卡)?|计[划劃])",
+        r"\b(?:create|make|give|add)\b[^,.;!?\n]{0,24}\b(?:summary|information|details?|"
+        r"context|explanation)\b[^,.;!?\n]{0,24}\b(?:plans?|task cards?)\b",
+        r"\b(?:tell me about|explain|describe|summarize|add more detail to)"
+        r"\b[^,.;!?\n]{0,32}"
+        r"\b(?:plans?|task cards?)\b",
+    )
+)
+_TASK_COUNT_WORDS = {
+    "一": 1, "一个": 1, "一個": 1, "1": 1, "one": 1,
+    "二": 2, "两": 2, "兩": 2, "两个": 2, "兩個": 2, "2": 2, "two": 2,
+    "三": 3, "三个": 3, "三個": 3, "3": 3, "three": 3,
+    "四": 4, "四个": 4, "四個": 4, "4": 4, "four": 4,
+}
+_TASK_TYPES = {"interaction", "observation", "care", "selfcare"}
+_URGENT_TASK_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:喘不上气|喘不過氣|不能呼吸|無法呼吸|呼吸困难|呼吸困難|停止呼吸|窒息|嘴唇发紫|嘴唇發紫)",
+        r"(?:昏迷|失去意识|失去意識|叫不醒|没有反应|沒有反應|抽搐|癫痫发作|癲癇發作)",
+        r"(?:严重出血|嚴重出血|流血不止|误食|誤食|中毒|过量服药|過量服藥)",
+        r"(?:自杀|自殺|伤害自己|傷害自己|伤害他人|傷害他人)",
+        r"(?:立即|马上|立刻|趕快|赶快).{0,6}(?:急诊|急診|就医|就醫|打120|拨打120|撥打120)",
+        r"\b(?:can(?:not|'t) breathe|trouble breathing|choking|unconscious|unresponsive|"
+        r"seizure|severe bleeding|poison(?:ed|ing)?|overdose|self[- ]harm|suicid(?:e|al))\b",
+        r"\b(?:call 911|emergency room|seek immediate medical (?:help|care)|medical emergency)\b",
+    )
+)
+
+
+def _task_intent(text: str) -> Optional[str]:
+    """Resolve the latest unambiguous request/decline about task cards.
+
+    Positive phrases inside a negative phrase ("不要生成任务") do not count as
+    requests. A later clause can intentionally override an earlier one, as in
+    "先不要解释，直接给我两个任务".
+    """
+    normalized = " ".join((text or "").strip().split())
+    if not normalized:
+        return None
+    declines = [
+        match
+        for pattern in _TASK_NEGATION_PATTERNS
+        for match in pattern.finditer(normalized)
+    ]
+    meta_requests = [
+        match
+        for pattern in _TASK_META_PATTERNS
+        for match in pattern.finditer(normalized)
+    ]
+    requests = [
+        match
+        for pattern in _TASK_REQUEST_PATTERNS
+        for match in pattern.finditer(normalized)
+        if not any(
+            decline.start() <= match.start() and match.end() <= decline.end()
+            for decline in declines
+        )
+        and not any(
+            meta.start() <= match.start() and match.end() <= meta.end()
+            for meta in meta_requests
+        )
+    ]
+    latest_request = max((match.start() for match in requests), default=-1)
+    latest_decline = max((match.start() for match in declines), default=-1)
+    if latest_request < 0 and latest_decline < 0:
+        return None
+    return "request" if latest_request > latest_decline else "decline"
+
+
+def _user_requested_tasks(text: str) -> bool:
+    """Deterministically recognise a direct request for task cards."""
+    return _task_intent(text) == "request"
+
+
+def _user_declined_tasks(text: str) -> bool:
+    return _task_intent(text) == "decline"
+
+
+def _urgent_task_suppressed(user_text: str, ai_text: str = "") -> bool:
+    """Never turn an emergency or immediate safety handoff into a routine card."""
+    combined = f"{user_text or ''}\n{ai_text or ''}"
+    return any(pattern.search(combined) for pattern in _URGENT_TASK_PATTERNS)
+
+
+def _requested_task_count(text: str) -> Optional[int]:
+    normalized = " ".join((text or "").strip().lower().split())
+    task_term = r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦]|tasks?|task cards?|plans?)"
+    count_terms = "|".join(sorted((re.escape(key) for key in _TASK_COUNT_WORDS), key=len, reverse=True))
+    match = re.search(rf"({count_terms})\s*{task_term}", normalized, re.IGNORECASE)
+    return _TASK_COUNT_WORDS.get(match.group(1).lower()) if match else None
+
+
+def _normalize_task_proposals(raw_tasks) -> list[dict]:
+    """Validate the compact task contract before it reaches the frontend."""
+    tasks: list[dict] = []
+    seen_titles: set[str] = set()
+    for raw in raw_tasks or []:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "").strip()[:40]
+        normalized_title = re.sub(r"\s+", "", title).lower()
+        if not title or normalized_title in seen_titles:
+            continue
+        raw_steps = raw.get("steps") or []
+        if isinstance(raw_steps, str):
+            raw_steps = [raw_steps]
+        elif not isinstance(raw_steps, list):
+            raw_steps = []
+        steps = [
+            step.strip()[:160]
+            for step in raw_steps
+            if isinstance(step, str) and step.strip()
+        ][:3]
+        description = str(raw.get("description") or "").strip()[:280]
+        if not description and steps:
+            description = steps[0]
+        if not description:
+            continue
+        if not steps:
+            continue
+        task_type = str(raw.get("task_type") or "interaction")
+        tasks.append({
+            "title": title,
+            "scope": raw.get("scope") if raw.get("scope") in {"today", "week"} else "today",
+            "task_type": task_type if task_type in _TASK_TYPES else "interaction",
+            "description": description,
+            "steps": steps,
+        })
+        seen_titles.add(normalized_title)
+        if len(tasks) == 4:
+            break
+    return tasks
+
+
 def _parse_nuri_reply(raw: str) -> dict:
     data = json.loads(raw)
     return {
         "text": data.get("text", ""),
         "quick_replies": data.get("quick_replies", [])[:3],
         "suggest_tasks": bool(data.get("suggest_tasks", False)),
+        "task_proposals": _normalize_task_proposals(data.get("task_proposals")),
     }
 
 def _nuri_reply_sync(
@@ -853,7 +1069,12 @@ def _nuri_reply_sync(
     metrics: Optional["_TurnMetrics"] = None,
 ) -> dict:
     if not oai:
-        return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+        return {
+            "text": "AI 暂时不可用。",
+            "quick_replies": [],
+            "suggest_tasks": False,
+            "task_proposals": [],
+        }
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
     if metrics:
         metrics.set(model="gpt-5.5")
@@ -949,7 +1170,12 @@ async def _nuri_reply_stream(
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
-        yield "final", {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+        yield "final", {
+            "text": "AI 暂时不可用。",
+            "quick_replies": [],
+            "suggest_tasks": False,
+            "task_proposals": [],
+        }
         return
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
     if metrics:
@@ -1000,7 +1226,12 @@ async def _nuri_reply_stream(
         # Anything already streamed stays on screen; only the tail is lost.
         salvaged = _partial_json_string(buf, "text")
         if salvaged:
-            yield "final", {"text": salvaged, "quick_replies": [], "suggest_tasks": False}
+            yield "final", {
+                "text": salvaged,
+                "quick_replies": [],
+                "suggest_tasks": False,
+                "task_proposals": [],
+            }
         else:
             yield "final", dict(_NURI_FALLBACK)
 
@@ -1555,8 +1786,10 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
     except Exception:
         return []
 
-def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
-    """Generate 2-4 contextual tasks from conversation history via AI."""
+def _gen_tasks_ai_sync(
+    msgs: list[dict], requested_count: Optional[int] = None,
+) -> list[dict]:
+    """Fallback task generation when the primary structured reply has no cards."""
     if not oai:
         return []
     history = "\n".join(
@@ -1567,11 +1800,15 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
     resp = oai.chat.completions.create(
         model="gpt-5.5",
         messages=[{"role": "user", "content":
-            f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
+            f"根据以下育儿对话，生成"
+            f"{requested_count if requested_count else '1-3'}个具体可执行的小任务。\n\n"
+            f"{history}\n\n"
             '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
             '"task_type": "interaction|observation|care|selfcare", "description": "一句话任务说明", '
             '"steps": ["具体做法1", "具体做法2"]}]}\n'
+            "- 对话最后一条 NURI 回复是刚刚给用户的方案，任务必须优先忠实转换其中的行动\n"
             "- 任务必须针对对话中的具体情况，不要泛泛的通用任务\n"
+            "- 不要创建内容重叠的任务；每张卡只承载一个清楚行动\n"
             "- today=今天完成，week=本周持续追踪\n"
             "- task_type：interaction=亲子互动，observation=发展观察，care=照顾陪伴，selfcare=自我照顾\n"
             "- steps 给1-3条具体做法，不是套话\n"
@@ -1612,7 +1849,10 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
         timeout=OPENAI_TASKS_TIMEOUT_S,
     )
     try:
-        return json.loads(resp.choices[0].message.content).get("tasks", [])[:4]
+        tasks = _normalize_task_proposals(
+            json.loads(resp.choices[0].message.content).get("tasks", [])
+        )
+        return tasks[:requested_count] if requested_count else tasks
     except Exception:
         return []
 
@@ -2219,7 +2459,6 @@ class _Turn(NamedTuple):
     msgs: list
     context_hints: dict
     fix_text: Optional[str]
-    already_generated: bool
 
 
 async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
@@ -2290,13 +2529,8 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         fix_text = stripped_text[len(FIX_KEYWORD):].strip()
 
     user_turns = sum(1 for m in msgs if m["role"] == "user")
-    already_generated = any(
-        (m.get("transition") or {}).get("kind") == "task_suggestion"
-        for m in msgs if m["role"] == "ai"
-    )
-
     await _maybe_set_title(session, session_id, body, fix_text, user_turns)
-    return _Turn(session, owner_uid, user_msg, msgs, context_hints, fix_text, already_generated)
+    return _Turn(session, owner_uid, user_msg, msgs, context_hints, fix_text)
 
 
 async def _maybe_set_title(
@@ -2356,7 +2590,7 @@ async def _fix_reply(msgs: list, fix_text: str) -> str:
     return "没能提炼出规则，换个说法再试一次？"
 
 
-async def _scripted_reply(session: dict, session_id: str, already_generated: bool) -> tuple:
+async def _scripted_reply(session: dict, session_id: str) -> tuple:
     """Canned script used when no OpenAI key is configured."""
     sb = _get_supabase()
     script_key = session.get("script_key", "free")
@@ -2373,13 +2607,11 @@ async def _scripted_reply(session: dict, session_id: str, already_generated: boo
     else:
         ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
         new_step = step
-    if transition and transition.get("kind") == "tasks_generated" and not already_generated:
+    if transition and transition.get("kind") == "tasks_generated":
         transition = {
             "kind": "task_suggestion",
             "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
         }
-    elif transition and transition.get("kind") == "tasks_generated":
-        transition = None
     if sb:
         try:
             await anyio.to_thread.run_sync(
@@ -2416,31 +2648,55 @@ async def _reply_context(
 
 
 async def _task_suggestion(
-    reply: dict, msgs: list, already_generated: bool,
+    reply: dict, msgs: list, user_text: str, ai_text: str,
     metrics: Optional["_TurnMetrics"] = None,
 ) -> Optional[dict]:
-    """NURI decides when to suggest tasks via the suggest_tasks flag. These are
-    only drafts — nothing is persisted to the tasks table until the parent taps
-    "添加计划" on a specific card (POST /tasks).
+    """Build task drafts for either supported trigger.
+
+    The primary reply returns task proposals alongside its actionable guidance,
+    keeping the cards faithful to the plan already shown. A deterministic intent
+    recognizer guarantees that a parent's direct request still triggers even if
+    the model's boolean is conservative. The older second model call remains only
+    as a fallback when a triggered reply contains no usable proposals.
 
     On the streaming path this runs *after* the reply is already on the parent's
     screen, so a failure here must never take the reply down with it — the turn
     just arrives without task cards.
     """
-    if not reply.get("suggest_tasks") or already_generated:
+    if _user_declined_tasks(user_text) or _urgent_task_suppressed(user_text, ai_text):
         return None
+    explicit_request = _user_requested_tasks(user_text)
+    task_list = _normalize_task_proposals(reply.get("task_proposals"))
+    if not (explicit_request or reply.get("suggest_tasks")):
+        return None
+
+    requested_count = _requested_task_count(user_text) if explicit_request else None
+    if requested_count and task_list:
+        task_list = task_list[:requested_count]
+
     started = time.perf_counter()
-    try:
-        task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
-    except Exception as e:
-        print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
-        if metrics:
-            metrics.mark("tasks_ms", started)
-        return None
+    if not task_list or (requested_count and len(task_list) < requested_count):
+        task_context = msgs + [{"role": "ai", "text": ai_text}]
+        try:
+            fallback_tasks = await anyio.to_thread.run_sync(
+                lambda: _gen_tasks_ai_sync(task_context, requested_count)
+            )
+            task_list = _normalize_task_proposals(task_list + fallback_tasks)
+            if requested_count:
+                task_list = task_list[:requested_count]
+        except Exception as e:
+            print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
+            if metrics:
+                metrics.mark("tasks_ms", started)
+            return None
     if metrics:
         metrics.mark("tasks_ms", started)
         metrics.set(suggested_tasks=bool(task_list))
-    return {"kind": "task_suggestion", "tasks": task_list} if task_list else None
+    return {
+        "kind": "task_suggestion",
+        "trigger": "explicit_request" if explicit_request else "actionable_reply",
+        "tasks": task_list,
+    } if task_list else None
 
 
 async def _persist_ai_turn(
@@ -2486,11 +2742,11 @@ async def post_message(
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
-        transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
-    else:
-        ai_text, quick_replies, transition = await _scripted_reply(
-            turn.session, session_id, turn.already_generated
+        transition = await _task_suggestion(
+            reply, turn.msgs, body.text or "", ai_text, metrics
         )
+    else:
+        ai_text, quick_replies, transition = await _scripted_reply(turn.session, session_id)
 
     ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
 
@@ -2549,12 +2805,15 @@ async def post_message_stream(
                 reply = reply or dict(_NURI_FALLBACK)
                 ai_text = reply["text"]
                 quick_replies = reply.get("quick_replies", [])
-                # Only runs once the text is on screen, so the extra model call
-                # no longer sits in front of the parent's first visible token.
-                transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
+                # The primary reply normally already carries proposals. If it
+                # does not, the fallback call still runs only after the text is
+                # visible, so it cannot delay the parent's first token.
+                transition = await _task_suggestion(
+                    reply, turn.msgs, body.text or "", ai_text, metrics
+                )
             else:
                 ai_text, quick_replies, transition = await _scripted_reply(
-                    turn.session, session_id, turn.already_generated
+                    turn.session, session_id
                 )
                 yield _sse({"type": "delta", "text": ai_text})
 
@@ -2602,7 +2861,7 @@ async def post_message_stream(
 
 # ── Tasks ─────────────────────────────────────────────────────────────────────
 @api.get("/tasks")
-async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_opt_uid)):
+async def list_tasks(scope: Optional[str] = None, uid: str = Depends(_req_uid)):
     sb = _get_supabase()
     if sb and uid:
         try:
@@ -2615,17 +2874,28 @@ async def list_tasks(scope: Optional[str] = None, uid: Optional[str] = Depends(_
             return res.data or []
         except Exception as e:
             print(f"[warn] list_tasks error: {e}")
-    tasks = [t for t in _tasks if not uid or t.get("user_id") == uid]
+    tasks = [t for t in _tasks if t.get("user_id") == uid]
     if scope in ("today", "week"):
         tasks = [t for t in tasks if t["scope"] == scope]
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
 
 @api.post("/tasks", status_code=201)
-async def create_task(body: TaskCreate, uid: Optional[str] = Depends(_opt_uid)):
+async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
     due = date.today() + timedelta(days=0 if body.scope == "today" else 7)
+    is_suggestion = (
+        body.source_message_id is not None and body.suggestion_index is not None
+    )
+    source = (
+        f"NURI 对话:{body.source_message_id}:{body.suggestion_index}"
+        if is_suggestion else "手动添加"
+    )
+    task_id = (
+        str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri-task:{uid}:{source}"))
+        if is_suggestion else str(uuid.uuid4())
+    )
     task = {
-        "id": str(uuid.uuid4()), "title": body.title, "scope": body.scope,
-        "source": "手动添加", "done": False, "progress_done": 0,
+        "id": task_id, "title": body.title, "scope": body.scope,
+        "source": source, "done": False, "progress_done": 0,
         "progress_total": 7 if body.scope == "week" else 1,
         "reflection": None, "created_at": _now(), "completed_at": None,
         "task_type": body.task_type or "interaction",
@@ -2635,15 +2905,44 @@ async def create_task(body: TaskCreate, uid: Optional[str] = Depends(_opt_uid)):
         "is_favorited": False,
         "backfilled": False,
     }
-    if uid:
-        task["user_id"] = uid
+    task["user_id"] = uid
     sb = _get_supabase()
-    if sb and uid:
+    if sb:
+        def find_existing():
+            return (
+                sb.table("tasks").select("*")
+                .eq("id", task_id).eq("user_id", uid).limit(1).execute()
+            )
+
+        if is_suggestion:
+            try:
+                existing = await anyio.to_thread.run_sync(find_existing)
+                if existing.data:
+                    return existing.data[0]
+            except Exception as e:
+                print(f"[warn] create_task idempotency lookup error: {e}")
         try:
             await anyio.to_thread.run_sync(lambda: sb.table("tasks").insert(task).execute())
             return task
         except Exception as e:
+            # A concurrent retry can lose the insert race against the same
+            # deterministic proposal ID. Return the winning row, not an error.
+            if is_suggestion:
+                try:
+                    existing = await anyio.to_thread.run_sync(find_existing)
+                    if existing.data:
+                        return existing.data[0]
+                except Exception as lookup_error:
+                    print(f"[warn] create_task retry lookup error: {lookup_error}")
             print(f"[warn] create_task insert error: {e}")
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Task could not be saved",
+            ) from e
+    if is_suggestion:
+        existing = next((item for item in _tasks if item["id"] == task_id), None)
+        if existing:
+            return existing
     _tasks.append(task)
     return task
 
