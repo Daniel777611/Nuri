@@ -132,6 +132,27 @@ insert into public.source_domains (domain, tier, lang, site_name, note) values
   ('unicef.org', 'authority', 'any', 'UNICEF',      '')
 on conflict (domain) do nothing;
 
+-- Chinese-language government health services. These are the closest thing to
+-- an AAP equivalent that publishes in Chinese: Hong Kong and Taiwan's health
+-- authorities adapt the same international guidance, so a parent who reads
+-- Chinese gets Western-aligned advice in their own language rather than a
+-- translation NURI had to make itself.
+--
+-- Also a latency fix. The Chinese authority list had five domains against
+-- nineteen English ones, and the Chinese search pass was consistently the
+-- slower of the two (2.0-3.0s vs 0.9s) because Tavily was hunting through too
+-- narrow a slice of the web.
+insert into public.source_domains (domain, tier, lang, site_name, note) values
+  ('fhs.gov.hk',   'authority', 'zh', '香港衞生署家庭健康服務', 'Parent-facing; Traditional Chinese'),
+  ('chp.gov.hk',   'authority', 'zh', '香港衞生防護中心',      ''),
+  ('hpa.gov.tw',   'authority', 'zh', '台灣國民健康署',        'Parent-facing; Traditional Chinese'),
+  ('mohw.gov.tw',  'authority', 'zh', '台灣衛福部',           ''),
+  ('cdc.gov.tw',   'authority', 'zh', '台灣疾管署',           'Vaccination schedules'),
+  ('hkcpaed.org',  'authority', 'zh', '香港兒科醫學會',        ''),
+  ('bch.com.cn',   'authority', 'zh', '北京儿童医院',          ''),
+  ('shchildren.com.cn', 'authority', 'zh', '上海儿童医学中心',  '')
+on conflict (domain) do nothing;
+
 -- ── Pending a call from the team ─────────────────────────────────────────────
 -- Left unseeded on purpose. Each has a genuinely wide quality spread, and
 -- picking a tier is a product judgement rather than an engineering one:
