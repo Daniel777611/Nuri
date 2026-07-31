@@ -244,6 +244,7 @@ export const api = {
 
   // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
+  getPersonalizedFeed: (count = 4) => req(`/feed/personalized?count=${count}`),
   getCardDetail: (id: string) => req(`/feed/${id}/detail`),
   getAltCard: (exclude: string) =>
     req(`/feed/alt?exclude=${encodeURIComponent(exclude)}`),

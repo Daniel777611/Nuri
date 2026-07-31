@@ -55,9 +55,16 @@ export default function Profile() {
   );
 
   const updatePrivacy = async (patch: any) => {
+    const previous = privacy;
     const next = { ...privacy, ...patch };
     setPrivacy(next);
-    await api.setPrivacy(next);
+    try {
+      await api.setPrivacy(next);
+    } catch {
+      // Do not leave a privacy toggle visually enabled/disabled when the
+      // persisted setting did not actually save.
+      setPrivacy(previous);
+    }
   };
 
   const wipeAll = async () => {

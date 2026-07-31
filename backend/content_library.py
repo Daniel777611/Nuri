@@ -1,0 +1,345 @@
+"""Curated learning content used by the personalized home feed.
+
+The model is never allowed to invent a resource URL.  Every external link in
+this module was reviewed against an official child-development, public-health,
+or pediatric source.  Conversation text is used only to rank these stable
+content IDs.
+"""
+
+from urllib.parse import urlparse
+
+
+TRUSTED_RESOURCE_HOSTS = frozenset(
+    {
+        "healthychildren.org",
+        "www.healthychildren.org",
+        "cdc.gov",
+        "www.cdc.gov",
+        "unicef.org",
+        "www.unicef.org",
+        "developingchild.harvard.edu",
+        "asha.org",
+        "www.asha.org",
+        "youtube.com",
+        "www.youtube.com",
+        "youtu.be",
+    }
+)
+
+
+def is_trusted_resource_url(url: str) -> bool:
+    """Return True only for reviewed HTTPS publisher domains."""
+
+    try:
+        parsed = urlparse(url)
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+
+
+LEARNING_CONTENT_CARDS = [
+    {
+        "id": "learn_sleep_routine",
+        "topic": "sleep",
+        "topic_label": "睡眠与作息",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "AAP 美国儿科学会",
+        "title": "孩子夜醒或入睡困难，可以先从固定睡前节奏开始",
+        "summary": "把睡前半小时变得可预期，并观察夜醒后的回应方式是否一致。",
+        "body": (
+            "孩子的睡眠很少靠某一个技巧立刻改变。更值得先做的，是把每天睡前的顺序变得简单、温和、可重复："
+            "例如洗漱、调暗灯光、读一本书、拥抱和晚安。夜里醒来时，照顾者也尽量使用相近的安抚方式。\n\n"
+            "你可以连续记录三到七晚：入睡时间、夜醒次数、白天小睡和当天是否有明显变化。记录的目的不是追求完美，"
+            "而是找到最可能影响孩子的规律。如果伴随呼吸异常、持续疼痛或明显精神状态变化，应及时联系医疗专业人员。"
+        ),
+        "tags": ["#睡眠", "#夜醒", "#睡前仪式"],
+        "hook_line": "下面的文章和视频可以帮助你把方法做得更具体。",
+        "match_terms": [
+            "睡眠", "睡觉", "睡不着", "不肯睡", "入睡", "哄睡", "夜醒", "醒了", "晚睡", "早醒",
+            "作息", "睡前", "小睡", "nap", "bedtime", "sleep", "wake up",
+        ],
+        "resources": [
+            {
+                "id": "sleep-aap-article",
+                "kind": "article",
+                "title": "Toddler Bedtime Trouble: 7 Tips for Parents",
+                "publisher": "AAP · HealthyChildren.org",
+                "language": "英文文章",
+                "description": "美国儿科学会给幼儿家庭的睡前困难应对建议。",
+                "url": "https://www.healthychildren.org/English/healthy-living/sleep/Pages/bedtime-trouble.aspx",
+            },
+            {
+                "id": "sleep-aap-video",
+                "kind": "video",
+                "title": "Smart Solutions for Safe and Sound Sleep",
+                "publisher": "AAP 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "儿科专家讲解安全睡眠与常见睡眠问题。",
+                "url": "https://www.youtube.com/watch?v=gn1bbzLU2rg",
+            },
+        ],
+    },
+    {
+        "id": "learn_big_feelings",
+        "topic": "emotion",
+        "topic_label": "情绪调节",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "AAP 与 UNICEF",
+        "title": "孩子有“大情绪”时，先共调节，再教他表达",
+        "summary": "把哭闹、生气或害怕看作需要帮助的信号，而不是故意为难大人。",
+        "body": (
+            "幼儿还不能独自完成复杂的情绪调节。情绪很强烈时，可以先降低声音、靠近并保证安全，再用很短的话替孩子命名感受，"
+            "例如“你很失望，因为现在要离开”。等身体慢慢平静后，再讨论边界和下一次可以怎么做。\n\n"
+            "共情不等于取消规则。你可以同时说“我知道你很生气”和“我不会让你打人”。稳定、可预测的回应，会逐渐成为孩子日后"
+            "自己调节情绪时可以调用的经验。"
+        ),
+        "tags": ["#情绪", "#共调节", "#亲子沟通"],
+        "hook_line": "先理解情绪发生了什么，再选择适合你家的回应。",
+        "match_terms": [
+            "情绪", "焦虑", "害怕", "担心", "崩溃", "哭", "爱哭", "生气", "发火", "冷静", "压力",
+            "共情", "安抚", "情绪管理", "emotion", "anxiety", "upset", "calm",
+        ],
+        "resources": [
+            {
+                "id": "emotion-aap-article",
+                "kind": "article",
+                "title": "Helping Little People Manage Big Feelings",
+                "publisher": "AAP · HealthyChildren.org",
+                "language": "英文文章",
+                "description": "帮助幼儿识别和管理强烈情绪的儿科建议。",
+                "url": "https://www.healthychildren.org/English/family-life/family-dynamics/Pages/helping-little-people-manage-big-feelings.aspx",
+            },
+            {
+                "id": "emotion-unicef-video",
+                "kind": "video",
+                "title": "How to Build Your Baby's Mental Health",
+                "publisher": "UNICEF 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "介绍照顾者回应如何支持婴幼儿的心理健康。",
+                "url": "https://www.youtube.com/watch?v=dp2NKV0C7_k",
+            },
+        ],
+    },
+    {
+        "id": "learn_picky_eating",
+        "topic": "food",
+        "topic_label": "挑食与营养",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "AAP 与 UNICEF",
+        "title": "面对挑食，先减少餐桌压力，再增加接触机会",
+        "summary": "新食物可以重复出现，但不把“必须吃一口”变成每餐的冲突。",
+        "body": (
+            "很多幼儿会经历食物选择突然变窄的阶段。照顾者负责提供规律、相对均衡的选择，孩子决定吃不吃以及吃多少。"
+            "可以把一种熟悉食物和少量新食物放在同一餐里，让孩子先看、闻、碰，不急着要求吞下。\n\n"
+            "连续记录一到两周，比单看某一顿更有意义。若孩子持续体重下降、吞咽困难、频繁呛咳，或可接受的食物越来越少，"
+            "应向儿科医生或喂养专业人员咨询。"
+        ),
+        "tags": ["#挑食", "#营养", "#餐桌关系"],
+        "hook_line": "从可信儿科资源里挑一个最容易执行的改变。",
+        "match_terms": [
+            "挑食", "吃饭", "不吃", "拒绝吃", "只吃", "蔬菜", "水果", "营养", "辅食", "食物", "吞咽",
+            "餐桌", "喂饭", "picky", "eating", "food", "feeding",
+        ],
+        "resources": [
+            {
+                "id": "food-aap-article",
+                "kind": "article",
+                "title": "How Do I Help My Picky Eater Try More Healthy Foods?",
+                "publisher": "AAP · HealthyChildren.org",
+                "language": "英文文章",
+                "description": "关于重复接触、用餐结构和家长分工的实用建议。",
+                "url": "https://www.healthychildren.org/english/tips-tools/ask-the-pediatrician/pages/how-do-i-help-my-picky-eater-try-more-foods.aspx",
+            },
+            {
+                "id": "food-aap-video",
+                "kind": "video",
+                "title": "Tips for Feeding Picky Eaters",
+                "publisher": "AAP 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "儿科医生演示如何降低挑食家庭的进餐压力。",
+                "url": "https://www.youtube.com/watch?v=s1KvNv4Jxqw",
+            },
+        ],
+    },
+    {
+        "id": "learn_language_milestones",
+        "topic": "language",
+        "topic_label": "语言与沟通",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "CDC 与 ASHA",
+        "title": "担心孩子说话晚？先看沟通里程碑和日常互动",
+        "summary": "把词汇量放回年龄、理解能力、手势和互动意愿中一起观察。",
+        "body": (
+            "语言发展不只包括会说多少词，也包括是否会看向交流对象、使用手势、理解简单指令和轮流互动。你可以记录孩子自然表达的方式，"
+            "并在日常活动中跟随他的注意点，用短句描述正在发生的事，留出回应时间。\n\n"
+            "里程碑是帮助家长及时行动的观察工具，不是给孩子贴标签。如果孩子出现已掌握能力倒退、对声音反应很少，或你持续担心，"
+            "请和儿科医生讨论听力与发展筛查。"
+        ),
+        "tags": ["#语言发展", "#沟通", "#发育里程碑"],
+        "hook_line": "对照官方里程碑时，也保留对孩子个体节奏的观察。",
+        "match_terms": [
+            "说话", "不开口", "说话晚", "词汇", "发音", "语言", "听不懂", "表达", "沟通", "手势", "叫名字",
+            "里程碑", "language", "speech", "words", "milestone", "communication",
+        ],
+        "resources": [
+            {
+                "id": "language-cdc-article",
+                "kind": "article",
+                "title": "CDC's Developmental Milestones",
+                "publisher": "美国疾病控制与预防中心 CDC",
+                "language": "英文 / 西班牙文文章",
+                "description": "按年龄查看沟通、认知、动作与社会情绪里程碑。",
+                "url": "https://www.cdc.gov/act-early/milestones/index.html",
+            },
+            {
+                "id": "language-cdc-video",
+                "kind": "video",
+                "title": "Milestones Matter for Families",
+                "publisher": "CDC 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "帮助家长理解如何观察和沟通发展里程碑。",
+                "url": "https://www.youtube.com/watch?v=T7bCsIIpC7M",
+            },
+        ],
+    },
+    {
+        "id": "learn_tantrum_boundaries",
+        "topic": "behavior",
+        "topic_label": "行为与边界",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "AAP 与 UNICEF",
+        "title": "发脾气、打人或不配合时，边界要短而一致",
+        "summary": "先保证安全，再减少解释，用可重复的话和行动守住边界。",
+        "body": (
+            "孩子失控时，大段说理通常很难被听进去。先移开危险物、阻止伤害，再用一句稳定的话说明边界，例如“我不会让你打人”。"
+            "等强烈情绪过去后，再简短复盘并练习替代动作。\n\n"
+            "规则越少、越明确，照顾者之间越一致，孩子越容易预测结果。纪律的目标不是让孩子害怕，而是帮助他逐渐学会安全、"
+            "尊重和自我控制。"
+        ),
+        "tags": ["#发脾气", "#边界", "#正向管教"],
+        "hook_line": "先选一句全家都能坚持的边界话术。",
+        "match_terms": [
+            "发脾气", "打人", "咬人", "踢人", "扔东西", "不听话", "不配合", "规则", "边界", "管教", "攻击",
+            "尖叫", "撒泼", "tantrum", "discipline", "hit", "bite", "behavior",
+        ],
+        "resources": [
+            {
+                "id": "behavior-aap-article",
+                "kind": "article",
+                "title": "What's the Best Way to Discipline My Child?",
+                "publisher": "AAP · HealthyChildren.org",
+                "language": "英文文章",
+                "description": "美国儿科学会关于安全、有效纪律方式的建议。",
+                "url": "https://www.healthychildren.org/English/family-life/family-dynamics/communication-discipline/Pages/Disciplining-Your-Child.aspx",
+            },
+            {
+                "id": "behavior-unicef-video",
+                "kind": "video",
+                "title": "Expert Tips for Taming Tantrums",
+                "publisher": "UNICEF 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "专家讲解孩子发脾气时可以如何回应。",
+                "url": "https://www.youtube.com/watch?v=L8B9zA8VUjk",
+            },
+        ],
+    },
+    {
+        "id": "learn_serve_and_return",
+        "topic": "connection",
+        "topic_label": "亲子互动",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "哈佛大学儿童发展中心",
+        "title": "不知道怎么高质量陪伴？试试“发球与回应”",
+        "summary": "跟随孩子正在关注的事物回应几轮，短时间也能形成真实连接。",
+        "body": (
+            "高质量陪伴不一定需要复杂活动。孩子看向、指向、发声或提出问题，就像向你“发球”；你注意到并回应，再等待他的下一次反应，"
+            "就形成了来回互动。你可以给他正在关注的事物命名，跟随他的节奏，并在他转移注意时自然结束。\n\n"
+            "这种互动可以发生在换衣、吃饭、散步或读绘本时。比起追求一次陪伴很久，更重要的是让孩子感受到：他的信号被看见，"
+            "回应是可靠的。"
+        ),
+        "tags": ["#亲子互动", "#陪伴", "#发球与回应"],
+        "hook_line": "看一遍示范视频，今天就能在日常里练习。",
+        "match_terms": [
+            "陪伴", "亲子", "亲子关系", "不知道怎么玩", "互动", "建立连接", "连接", "读绘本", "一起玩", "共同游戏",
+            "注意力", "serve and return", "play", "connection", "bond",
+        ],
+        "resources": [
+            {
+                "id": "connection-harvard-article",
+                "kind": "article",
+                "title": "5 Steps for Brain-Building Serve and Return",
+                "publisher": "Harvard Center on the Developing Child",
+                "language": "英文 / 西班牙文文章",
+                "description": "用五个步骤解释如何跟随孩子的信号形成来回互动。",
+                "url": "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
+            },
+            {
+                "id": "connection-harvard-video",
+                "kind": "video",
+                "title": "How-to: 5 Steps for Brain-Building Serve and Return",
+                "publisher": "Harvard Center on the Developing Child",
+                "language": "英文 / 西班牙文视频",
+                "description": "通过具体画面示范照顾者如何观察、回应并轮流互动。",
+                "url": "https://developingchild.harvard.edu/resources/videos/how-to-5-steps-for-brain-building-serve-and-return/",
+            },
+        ],
+    },
+    {
+        "id": "learn_home_safety",
+        "topic": "safety",
+        "topic_label": "居家安全",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "CDC 与 AAP",
+        "title": "孩子活动范围变大后，重新做一次居家安全检查",
+        "summary": "从孩子视线高度检查药品、电池、热源、水域和可能造成窒息的小物。",
+        "body": (
+            "孩子会爬、会走或开始攀爬后，原本够不到的地方会很快变得可达。可以蹲到孩子的高度逐个房间查看：药品和清洁剂是否上锁，"
+            "纽扣电池和小物是否收好，家具是否固定，热水、窗户和水域是否有保护。\n\n"
+            "安全措施要随着能力变化定期更新。如果怀疑误食、中毒、窒息或出现呼吸困难，应立即联系当地急救或毒物控制服务，"
+            "不要等待普通线上建议。"
+        ),
+        "tags": ["#居家安全", "#儿童防护", "#急救意识"],
+        "hook_line": "用官方清单，从今天最常活动的房间开始检查。",
+        "match_terms": [
+            "误食", "窒息", "跌倒", "烫伤", "溺水", "药品", "电池", "居家安全", "儿童防护", "安全门", "插座",
+            "家具固定", "babyproof", "safety", "choking", "poison",
+        ],
+        "resources": [
+            {
+                "id": "safety-cdc-article",
+                "kind": "article",
+                "title": "Young Children: Safety in the Home & Community",
+                "publisher": "美国疾病控制与预防中心 CDC",
+                "language": "英文文章",
+                "description": "涵盖居家、出行和户外环境中的儿童安全重点。",
+                "url": "https://www.cdc.gov/parents/children/safety-in-the-home-and-community.html",
+            },
+            {
+                "id": "safety-aap-video",
+                "kind": "video",
+                "title": "Household Hazards: Keeping Kids Safe at Home",
+                "publisher": "AAP 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "儿科安全讲座，介绍家庭中常见但容易忽视的风险。",
+                "url": "https://www.youtube.com/watch?v=nBE3ZuqwlkA",
+            },
+        ],
+    },
+]
+
+
+LEARNING_CONTENT_BY_ID = {card["id"]: card for card in LEARNING_CONTENT_CARDS}

@@ -42,6 +42,55 @@ const card = {
   body: "固定而温柔的睡前步骤，能让孩子知道一天即将结束。可以从洗漱、读一本书、说一句晚安开始，不需要复杂，关键是每天大致一致。",
   tags: ["睡眠", "亲子互动", "日常习惯"], hook_line: "从今晚开始，试试只保留一个最容易坚持的步骤。",
 };
+const learningCards = [
+  {
+    id: "learn_sleep_routine",
+    topic: "sleep",
+    topic_label: "睡眠与作息",
+    type: "tip",
+    type_label: "对话精选",
+    publisher: "AAP 美国儿科学会",
+    title: "孩子夜醒或入睡困难，可以先从固定睡前节奏开始",
+    summary: "把睡前半小时变得可预期，并观察夜醒后的回应方式是否一致。",
+    body: "孩子的睡眠很少靠某一个技巧立刻改变。可以先把每天睡前的顺序变得简单、温和、可重复，例如洗漱、调暗灯光、读一本书、拥抱和晚安。连续记录三到七晚，观察入睡时间、夜醒次数、白天小睡和当天是否有明显变化。",
+    tags: ["#睡眠", "#夜醒", "#睡前仪式"],
+    hook_line: "下面的文章和视频可以帮助你把方法做得更具体。",
+    resources: [
+      { id: "sleep-aap-article", kind: "article", title: "Toddler Bedtime Trouble: 7 Tips for Parents", publisher: "AAP · HealthyChildren.org", language: "英文文章", description: "美国儿科学会给幼儿家庭的睡前困难应对建议。", url: "https://www.healthychildren.org/English/healthy-living/sleep/Pages/bedtime-trouble.aspx" },
+      { id: "sleep-aap-video", kind: "video", title: "Smart Solutions for Safe and Sound Sleep", publisher: "AAP 官方 YouTube 频道", language: "英文视频", description: "儿科专家讲解安全睡眠与常见睡眠问题。", url: "https://www.youtube.com/watch?v=gn1bbzLU2rg" },
+    ],
+  },
+  {
+    id: "learn_big_feelings", topic: "emotion", topic_label: "情绪调节", type: "tip", type_label: "对话精选", publisher: "AAP 与 UNICEF",
+    title: "孩子有“大情绪”时，先共调节，再教他表达", summary: "把哭闹、生气或害怕看作需要帮助的信号，而不是故意为难大人。",
+    body: "幼儿还不能独自完成复杂的情绪调节。先降低声音、靠近并保证安全，再用很短的话替孩子命名感受。共情不等于取消规则，你可以同时理解感受并守住安全边界。",
+    tags: ["#情绪", "#共调节", "#亲子沟通"], hook_line: "先理解情绪发生了什么，再选择适合你家的回应。",
+    resources: [
+      { id: "emotion-aap-article", kind: "article", title: "Helping Little People Manage Big Feelings", publisher: "AAP · HealthyChildren.org", language: "英文文章", description: "帮助幼儿识别和管理强烈情绪的儿科建议。", url: "https://www.healthychildren.org/English/family-life/family-dynamics/Pages/helping-little-people-manage-big-feelings.aspx" },
+      { id: "emotion-unicef-video", kind: "video", title: "How to Build Your Baby's Mental Health", publisher: "UNICEF 官方 YouTube 频道", language: "英文视频", description: "介绍照顾者回应如何支持婴幼儿心理健康。", url: "https://www.youtube.com/watch?v=dp2NKV0C7_k" },
+    ],
+  },
+  {
+    id: "learn_picky_eating", topic: "food", topic_label: "挑食与营养", type: "tip", type_label: "对话精选", publisher: "AAP 与 UNICEF",
+    title: "面对挑食，先减少餐桌压力，再增加接触机会", summary: "新食物可以重复出现，但不把“必须吃一口”变成每餐的冲突。",
+    body: "照顾者负责提供规律、相对均衡的选择，孩子决定吃不吃以及吃多少。把熟悉食物和少量新食物放在同一餐里，先允许孩子看、闻、碰，不急着要求吞下。",
+    tags: ["#挑食", "#营养", "#餐桌关系"], hook_line: "从可信儿科资源里挑一个最容易执行的改变。",
+    resources: [
+      { id: "food-aap-article", kind: "article", title: "How Do I Help My Picky Eater Try More Healthy Foods?", publisher: "AAP · HealthyChildren.org", language: "英文文章", description: "关于重复接触、用餐结构和家长分工的实用建议。", url: "https://www.healthychildren.org/english/tips-tools/ask-the-pediatrician/pages/how-do-i-help-my-picky-eater-try-more-foods.aspx" },
+      { id: "food-aap-video", kind: "video", title: "Tips for Feeding Picky Eaters", publisher: "AAP 官方 YouTube 频道", language: "英文视频", description: "儿科医生演示如何降低进餐压力。", url: "https://www.youtube.com/watch?v=s1KvNv4Jxqw" },
+    ],
+  },
+  {
+    id: "learn_serve_and_return", topic: "connection", topic_label: "亲子互动", type: "tip", type_label: "对话精选", publisher: "哈佛大学儿童发展中心",
+    title: "不知道怎么高质量陪伴？试试“发球与回应”", summary: "跟随孩子正在关注的事物回应几轮，短时间也能形成真实连接。",
+    body: "孩子看向、指向、发声或提出问题，就像向你发球；你注意到并回应，再等待他的下一次反应，就形成了来回互动。这可以发生在换衣、吃饭、散步或读绘本时。",
+    tags: ["#亲子互动", "#陪伴", "#发球与回应"], hook_line: "看一遍示范视频，今天就能在日常里练习。",
+    resources: [
+      { id: "connection-harvard-article", kind: "article", title: "5 Steps for Brain-Building Serve and Return", publisher: "Harvard Center on the Developing Child", language: "英文 / 西班牙文文章", description: "用五个步骤解释如何形成来回互动。", url: "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/" },
+      { id: "connection-harvard-video", kind: "video", title: "How-to: 5 Steps for Brain-Building Serve and Return", publisher: "Harvard Center on the Developing Child", language: "英文 / 西班牙文视频", description: "通过画面示范照顾者如何观察、回应并轮流互动。", url: "https://developingchild.harvard.edu/resources/videos/how-to-5-steps-for-brain-building-serve-and-return/" },
+    ],
+  },
+];
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh" };
 let sessions = [
@@ -177,7 +226,44 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/tasks/clear-completed") { tasks = tasks.filter((t) => !t.completed_at); return {}; }
   if (path === "/tasks/insights") return { streak_days: 17 };
 
-  if (path.startsWith("/feed/") && path.endsWith("/detail")) return { ...card, id: path.split("/")[2] };
+  if (path.startsWith("/feed/personalized") && method === "GET") {
+    const useConversation = privacy.allow_history_training;
+    const items = learningCards.map((item, index) => ({
+      ...item,
+      personalization_reason: useConversation && index === 0
+        ? "因为你最近和 NURI 聊到了“睡眠与作息”"
+        : useConversation
+          ? "NURI 从可信育儿来源中为你补充精选"
+          : "你已关闭对话个性化，这是 NURI 的可信来源精选",
+      is_conversation_match: useConversation && index === 0,
+      related_session_id: useConversation && index === 0 ? "chat-1" : null,
+    }));
+    return {
+      items,
+      personalization_mode: useConversation ? "conversation" : "default_privacy",
+      matched_topic: useConversation ? "sleep" : null,
+      related_session_id: useConversation ? "chat-1" : null,
+      generated_at: new Date().toISOString(),
+    };
+  }
+  if (path.startsWith("/feed/") && path.endsWith("/detail")) {
+    const contentId = path.split("/")[2];
+    const learningCard = learningCards.find((item) => item.id === contentId);
+    if (learningCard) {
+      const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
+      return {
+        ...learningCard,
+        personalization_reason: isSleepMatch
+          ? "因为你最近和 NURI 聊到了“睡眠与作息”"
+          : privacy.allow_history_training
+            ? "NURI 从可信育儿来源中为你补充精选"
+            : "你已关闭对话个性化，这是 NURI 的可信来源精选",
+        is_conversation_match: isSleepMatch,
+        related_session_id: isSleepMatch ? "chat-1" : null,
+      };
+    }
+    return { ...card, id: contentId };
+  }
   if (path === "/feed" || path.startsWith("/feed?")) return [card];
   if (path.startsWith("/feed/search") || path.startsWith("/feed/alt")) return [card];
   if (path === "/feed/generate") return [card];

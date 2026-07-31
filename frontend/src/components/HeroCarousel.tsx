@@ -1,61 +1,105 @@
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
 export type HeroCard = {
   id: string;
-  source: string;
   title: string;
-  sub: string;
-  colors: readonly [string, string, ...string[]];
+  summary?: string;
+  publisher?: string;
+  topic?: string;
+  topic_label?: string;
+  personalization_reason?: string;
+  is_conversation_match?: boolean;
+  related_session_id?: string | null;
+  colors?: readonly [string, string, ...string[]];
 };
 
-// 首页知识卡片轮播 mock：六页均为前端演示，不依赖后端或外部链接。
-const CAROUSEL: HeroCard[] = [
+// These IDs all exist in the backend's reviewed content library. They are a
+// safe visual fallback while the signed-in recommendation request is loading;
+// unlike the old c1-c6 mock cards, they can always open a real detail page.
+const FALLBACK_CARDS: HeroCard[] = [
   {
-    id: "c1",
-    source: "来自Amber的育儿播客分享",
-    title: "如何培养孩子的\n情绪管理能力？",
-    sub: "探索属于你的家庭策略",
-    colors: ["#4F4B9C", "#ADD2FD"] as const,
+    id: "learn_big_feelings",
+    title: "孩子有“大情绪”时，先共调节，再教他表达",
+    publisher: "AAP 与 UNICEF",
+    topic: "emotion",
+    topic_label: "情绪调节",
+    personalization_reason: "NURI 可信来源精选",
   },
   {
-    id: "c2",
-    source: "来自丁香妈妈的科普文章",
-    title: "18个月宝宝挑食怎么办？\n专家这样说",
-    sub: "食物新恐惧期的应对指南",
-    colors: ["#4B72B9", "#9ED8F0"] as const,
+    id: "learn_sleep_routine",
+    title: "孩子夜醒或入睡困难，可以先从固定睡前节奏开始",
+    publisher: "AAP 美国儿科学会",
+    topic: "sleep",
+    topic_label: "睡眠与作息",
+    personalization_reason: "NURI 可信来源精选",
   },
   {
-    id: "c3",
-    source: "来自北美儿科医生播客",
-    title: "睡眠训练到底\n有没有用？",
-    sub: "聊聊哭声免疫法的争议",
-    colors: ["#8861B1", "#E8B7D1"] as const,
+    id: "learn_picky_eating",
+    title: "面对挑食，先减少餐桌压力，再增加接触机会",
+    publisher: "AAP 与 UNICEF",
+    topic: "food",
+    topic_label: "挑食与营养",
+    personalization_reason: "NURI 可信来源精选",
   },
-  { id: "c4", source: "来自NURI精选文章", title: "宝宝总说“不”？\n试试这样回应", sub: "把对抗变成一次合作练习", colors: ["#9A5B83", "#F3B992"] as const },
-  { id: "c5", source: "来自家庭成长通讯", title: "给自己留一点\n不被打扰的时间", sub: "照顾孩子前，先照顾好自己", colors: ["#385E87", "#9FC5DD"] as const },
-  { id: "c6", source: "来自真实家长经验", title: "出门总是拖很久？\n试试出发仪式", sub: "让每天的小事更有掌控感", colors: ["#52685E", "#B7D6AF"] as const },
+  {
+    id: "learn_serve_and_return",
+    title: "不知道怎么高质量陪伴？试试“发球与回应”",
+    publisher: "哈佛大学儿童发展中心",
+    topic: "connection",
+    topic_label: "亲子互动",
+    personalization_reason: "NURI 可信来源精选",
+  },
 ];
 
-// PC 端没有滑动手势，左右各留出 1/4 卡片宽度的无形点击区（避开底部的
-// "浏览详情" 按钮），点一下翻到上一页/下一页。原生端保留手势滑动，不受影响。
+const TOPIC_COLORS: Record<string, readonly [string, string]> = {
+  emotion: ["#4F4B9C", "#ADD2FD"],
+  sleep: ["#4B72B9", "#9ED8F0"],
+  food: ["#9A5B83", "#F3B992"],
+  language: ["#8861B1", "#E8B7D1"],
+  behavior: ["#52685E", "#B7D6AF"],
+  connection: ["#385E87", "#9FC5DD"],
+  safety: ["#7B526A", "#E7A8A8"],
+};
+
+const FALLBACK_COLORS: readonly [readonly [string, string], ...readonly [string, string][]] = [
+  ["#4F4B9C", "#ADD2FD"],
+  ["#4B72B9", "#9ED8F0"],
+  ["#8861B1", "#E8B7D1"],
+  ["#52685E", "#B7D6AF"],
+];
+
+// PC has no touch gesture, so the upper left/right quarters remain invisible
+// previous/next controls. The lower CTA area always opens the content page.
 const CLICK_ZONE_HEIGHT = 140;
 const CLICK_ZONE_RATIO = 0.25;
 
 export default function HeroCarousel({
   width,
+  cards = [],
   onCardPress,
 }: {
   width: number;
+  cards?: HeroCard[];
   onCardPress: (card: HeroCard) => void;
 }) {
+  const visibleCards = cards.length ? cards : FALLBACK_CARDS;
+  const cardSignature = useMemo(
+    () => visibleCards.map((card) => card.id).join("|"),
+    [visibleCards]
+  );
   const [page, setPage] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const pageWidth = width + 12;
 
+  useEffect(() => {
+    setPage(0);
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [cardSignature]);
+
   const goToPage = (index: number) => {
-    const clamped = Math.max(0, Math.min(CAROUSEL.length - 1, index));
+    const clamped = Math.max(0, Math.min(visibleCards.length - 1, index));
     scrollRef.current?.scrollTo({ x: clamped * pageWidth, animated: true });
     setPage(clamped);
   };
@@ -70,62 +114,85 @@ export default function HeroCarousel({
         decelerationRate="fast"
         disableIntervalMomentum
         contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
-        onScroll={(e) => setPage(Math.round(e.nativeEvent.contentOffset.x / pageWidth))}
-        onMomentumScrollEnd={(e) => {
-          // react-native-web doesn't reliably honor snapToInterval, so force
-          // an exact snap after every drag — a card should never end up
-          // straddling the viewport edge.
+        onScroll={(event) =>
+          setPage(
+            Math.max(
+              0,
+              Math.min(
+                visibleCards.length - 1,
+                Math.round(event.nativeEvent.contentOffset.x / pageWidth)
+              )
+            )
+          )
+        }
+        onMomentumScrollEnd={(event) => {
           if (Platform.OS === "web") {
-            goToPage(Math.round(e.nativeEvent.contentOffset.x / pageWidth));
+            goToPage(Math.round(event.nativeEvent.contentOffset.x / pageWidth));
           }
         }}
         scrollEventThrottle={16}
       >
-        {CAROUSEL.map((c, i) => (
-          <LinearGradient
-            key={c.id}
-            colors={c.colors}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.heroCard, { width }]}
-          >
-            {Platform.OS === "web" && (
-              <>
-                <Pressable
-                  onPress={() => goToPage(i - 1)}
-                  style={[styles.clickZone, { left: 0, width: width * CLICK_ZONE_RATIO }]}
-                  testID={`hero-carousel-prev-${c.id}`}
-                />
-                <Pressable
-                  onPress={() => goToPage(i + 1)}
-                  style={[styles.clickZone, { right: 0, width: width * CLICK_ZONE_RATIO }]}
-                  testID={`hero-carousel-next-${c.id}`}
-                />
-              </>
-            )}
-            {/* 前端模拟的云朵/树冠装饰；不绑定后端内容。 */}
-            <View style={styles.decoCloudOne} />
-            <View style={styles.decoCloudTwo} />
-            <View style={styles.decoCloudThree} />
-            <Text style={styles.heroTitle}>{c.title}</Text>
-            <Text style={styles.heroSub}>
-              {c.source}，{c.sub}
-            </Text>
-            <View style={{ flex: 1 }} />
+        {visibleCards.map((card, index) => {
+          const colors =
+            card.colors ||
+            TOPIC_COLORS[card.topic || ""] ||
+            FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+          return (
             <Pressable
-              onPress={() => onCardPress(c)}
-              style={styles.heroBtn}
-              testID={`home-hero-cta-${c.id}`}
+              key={card.id}
+              onPress={() => onCardPress(card)}
+              style={{ width }}
+              accessibilityRole="button"
+              accessibilityLabel={`浏览内容：${card.title}`}
+              testID={`home-hero-card-${card.id}`}
             >
-              <Text style={styles.heroBtnText}>浏览详情</Text>
+              <LinearGradient
+                colors={colors}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.heroCard}
+              >
+                {Platform.OS === "web" && (
+                  <>
+                    <Pressable
+                      onPress={() => goToPage(index - 1)}
+                      style={[styles.clickZone, { left: 0, width: width * CLICK_ZONE_RATIO }]}
+                      accessibilityLabel="上一条推荐"
+                      testID={`hero-carousel-prev-${card.id}`}
+                    />
+                    <Pressable
+                      onPress={() => goToPage(index + 1)}
+                      style={[styles.clickZone, { right: 0, width: width * CLICK_ZONE_RATIO }]}
+                      accessibilityLabel="下一条推荐"
+                      testID={`hero-carousel-next-${card.id}`}
+                    />
+                  </>
+                )}
+                <View style={styles.decoCloudOne} />
+                <View style={styles.decoCloudTwo} />
+                <View style={styles.decoCloudThree} />
+                <Text style={styles.eyebrow}>
+                  {card.is_conversation_match ? "根据最近对话推荐" : "NURI 可信来源精选"}
+                  {card.topic_label ? ` · ${card.topic_label}` : ""}
+                </Text>
+                <Text style={styles.heroTitle} numberOfLines={3}>
+                  {card.title}
+                </Text>
+                <Text style={styles.heroSub} numberOfLines={2}>
+                  {card.personalization_reason || card.summary || card.publisher}
+                </Text>
+                <View style={{ flex: 1 }} />
+                <View style={styles.heroBtn}>
+                  <Text style={styles.heroBtnText}>浏览详情</Text>
+                </View>
+              </LinearGradient>
             </Pressable>
-          </LinearGradient>
-        ))}
+          );
+        })}
       </ScrollView>
-      {/* 分页指示器 */}
       <View style={styles.dots}>
-        {CAROUSEL.map((_, i) => (
-          <View key={i} style={[styles.dot, page === i && styles.dotActive]} />
+        {visibleCards.map((card, index) => (
+          <View key={card.id} style={[styles.dot, page === index && styles.dotActive]} />
         ))}
       </View>
     </View>
@@ -148,7 +215,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 0,
     height: CLICK_ZONE_HEIGHT,
-    zIndex: 1,
+    zIndex: 2,
   },
   decoCloudOne: {
     position: "absolute",
@@ -177,19 +244,26 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     backgroundColor: "rgba(255,255,255,0.15)",
   },
+  eyebrow: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 10,
+    fontWeight: "700",
+    maxWidth: 235,
+  },
   heroTitle: {
     color: "#FFFFFF",
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "700",
-    lineHeight: 27,
-    marginTop: 18,
+    lineHeight: 26,
+    marginTop: 8,
+    maxWidth: 270,
   },
   heroSub: {
-    color: "rgba(255,255,255,0.85)",
+    color: "rgba(255,255,255,0.88)",
     fontSize: 11,
     lineHeight: 16,
     marginTop: 4,
-    maxWidth: 205,
+    maxWidth: 235,
   },
   heroBtn: {
     alignSelf: "flex-start",
@@ -197,7 +271,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    marginTop: 12,
+    marginTop: 8,
   },
   heroBtnText: { color: "#1A1A2E", fontSize: 12, fontWeight: "700" },
   dots: {

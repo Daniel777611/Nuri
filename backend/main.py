@@ -50,6 +50,19 @@ from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel, EmailStr, Field
 from starlette.background import BackgroundTask
 
+try:
+    from backend.content_library import (
+        LEARNING_CONTENT_BY_ID,
+        LEARNING_CONTENT_CARDS,
+        is_trusted_resource_url,
+    )
+except ImportError:  # Supports `python backend/main.py` during local debugging.
+    from content_library import (  # type: ignore
+        LEARNING_CONTENT_BY_ID,
+        LEARNING_CONTENT_CARDS,
+        is_trusted_resource_url,
+    )
+
 load_dotenv()
 
 # ── Optional Supabase/pgvector RAG dependencies ──────────────────────────────
@@ -166,6 +179,13 @@ _fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
 _feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
+
+_DEFAULT_PRIVACY = {
+    "allow_history_training": True,
+    "daily_push": True,
+    "anonymous_community_share": False,
+    "language": "zh",
+}
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -292,6 +312,106 @@ async def _db_set_feed_mode(mode: str):
             )
         except Exception as e:
             print(f"[warn] _db_set_feed_mode: {e}")
+
+
+def _normalized_privacy_settings(value: object) -> dict:
+    settings = dict(_DEFAULT_PRIVACY)
+    if not isinstance(value, dict):
+        return settings
+    for key in ("allow_history_training", "daily_push", "anonymous_community_share"):
+        if isinstance(value.get(key), bool):
+            settings[key] = value[key]
+    if isinstance(value.get("language"), str) and value["language"]:
+        settings["language"] = value["language"]
+    return settings
+
+
+def _privacy_storage_key(uid: str) -> str:
+    # app_settings predates per-user preferences and may be visible to broader
+    # database roles in older installations. Do not place a raw user ID in it.
+    digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()
+    return f"user_privacy:{digest}"
+
+
+async def _db_get_privacy(uid: Optional[str], fail_closed: bool = False) -> dict:
+    """Load per-user privacy settings from the existing app_settings table.
+
+    Namespaced keys avoid a new migration while still surviving Vercel cold
+    starts. If storage is temporarily unavailable and no warm cache exists,
+    conversation personalization fails closed.
+    """
+
+    key = uid or "singleton"
+    cached = _privacy.get(key)
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings")
+                .select("value")
+                .eq("key", _privacy_storage_key(uid))
+                .maybe_single()
+                .execute()
+            )
+            if result.data and result.data.get("value"):
+                settings = _normalized_privacy_settings(
+                    json.loads(result.data["value"])
+                )
+                _privacy[key] = settings
+                return settings
+        except Exception as exc:
+            print(f"[warn] _db_get_privacy: {exc}")
+            if cached is None and fail_closed:
+                return {**_DEFAULT_PRIVACY, "allow_history_training": False}
+    return _normalized_privacy_settings(cached)
+
+
+async def _db_set_privacy(uid: Optional[str], settings: dict) -> dict:
+    key = uid or "singleton"
+    normalized = _normalized_privacy_settings(settings)
+    previous = _privacy.get(key)
+    _privacy[key] = normalized
+    sb = _get_supabase()
+    if sb and uid:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings").upsert(
+                    {
+                        "key": _privacy_storage_key(uid),
+                        "value": json.dumps(normalized, ensure_ascii=False),
+                        "updated_at": _now(),
+                    },
+                    on_conflict="key",
+                ).execute()
+            )
+        except Exception as exc:
+            if previous is None:
+                _privacy.pop(key, None)
+            else:
+                _privacy[key] = previous
+            print(f"[warn] _db_set_privacy: {exc}")
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Privacy settings could not be saved",
+            ) from exc
+    return normalized
+
+
+async def _db_delete_privacy(uid: str) -> None:
+    _privacy.pop(uid, None)
+    sb = _get_supabase()
+    if not sb:
+        return
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .delete()
+            .eq("key", _privacy_storage_key(uid))
+            .execute()
+        )
+    except Exception as exc:
+        print(f"[warn] _db_delete_privacy: {exc}")
+
 
 async def _db_list_fav_ids(uid: str) -> set:
     sb = _get_supabase()
@@ -1236,11 +1356,18 @@ async def _nuri_reply_stream(
             yield "final", dict(_NURI_FALLBACK)
 
 def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
-    for c in FEED_CARDS + ALT_FEED_CARDS + (gen_cards or []):
+    for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
             d = CARD_DETAILS.get(card_id, {})
             body = d.get("body") or c.get("body", "")
-            return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}"
+            resources = c.get("resources") or []
+            resource_ctx = ""
+            if resources:
+                resource_ctx = "\n延伸资源：" + "；".join(
+                    f"{item.get('publisher', '')}《{item.get('title', '')}》"
+                    for item in resources
+                )
+            return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}{resource_ctx}"
     return ""
 
 # ── Input normalization & long-term memory ───────────────────────────────────
@@ -2003,6 +2130,247 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
     return {"ok": True}
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
+def _recommendation_activity_key(row: dict) -> tuple[str, str]:
+    return (str(row.get("created_at") or ""), str(row.get("id") or ""))
+
+
+def _recent_main_chat_from_memory(uid: str, limit: int = 12) -> dict:
+    """Resolve the user's real main conversation without trusting a client ID."""
+
+    sessions = [
+        session
+        for session in _sessions.values()
+        if session.get("user_id") == uid and not session.get("source_card_id")
+    ]
+    if not sessions:
+        return {"state": "no_history", "session_id": None, "messages": []}
+
+    session_ids = {session["id"] for session in sessions}
+    all_user_messages = [
+        {**message, "session_id": message.get("session_id") or session_id}
+        for session_id in session_ids
+        for message in _messages.get(session_id, [])
+        if message.get("role") == "user" and str(message.get("text") or "").strip()
+    ]
+    last_user_message = max(
+        all_user_messages,
+        key=_recommendation_activity_key,
+        default=None,
+    )
+    if last_user_message:
+        session = next(
+            item for item in sessions if item["id"] == last_user_message.get("session_id")
+        )
+    else:
+        session = max(sessions, key=_recommendation_activity_key)
+
+    messages = sorted(
+        _messages.get(session["id"], []),
+        key=_recommendation_activity_key,
+    )[-limit:]
+    safe_messages = [
+        {
+            "id": message.get("id"),
+            "role": message.get("role"),
+            "text": str(message.get("text") or ""),
+            "created_at": message.get("created_at"),
+        }
+        for message in messages
+        if message.get("role") in {"user", "ai", "assistant"}
+    ]
+    return {
+        "state": "ready" if last_user_message else "no_user_message",
+        "session_id": session.get("id"),
+        "messages": safe_messages,
+    }
+
+
+async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
+    """Load recent main-chat context scoped to ``uid``.
+
+    Card-linked conversations are intentionally excluded.  When Supabase is
+    temporarily unavailable we return a safe default state instead of exposing
+    another user's process-local data or breaking the home screen.
+    """
+
+    privacy = await _db_get_privacy(uid, fail_closed=True)
+    if privacy.get("allow_history_training") is False:
+        return {"state": "privacy_off", "session_id": None, "messages": []}
+
+    sb = _get_supabase()
+    if not sb:
+        return _recent_main_chat_from_memory(uid, limit)
+
+    try:
+        session_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions")
+            .select("id,title,source_card_id,created_at")
+            .eq("user_id", uid)
+            .execute()
+        )
+        main_sessions = [
+            session
+            for session in (session_res.data or [])
+            if not session.get("source_card_id")
+        ]
+        if not main_sessions:
+            return {"state": "no_history", "session_id": None, "messages": []}
+
+        session_ids = [session["id"] for session in main_sessions]
+        last_user_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .in_("session_id", session_ids)
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        last_user_message = (last_user_res.data or [None])[0]
+        if last_user_message:
+            session = next(
+                item
+                for item in main_sessions
+                if item["id"] == last_user_message.get("session_id")
+            )
+        else:
+            session = max(main_sessions, key=_recommendation_activity_key)
+
+        message_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .eq("session_id", session["id"])
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        messages = list(reversed(message_res.data or []))
+        return {
+            "state": "ready" if last_user_message else "no_user_message",
+            "session_id": session.get("id"),
+            "messages": messages,
+        }
+    except Exception as exc:
+        print(f"[warn] personalized feed conversation lookup failed: {exc}")
+        return {"state": "unavailable", "session_id": None, "messages": []}
+
+
+def _rank_learning_content(
+    messages: list[dict],
+    count: int = 4,
+    session_id: Optional[str] = None,
+    context_state: str = "ready",
+    include_detail: bool = False,
+) -> tuple[list[dict], bool]:
+    """Deterministically rank reviewed content against recent conversation text."""
+
+    user_texts = [
+        str(message.get("text") or "").strip()
+        for message in messages
+        if message.get("role") == "user" and str(message.get("text") or "").strip()
+    ]
+    assistant_texts = [
+        str(message.get("text") or "").strip()
+        for message in messages
+        if message.get("role") in {"ai", "assistant"}
+        and str(message.get("text") or "").strip()
+    ]
+    last_user_text = (user_texts[-1] if user_texts else "").casefold()
+    all_user_text = " ".join(user_texts).casefold()
+    assistant_text = " ".join(assistant_texts).casefold()
+    recent_text = " ".join(
+        str(message.get("text") or "") for message in messages[-4:]
+    ).casefold()
+
+    ranked: list[tuple[int, int, dict]] = []
+    for index, card in enumerate(LEARNING_CONTENT_CARDS):
+        score = 0
+        for raw_term in card.get("match_terms", []):
+            term = str(raw_term).casefold()
+            if term and term in last_user_text:
+                score += 6
+            if term and term in all_user_text:
+                score += 3
+            if term and term in recent_text:
+                score += 2
+            elif term and term in assistant_text:
+                score += 1
+        ranked.append((score, index, card))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    has_conversation_match = bool(user_texts and ranked and ranked[0][0] > 0)
+    selected: list[dict] = []
+    for score, _, card in ranked[: max(1, min(count, len(LEARNING_CONTENT_CARDS)))]:
+        if score > 0 and has_conversation_match:
+            reason = f"因为你最近和 NURI 聊到了“{card['topic_label']}”"
+            related_session_id = session_id
+            is_match = True
+        elif context_state == "privacy_off":
+            reason = "你已关闭对话个性化，这是 NURI 的可信来源精选"
+            related_session_id = None
+            is_match = False
+        elif context_state == "unavailable":
+            reason = "近期对话暂时无法读取，这是 NURI 的可信来源精选"
+            related_session_id = None
+            is_match = False
+        elif not user_texts:
+            reason = "还没有足够的近期对话，这是 NURI 的可信来源精选"
+            related_session_id = None
+            is_match = False
+        else:
+            reason = "NURI 从可信育儿来源中为你补充精选"
+            related_session_id = None
+            is_match = False
+
+        hidden_fields = {"match_terms"}
+        if not include_detail:
+            hidden_fields.update({"body", "hook_line", "resources", "tags"})
+        public_card = {key: value for key, value in card.items() if key not in hidden_fields}
+        public_card.update(
+            {
+                "personalization_reason": reason,
+                "is_conversation_match": is_match,
+                "related_session_id": related_session_id,
+            }
+        )
+        selected.append(public_card)
+    return selected, has_conversation_match
+
+
+@api.get("/feed/personalized")
+async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
+    """Return stable learning recommendations tied to this parent's main chat."""
+
+    context = await _load_recent_main_chat(uid)
+    items, used_conversation = _rank_learning_content(
+        context.get("messages") or [],
+        count=max(1, min(count, 6)),
+        session_id=context.get("session_id"),
+        context_state=context.get("state", "no_history"),
+    )
+    first_match = next(
+        (item for item in items if item.get("is_conversation_match")),
+        None,
+    )
+    if context.get("state") == "privacy_off":
+        mode = "default_privacy"
+    elif used_conversation:
+        mode = "conversation"
+    elif context.get("state") == "unavailable":
+        mode = "default_unavailable"
+    else:
+        mode = "default"
+    return {
+        "items": items,
+        "personalization_mode": mode,
+        "matched_topic": (first_match or {}).get("topic"),
+        "related_session_id": (first_match or {}).get("related_session_id"),
+        "generated_at": _now(),
+    }
+
+
 @api.get("/feed")
 async def get_feed(shuffle: bool = False):
     gen_cards = await _db_get_gen_cards()
@@ -2024,7 +2392,7 @@ async def get_alt_card(exclude: str = ""):
 async def search_feed(q: str = "", type: Optional[str] = None):
     gen_cards = await _db_get_gen_cards()
     q_lower = q.lower().strip()
-    all_cards = FEED_CARDS + ALT_FEED_CARDS + gen_cards
+    all_cards = FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
     if not q_lower:
         results = all_cards
     else:
@@ -2076,7 +2444,27 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
     return new_cards
 
 @api.get("/feed/{card_id}/detail")
-async def get_card_detail(card_id: str):
+async def get_card_detail(card_id: str, uid: Optional[str] = Depends(_opt_uid)):
+    if card_id in LEARNING_CONTENT_BY_ID:
+        if uid:
+            context = await _load_recent_main_chat(uid)
+        else:
+            context = {"state": "no_history", "session_id": None, "messages": []}
+        ranked, _ = _rank_learning_content(
+            context.get("messages") or [],
+            count=len(LEARNING_CONTENT_CARDS),
+            session_id=context.get("session_id"),
+            context_state=context.get("state", "no_history"),
+            include_detail=True,
+        )
+        card = next(item for item in ranked if item["id"] == card_id)
+        card["resources"] = [
+            resource
+            for resource in card.get("resources", [])
+            if is_trusted_resource_url(str(resource.get("url") or ""))
+        ]
+        return card
+
     gen_cards = await _db_get_gen_cards()
     for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards:
         if c["id"] == card_id:
@@ -2142,7 +2530,10 @@ async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
         ids = _favorites.get(key, set())
         col_map = _fav_cols.get(key, {})
     gen_cards = await _db_get_gen_cards()
-    by_id = {c["id"]: c for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards}
+    by_id = {
+        c["id"]: c
+        for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
+    }
     return [{**by_id[cid], "collection_id": col_map.get(cid)} for cid in ids if cid in by_id]
 
 @api.post("/favorites/toggle")
@@ -2319,7 +2710,7 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
     card_id = body.card_id
     title = body.title or "和NURI聊天"
     if card_id:
-        for c in FEED_CARDS:
+        for c in FEED_CARDS + LEARNING_CONTENT_CARDS:
             if c["id"] == card_id:
                 title = c["title"]
                 break
@@ -3084,16 +3475,13 @@ async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
     }
 
 # ── Privacy ───────────────────────────────────────────────────────────────────
-_DEFAULT_PRIVACY = {"allow_history_training": True, "daily_push": True, "anonymous_community_share": False, "language": "zh"}
-
 @api.get("/privacy")
 async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
-    return _privacy.get(uid or "singleton", _DEFAULT_PRIVACY)
+    return await _db_get_privacy(uid, fail_closed=bool(uid))
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
-    _privacy[uid or "singleton"] = body.dict()
-    return body
+    return await _db_set_privacy(uid, body.dict())
 
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
@@ -3103,7 +3491,8 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         _tasks    = [t for t in _tasks    if t.get("user_id") != uid]
         for sid in [s for s, d in _sessions.items() if d.get("user_id") == uid]:
             _sessions.pop(sid, None); _messages.pop(sid, None)
-        _favorites.pop(uid, None); _privacy.pop(uid, None)
+        _favorites.pop(uid, None)
+        await _db_delete_privacy(uid)
     else:
         _children.clear(); _tasks.clear()
         _sessions.clear(); _messages.clear()

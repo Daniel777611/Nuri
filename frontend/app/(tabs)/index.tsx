@@ -17,7 +17,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
-import HeroCarousel from "@/src/components/HeroCarousel";
+import HeroCarousel, { type HeroCard } from "@/src/components/HeroCarousel";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
@@ -110,8 +110,10 @@ export default function Home() {
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
   const [nuriPreviewStatus, setNuriPreviewStatus] =
     useState<NuriPreviewStatus>("loading");
+  const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
+  const heroRequest = useRef(0);
   const openingNuriChat = useRef(false);
 
   const showToast = (m: string) => {
@@ -141,6 +143,20 @@ export default function Home() {
       if (requestId === nuriPreviewRequest.current) {
         setNuriPreviewStatus("error");
       }
+    }
+  }, []);
+
+  const loadPersonalizedFeed = useCallback(async () => {
+    const requestId = ++heroRequest.current;
+    try {
+      const response: any = await api.getPersonalizedFeed(4);
+      if (requestId !== heroRequest.current) return;
+      const items = Array.isArray(response?.items) ? response.items : [];
+      setHeroCards(items.filter((item: any) => item?.id && item?.title));
+    } catch {
+      // HeroCarousel uses real, backend-backed curated IDs as its loading and
+      // network fallback, so a transient request failure never revives c1-c6.
+      if (requestId === heroRequest.current) setHeroCards([]);
     }
   }, []);
 
@@ -196,6 +212,15 @@ export default function Home() {
         openingNuriChat.current = false;
       };
     }, [loadNuriPreview])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadPersonalizedFeed();
+      return () => {
+        heroRequest.current += 1;
+      };
+    }, [loadPersonalizedFeed])
   );
 
   const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
@@ -256,7 +281,8 @@ export default function Home() {
         {/* 内容推荐轮播 */}
         <HeroCarousel
           width={carouselWidth}
-          onCardPress={(c) => showToast(`「${c.title.replace("\n", "")}」详情即将上线`)}
+          cards={heroCards}
+          onCardPress={(card) => router.push(`/detail/${encodeURIComponent(card.id)}`)}
         />
 
         {/* 第一行：今日任务 + Nuri的家 */}
