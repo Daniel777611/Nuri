@@ -54,7 +54,8 @@ let messages: Record<string, any[]> = {
 const bodyOf = (init?: RequestInit): any => {
   try { return init?.body ? JSON.parse(String(init.body)) : {}; } catch { return {}; }
 };
-const id = (prefix: string) => `${prefix}-${Date.now()}`;
+let idSequence = 0;
+const id = (prefix: string) => `${prefix}-${Date.now()}-${++idSequence}`;
 
 export async function previewRequest(path: string, init?: RequestInit): Promise<any> {
   const method = init?.method || "GET";

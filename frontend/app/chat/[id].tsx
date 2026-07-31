@@ -217,7 +217,6 @@ export default function ChatDetail() {
               <MessageBubble
                 key={m.id}
                 msg={m}
-                onQuick={(q) => send(q)}
                 onAddTask={(task, index) => addGeneratedTask(m, task, index)}
                 isTaskAdded={(index) => approvedTaskIds.includes(`${m.id}-${index}`)}
               />
@@ -225,7 +224,6 @@ export default function ChatDetail() {
             {streamingText ? (
               <MessageBubble
                 msg={{ id: "__streaming__", role: "ai", text: streamingText }}
-                onQuick={() => {}}
                 onAddTask={() => {}}
                 isTaskAdded={() => false}
               />
@@ -274,15 +272,13 @@ export default function ChatDetail() {
   );
 }
 
-// ── Sub-component: message bubble (text, image, quick replies, transitions) ──
+// ── Sub-component: message bubble (text, image, transitions) ────────────────
 function MessageBubble({
   msg,
-  onQuick,
   onAddTask,
   isTaskAdded,
 }: {
   msg: Msg;
-  onQuick: (q: string) => void;
   onAddTask: (task: any, index: number) => void;
   isTaskAdded: (index: number) => boolean;
 }) {
@@ -331,7 +327,7 @@ function MessageBubble({
           <View style={styles.hospitalRow}>
             <Ionicons name="medkit-outline" size={16} color={colors.error} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.hospitalName}>Stanford Children's ER</Text>
+              <Text style={styles.hospitalName}>{"Stanford Children's ER"}</Text>
               <Text style={styles.hospitalMeta}>2.4 mi · 24h · (650) 555-0911</Text>
             </View>
           </View>
@@ -370,20 +366,6 @@ function MessageBubble({
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
             {msg.text}
           </Text>
-        ) : null}
-        {isAI && msg.quick_replies && msg.quick_replies.length > 0 ? (
-          <View style={styles.quickReplies}>
-            {msg.quick_replies.map((q) => (
-              <Pressable
-                key={q}
-                onPress={() => onQuick(q)}
-                style={styles.qrBtn}
-                testID={`quick-${q}`}
-              >
-                <Text style={styles.qrText}>{q}</Text>
-              </Pressable>
-            ))}
-          </View>
         ) : null}
       </View>
     </View>
@@ -512,25 +494,6 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.surfaceTertiary,
   },
-
-  quickReplies: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: spacing.sm,
-  },
-  qrBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceTertiary,
-    borderColor: colors.border,
-    borderWidth: 1,
-  },
-  qrText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
 
   typingBubble: { paddingVertical: spacing.md },
   dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },
