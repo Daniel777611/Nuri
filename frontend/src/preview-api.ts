@@ -43,7 +43,7 @@ const card = {
   tags: ["睡眠", "亲子互动", "日常习惯"], hook_line: "从今晚开始，试试只保留一个最容易坚持的步骤。",
 };
 let favorites: any[] = [card];
-let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh" };
+let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [{ id: "chat-1", title: "聊聊小满最近的睡眠", created_at: "2026-07-15T08:30:00.000Z" }];
 let messages: Record<string, any[]> = {
   "chat-1": [

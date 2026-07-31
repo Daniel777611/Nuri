@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 
+import { useT } from "@/src/i18n";
 import { ENCOURAGEMENTS, RATINGS, taskColors as c } from "@/src/taskMeta";
 
 /**
@@ -16,6 +17,7 @@ export default function CheckinSheet({
   taskType: string;
   onDone: (rating: string | null) => void;
 }) {
+  const { t } = useT();
   const [selected, setSelected] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -46,12 +48,12 @@ export default function CheckinSheet({
           hitSlop={8}
           testID="checkin-skip"
         >
-          <Text style={styles.skipText}>跳过</Text>
+          <Text style={styles.skipText}>{t("跳过")}</Text>
         </Pressable>
         <Text style={styles.encourage} testID="checkin-encouragement">
-          {ENCOURAGEMENTS[taskType] || ENCOURAGEMENTS.interaction}
+          {t(ENCOURAGEMENTS[taskType] || ENCOURAGEMENTS.interaction)}
         </Text>
-        <Text style={styles.subtitle}>记录这次任务体验</Text>
+        <Text style={styles.subtitle}>{t("记录这次任务体验")}</Text>
         <View style={styles.ratingRow}>
           {RATINGS.map((r) => (
             <Pressable
@@ -67,7 +69,7 @@ export default function CheckinSheet({
                   selected === r.key && { color: c.primary, fontWeight: "700" },
                 ]}
               >
-                {r.label}
+                {t(r.label)}
               </Text>
             </Pressable>
           ))}

@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
 import HeroCarousel from "@/src/components/HeroCarousel";
@@ -43,6 +44,9 @@ const STREAK_DAYS = 17;
 
 // 任务预览默认 mock（任务数据为空时展示）
 const DEFAULT_TASKS = ["自我：今天给自己留30分钟独处", "亲子：每日户外活动20分钟"];
+// Prefix and title are translated separately: the prefix is one of a fixed set
+// of task types, the title is free text the model wrote in the parent's own
+// language and must pass through untouched.
 
 // 待开发占位 bottom sheet（统一规范）
 function DevSheet({
@@ -56,6 +60,7 @@ function DevSheet({
   name: string;
   onClose: () => void;
 }) {
+  const { t } = useT();
   if (!visible) return null;
   return (
     <View style={styles.sheetRoot}>
@@ -63,9 +68,9 @@ function DevSheet({
       <View style={styles.sheet} testID="dev-sheet">
         <View style={styles.sheetHandle} />
         <Text style={styles.sheetEmoji}>{emoji}</Text>
-        <Text style={styles.sheetTitle}>{name}即将上线，敬请期待</Text>
+        <Text style={styles.sheetTitle}>{t("{name}即将上线，敬请期待", { name })}</Text>
         <Pressable onPress={onClose} style={styles.sheetBtn} testID="dev-sheet-close">
-          <Text style={styles.sheetBtnText}>我知道了</Text>
+          <Text style={styles.sheetBtnText}>{t("我知道了")}</Text>
         </Pressable>
       </View>
     </View>
@@ -74,12 +79,14 @@ function DevSheet({
 
 export default function Home() {
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   // Keep the same content geometry as the 402px Figma phone frame. On a real
   // phone the frame shrinks with the viewport; on desktop it remains centered.
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const carouselWidth = phoneWidth - 32;
-  const [nickname, setNickname] = useState("Momo妈妈");
+  // Placeholder until /auth/me answers; replaced by the real nickname.
+  const [nickname, setNickname] = useState(t("Momo妈妈"));
   const [pendingTasks, setPendingTasks] = useState<string[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
@@ -106,17 +113,24 @@ export default function Home() {
       api
         .listTasks()
         .then((ts: any[]) => {
-          const pending = ts.filter((t) => !t.completed_at);
+          const pending = ts.filter((item) => !item.completed_at);
           setPendingCount(pending.length);
           setPendingTasks(
-            pending.slice(0, 2).map((t) => `${taskTypeMeta(t.task_type).prefix}：${t.title}`)
+            pending
+              .slice(0, 2)
+              .map((item) =>
+                t("{prefix}：{title}", {
+                  prefix: t(taskTypeMeta(item.task_type).prefix),
+                  title: item.title,
+                })
+              )
           );
         })
         .catch(() => {});
-    }, [])
+    }, [t])
   );
 
-  const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
+  const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS.map((d) => t(d));
   const previewCount = pendingTasks.length ? pendingCount : 3;
 
   return (
@@ -138,7 +152,7 @@ export default function Home() {
             resizeMode="contain"
           />
           <Text style={styles.welcome} numberOfLines={1}>
-            欢迎，{nickname}！
+            {t("欢迎，{nickname}！", { nickname })}
           </Text>
           <Pressable
             onPress={() => router.push("/(tabs)/profile")}
@@ -154,7 +168,7 @@ export default function Home() {
         {/* 内容推荐轮播 */}
         <HeroCarousel
           width={carouselWidth}
-          onCardPress={(c) => showToast(`「${c.title.replace("\n", "")}」详情即将上线`)}
+          onCardPress={(c) => showToast(t("「{title}」详情即将上线", { title: c.title.replace("\n", "") }))}
         />
 
         {/* 第一行：今日任务 + Nuri的家 */}
@@ -164,12 +178,12 @@ export default function Home() {
             onPress={() => router.push("/(tabs)/tasks")}
             testID="home-tasks-card"
           >
-            <Text style={styles.moduleTitle}>今日任务</Text>
+            <Text style={styles.moduleTitle}>{t("今日任务")}</Text>
             <Text style={styles.moduleSub}>
-              您已坚持打卡{STREAK_DAYS}天！加油！
+              {t("您已坚持打卡{days}天！加油！", { days: STREAK_DAYS })}
             </Text>
             <View style={[styles.innerCard, { flex: 1 }]}>
-              <Text style={styles.taskCount}>{previewCount} 件任务正在进行</Text>
+              <Text style={styles.taskCount}>{t("{count} 件任务正在进行", { count: previewCount })}</Text>
               {previewTasks.map((t, i) => (
                 <View key={i} style={styles.taskRow}>
                   <View style={styles.checkbox} />
@@ -181,11 +195,11 @@ export default function Home() {
               <Text style={styles.taskEllipsis}>……</Text>
               <View style={{ flex: 1, minHeight: 8 }} />
               <Pressable
-                onPress={() => showToast("提醒功能即将上线")}
+                onPress={() => showToast(t("提醒功能即将上线"))}
                 style={styles.primaryBtn}
                 testID="home-remind-btn"
               >
-                <Text style={styles.primaryBtnText}>开启提醒</Text>
+                <Text style={styles.primaryBtnText}>{t("开启提醒")}</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -201,16 +215,16 @@ export default function Home() {
               end={{ x: 1, y: 1 }}
               style={styles.nuriCard}
             >
-              <Text style={styles.moduleTitle}>Nuri的家</Text>
+              <Text style={styles.moduleTitle}>{t("Nuri的家")}</Text>
               <Text style={styles.nuriMemo}>
-                Hi！早上好，{nickname}，你还记得我们上次聊到了宝宝的睡眠策略吗？最新的进展如何？
+                {t("Hi！早上好，{nickname}，你还记得我们上次聊到了宝宝的睡眠策略吗？最新的进展如何？", { nickname })}
               </Text>
               <View style={{ flex: 1 }} />
               <View style={styles.continueCard}>
                 <View style={styles.continueRow}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <Ionicons name="chatbox-ellipses-outline" size={18} color={C.text} />
-                    <Text style={styles.continueText}>继续对话</Text>
+                    <Text style={styles.continueText}>{t("继续对话")}</Text>
                   </View>
                   <Ionicons name="arrow-forward" size={18} color={C.text} />
                 </View>
@@ -224,41 +238,41 @@ export default function Home() {
           <View style={{ flex: 1, gap: 12 }}>
             <Pressable
               style={[styles.moduleCard, styles.lightCard, { minHeight: 88 }]}
-              onPress={() => setDevSheet({ emoji: "🌱", name: "知识图书馆" })}
+              onPress={() => setDevSheet({ emoji: "🌱", name: t("知识图书馆") })}
               testID="home-library-card"
             >
-              <Text style={styles.moduleTitle}>知识图书馆</Text>
+              <Text style={styles.moduleTitle}>{t("知识图书馆")}</Text>
             </Pressable>
 
             <Pressable
               style={[styles.moduleCard, styles.lightCard]}
-              onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
+              onPress={() => setDevSheet({ emoji: "🏡", name: t("我的家") })}
               testID="home-myhome-card"
             >
-              <Text style={styles.moduleTitle}>我的家</Text>
-              <Text style={styles.moduleSub}>灵感：试着写下今天的心情。</Text>
+              <Text style={styles.moduleTitle}>{t("我的家")}</Text>
+              <Text style={styles.moduleSub}>{t("灵感：试着写下今天的心情。")}</Text>
               <View style={{ height: 12 }} />
               <Pressable
-                onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
+                onPress={() => setDevSheet({ emoji: "🏡", name: t("我的家") })}
                 style={styles.primaryBtn}
                 testID="home-record-btn"
               >
-                <Text style={styles.primaryBtnText}>记录当下</Text>
+                <Text style={styles.primaryBtnText}>{t("记录当下")}</Text>
               </Pressable>
             </Pressable>
           </View>
 
           <Pressable
             style={[styles.moduleCard, { backgroundColor: C.taskBg, flex: 1 }]}
-            onPress={() => setDevSheet({ emoji: "🌻", name: "社区中心" })}
+            onPress={() => setDevSheet({ emoji: "🌻", name: t("社区中心") })}
             testID="home-community-card"
           >
-            <Text style={styles.moduleTitle}>社区中心</Text>
-            <Text style={styles.moduleSub}>您上次关于牙医的回答得到了17个人的赞！</Text>
+            <Text style={styles.moduleTitle}>{t("社区中心")}</Text>
+            <Text style={styles.moduleSub}>{t("您上次关于牙医的回答得到了17个人的赞！")}</Text>
             <View style={{ flex: 1 }} />
             <View style={styles.innerCard}>
               <Text style={styles.communityTopic}>
-                “宝宝18个月饮食”的问题也许可以和他们交流
+                {t("“宝宝18个月饮食”的问题也许可以和他们交流")}
               </Text>
               <View style={styles.avatarRow}>
                 {["#F5A855", "#7B8FE8", "#A87CC5"].map((color, i) => (

@@ -18,11 +18,13 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
+import * as WebBrowser from "expo-web-browser";
 import Toast from "@/src/components/Toast";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 import { api, isStreamUnsupported } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
@@ -36,6 +38,19 @@ type Msg = {
   image_base64?: string | null;
   quick_replies?: string[];
   transition?: any;
+  sources?: Source[];
+};
+
+// Built server-side from the search results the backend fetched, indexed by the
+// citation numbers the model emitted — the model never writes a URL, so a link
+// here can't be invented.
+type Source = {
+  n: number;
+  title: string;
+  url: string;
+  site_name: string;
+  lang: "en" | "zh";
+  tier: "authority" | "good" | "neutral";
 };
 
 // ── Sub-component: avatar ────────────────────────────────────────────────────
@@ -74,6 +89,7 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -129,7 +145,7 @@ export default function ChatDetail() {
     const optimistic: Msg = {
       id: `tmp-${Date.now()}`,
       role: "user",
-      text: text || "[图片]",
+      text: text || t("[图片]"),
       image_base64: imageBase64 || null,
     };
     setMessages((p) => [...p, optimistic]);
@@ -160,7 +176,7 @@ export default function ChatDetail() {
       // Mid-stream failures may have already persisted the user message, so
       // resending would duplicate it — reload the thread instead of guessing.
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
-      showToast("发送失败，请重试");
+      showToast(t("发送失败，请重试"));
       await load().catch(() => {});
     } finally {
       setStreamingText("");
@@ -179,7 +195,7 @@ export default function ChatDetail() {
     if (approvedTaskIds.includes(approvalId)) return;
     await api.createTask(task);
     setApprovedTaskIds((ids) => [...ids, approvalId]);
-    showToast("已添加至“我的任务”");
+    showToast(t("已添加至“我的任务”"));
   };
 
   return (
@@ -201,7 +217,7 @@ export default function ChatDetail() {
           <Pressable onPress={() => router.replace("/(tabs)")} style={styles.backBtn} testID="chat-back-btn">
             <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
           </Pressable>
-          <Text style={styles.headerName}>我的对话</Text>
+          <Text style={styles.headerName}>{t("我的对话")}</Text>
         </View>
 
         <KeyboardAvoidingView
@@ -236,7 +252,7 @@ export default function ChatDetail() {
           <View style={styles.composer} testID="chat-composer">
             <View style={styles.inputPill}>
               <Pressable
-                onPress={() => showToast("图片上传功能即将上线")}
+                onPress={() => showToast(t("图片上传功能即将上线"))}
                 style={styles.iconBtn}
                 disabled={sending}
                 testID="chat-image-btn"
@@ -246,7 +262,7 @@ export default function ChatDetail() {
               <TextInput
                 value={input}
                 onChangeText={setInput}
-                placeholder="说点什么..."
+                placeholder={t("说点什么...")}
                 placeholderTextColor={colors.muted}
                 style={styles.input}
                 multiline
@@ -261,7 +277,7 @@ export default function ChatDetail() {
                 }}
                 testID="chat-input"
               />
-              <Pressable onPress={() => showToast("语音输入功能即将上线")} style={styles.micBtn} testID="chat-voice-btn">
+              <Pressable onPress={() => showToast(t("语音输入功能即将上线"))} style={styles.micBtn} testID="chat-voice-btn">
                 <Ionicons name="mic-outline" size={22} color="#3A2F5A" />
               </Pressable>
             </View>
@@ -286,6 +302,7 @@ function MessageBubble({
   onAddTask: (task: any, index: number) => void;
   isTaskAdded: (index: number) => boolean;
 }) {
+  const { t } = useT();
   const isAI = msg.role === "ai";
 
   if (msg.transition?.kind === "task_suggestion") {
@@ -299,18 +316,18 @@ function MessageBubble({
               const added = isTaskAdded(taskIndex);
               return <View key={`${msg.id}-${taskIndex}`} style={styles.generatedSlide}>
                 <LinearGradient colors={["#A6AEFF", "#FFD092"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.generatedCard}>
-                  <Text style={styles.generatedType}>观察：{task.title}</Text>
+                  <Text style={styles.generatedType}>{t("观察")}：{task.title}</Text>
                   <View style={styles.generatedInner}>
-                    <Text style={styles.generatedSection}>任务介绍</Text>
+                    <Text style={styles.generatedSection}>{t("任务介绍")}</Text>
                     <Text style={styles.generatedBody}>{task.description}</Text>
-                    <Text style={styles.generatedSection}>做法：</Text>
+                    <Text style={styles.generatedSection}>{t("做法：")}</Text>
                     {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
                     <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>
-                      <Text style={styles.addTaskText}>{added ? "已添加至任务" : "添加计划"}</Text>
+                      <Text style={styles.addTaskText}>{added ? t("已添加至任务") : t("添加计划")}</Text>
                     </Pressable>
                   </View>
                 </LinearGradient>
-                {added ? <Text style={styles.addedHint}>成功添加至“我的任务”</Text> : null}
+                {added ? <Text style={styles.addedHint}>{t("成功添加至“我的任务”")}</Text> : null}
               </View>;
             })}
           </ScrollView>
@@ -339,7 +356,7 @@ function MessageBubble({
             <Ionicons name="call-outline" size={16} color={colors.brand} />
             <View style={{ flex: 1 }}>
               <Text style={styles.hospitalName}>Nurse Hotline</Text>
-              <Text style={styles.hospitalMeta}>免费 · 24h · (800) 555-0144</Text>
+              <Text style={styles.hospitalMeta}>{t("免费")} · 24h · (800) 555-0144</Text>
             </View>
           </View>
         </View>
@@ -371,6 +388,7 @@ function MessageBubble({
             {msg.text}
           </Text>
         ) : null}
+        {isAI && msg.sources?.length ? <SourceChips sources={msg.sources} /> : null}
         {isAI && msg.quick_replies && msg.quick_replies.length > 0 ? (
           <View style={styles.quickReplies}>
             {msg.quick_replies.map((q) => (
@@ -385,6 +403,35 @@ function MessageBubble({
             ))}
           </View>
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+// ── Sub-component: cited sources ────────────────────────────────────────────
+// Numbered to match the [1] [2] markers in the reply text. Authority sources
+// are marked because the institution is the trust signal — "AAP" tells a parent
+// something that "healthychildren.org" does not.
+function SourceChips({ sources }: { sources: Source[] }) {
+  const { t } = useT();
+  return (
+    <View style={styles.sources}>
+      <Text style={styles.sourcesLabel}>{t("参考来源")}</Text>
+      <View style={styles.sourceRow}>
+        {sources.map((s) => (
+          <Pressable
+            key={`${s.n}-${s.url}`}
+            onPress={() => WebBrowser.openBrowserAsync(s.url).catch(() => {})}
+            style={[styles.sourceChip, s.tier === "authority" && styles.sourceChipAuthority]}
+            testID={`source-${s.n}`}
+          >
+            <Text style={styles.sourceIndex}>{s.n}</Text>
+            <Text style={styles.sourceName} numberOfLines={1}>
+              {s.site_name}
+            </Text>
+            {s.lang === "en" ? <Text style={styles.sourceLang}>EN</Text> : null}
+          </Pressable>
+        ))}
       </View>
     </View>
   );
@@ -531,6 +578,33 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   qrText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
+
+  sources: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(58,47,90,0.10)",
+  },
+  sourcesLabel: { fontSize: 11, color: colors.muted, marginBottom: 6 },
+  sourceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  sourceChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    maxWidth: "100%",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: "#FFFFFF",
+    borderColor: colors.border,
+    borderWidth: 1,
+  },
+  // Institutional sources are visually distinct: for a parenting question the
+  // publisher is most of the signal.
+  sourceChipAuthority: { borderColor: colors.brand, backgroundColor: "#F4F1FE" },
+  sourceIndex: { fontSize: 10, fontWeight: "700", color: colors.brand },
+  sourceName: { fontSize: 11, color: colors.onSurface, flexShrink: 1 },
+  sourceLang: { fontSize: 9, color: colors.muted, fontWeight: "700" },
 
   typingBubble: { paddingVertical: spacing.md },
   dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },

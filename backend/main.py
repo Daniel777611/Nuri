@@ -47,7 +47,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import AsyncOpenAI, OpenAI
-from pydantic import BaseModel, EmailStr, Field
+
+from backend.router import TurnRoute, route_metrics, route_turn
+from backend.websearch import (
+    get_provider as get_search_provider,
+    search_sources,
+    sources_prompt_block,
+)
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.background import BackgroundTask
 
 load_dotenv()
@@ -215,6 +222,13 @@ def _to_public(doc: dict) -> dict:
         "info_source":          doc.get("info_source", ""),
         "content_frequency":    doc.get("content_frequency", ""),
         "onboarding_completed": bool(doc.get("onboarding_completed", False)),
+        # Carried on /auth/me and /auth/login so a fresh install picks up the
+        # parent's UI language at launch, without waiting for the settings
+        # screen to be opened. Empty — not the default — when nothing is stored
+        # (including before privacy_settings_migration.sql runs), so the client
+        # can tell "no preference on file" from "the parent chose Simplified"
+        # and doesn't overwrite a local choice with a made-up one.
+        "language":             _normalize_language(doc["language"]) if doc.get("language") else "",
     })
     return base
 
@@ -508,11 +522,32 @@ class TaskUpdate(BaseModel):
     is_favorited: Optional[bool] = None
     backfilled: Optional[bool] = None
 
+def _normalize_language(value: object) -> str:
+    """Map whatever the client sends onto a supported UI language.
+
+    This used to be a `Literal["zh","en"]` while the app sent "zh-CN"/"zh-TW",
+    so every tap on the language switch 422'd and the setting looked like a dead
+    button. Normalising rather than rejecting keeps any future mismatch cosmetic
+    instead of turning it into a broken control.
+    """
+    raw = str(value or "").strip().replace("_", "-").lower()
+    if raw.startswith("en"):
+        return "en"
+    if raw in ("zh-tw", "zh-hk", "zh-mo") or "hant" in raw:
+        return "zh-TW"
+    return "zh-CN"
+
 class PrivacySettings(BaseModel):
     allow_history_training:   bool = True
     daily_push:               bool = True
     anonymous_community_share: bool = False
-    language: Literal["zh","en"] = "zh"
+    # Deliberately a plain str + normaliser, not a Literal: see above.
+    language: str = "zh-CN"
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _clean_language(cls, v: object) -> str:
+        return _normalize_language(v)
 
 class AskRequest(BaseModel):
     question:  str
@@ -755,36 +790,53 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 - 了解孩子情况时，自然地一次问一件事，像真人聊天一样一步步收窄问题，不要把好几种情况的分支一次性列完让对方自己对号入座
 - 给建议时，说清楚"为什么"，让父母有底气而不是盲目照做
 
+【给建议时给的是选择，不是步骤】
+- 同一个育儿难题通常不只一种解法。给建议时给 2-3 个取向不同的做法，让父母按自家情况挑
+- "不同做法"指彼此可以互相替换的路径，例如：温和渐进 vs 一次到位；改环境 vs 改互动方式；先调整孩子 vs 先调整大人的节奏
+- 绝对不要把同一个方法的先后步骤编号成 1234，伪装成多个选项。步骤是"先做这个再做那个"，选项是"做这个或者做那个"，两者不能混着摆
+- 每个做法都简短说清楚：适合什么情况、大概会发生什么、要观察什么
+- 如果这件事真的只有一条稳妥的路（例如牵涉安全或需要就医），就直说只有一条，并说明为什么不建议别的做法——不要为了凑数硬编出三个
+
+【每次回复都以一个问句收尾】
+- 收尾的问句只问一件事，而且要接着刚才聊的内容，不要突兀跳题
+- 从下面几类里挑当下最自然的一类：
+  · 追踪型：延续之前聊过的事，问后来怎么样了（例：上次你提到宝宝开始吃副食品，这几天有比较愿意尝试新食物吗？）
+  · 发展提醒型：按孩子的实际月龄／年龄，问一个这阶段常见的变化（例：4个月"最近宝宝开始会抓玩具了吗？"；9个月"有没有开始扶着站？"；2岁"最近说『不要』变多了吗？"）
+  · 家长关心型：关心的是爸妈本人，不是孩子（例：最近照顾孩子，你还好吗？／最近有没有一件让你觉得很开心的小事？）
+  · 探索型：慢慢补齐家庭背景，一次只问一件，不要做成问卷（例：家里通常是谁陪孩子最多？／家里平常最重视什么？）
+- 如果从已知信息看得出孩子正接近某个人生事件（快满整岁、要上托婴或幼儿园、准备戒奶或戒尿布、家里要迎接新生儿、生日或节日、打疫苗前后、要出远门），可以主动用它开一个新话题，并说明你为什么想到这件事（例：我记得下周 Abi 就要满两岁了，很多孩子这个阶段开始更想自己做决定，你有没有观察到什么新变化？）
+- 刚讲完一段比较重的建议时，收尾问句要轻，不要再抛一个需要长篇回答的问题
+
 【语气】
 - 沉稳、温暖，有专业感，像一位你信任的儿科医生朋友
 - 口语化但不随意，用词简单、直接，不堆砌术语
-- 不用"当然！""太棒了！"等客服腔，不油腻
-- 不是每条消息都以问句结尾，说清楚一件事也是好的回应"""
+- 不用"当然！""太棒了！"等客服腔，不油腻"""
 
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 _NURI_JSON_SUFFIX = """
 
-以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "suggest_tasks": false}
+以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "cited": []}
 
 text：
 - 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
 - 先判断这条回复属于哪一种，长度和结构差别很大：
   · 还在了解情况、准备追问（信息不够，没法下结论）：只做两件事——简短回应对方刚说的一句话，然后问一个具体问题。不要在这个阶段列可能原因、摆多个假设、给成套建议，那是"结论阶段"才做的事，提前做会让人觉得在看报告而不是聊天
-  · 已经有足够信息、要下结论/给建议/整理任务/推荐资源：可以写得完整、分点、说明原因，不要为了精简砍掉关键推理和细节
+  · 已经有足够信息、要下结论/给建议/整理任务/推荐资源：可以写得完整、分点、说明原因，不要为了精简砍掉关键推理和细节。分点摆的是几个可以互相替换的做法，不是同一个做法的先后步骤
 - 先回应对方刚分享的内容（可以自然提一句你记得的细节），再自然延伸，不要用模板化开场白
-- 口语化但有专业感；不强迫以问句结尾
+- 口语化但有专业感
+- 结尾一定要有一个问句，类型按上面【每次回复都以一个问句收尾】挑
 
 quick_replies（用户可能说的下一句话，不是菜单）：
+- 让它们读起来像是在回答你结尾那个问句
 - 打招呼/寒暄：0-2个，像真人回应
 - 正在聊话题：1-3个，自然接下去
-- 刚给结论/建议：0个也行
 - 每个不超过10字
 
-suggest_tasks（只在全部条件满足时才设为true，否则一律false）：
-- 对话里出现了具体的育儿场景、困扰或目标（不是泛泛聊天）
-- 你已充分了解了背景，知道给什么任务有意义
-- 自然到了"我来帮你整理几件可以做的事"的时机
-- 本次对话还没生成过任务"""
+cited（你在正文里引用了哪几条来源）：
+- 只填系统给你的来源清单里的编号，例如 [1] [3] 就填 [1, 3]
+- 正文里标了几号，这里就填几号，两边必须一致
+- 没有来源清单、或者没有一条真的用得上，就填 []
+- 你永远不需要、也绝对不要自己写出网址"""
 
 # 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
@@ -804,23 +856,39 @@ _NURI_RESPONSE_FORMAT = {
                 # streaming path surfaces it while the rest is still arriving.
                 "text": {"type": "string"},
                 "quick_replies": {"type": "array", "items": {"type": "string"}},
-                "suggest_tasks": {"type": "boolean"},
+                # Indices into the numbered source list in the prompt — never
+                # URLs. The model physically cannot invent a link it was not
+                # given, which is the one guarantee worth designing the schema
+                # around for a parenting product.
+                "cited": {"type": "array", "items": {"type": "integer"}},
             },
-            "required": ["text", "quick_replies", "suggest_tasks"],
+            "required": ["text", "quick_replies", "cited"],
             "additionalProperties": False,
         },
     },
 }
 
-_NURI_FALLBACK = {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "suggest_tasks": False}
+# suggest_tasks is deliberately absent: the router decides task cards now, so
+# the reply model no longer votes on it. See backend/router.py.
+_NURI_FALLBACK = {"text": "抱歉，AI 暂时无法回应，请稍后再试。", "quick_replies": [], "cited": []}
 
 def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "", will_suggest_tasks: bool = False,
 ) -> list[dict]:
     """Assemble the system prompt and history window. Shared by the blocking and
     streaming reply paths so the two can't drift apart."""
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
+    if will_suggest_tasks:
+        # The task cards render directly under this reply's text, so the reply
+        # has to lead into them. Without this the parent gets an answer that
+        # never mentions tasks, followed by three task cards.
+        system += (
+            "\n\n本轮回复结束后，会在你的回复下方给家长几张可以执行的任务卡片。"
+            "请在结尾自然地引出它们（例如提一句你帮他整理了几件可以做的事），"
+            "但不要把任务内容写进正文，也不要编号列出来——卡片会自己显示。"
+        )
     if internal_ctx:
         system += f"\n\n{internal_ctx}"
     if style_ctx:
@@ -831,6 +899,10 @@ def _nuri_messages(
         system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
     if card_ctx:
         system += f"\n\n本次对话相关内容：\n{card_ctx}"
+    if sources_ctx:
+        # Last, and after the internal rules on purpose: external pages are the
+        # weakest tier of context NURI has, and the block itself says so.
+        system += f"\n\n{sources_ctx}"
     msgs = [{"role": "system", "content": system}]
     for m in history[-_HISTORY_WINDOW:]:
         role = "user" if m["role"] == "user" else "assistant"
@@ -839,27 +911,42 @@ def _nuri_messages(
             msgs.append({"role": role, "content": content})
     return msgs
 
+def _unescape_stray_newlines(text: str) -> str:
+    """Repair a reply whose paragraph breaks arrived double-escaped.
+
+    The model occasionally emits "\\n\\n" inside the JSON string rather than a
+    real break, so json.loads yields a literal backslash-n that renders as
+    visible characters mid-sentence. Only applied when there are no real
+    newlines to begin with, so a correctly formatted reply is never touched.
+    """
+    if "\n" in text or "\\n" not in text:
+        return text
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def _parse_nuri_reply(raw: str) -> dict:
     data = json.loads(raw)
     return {
-        "text": data.get("text", ""),
+        "text": _unescape_stray_newlines(data.get("text", "")),
         "quick_replies": data.get("quick_replies", [])[:3],
-        "suggest_tasks": bool(data.get("suggest_tasks", False)),
+        "cited": [n for n in (data.get("cited") or []) if isinstance(n, int)],
     }
 
 def _nuri_reply_sync(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "", will_suggest_tasks: bool = False,
     metrics: Optional["_TurnMetrics"] = None,
 ) -> dict:
     if not oai:
-        return {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
-    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+        return {"text": "AI 暂时不可用。", "quick_replies": [], "cited": []}
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx, will_suggest_tasks)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
             "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
-            "style": style_ctx, "internal": internal_ctx,
+            "style": style_ctx, "internal": internal_ctx, "sources": sources_ctx,
         })
     started = time.perf_counter()
     try:
@@ -945,18 +1032,20 @@ def _partial_json_string(buf: str, key: str) -> str:
 async def _nuri_reply_stream(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "", will_suggest_tasks: bool = False,
     metrics: Optional["_TurnMetrics"] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
-        yield "final", {"text": "AI 暂时不可用。", "quick_replies": [], "suggest_tasks": False}
+        yield "final", {"text": "AI 暂时不可用。", "quick_replies": [], "cited": []}
         return
-    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx, will_suggest_tasks)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
             "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
-            "style": style_ctx, "internal": internal_ctx,
+            "style": style_ctx, "internal": internal_ctx, "sources": sources_ctx,
         })
     buf = ""
     sent = 0
@@ -1000,7 +1089,7 @@ async def _nuri_reply_stream(
         # Anything already streamed stays on screen; only the tail is lost.
         salvaged = _partial_json_string(buf, "text")
         if salvaged:
-            yield "final", {"text": salvaged, "quick_replies": [], "suggest_tasks": False}
+            yield "final", {"text": salvaged, "quick_replies": [], "cited": []}
         else:
             yield "final", dict(_NURI_FALLBACK)
 
@@ -1042,6 +1131,7 @@ _INFO_SOURCE_LABELS = {
     "parents": "其他家长经验", "all": "都会参考",
 }
 _GENDER_LABELS = {"boy": "男孩", "girl": "女孩"}
+_LANGUAGE_LABELS = {"zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English"}
 
 
 def _age_label(birth_date: str) -> str:
@@ -1119,6 +1209,14 @@ def _profile_ctx(row: dict, children: Optional[list] = None) -> str:
     help_pref = _HELP_PREF_LABELS.get(row.get("help_preference"))
     if help_pref:
         block += f"\n这位家长{help_pref}。在不违反上述规则的前提下，按这个偏好来组织回答。"
+    # The app's language switch is a statement of preference, not a hard lock —
+    # a parent who types English in a zh-TW UI still wants an English answer.
+    lang = _LANGUAGE_LABELS.get(row.get("language"))
+    if lang:
+        block += (
+            f"\n这位家长把界面语言设成了{lang}，默认就用{lang}回复。"
+            "但如果他这条消息用的是别的语言或字体，仍然跟随他当下用的那种。"
+        )
     return block
 
 _PROFILE_FIELDS = (
@@ -1156,7 +1254,22 @@ async def _load_profile(user_id: Optional[str]) -> tuple[dict, list]:
         except Exception as e:
             print(f"[warn] _load_profile children: {e}")
             return []
-    profile, children = await asyncio.gather(_user(), _children())
+    async def _language():
+        # Selected apart from _PROFILE_FIELDS on purpose: this column arrives
+        # with privacy_settings_migration.sql, and folding it into the main
+        # select would make one missing column drop the whole profile block.
+        try:
+            r = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select("language")
+                .eq("id", user_id).maybe_single().execute()
+            )
+            return ((r.data if r else None) or {}).get("language") or ""
+        except Exception as e:
+            print(f"[warn] _load_profile language: {e}")
+            return ""
+    profile, children, language = await asyncio.gather(_user(), _children(), _language())
+    if language:
+        profile = {**profile, "language": _normalize_language(language)}
     return profile, children
 
 
@@ -2242,42 +2355,103 @@ async def _scripted_reply(session: dict, session_id: str, already_generated: boo
     return ai_text, quick_replies, transition
 
 
+class _ReplyContext(NamedTuple):
+    """Everything assembled before the reply model is called. A NamedTuple
+    rather than a bare tuple because it now carries seven things, and positional
+    unpacking of seven was one refactor away from a silent mix-up."""
+    card: str
+    memory: str
+    profile: str
+    style: str
+    internal: str
+    sources: str                       # rendered allow-list, "" when not searching
+    route: "TurnRoute"
+    search_results: list               # SearchResult objects behind `sources`
+
+
+async def _route_and_search(
+    turn: _Turn, profile_ctx: str, metrics: Optional["_TurnMetrics"],
+) -> tuple["TurnRoute", list]:
+    """Decide what this turn needs, then fetch it.
+
+    Serial by nature — the search can't start until the router has produced a
+    query — but the pair runs concurrently with the other context blocks, so
+    only the part that isn't hidden behind them lands on first-token latency.
+
+    Both halves already degrade to "nothing" on failure, so this needs no
+    error handling of its own.
+    """
+    started = time.perf_counter()
+    route = await route_turn(
+        turn.msgs, client=aoai, child_context=profile_ctx,
+        already_generated=turn.already_generated,
+    )
+    if metrics:
+        metrics.mark("route_ms", started)
+        metrics.set(**route_metrics(route))
+    if not route.needs_search:
+        return route, []
+
+    started = time.perf_counter()
+    results = await search_sources(
+        route.search_query, zh_query=route.search_query_zh,
+        scope=route.search_scope, is_medical=route.is_medical,
+        sb=_get_supabase(),
+    )
+    if metrics:
+        metrics.mark("search_ms", started)
+        metrics.set(search_hits=len(results), search_provider=get_search_provider().name)
+    return route, results
+
+
 async def _reply_context(
     turn: _Turn, body: "UserMessageIn", metrics: Optional["_TurnMetrics"] = None,
-) -> tuple:
-    """Gather the five prompt context blocks. The four I/O-bound ones run
-    concurrently rather than as serial round trips before the reply starts."""
+) -> _ReplyContext:
+    """Gather the prompt context blocks. The I/O-bound ones run concurrently
+    rather than as serial round trips before the reply starts."""
     started = time.perf_counter()
-    gen_cards, memory_ctx, style_ctx, internal_ctx = await asyncio.gather(
+    profile_ctx = _profile_ctx(turn.context_hints, turn.context_hints.get("children"))
+    gen_cards, memory_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
         _db_get_gen_cards(),
         _get_memory_context(turn.owner_uid),
         _get_style_rules_ctx(),
         anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
+        _route_and_search(turn, profile_ctx, metrics),
     )
+    route, results = routed
     if metrics:
         metrics.mark("context_ms", started)
-    return (
-        _card_ctx(turn.session.get("source_card_id") or "", gen_cards),
-        memory_ctx,
-        _profile_ctx(turn.context_hints, turn.context_hints.get("children")),
-        style_ctx,
-        internal_ctx,
+    return _ReplyContext(
+        card=_card_ctx(turn.session.get("source_card_id") or "", gen_cards),
+        memory=memory_ctx,
+        profile=profile_ctx,
+        style=style_ctx,
+        internal=internal_ctx,
+        sources=sources_prompt_block(results),
+        route=route,
+        search_results=results,
     )
 
 
 async def _task_suggestion(
-    reply: dict, msgs: list, already_generated: bool,
+    route: "TurnRoute", msgs: list,
     metrics: Optional["_TurnMetrics"] = None,
 ) -> Optional[dict]:
-    """NURI decides when to suggest tasks via the suggest_tasks flag. These are
-    only drafts — nothing is persisted to the tasks table until the parent taps
-    "添加计划" on a specific card (POST /tasks).
+    """Draft task cards, when the router asked for them. These are only drafts —
+    nothing is persisted to the tasks table until the parent taps "添加计划" on a
+    specific card (POST /tasks).
 
-    On the streaming path this runs *after* the reply is already on the parent's
-    screen, so a failure here must never take the reply down with it — the turn
-    just arrives without task cards.
+    The gate used to be a boolean the reply model set while writing its answer,
+    judged against four subjective sentences, which is why testers said the
+    cards appeared with no discernible rule. It is now a dedicated router
+    decision with a logged reason (see backend/router.py).
+
+    Generation reads only the conversation, never the reply being written
+    alongside it, which is what lets this run concurrently with the reply
+    instead of after it. A failure here must never take the reply down — the
+    turn just arrives without task cards.
     """
-    if not reply.get("suggest_tasks") or already_generated:
+    if not route.suggest_tasks:
         return None
     started = time.perf_counter()
     try:
@@ -2293,21 +2467,59 @@ async def _task_suggestion(
     return {"kind": "task_suggestion", "tasks": task_list} if task_list else None
 
 
+def _cited_sources(
+    cited: Optional[list], results: list, metrics: Optional["_TurnMetrics"] = None,
+) -> list[dict]:
+    """Turn the model's citation indices into the links the app renders.
+
+    The model only ever emits numbers, so the URLs here come from the search
+    results this backend fetched — a hallucinated link is not merely discouraged
+    but unrepresentable. Out-of-range indices are dropped rather than clamped;
+    guessing which source was meant would defeat the point.
+    """
+    out, seen = [], set()
+    for n in cited or []:
+        if not isinstance(n, int) or not (1 <= n <= len(results)) or n in seen:
+            continue
+        seen.add(n)
+        r = results[n - 1]
+        out.append({
+            "n": n, "title": r.title, "url": r.url,
+            "site_name": r.site_name, "lang": r.lang, "tier": r.tier,
+        })
+    if metrics:
+        metrics.set(cited_sources=len(out))
+    return out
+
+
 async def _persist_ai_turn(
     session_id: str, turn: _Turn, ai_text: str,
-    quick_replies: list, transition: Optional[dict],
+    quick_replies: list, transition: Optional[dict], sources: Optional[list] = None,
 ) -> dict:
     sb = _get_supabase()
     ai_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": ai_text,
-        "quick_replies": quick_replies, "transition": transition, "created_at": _now(),
+        "quick_replies": quick_replies, "transition": transition,
+        "sources": sources or [], "created_at": _now(),
     }
     if sb:
         try:
             await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(ai_msg).execute())
         except Exception as e:
             print(f"[warn] post_message ai_msg insert: {e}")
+            # `sources` arrives with message_sources_migration.sql. Deploying
+            # ahead of that migration would otherwise stop every AI reply from
+            # being saved at all, which is far worse than losing the links —
+            # so drop the new column and keep the message.
+            legacy = {k: v for k, v in ai_msg.items() if k != "sources"}
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_messages").insert(legacy).execute()
+                )
+                print("[warn] saved without `sources`; run message_sources_migration.sql")
+            except Exception as e2:
+                print(f"[warn] ai_msg insert retry failed: {e2}")
     else:
         turn.msgs.append(ai_msg)
     return ai_msg
@@ -2325,24 +2537,33 @@ async def post_message(
     transition = None
     quick_replies: list = []
 
+    sources: list = []
+
     if turn.fix_text:
         ai_text = await _fix_reply(turn.msgs, turn.fix_text)
     elif oai:
-        ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
-        reply = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync(
-                turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
-            )
+        rc = await _reply_context(turn, body, metrics)
+        # Task drafting reads only the conversation, so it runs alongside the
+        # reply rather than after it — the extra model call no longer adds to
+        # the turn's wall time.
+        reply, transition = await asyncio.gather(
+            anyio.to_thread.run_sync(
+                lambda: _nuri_reply_sync(
+                    turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                    rc.internal, rc.sources, rc.route.suggest_tasks, metrics,
+                )
+            ),
+            _task_suggestion(rc.route, turn.msgs, metrics),
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
-        transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
+        sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
     else:
         ai_text, quick_replies, transition = await _scripted_reply(
             turn.session, session_id, turn.already_generated
         )
 
-    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
 
     # Logged after the reply is built, and only for real model turns — a #fix
     # command or the canned script isn't a generation worth measuring.
@@ -2382,33 +2603,48 @@ async def post_message_stream(
     async def events():
         transition = None
         quick_replies: list = []
+        sources: list = []
         try:
             if turn.fix_text:
                 ai_text = await _fix_reply(turn.msgs, turn.fix_text)
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
-                ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
+                rc = await _reply_context(turn, body, metrics)
+                # Started before the first token and awaited after the last, so
+                # by the time the text finishes streaming the cards are usually
+                # already drafted. Task drafting reads only the conversation, so
+                # it doesn't need the reply it's running alongside.
+                tasks_job = asyncio.create_task(
+                    _task_suggestion(rc.route, turn.msgs, metrics)
+                )
                 reply = None
-                async for kind, value in _nuri_reply_stream(
-                    turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
-                ):
-                    if kind == "delta":
-                        yield _sse({"type": "delta", "text": value})
-                    else:
-                        reply = value
+                try:
+                    async for kind, value in _nuri_reply_stream(
+                        turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                        rc.internal, rc.sources, rc.route.suggest_tasks, metrics,
+                    ):
+                        if kind == "delta":
+                            yield _sse({"type": "delta", "text": value})
+                        else:
+                            reply = value
+                finally:
+                    # Even if streaming blew up, the drafting task must be
+                    # collected — an orphaned task logs "never retrieved".
+                    try:
+                        transition = await tasks_job
+                    except Exception as e:
+                        print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
                 reply = reply or dict(_NURI_FALLBACK)
                 ai_text = reply["text"]
                 quick_replies = reply.get("quick_replies", [])
-                # Only runs once the text is on screen, so the extra model call
-                # no longer sits in front of the parent's first visible token.
-                transition = await _task_suggestion(reply, turn.msgs, turn.already_generated, metrics)
+                sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
             else:
                 ai_text, quick_replies, transition = await _scripted_reply(
                     turn.session, session_id, turn.already_generated
                 )
                 yield _sse({"type": "delta", "text": ai_text})
 
-            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
             yield _sse({
                 "type": "done",
                 "user_message": turn.user_msg,
@@ -2635,16 +2871,50 @@ async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
     }
 
 # ── Privacy ───────────────────────────────────────────────────────────────────
-_DEFAULT_PRIVACY = {"allow_history_training": True, "daily_push": True, "anonymous_community_share": False, "language": "zh"}
+_DEFAULT_PRIVACY = {
+    "allow_history_training": True, "daily_push": True,
+    "anonymous_community_share": False, "language": "zh-CN",
+}
+_PRIVACY_FIELDS = ",".join(_DEFAULT_PRIVACY)
 
 @api.get("/privacy")
 async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
+    """Settings live on the users row. They used to live only in `_privacy`, a
+    module-level dict — which on serverless means the next request can land on a
+    cold instance that never saw the write, so a saved preference silently
+    reverted. The dict is still the fallback for local runs without Supabase."""
+    sb = _get_supabase()
+    if uid and sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select(_PRIVACY_FIELDS)
+                .eq("id", uid).maybe_single().execute()
+            )
+            row = (res.data if res else None) or {}
+            if row:
+                merged = {**_DEFAULT_PRIVACY, **{k: v for k, v in row.items() if v is not None}}
+                merged["language"] = _normalize_language(merged["language"])
+                return merged
+        except Exception as e:
+            print(f"[warn] get_privacy: {e}")
     return _privacy.get(uid or "singleton", _DEFAULT_PRIVACY)
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
-    _privacy[uid or "singleton"] = body.dict()
-    return body
+    settings = body.dict()
+    _privacy[uid or "singleton"] = settings
+    sb = _get_supabase()
+    if uid and sb:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("users").update(settings).eq("id", uid).execute()
+            )
+        except Exception as e:
+            # Surface it. A swallowed failure here is what made the language
+            # switch look like it worked and then quietly revert on reload.
+            print(f"[warn] update_privacy persist: {e}")
+            raise HTTPException(503, "设置暂时无法保存，请稍后再试")
+    return settings
 
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):

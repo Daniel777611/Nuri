@@ -21,6 +21,7 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth } from "@/src/api";
+import { useT } from "@/src/i18n";
 
 const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
@@ -43,6 +44,7 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 export default function Onboarding() {
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
@@ -85,7 +87,9 @@ export default function Onboarding() {
   const canNext = page === 0
     ? !!childName.trim() && !!birthYear && !!birthMonth
     : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true;
-  const birthLabel = birthYear && birthMonth ? `${birthYear} 年 ${birthMonth} 月` : "请选择孩子的出生年月";
+  const birthLabel = birthYear && birthMonth
+    ? t("{year} 年 {month} 月", { year: birthYear, month: birthMonth })
+    : t("请选择孩子的出生年月");
 
   const save = async () => {
     if (saving) return;
@@ -116,7 +120,7 @@ export default function Onboarding() {
               <Ionicons name="arrow-back" size={23} color="#3A2F5A" />
             </Pressable>
             <Pressable onPress={page >= 2 ? skip : undefined} disabled={page < 2} hitSlop={10}>
-              <Text style={styles.progressText}>{stepNumber}/4{page >= 2 ? "  跳过" : ""}</Text>
+              <Text style={styles.progressText}>{stepNumber}/4{page >= 2 ? `  ${t("跳过")}` : ""}</Text>
             </Pressable>
           </View>
 
@@ -126,13 +130,13 @@ export default function Onboarding() {
               {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} openPicker={() => setPickerOpen(true)} />}
               {page === 1 && <ParentPage nickname={nickname} setNickname={setNickname} city={city} setCity={setCity} parentRole={parentRole} setParentRole={setParentRole} />}
               {page === 2 && <ConcernPage concerns={concerns} toggle={toggleConcern} other={concernOther} setOther={setConcernOther} />}
-              {page === 3 && <TextPage title="了解你的教养方式" subtitle="帮助 NURI 了解你的最佳陪伴方式"><Field label="平常没带小孩时喜欢做的事"><TextInput value={hobbies} onChangeText={setHobbies} placeholder="例如：看剧、健身、和朋友聚会……" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>}
-              {page === 4 && <ChoicePage title="遇到教养问题时" subtitle="你希望 NURI 提供什么样的帮助？" options={HELP_PREFS} value={helpPref} onChange={setHelpPref} />}
-              {page === 5 && <ChoicePage title="你平常比较信任" subtitle="哪些信息来源？" options={INFO_SOURCES} value={infoSource} onChange={setInfoSource} />}
-              {page === 6 && <ChoicePage title="希望多久收到一次" subtitle="育儿知识或有帮助的内容？" options={FREQUENCIES} value={frequency} onChange={setFrequency} />}
+              {page === 3 && <TextPage title={t("了解你的教养方式")} subtitle={t("帮助 NURI 了解你的最佳陪伴方式")}><Field label={t("平常没带小孩时喜欢做的事")}><TextInput value={hobbies} onChangeText={setHobbies} placeholder={t("例如：看剧、健身、和朋友聚会……")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>}
+              {page === 4 && <ChoicePage title={t("遇到教养问题时")} subtitle={t("你希望 NURI 提供什么样的帮助？")} options={HELP_PREFS} value={helpPref} onChange={setHelpPref} />}
+              {page === 5 && <ChoicePage title={t("你平常比较信任")} subtitle={t("哪些信息来源？")} options={INFO_SOURCES} value={infoSource} onChange={setInfoSource} />}
+              {page === 6 && <ChoicePage title={t("希望多久收到一次")} subtitle={t("育儿知识或有帮助的内容？")} options={FREQUENCIES} value={frequency} onChange={setFrequency} />}
               <View style={[styles.ctaRow, page === 2 && styles.concernCta]}>
                 <Pressable onPress={next} disabled={!canNext || saving} style={({ pressed }) => [styles.cta, canNext && !saving && styles.ctaReady, pressed && canNext && styles.pressed]} testID="onboarding-next-btn">
-                  <Text style={styles.ctaText}>{page === 6 ? (saving ? "保存中..." : "完成") : "下一步"}</Text><Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
+                  <Text style={styles.ctaText}>{page === 6 ? (saving ? t("保存中...") : t("完成")) : t("下一步")}</Text><Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
                 </Pressable>
               </View>
             </View>
@@ -151,12 +155,12 @@ function Hero({ page }: { page: number }) {
   return <View style={styles.choiceIcon}><View style={styles.iconBlockTall} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockTall} /></View>;
 }
 function TextPage({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) { return <><Text style={styles.title}>{title}</Text><Text style={styles.subtitle}>{subtitle}</Text><View style={styles.pageBody}>{children}</View></>; }
-function ChildPage({ childName, setChildName, birthLabel, openPicker }: any) { return <TextPage title="孩子基本信息" subtitle="这些信息只用来给你更个性化的建议，永远不会分享给第三方"><Field label="孩子怎么称呼？"><TextInput value={childName} onChangeText={setChildName} placeholder="例如：小满" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label="孩子的出生日期"><Pressable onPress={openPicker} style={[styles.input, styles.picker]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !childName && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable></Field></TextPage>; }
-function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParentRole }: any) { return <TextPage title="家长基本信息" subtitle="AI 会用这个名字给你打招呼"><Field label="我应该怎么称呼你？"><TextInput value={nickname} onChangeText={setNickname} placeholder="例如：小满妈" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label="您是孩子的？"><View style={styles.chipWrap}>{PARENT_ROLES.map(([key, label]) => { const active = parentRole === key; return <Pressable key={key} onPress={() => setParentRole(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-role-${key}`}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View></Field><Field label="您目前居住在哪里？"><TextInput value={city} onChangeText={setCity} placeholder="例如：San Francisco／多伦多" placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
-function ConcernPage({ concerns, toggle, other, setOther }: any) { return <TextPage title="目前最想要解决的育儿问题" subtitle="目前最困扰你的事情是什么？（可多选）"><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View>{concerns.includes("other") && <TextInput value={other} onChangeText={setOther} placeholder="请描述你的困扰..." placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
-function ChoicePage({ title, subtitle, options, value, onChange }: any) { return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{label}</Text></Pressable>)}</View></TextPage>; }
+function ChildPage({ childName, setChildName, birthLabel, openPicker }: any) { const { t } = useT(); return <TextPage title={t("孩子基本信息")} subtitle={t("这些信息只用来给你更个性化的建议，永远不会分享给第三方")}><Field label={t("孩子怎么称呼？")}><TextInput value={childName} onChangeText={setChildName} placeholder={t("例如：小满")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label={t("孩子的出生日期")}><Pressable onPress={openPicker} style={[styles.input, styles.picker]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !childName && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable></Field></TextPage>; }
+function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParentRole }: any) { const { t } = useT(); return <TextPage title={t("家长基本信息")} subtitle={t("AI 会用这个名字给你打招呼")}><Field label={t("我应该怎么称呼你？")}><TextInput value={nickname} onChangeText={setNickname} placeholder={t("例如：小满妈")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label={t("您是孩子的？")}><View style={styles.chipWrap}>{PARENT_ROLES.map(([key, label]) => { const active = parentRole === key; return <Pressable key={key} onPress={() => setParentRole(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-role-${key}`}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{t(label)}</Text></Pressable>; })}</View></Field><Field label={t("您目前居住在哪里？")}><TextInput value={city} onChangeText={setCity} placeholder={t("例如：San Francisco／多伦多")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
+function ConcernPage({ concerns, toggle, other, setOther }: any) { const { t } = useT(); return <TextPage title={t("目前最想要解决的育儿问题")} subtitle={t("目前最困扰你的事情是什么？（可多选）")}><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{t(label)}</Text></Pressable>; })}</View>{concerns.includes("other") && <TextInput value={other} onChangeText={setOther} placeholder={t("请描述你的困扰...")} placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
+function ChoicePage({ title, subtitle, options, value, onChange }: any) { const { t } = useT(); return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{t(label)}</Text></Pressable>)}</View></TextPage>; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <View style={styles.field}><Text style={styles.label}>{label}</Text>{children}</View>; }
-function BirthPicker({ year, month, setYear, setMonth, close }: any) { return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>选择出生年月</Text><Pressable onPress={close}><Text style={styles.done}>确定</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{YEARS.map((value) => <Pressable key={value} onPress={() => setYear(value)} style={[styles.pickerItem, year === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{value} 年</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{MONTHS.map((value) => <Pressable key={value} onPress={() => setMonth(value)} style={[styles.pickerItem, month === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{value} 月</Text></Pressable>)}</ScrollView></View></View></View>; }
+function BirthPicker({ year, month, setYear, setMonth, close }: any) { const { t } = useT(); return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t("选择出生年月")}</Text><Pressable onPress={close}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{YEARS.map((value) => <Pressable key={value} onPress={() => setYear(value)} style={[styles.pickerItem, year === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 年", { value })}</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{MONTHS.map((value) => <Pressable key={value} onPress={() => setMonth(value)} style={[styles.pickerItem, month === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 月", { value })}</Text></Pressable>)}</ScrollView></View></View></View>; }
 
 const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" }, gradient: { flex: 1 }, safe: { flex: 1 },

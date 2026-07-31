@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 import { Platform } from "react-native";
@@ -35,6 +36,7 @@ const TAG_FG: Record<string, string> = {
 
 export default function Detail() {
   const router = useRouter();
+  const { t } = useT();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [card, setCard] = useState<any>(null);
   const [favorited, setFavorited] = useState(false);
@@ -80,7 +82,7 @@ export default function Detail() {
     if (!id) return;
     const r = await api.toggleFavorite(id as string);
     setFavorited(r.favorited);
-    showToast(r.favorited ? "已收藏" : "已取消收藏");
+    showToast(r.favorited ? t("已收藏") : t("已取消收藏"));
     api
       .trackEvent("favorite", { card_id: id, card_type: card?.type, value: r.favorited ? 1 : 0 })
       .catch(() => {});
@@ -154,7 +156,7 @@ export default function Detail() {
       <View style={styles.askBar}>
         <Pressable onPress={askAI} style={styles.askBtn} testID="detail-ask-ai-btn">
           <Ionicons name="sparkles" size={16} color="#fff" />
-          <Text style={styles.askBtnText}>问问AI</Text>
+          <Text style={styles.askBtnText}>{t("问问AI")}</Text>
         </Pressable>
       </View>
 
@@ -168,18 +170,18 @@ export default function Detail() {
         <Pressable style={styles.sheetBackdrop} onPress={() => setShareOpen(false)} />
         <View style={styles.shareSheet} testID="share-sheet">
           <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>分享到</Text>
+          <Text style={styles.sheetTitle}>{t("分享到")}</Text>
           {[
-            { label: "复制链接", icon: "link-outline" as const },
-            { label: "微信", icon: "logo-wechat" as const },
-            { label: "短信", icon: "chatbox-outline" as const },
-            { label: "更多…", icon: "ellipsis-horizontal" as const },
+            { label: t("复制链接"), icon: "link-outline" as const },
+            { label: t("微信"), icon: "logo-wechat" as const },
+            { label: t("短信"), icon: "chatbox-outline" as const },
+            { label: t("更多…"), icon: "ellipsis-horizontal" as const },
           ].map((o) => (
             <Pressable
               key={o.label}
               onPress={() => {
                 setShareOpen(false);
-                showToast("已分享 (mock)");
+                showToast(t("已分享 (mock)"));
                 api
                   .trackEvent("share", { card_id: card.id, card_type: card.type })
                   .catch(() => {});

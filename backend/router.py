@@ -1,0 +1,280 @@
+"""The per-turn router: one small-model call that decides two things.
+
+    * whether this turn needs external sources, and what to search for
+    * whether this turn should produce task cards
+
+Both decisions used to be made elsewhere and worse. Task cards were a
+`suggest_tasks` boolean the main model set while writing its reply, judged
+against four fairly subjective sentences — which is why testers reported the
+cards appearing with "no rules". Moving it here makes it a separate, cheap,
+auditable call with explicit criteria and a logged reason.
+
+It is also what makes the search step affordable: routing runs inside the
+existing parallel context phase, so the only latency actually added to a turn is
+the search itself.
+
+Two properties everything downstream depends on:
+
+  * It never raises. Any failure returns `NO_ROUTE` with `ok=False` — no search,
+    no task cards, reply unaffected.
+  * It never blocks past `timeout_s`. This sits in front of the parent's first
+    visible token.
+
+`ok=False` is deliberately visible rather than silent: a wrong ROUTER_MODEL
+would otherwise degrade every turn to "never search, never suggest tasks" and
+look exactly like a product decision. Log it, and record it on the turn metrics.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from dataclasses import dataclass
+from typing import Literal, Optional, Sequence
+
+Scope = Literal["en", "zh", "both"]
+
+#: Must name a small, fast model — this call sits on the critical path and runs
+#: on every turn. Verify the name against the account's available models: a
+#: typo here degrades silently to "no search, no tasks" on every single turn.
+ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-5-mini")
+
+#: Routing gates the search, so the two are serial: this plus
+#: WEB_SEARCH_TIMEOUT_S is the worst case added to first-token latency.
+#: Measured on gpt-5-mini at minimal reasoning: 1.65-1.69s, very consistent.
+ROUTER_TIMEOUT_S = float(os.getenv("ROUTER_TIMEOUT_S", "3.0"))
+
+#: Classification needs no deliberation, and the default setting is ruinous
+#: here: the same call measured 10.5s at gpt-5-mini's default effort against
+#: 1.65s at minimal — 6x, on the critical path, for a labelling task.
+#: Set to "" to omit the parameter entirely for models that don't accept it.
+ROUTER_REASONING_EFFORT = os.getenv("ROUTER_REASONING_EFFORT", "minimal")
+
+#: Turns of raw history handed to the router. The main reply gets 40; the router
+#: only needs enough to tell "still venting" from "asking a concrete question",
+#: and a shorter prompt is a faster and cheaper one.
+ROUTER_HISTORY_WINDOW = int(os.getenv("ROUTER_HISTORY_WINDOW", "6"))
+
+_VALID_SCOPES = ("en", "zh", "both")
+
+
+@dataclass(frozen=True)
+class TurnRoute:
+    needs_search: bool = False
+    #: English keywords. This is the query that reaches AAP/CDC-grade sources,
+    #: which is the whole point of searching in English for these users.
+    search_query: str = ""
+    #: Chinese keywords for the zh pass. Kept separate because a Chinese query
+    #: against English institutions retrieves badly, and vice versa.
+    search_query_zh: str = ""
+    search_scope: Scope = "both"
+    is_medical: bool = False
+    suggest_tasks: bool = False
+    #: Short rationale, logged so the task-card criteria can be tuned against
+    #: real turns instead of guessed at.
+    reason: str = ""
+    #: False when the call failed and these are defaults, not decisions.
+    ok: bool = True
+    error: str = ""
+
+
+NO_ROUTE = TurnRoute(ok=True)
+
+
+def _failed(error: str) -> TurnRoute:
+    return TurnRoute(ok=False, error=error[:300])
+
+
+_ROUTER_SYSTEM = """你是育儿助手 NURI 的分流器。你不回答家长，只判断这一轮该怎么处理，然后输出 JSON。
+
+【needs_search】这一轮是否需要检索外部资料
+true：家长在问具体做法、月龄／年龄的发展情况、医疗或安全问题、产品或机构选择、疫苗时程或托育政策这类有外部依据可查的事
+false：纯粹倾诉情绪、寒暄、道谢、只是在回答 NURI 上一个问题、补充背景信息
+判断标准是"外部资料能不能让这个回答更好"，不是"这句话里有没有育儿词"。家长说"最近好累"就是 false
+
+【search_query / search_query_zh】两组关键词，分别用于英文和中文检索
+- **最多 8 个词**，像真人在搜索框里打的那样，不是关键词堆砌
+- 只写这个问题最核心的那一件事。堆同义词会让检索结果变差，不会变好
+- 必须带上孩子的月龄或年龄（下面会给你）——4个月和2岁的答案完全不同
+- search_query 用英文写，search_query_zh 用中文写，两者是同一个问题的两种表达，不是互译腔
+- 好例子：'4 month old refusing solids' / '4个月 宝宝 不吃辅食'
+- 坏例子：'4-month-old baby spoon feeding pushes spoon away refuses solids tips introduction of solids feeding refusal'
+- needs_search 为 false 时两个都留空
+
+【search_scope】
+both：默认。一般育儿问题和医疗问题都用这个，英文权威来源优先
+zh：只跟中文语境有关时才用，例如国内的政策、中文资源、和长辈的教养观念冲突
+en：只跟北美体系有关时才用，例如美国的疫苗时程、保险、托育制度
+
+【is_medical】是否属于医疗或安全问题
+true：发烧、用药、疫苗、过敏反应、外伤、生长发育迟缓、喂养障碍、以及任何"要不要看医生"
+拿不准就填 true——这会把检索限制在权威机构，宁可保守
+**is_medical 为 true 时，needs_search 也必须是 true，并且要给出两组关键词。**
+医疗问题正是最需要权威依据的场合，绝对不要凭印象直接回答
+
+【suggest_tasks】这一轮结束后是否给家长几张行动卡片
+全部满足才是 true：
+- 对话里出现了具体的育儿场景、困扰或目标，不是泛泛聊天
+- 背景已经够清楚，知道给什么任务是有意义的
+- 自然到了"我来帮你整理几件可以做的事"的时机
+以下一律 false：纯情绪倾诉、寒暄、还在了解情况的追问阶段、家长只是想聊聊
+
+【reason】20字以内说明你为什么这样判断，中文"""
+
+
+def _condense(history: Sequence[dict], window: int = ROUTER_HISTORY_WINDOW) -> str:
+    """Flatten recent turns into plain text. Task-card and other transition
+    messages are skipped — they're UI payloads, not things anyone said."""
+    lines = []
+    for m in list(history)[-window:]:
+        text = (m.get("text") or "").strip()
+        if not text or (m.get("transition") or {}).get("kind"):
+            continue
+        who = "家长" if m.get("role") == "user" else "NURI"
+        lines.append(f"{who}: {text}")
+    return "\n".join(lines)
+
+
+_ROUTER_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "turn_route",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "needs_search": {"type": "boolean"},
+                "search_query": {"type": "string"},
+                "search_query_zh": {"type": "string"},
+                "search_scope": {"type": "string", "enum": list(_VALID_SCOPES)},
+                "is_medical": {"type": "boolean"},
+                "suggest_tasks": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+            "required": [
+                "needs_search", "search_query", "search_query_zh",
+                "search_scope", "is_medical", "suggest_tasks", "reason",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def parse_route(raw: str, *, already_generated: bool = False) -> TurnRoute:
+    """Parse and sanitise the model's JSON.
+
+    Separated from the network call so the invariants below are testable without
+    a model: a route that says "search" but supplies no query, or that suggests
+    tasks for a conversation that already has some, is corrected here rather
+    than surfacing as a confusing no-op further down.
+    """
+    data = json.loads(raw)
+
+    scope = data.get("search_scope")
+    if scope not in _VALID_SCOPES:
+        scope = "both"
+
+    query = (data.get("search_query") or "").strip()
+    query_zh = (data.get("search_query_zh") or "").strip()
+    # A search with nothing to search for is a wasted round trip.
+    needs_search = bool(data.get("needs_search")) and bool(query or query_zh)
+
+    # Whatever the model thinks, one conversation gets one set of task cards.
+    # This mirrors the `already_generated` gate the old suggest_tasks path had.
+    suggest_tasks = bool(data.get("suggest_tasks")) and not already_generated
+
+    return TurnRoute(
+        needs_search=needs_search,
+        search_query=query if needs_search else "",
+        search_query_zh=query_zh if needs_search else "",
+        search_scope=scope,
+        is_medical=bool(data.get("is_medical")),
+        suggest_tasks=suggest_tasks,
+        reason=(data.get("reason") or "").strip()[:120],
+    )
+
+
+async def route_turn(
+    history: Sequence[dict],
+    *,
+    client,
+    child_context: str = "",
+    already_generated: bool = False,
+    model: str = ROUTER_MODEL,
+    timeout_s: float = ROUTER_TIMEOUT_S,
+) -> TurnRoute:
+    """Classify one turn. `client` is an async OpenAI client (main.py's `aoai`),
+    passed in rather than imported so this module stays independent of main.py.
+
+    `child_context` should carry the child's age — the search query is close to
+    useless without it, since advice for a 4-month-old and a 2-year-old share
+    almost nothing.
+    """
+    if client is None:
+        return _failed("no model client")
+
+    convo = _condense(history)
+    if not convo:
+        return NO_ROUTE
+
+    user_block = (f"{child_context}\n\n" if child_context else "") + f"对话：\n{convo}"
+
+    messages = [
+        {"role": "system", "content": _ROUTER_SYSTEM},
+        {"role": "user", "content": user_block},
+    ]
+
+    async def call(reasoning: str) -> str:
+        extra = {"reasoning_effort": reasoning} if reasoning else {}
+        resp = await client.chat.completions.create(
+            model=model, messages=messages,
+            response_format=_ROUTER_RESPONSE_FORMAT, **extra,
+        )
+        return resp.choices[0].message.content or ""
+
+    async def call_with_fallback() -> str:
+        try:
+            return await call(ROUTER_REASONING_EFFORT)
+        except TypeError as e:
+            # Model or SDK doesn't take the parameter. Retry without it rather
+            # than degrading the whole turn to "no search, no tasks" over a
+            # keyword — the call itself is fine, just slower.
+            print(f"[warn] router: reasoning_effort rejected ({e}); retrying without")
+            return await call("")
+        except Exception as e:
+            if "reasoning_effort" not in str(e):
+                raise
+            print(f"[warn] router: reasoning_effort rejected ({e}); retrying without")
+            return await call("")
+
+    try:
+        raw = await asyncio.wait_for(call_with_fallback(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        print(f"[warn] router timed out after {timeout_s}s (model={model})")
+        return _failed("timeout")
+    except Exception as e:
+        print(f"[warn] router failed (model={model}): {type(e).__name__}: {e}")
+        return _failed(f"{type(e).__name__}: {e}")
+
+    try:
+        return parse_route(raw, already_generated=already_generated)
+    except Exception as e:
+        print(f"[warn] router returned unparsable JSON: {type(e).__name__}: {e}")
+        return _failed(f"parse: {type(e).__name__}")
+
+
+def route_metrics(route: TurnRoute) -> dict:
+    """Flatten a route into columns for chat_turn_logs. `route_reason` is the
+    one that earns its keep: it's what lets someone look at a week of real
+    turns and actually tune when task cards should appear."""
+    return {
+        "route_ok": route.ok,
+        "route_error": route.error,
+        "needs_search": route.needs_search,
+        "search_scope": route.search_scope,
+        "is_medical": route.is_medical,
+        "suggested_tasks": route.suggest_tasks,
+        "route_reason": route.reason,
+    }

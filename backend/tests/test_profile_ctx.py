@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.main import _age_label, _profile_ctx  # noqa: E402
+from backend.main import _age_label, _normalize_language, _profile_ctx  # noqa: E402
 
 
 def _shift_months(delta: int) -> str:
@@ -124,3 +124,37 @@ def test_multiple_children_all_appear():
     out = _profile_ctx({}, kids)
     assert "老大" in out and "5岁" in out
     assert "老二" in out and "8个月" in out
+
+
+# ── Language preference ──────────────────────────────────────────────────────
+# The app sent "zh-CN"/"zh-TW" at a Literal["zh","en"], so every tap on the
+# language switch 422'd. Nothing may reject a locale again — worst case it
+# falls back to Simplified.
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("zh-CN", "zh-CN"), ("zh-TW", "zh-TW"), ("en", "en"),
+        ("zh", "zh-CN"),                      # legacy two-letter code
+        ("zh_TW", "zh-TW"), ("ZH-tw", "zh-TW"),
+        ("zh-Hant", "zh-TW"), ("zh-Hans", "zh-CN"), ("zh-HK", "zh-TW"),
+        ("en-US", "en"),
+        ("", "zh-CN"), (None, "zh-CN"), ("klingon", "zh-CN"),
+    ],
+)
+def test_normalize_language(raw, expected):
+    assert _normalize_language(raw) == expected
+
+
+def test_language_preference_reaches_the_prompt():
+    out = _profile_ctx({**FULL_PROFILE, "language": "zh-TW"}, [])
+    assert "繁體中文" in out
+
+
+def test_language_preference_is_a_default_not_a_lock():
+    """A parent who types English in a zh-TW UI still wants an English answer."""
+    out = _profile_ctx({**FULL_PROFILE, "language": "zh-TW"}, [])
+    assert "跟随他当下用的" in out
+
+
+def test_unset_language_adds_nothing():
+    assert "界面语言" not in _profile_ctx(FULL_PROFILE, [])

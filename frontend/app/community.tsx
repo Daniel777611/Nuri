@@ -3,6 +3,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const POSTS = [
@@ -31,6 +32,7 @@ const POSTS = [
 
 export default function Community() {
   const router = useRouter();
+  const { t } = useT();
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.header}>
@@ -41,14 +43,14 @@ export default function Community() {
         >
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.title}>家长们的经验</Text>
+        <Text style={styles.title}>{t("家长们的经验")}</Text>
         <View style={{ width: 36 }} />
       </View>
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.note} testID="community-mock-banner">
           <Ionicons name="information-circle-outline" size={16} color={colors.muted} />
           <Text style={styles.noteText}>
-            这是社群的预览版本，仅展示其他家长匿名分享的经验，暂不开放互动。
+            {t("这是社群的预览版本，仅展示其他家长匿名分享的经验，暂不开放互动。")}
           </Text>
         </View>
         {POSTS.map((p, i) => (
@@ -58,11 +60,11 @@ export default function Community() {
                 <Ionicons name="person-outline" size={14} color={colors.brand} />
               </View>
               <View>
-                <Text style={styles.name}>{p.name}</Text>
-                <Text style={styles.meta}>{p.meta}</Text>
+                <Text style={styles.name}>{t(p.name)}</Text>
+                <Text style={styles.meta}>{t(p.meta)}</Text>
               </View>
             </View>
-            <Text style={styles.body}>{p.body}</Text>
+            <Text style={styles.body}>{t(p.body)}</Text>
             <View style={styles.cardFoot}>
               <Ionicons name="heart-outline" size={14} color={colors.muted} />
               <Text style={styles.foot}>{p.likes}</Text>

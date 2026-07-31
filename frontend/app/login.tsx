@@ -13,10 +13,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Login() {
   const router = useRouter();
+  const { t, setLocale } = useT();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -31,14 +33,15 @@ export default function Login() {
         password,
       });
       await auth.setToken(res.access_token);
+      if (res.user?.language) await setLocale(res.user.language);
       // Old users must also complete the basic-info flow before entering tabs
       const onboarded = !!res.user?.onboarding_completed;
       await auth.setOnboarded(onboarded);
       router.replace(onboarded ? "/(tabs)" : "/onboarding");
     } catch (e: any) {
       const msg = String(e?.message || "");
-      if (isAuthError(e) || msg.includes("401")) setError("邮箱或密码错误");
-      else setError("登录失败，请重试");
+      if (isAuthError(e) || msg.includes("401")) setError(t("邮箱或密码错误"));
+      else setError(t("登录失败，请重试"));
     } finally {
       setSubmitting(false);
     }
@@ -54,12 +57,12 @@ export default function Login() {
           <View style={styles.logo}>
             <Ionicons name="leaf-outline" size={28} color={colors.brand} />
           </View>
-          <Text style={styles.h1}>欢迎回来</Text>
+          <Text style={styles.h1}>{t("欢迎回来")}</Text>
           <Text style={styles.sub}>
-            登录继续你和 AI 育儿助手的对话。
+            {t("登录继续你和 AI 育儿助手的对话。")}
           </Text>
 
-          <Text style={styles.label}>邮箱</Text>
+          <Text style={styles.label}>{t("邮箱")}</Text>
           <TextInput
             value={email}
             onChangeText={setEmail}
@@ -71,7 +74,7 @@ export default function Login() {
             testID="login-email"
           />
 
-          <Text style={[styles.label, { marginTop: spacing.lg }]}>密码</Text>
+          <Text style={[styles.label, { marginTop: spacing.lg }]}>{t("密码")}</Text>
           <TextInput
             value={password}
             onChangeText={setPassword}
@@ -98,7 +101,7 @@ export default function Login() {
             ]}
             testID="login-submit-btn"
           >
-            <Text style={styles.ctaText}>{submitting ? "登录中..." : "登录"}</Text>
+            <Text style={styles.ctaText}>{submitting ? t("登录中...") : t("登录")}</Text>
           </Pressable>
 
           <Pressable
@@ -107,7 +110,7 @@ export default function Login() {
             testID="login-go-register"
           >
             <Text style={styles.altBtnText}>
-              还没有账号？<Text style={{ color: colors.brand }}>立即注册</Text>
+              {t("还没有账号？")}<Text style={{ color: colors.brand }}>{t("立即注册")}</Text>
             </Text>
           </Pressable>
         </View>

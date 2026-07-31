@@ -14,17 +14,15 @@ import { useFocusEffect, useRouter } from "expo-router";
 
 import { api, auth } from "@/src/api";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
+import Toast from "@/src/components/Toast";
+import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-const LANGUAGES = [
-  { value: "zh-CN", label: "简中" },
-  { value: "zh-TW", label: "繁中" },
-  { value: "en", label: "English" },
-] as const;
 const FIGMA_FRAME_WIDTH = 402;
 
 export default function Profile() {
   const router = useRouter();
+  const { t, locale, setLocale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const [children, setChildren] = useState<any[]>([]);
@@ -33,9 +31,15 @@ export default function Profile() {
     allow_history_training: true,
     daily_push: true,
     anonymous_community_share: false,
-    language: "zh",
+    language: "zh-CN",
   });
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 2400);
+  };
 
   const load = useCallback(async () => {
     const [ks, p, favs] = await Promise.all([
@@ -46,6 +50,12 @@ export default function Profile() {
     setChildren(ks);
     setPrivacy(p);
     setFavorites(favs);
+    // Deliberately does NOT re-apply p.language. /privacy always answers with a
+    // concrete language (it has to render the switch), so a default — or a
+    // response from before privacy_settings_migration.sql ran — would silently
+    // overwrite the choice the parent just made here. The account's language is
+    // adopted once at launch and at sign-in, where /auth/me reports an empty
+    // string when nothing is actually stored.
   }, []);
 
   useFocusEffect(
@@ -54,23 +64,37 @@ export default function Profile() {
     }, [load])
   );
 
+  // Optimistic, then reverted if the write fails. A settings row that reverts
+  // with an explanation beats one that appears to work and quietly forgets.
   const updatePrivacy = async (patch: any) => {
-    const next = { ...privacy, ...patch };
+    const previous = privacy;
+    // `locale` — not `privacy.language` — is what the parent is looking at.
+    // Toggling an unrelated switch must not push a stale language back up and
+    // undo their choice.
+    const next = { ...privacy, language: locale, ...patch };
     setPrivacy(next);
-    await api.setPrivacy(next);
+    if (patch.language) await setLocale(patch.language);
+    try {
+      await api.setPrivacy(next);
+    } catch {
+      setPrivacy(previous);
+      if (patch.language) await setLocale(locale);
+      showToast(t("设置没能保存，请稍后再试"));
+    }
   };
 
   const wipeAll = async () => {
     await api.wipe();
     await auth.clearToken();
     setConfirmWipe(false);
-    router.replace("/register");
+    router.replace("/login");
   };
 
   const logout = async () => {
     await auth.clearToken();
-    // 统一回到已按 Figma 更新的注册入口；已有账号可从该页进入登录。
-    router.replace("/register");
+    // Signed-out users land on login, matching app/index.tsx. Sending them to
+    // register was what made testers type their credentials into the signup form.
+    router.replace("/login");
   };
 
   return (
@@ -87,19 +111,19 @@ export default function Profile() {
           testID="profile-back-btn"
         >
           <Ionicons name="chevron-back" size={24} color={colors.onSurface} />
-          <Text style={{ fontSize: type.lg, fontWeight: "700", color: colors.onSurface }}>返回</Text>
+          <Text style={{ fontSize: type.lg, fontWeight: "700", color: colors.onSurface }}>{t("返回")}</Text>
         </Pressable>
         <View style={styles.header}>
           <View style={styles.avatar}>
             <Ionicons name="person-outline" size={26} color={colors.brand} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.name}>家长</Text>
-            <Text style={styles.sub}>育儿AI · 北美华人版</Text>
+            <Text style={styles.name}>{t("家长")}</Text>
+            <Text style={styles.sub}>{t("育儿AI · 北美华人版")}</Text>
           </View>
         </View>
 
-        <Section title="孩子信息">
+        <Section title={t("孩子信息")}>
           {children.map((c) => (
             <Pressable
               key={c.id}
@@ -113,8 +137,8 @@ export default function Profile() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.childName}>{c.nickname}</Text>
                 <Text style={styles.childMeta}>
-                  {monthsOf(c.birth_date)} 月龄
-                  {c.allergies?.length ? ` · 过敏：${c.allergies.join(", ")}` : ""}
+                  {t("{months} 月龄", { months: monthsOf(c.birth_date) })}
+                  {c.allergies?.length ? ` · ${t("过敏")}：${c.allergies.join(", ")}` : ""}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.muted} />
@@ -126,15 +150,15 @@ export default function Profile() {
             testID="profile-add-child"
           >
             <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
-            <Text style={styles.addRowText}>添加孩子</Text>
+            <Text style={styles.addRowText}>{t("添加孩子")}</Text>
           </Pressable>
         </Section>
 
-        <Section title="我的收藏">
+        <Section title={t("我的收藏")}>
           {favorites.length === 0 ? (
             <View style={{ padding: spacing.md }}>
               <Text style={{ color: colors.muted, fontSize: 14 }}>
-                还没有收藏。在首页或详情页点击 ★ 即可收藏。
+                {t("还没有收藏。在首页或详情页点击 ★ 即可收藏。")}
               </Text>
             </View>
           ) : (
@@ -160,7 +184,7 @@ export default function Profile() {
           )}
         </Section>
 
-        <Section title="隐私设置">
+        <Section title={t("隐私设置")}>
           <View style={styles.policy} testID="privacy-policy-card">
             <Ionicons
               name="shield-checkmark-outline"
@@ -168,23 +192,23 @@ export default function Profile() {
               color={colors.brand}
             />
             <Text style={styles.policyText}>
-              你的对话内容仅用于为你提供个性化建议，我们不会出售给第三方，也不用于训练公共模型。
+              {t("你的对话内容仅用于为你提供个性化建议，我们不会出售给第三方，也不用于训练公共模型。")}
             </Text>
           </View>
           <Toggle
-            label="允许使用我的对话历史改善建议质量"
+            label={t("允许使用我的对话历史改善建议质量")}
             value={privacy.allow_history_training}
             onChange={(v) => updatePrivacy({ allow_history_training: v })}
             testID="privacy-toggle-history"
           />
           <Toggle
-            label="接收每日推送提醒"
+            label={t("接收每日推送提醒")}
             value={privacy.daily_push}
             onChange={(v) => updatePrivacy({ daily_push: v })}
             testID="privacy-toggle-push"
           />
           <Toggle
-            label="允许匿名分享我的经验到社群"
+            label={t("允许匿名分享我的经验到社群")}
             value={privacy.anonymous_community_share}
             onChange={(v) =>
               updatePrivacy({ anonymous_community_share: v })
@@ -197,44 +221,49 @@ export default function Profile() {
             testID="privacy-wipe-btn"
           >
             <Ionicons name="trash-outline" size={16} color={colors.error} />
-            <Text style={styles.dangerText}>删除我的所有数据</Text>
+            <Text style={styles.dangerText}>{t("删除我的所有数据")}</Text>
           </Pressable>
         </Section>
 
-        <Section title="账户">
+        <Section title={t("账户")}>
           <View style={styles.langRow}>
-            <Text style={styles.langLabel}>语言偏好</Text>
+            <Text style={styles.langLabel}>{t("语言偏好")}</Text>
             <View style={styles.languageOptions}>
-              {LANGUAGES.map((language) => {
-                const active = (privacy.language === "zh" ? "zh-CN" : privacy.language) === language.value;
+              {LOCALES.map((value) => {
+                // Compared against the live locale, not `privacy.language`: the
+                // rendered language is what the parent is actually looking at.
+                const active = locale === value;
                 return (
                   <Pressable
-                    key={language.value}
-                    onPress={() => updatePrivacy({ language: language.value })}
+                    key={value}
+                    onPress={() => updatePrivacy({ language: value })}
                     style={[styles.languageOption, active && styles.languageOptionActive]}
-                    testID={`profile-language-${language.value}`}
+                    testID={`profile-language-${value}`}
                   >
-                    <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>{language.label}</Text>
+                    <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>
+                      {LOCALE_LABELS[value]}
+                    </Text>
                   </Pressable>
                 );
               })}
             </View>
           </View>
           <Pressable style={styles.logoutRow} testID="profile-logout-btn" onPress={logout}>
-            <Text style={styles.logoutText}>登出</Text>
+            <Text style={styles.logoutText}>{t("登出")}</Text>
           </Pressable>
         </Section>
         </ScrollView>
 
         <ConfirmDialog
           visible={confirmWipe}
-          title="确认删除所有数据？"
-          message="包括孩子档案、对话记录、任务和反思。此操作不可恢复。"
-          confirmText="确认删除"
+          title={t("确认删除所有数据？")}
+          message={t("包括孩子档案、对话记录、任务和反思。此操作不可恢复。")}
+          confirmText={t("确认删除")}
           danger
           onConfirm={wipeAll}
           onCancel={() => setConfirmWipe(false)}
         />
+        <Toast message={toastMsg} />
       </View>
     </SafeAreaView>
   );

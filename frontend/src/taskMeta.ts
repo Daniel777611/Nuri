@@ -60,11 +60,20 @@ export const RATINGS = [
 ];
 
 // "2026-07-10" / ISO datetime → "7月8号" 样式或 "07 / 06" 样式
-export function formatCNDate(s?: string | null): string {
+// The Chinese strings here (and in TASK_TYPES / ENCOURAGEMENTS / RATINGS above)
+// double as translation keys — call sites pass them through t() from
+// @/src/i18n. Keeping them as plain module constants avoids turning every
+// consumer into a hook call.
+export function formatCNDate(s?: string | null, locale = "zh-CN"): string {
   if (!s) return "—";
   const d = new Date(s.length <= 10 ? s + "T00:00:00" : s);
   if (isNaN(d.getTime())) return "—";
-  return `${d.getMonth() + 1}月${d.getDate()}号`;
+  if (locale === "en") {
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return locale === "zh-TW"
+    ? `${d.getMonth() + 1}月${d.getDate()}號`
+    : `${d.getMonth() + 1}月${d.getDate()}号`;
 }
 
 export function formatSlashDate(s?: string | null): string {

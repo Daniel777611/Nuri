@@ -21,12 +21,14 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { isPreviewMode } from "@/src/preview-api";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 
 export default function Register() {
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const [email, setEmail] = useState(isPreviewMode ? "preview@nuri.app" : "");
@@ -50,7 +52,7 @@ export default function Register() {
       router.replace("/onboarding");
     } catch (e: any) {
       const msg = String(e?.message || "");
-      setError(msg.includes("已注册") ? "该邮箱已注册，请直接登录" : "注册失败，请检查信息后重试");
+      setError(msg.includes("已注册") ? t("该邮箱已注册，请直接登录") : t("注册失败，请检查信息后重试"));
     } finally {
       setSubmitting(false);
     }
@@ -75,7 +77,7 @@ export default function Register() {
               style={({ pressed }) => [styles.loginLink, pressed && styles.pressed]}
               testID="register-go-login"
             >
-              <Text style={styles.loginText}>已有账号，登陆</Text>
+              <Text style={styles.loginText}>{t("已有账号，登陆")}</Text>
               <Ionicons name="arrow-forward" size={14} color="#3A2F5A" />
             </Pressable>
           </View>
@@ -86,14 +88,16 @@ export default function Register() {
             showsVerticalScrollIndicator={false}
           >
             <Image source={wordmark} style={styles.wordmark} resizeMode="contain" />
-            <Text style={styles.welcome}>欢迎来到NURI: <Text style={styles.village}>Village</Text>大家庭</Text>
-            <Text style={styles.tagline}>让我们一起探索孩子的未来。</Text>
+            <Text style={styles.welcome}>
+              {t("欢迎来到NURI: ")}<Text style={styles.village}>Village</Text>{t("大家庭")}
+            </Text>
+            <Text style={styles.tagline}>{t("让我们一起探索孩子的未来。")}</Text>
 
             <View style={styles.form} testID="register-step-account">
-              <Text style={styles.title}>创建账号</Text>
-              <Text style={styles.description}>邮箱+密码，保护你的家人和隐私数据。注册后还需要一分钟完善基本信息。</Text>
+              <Text style={styles.title}>{t("创建账号")}</Text>
+              <Text style={styles.description}>{t("邮箱+密码，保护你的家人和隐私数据。注册后还需要一分钟完善基本信息。")}</Text>
 
-              <Field label="邮箱">
+              <Field label={t("邮箱")}>
                 <TextInput
                   value={email}
                   onChangeText={setEmail}
@@ -106,7 +110,7 @@ export default function Register() {
                   testID="register-email"
                 />
               </Field>
-              <Field label="密码（至少6位）">
+              <Field label={t("密码（至少6位）")}>
                 <TextInput
                   value={password}
                   onChangeText={setPassword}
@@ -137,7 +141,7 @@ export default function Register() {
                   ]}
                   testID="register-next-btn"
                 >
-                  <Text style={styles.ctaText}>{submitting ? "创建中..." : "下一步"}</Text>
+                  <Text style={styles.ctaText}>{submitting ? t("创建中...") : t("下一步")}</Text>
                   <Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
                 </Pressable>
               </View>

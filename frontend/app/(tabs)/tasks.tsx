@@ -15,6 +15,7 @@ import { BlurView } from "expo-blur";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import {
   TaskItem,
   TASK_TYPES,
@@ -32,6 +33,7 @@ const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.
 
 export default function Tasks() {
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -71,12 +73,12 @@ export default function Tasks() {
   );
 
   const applyUpdate = (updated: TaskItem) =>
-    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+    setTasks((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
 
   // ---- 打卡流程：立刻打卡 → API → bottom sheet 感想 → 归档动效 ----
-  const checkin = async (t: TaskItem) => {
-    if (t.completed_at) return;
-    const updated = await api.updateTask(t.id, { done: true });
+  const checkin = async (task: TaskItem) => {
+    if (task.completed_at) return;
+    const updated = await api.updateTask(task.id, { done: true });
     setSheetFor(toTaskItem(updated)); // 卡片状态在 sheet 关闭后才更新，避免打卡瞬间跳区
   };
 
@@ -86,7 +88,7 @@ export default function Tasks() {
     if (!updated) return;
     if (rating) {
       api.updateTask(updated.id, { mood: rating });
-      showToast("已记录你的感受 ✓");
+      showToast(t("已记录你的感受 ✓"));
     }
     if (updated.completed_at) {
       // 淡出 + 轻微下移动效后归入「已完成」
@@ -100,17 +102,17 @@ export default function Tasks() {
     }
   };
 
-  const backfill = async (t: TaskItem) => {
-    const updated = await api.updateTask(t.id, { done: true, backfilled: true });
+  const backfill = async (task: TaskItem) => {
+    const updated = await api.updateTask(task.id, { done: true, backfilled: true });
     applyUpdate(toTaskItem(updated));
-    showToast("已补全打卡");
+    showToast(t("已补全打卡"));
   };
 
   const onConfirm = async () => {
     if (!confirm) return;
     if (confirm.kind === "delete") {
       await api.deleteTask(confirm.task.id);
-      setTasks((prev) => prev.filter((t) => t.id !== confirm.task.id));
+      setTasks((prev) => prev.filter((item) => item.id !== confirm.task.id));
     } else {
       await api.clearCompletedTasks();
       await load();
@@ -122,19 +124,20 @@ export default function Tasks() {
     setFilters((p) => (p.includes(key) ? p.filter((x) => x !== key) : [...p, key]));
 
   // ---- 列表数据 ----
-  const matchesFilter = (t: TaskItem) =>
-    filters.length === 0 || filters.includes(t.task_type);
+  const matchesFilter = (item: TaskItem) =>
+    filters.length === 0 || filters.includes(item.task_type);
 
   // 归档清理规则：完成超过阈值且未收藏 → 不显示；已收藏 → 始终保留
   const cleanupThresholdMs = debugFastCleanup ? 30 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
-  const pending = tasks.filter((t) => !t.completed_at && matchesFilter(t));
+  const pending = tasks.filter((item) => !item.completed_at && matchesFilter(item));
   const completed = tasks.filter(
-    (t) =>
-      t.completed_at &&
-      matchesFilter(t) &&
-      (t.is_favorited || Date.now() - Date.parse(t.completed_at) <= cleanupThresholdMs)
+    (item) =>
+      item.completed_at &&
+      matchesFilter(item) &&
+      (item.is_favorited ||
+        Date.now() - Date.parse(item.completed_at) <= cleanupThresholdMs)
   );
-  const pendingTotal = tasks.filter((t) => !t.completed_at).length;
+  const pendingTotal = tasks.filter((item) => !item.completed_at).length;
 
   const renderCompletedSection = () => (
     <View>
@@ -145,7 +148,7 @@ export default function Tasks() {
             style={styles.doneHeader}
             testID="tasks-completed-toggle"
           >
-            <Text style={styles.doneHeaderText}>已完成（{completed.length}）</Text>
+            <Text style={styles.doneHeaderText}>{t("已完成（{count}）", { count: completed.length })}</Text>
             <Ionicons
               name={completedOpen ? "chevron-up" : "chevron-down"}
               size={18}
@@ -153,12 +156,12 @@ export default function Tasks() {
             />
           </Pressable>
           {completedOpen
-            ? completed.map((t) => (
+            ? completed.map((item) => (
                 <TaskCard
-                  key={t.id}
-                  task={t}
+                  key={item.id}
+                  task={item}
                   completedMode
-                  onPressBody={() => router.push(`/task/${t.id}` as any)}
+                  onPressBody={() => router.push(`/task/${item.id}` as any)}
                 />
               ))
             : null}
@@ -167,7 +170,7 @@ export default function Tasks() {
             style={styles.clearBtn}
             testID="tasks-clear-completed"
           >
-            <Text style={styles.clearText}>清空已完成任务</Text>
+            <Text style={styles.clearText}>{t("清空已完成任务")}</Text>
           </Pressable>
         </>
       ) : null}
@@ -197,12 +200,12 @@ export default function Tasks() {
           onLongPress={() => {
             const next = !debugFastCleanup;
             setDebugFastCleanup(next);
-            showToast(next ? "演示模式：30分钟自动清理已完成" : "已恢复：7天自动清理");
+            showToast(next ? t("演示模式：30分钟自动清理已完成") : t("已恢复：7天自动清理"));
           }}
           delayLongPress={600}
           testID="tasks-title"
         >
-          <Text style={styles.h1}>我的任务</Text>
+          <Text style={styles.h1}>{t("我的任务")}</Text>
         </Pressable>
       </View>
 
@@ -221,7 +224,7 @@ export default function Tasks() {
             <Text
               style={[styles.filterText, filters.length === 0 && styles.filterTextActive]}
             >
-              全部
+              {t("全部")}
             </Text>
           </Pressable>
           {FILTER_TYPES.map((k) => {
@@ -234,7 +237,7 @@ export default function Tasks() {
                 testID={`tasks-filter-${k}`}
               >
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>
-                  {TASK_TYPES[k].label}
+                  {t(TASK_TYPES[k].label)}
                 </Text>
               </Pressable>
             );
@@ -246,9 +249,9 @@ export default function Tasks() {
       <View style={styles.dateRow}>
         <Text style={styles.dateBig}>{formatSlashDate(today)}</Text>
         <View>
-          <Text style={styles.dateSmall}>今日</Text>
+          <Text style={styles.dateSmall}>{t("今日")}</Text>
           <Text style={styles.dateSmall} testID="tasks-pending-count">
-            您有{pendingTotal}项任务待办
+            {t("您有{count}项任务待办", { count: pendingTotal })}
           </Text>
         </View>
       </View>
@@ -265,8 +268,8 @@ export default function Tasks() {
                 style={{ width: 36, height: 36 }}
                 resizeMode="contain"
               />
-              <Text style={styles.emptyTitle}>没有待办任务</Text>
-              <Text style={styles.emptySub}>先去和AI聊一聊，TA会帮你生成清单</Text>
+              <Text style={styles.emptyTitle}>{t("没有待办任务")}</Text>
+              <Text style={styles.emptySub}>{t("先去和AI聊一聊，TA会帮你生成清单")}</Text>
             </View>
           ) : null
         }
@@ -292,11 +295,11 @@ export default function Tasks() {
 
       <ConfirmDialog
         visible={!!confirm}
-        title={confirm?.kind === "delete" ? "删除这个任务？" : "清空已完成任务？"}
+        title={confirm?.kind === "delete" ? t("删除这个任务？") : t("清空已完成任务？")}
         message={
-          confirm?.kind === "delete" ? "删除后无法恢复" : "已收藏的任务不会被清除"
+          confirm?.kind === "delete" ? t("删除后无法恢复") : t("已收藏的任务不会被清除")
         }
-        confirmText={confirm?.kind === "delete" ? "删除" : "清空"}
+        confirmText={confirm?.kind === "delete" ? t("删除") : t("清空")}
         danger
         onConfirm={onConfirm}
         onCancel={() => setConfirm(null)}

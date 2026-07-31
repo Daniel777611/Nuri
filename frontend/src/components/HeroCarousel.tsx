@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
+import { useT } from "@/src/i18n";
+
 export type HeroCard = {
   id: string;
   source: string;
@@ -50,6 +52,7 @@ export default function HeroCarousel({
   width: number;
   onCardPress: (card: HeroCard) => void;
 }) {
+  const { t } = useT();
   const [page, setPage] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const pageWidth = width + 12;
@@ -107,9 +110,9 @@ export default function HeroCarousel({
             <View style={styles.decoCloudOne} />
             <View style={styles.decoCloudTwo} />
             <View style={styles.decoCloudThree} />
-            <Text style={styles.heroTitle}>{c.title}</Text>
+            <Text style={styles.heroTitle}>{t(c.title)}</Text>
             <Text style={styles.heroSub}>
-              {c.source}，{c.sub}
+              {t(c.source)}，{t(c.sub)}
             </Text>
             <View style={{ flex: 1 }} />
             <Pressable
@@ -117,7 +120,7 @@ export default function HeroCarousel({
               style={styles.heroBtn}
               testID={`home-hero-cta-${c.id}`}
             >
-              <Text style={styles.heroBtnText}>浏览详情</Text>
+              <Text style={styles.heroBtnText}>{t("浏览详情")}</Text>
             </Pressable>
           </LinearGradient>
         ))}

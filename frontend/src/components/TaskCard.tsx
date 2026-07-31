@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, Pressable, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
+import { useT } from "@/src/i18n";
+
 import {
   TaskItem,
   taskColors as c,
@@ -33,6 +35,7 @@ export default function TaskCard({
   onBackfill?: () => void;
   onDelete?: () => void;
 }) {
+  const { t, locale } = useT();
   const meta = taskTypeMeta(task.task_type);
   const overdue = isOverdue(task);
   const ratio = progressRatio(task);
@@ -58,7 +61,7 @@ export default function TaskCard({
       <Pressable onPress={onPressBody} testID={`task-card-${task.id}`}>
         <View style={styles.doneCard}>
           <Text style={styles.doneTitle} numberOfLines={1}>
-            {meta.prefix}：{task.title}
+            {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
           </Text>
         </View>
       </Pressable>
@@ -77,12 +80,12 @@ export default function TaskCard({
       <Pressable onPress={onPressBody} style={styles.cardBody} testID={`task-body-${task.id}`}>
         {/* 任务名（类型前缀+标题） */}
         <Text style={styles.title} numberOfLines={2}>
-          {meta.prefix}：{task.title}
+          {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
         </Text>
 
         {/* 频率小字 */}
         {task.is_recurring && task.frequency_label ? (
-          <Text style={styles.freq}>{task.frequency_label}</Text>
+          <Text style={styles.freq}>{t(task.frequency_label)}</Text>
         ) : null}
 
         {/* 进度条 */}
@@ -94,10 +97,12 @@ export default function TaskCard({
         <View style={styles.statusRow}>
           {overdue ? (
             <Text style={styles.overdueText} testID={`task-overdue-${task.id}`}>
-              已过期
+              {t("已过期")}
             </Text>
           ) : task.due_date ? (
-            <Text style={styles.dueText}>截止：{formatCNDate(task.due_date)}</Text>
+            <Text style={styles.dueText}>
+              {t("截止：{date}", { date: formatCNDate(task.due_date, locale) })}
+            </Text>
           ) : null}
         </View>
       </Pressable>
@@ -124,7 +129,7 @@ export default function TaskCard({
             style={styles.backfillBtn}
             testID={`task-backfill-${task.id}`}
           >
-            <Text style={styles.backfillText}>补全打卡</Text>
+            <Text style={styles.backfillText}>{t("补全打卡")}</Text>
           </Pressable>
         ) : (
           <Pressable
@@ -132,7 +137,7 @@ export default function TaskCard({
             style={styles.checkinBtn}
             testID={`task-check-${task.id}`}
           >
-            <Text style={styles.checkinText}>立刻打卡</Text>
+            <Text style={styles.checkinText}>{t("立刻打卡")}</Text>
           </Pressable>
         )}
       </View>

@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
 
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 /** 通用二次确认弹窗（跨平台，替代 RN Alert 以兼容 web 预览）。 */
@@ -7,8 +8,8 @@ export default function ConfirmDialog({
   visible,
   title,
   message,
-  confirmText = "确认",
-  cancelText = "取消",
+  confirmText,
+  cancelText,
   danger = false,
   onConfirm,
   onCancel,
@@ -22,6 +23,7 @@ export default function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
   if (!visible) return null;
   return (
     <View style={styles.root}>
@@ -31,14 +33,14 @@ export default function ConfirmDialog({
         {message ? <Text style={styles.message}>{message}</Text> : null}
         <View style={styles.row}>
           <Pressable onPress={onCancel} style={styles.btn} testID="confirm-cancel">
-            <Text style={styles.cancelText}>{cancelText}</Text>
+            <Text style={styles.cancelText}>{cancelText ?? t("取消")}</Text>
           </Pressable>
           <Pressable
             onPress={onConfirm}
             style={[styles.btn, styles.confirmBtn, danger && { backgroundColor: "#FF3B30" }]}
             testID="confirm-ok"
           >
-            <Text style={styles.confirmText}>{confirmText}</Text>
+            <Text style={styles.confirmText}>{confirmText ?? t("确认")}</Text>
           </Pressable>
         </View>
       </View>

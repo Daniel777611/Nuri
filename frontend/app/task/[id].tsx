@@ -7,6 +7,7 @@ import { BlurView } from "expo-blur";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { TaskItem, taskColors as c, taskTypeMeta, formatSlashDate, progressRatio, toTaskItem } from "@/src/taskMeta";
 import CheckinSheet from "@/src/components/CheckinSheet";
 import Toast from "@/src/components/Toast";
@@ -16,6 +17,7 @@ const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.
 export default function TaskDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { t } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const [task, setTask] = useState<TaskItem | null>(null);
@@ -29,7 +31,7 @@ export default function TaskDetail() {
     }).catch(() => {});
   }, [id]));
 
-  if (!task) return <SafeAreaView style={styles.safe}><View style={styles.loading}><Text style={styles.muted}>加载中...</Text></View></SafeAreaView>;
+  if (!task) return <SafeAreaView style={styles.safe}><View style={styles.loading}><Text style={styles.muted}>{t("加载中...")}</Text></View></SafeAreaView>;
 
   const meta = taskTypeMeta(task.task_type);
   const ratio = progressRatio(task);
@@ -42,7 +44,7 @@ export default function TaskDetail() {
   };
   const onSheetDone = (rating: string | null) => {
     setSheetOpen(false);
-    if (rating) { api.updateTask(task.id, { mood: rating }); setToastMsg("已记录你的感受 ✓"); setTimeout(() => setToastMsg(null), 2000); }
+    if (rating) { api.updateTask(task.id, { mood: rating }); setToastMsg(t("已记录你的感受 ✓")); setTimeout(() => setToastMsg(null), 2000); }
     if (task.completed_at) setTimeout(() => router.back(), rating ? 900 : 400);
   };
 
@@ -54,31 +56,31 @@ export default function TaskDetail() {
         <View pointerEvents="none" style={styles.haloRed} />
         <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
         <View style={styles.topBar}>
-          <Pressable onPress={() => router.replace("/tasks")} style={styles.backRow} testID="task-detail-back"><Ionicons name="chevron-back" size={26} color="#3A2F5A" /><Text style={styles.topTitle}>任务卡</Text></Pressable>
+          <Pressable onPress={() => router.replace("/tasks")} style={styles.backRow} testID="task-detail-back"><Ionicons name="chevron-back" size={26} color="#3A2F5A" /><Text style={styles.topTitle}>{t("任务卡")}</Text></Pressable>
         </View>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.card}>
             <View style={styles.titleRow}>
               <Text style={styles.title} numberOfLines={2}>{task.title}</Text>
-              <View style={styles.typePill}><Text style={styles.typeText}>{meta.label}</Text></View>
+              <View style={styles.typePill}><Text style={styles.typeText}>{t(meta.label)}</Text></View>
             </View>
             <View style={styles.infoRow}>
-              <Info label="开始日期" value={formatSlashDate(task.created_at)} />
+              <Info label={t("开始日期")} value={formatSlashDate(task.created_at)} />
               <View style={styles.divider} />
-              <Info label="结束日期" value={formatSlashDate(task.due_date)} />
+              <Info label={t("结束日期")} value={formatSlashDate(task.due_date)} />
               <View style={styles.divider} />
-              <Info label="任务频率" value={task.is_recurring ? task.frequency_label || "重复性" : "一次性"} compact />
+              <Info label={t("任务频率")} value={task.is_recurring ? t(task.frequency_label || "重复性") : t("一次性")} compact />
             </View>
-            <Text style={styles.sectionTitle}>当前进度</Text>
+            <Text style={styles.sectionTitle}>{t("当前进度")}</Text>
             <View style={styles.progressTrack}><LinearGradient colors={["#422D7E", "#7751E4"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.progressFill, { width: `${ratio * 100}%` }]} /></View>
             <Text style={styles.progressNumber}>{completed && !task.is_recurring ? "1/1" : `${task.completed_count}/${task.total_count}`}</Text>
-            {task.description ? <><Text style={styles.sectionTitle}>任务介绍</Text><Text style={styles.description}>{task.description}</Text></> : null}
-            {task.steps?.length ? <><Text style={styles.sectionTitle}>指引</Text><View style={styles.steps}>{task.steps.map((step, index) => <Text key={step} style={styles.stepText}>{index + 1}. {step}</Text>)}</View></> : null}
-            <Pressable onPress={() => { setToastMsg("图片已保存到相册"); setTimeout(() => setToastMsg(null), 2000); }} style={styles.download} testID="task-detail-export"><Ionicons name="download-outline" size={28} color="#3A2F5A" /></Pressable>
+            {task.description ? <><Text style={styles.sectionTitle}>{t("任务介绍")}</Text><Text style={styles.description}>{task.description}</Text></> : null}
+            {task.steps?.length ? <><Text style={styles.sectionTitle}>{t("指引")}</Text><View style={styles.steps}>{task.steps.map((step, index) => <Text key={step} style={styles.stepText}>{index + 1}. {step}</Text>)}</View></> : null}
+            <Pressable onPress={() => { setToastMsg(t("图片已保存到相册")); setTimeout(() => setToastMsg(null), 2000); }} style={styles.download} testID="task-detail-export"><Ionicons name="download-outline" size={28} color="#3A2F5A" /></Pressable>
           </View>
         </ScrollView>
         <View style={styles.footer}>
-          <Pressable onPress={checkin} disabled={completed} style={[styles.checkinBtn, completed && styles.checkinDone]} testID="task-detail-checkin"><Ionicons name="checkmark-circle-outline" size={25} color="#3A2F5A" /><Text style={styles.checkinText}>{completed ? "已完成" : "打卡完成"}</Text></Pressable>
+          <Pressable onPress={checkin} disabled={completed} style={[styles.checkinBtn, completed && styles.checkinDone]} testID="task-detail-checkin"><Ionicons name="checkmark-circle-outline" size={25} color="#3A2F5A" /><Text style={styles.checkinText}>{completed ? t("已完成") : t("打卡完成")}</Text></Pressable>
         </View>
         <CheckinSheet visible={sheetOpen} taskType={task.task_type} onDone={onSheetDone} />
       </View>

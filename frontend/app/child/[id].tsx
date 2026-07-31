@@ -14,6 +14,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
@@ -24,6 +25,7 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 
 export default function ChildEdit() {
   const router = useRouter();
+  const { t } = useT();
   const { id } = useLocalSearchParams<{ id: string }>();
   const isNew = id === "new";
 
@@ -90,10 +92,10 @@ export default function ChildEdit() {
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.title}>
-          {isNew ? "添加孩子" : "编辑信息"}
+          {isNew ? t("添加孩子") : t("编辑信息")}
         </Text>
         <Pressable onPress={save} style={styles.save} testID="child-save-btn">
-          <Text style={styles.saveText}>保存</Text>
+          <Text style={styles.saveText}>{t("保存")}</Text>
         </Pressable>
       </View>
       <KeyboardAvoidingView
@@ -101,17 +103,17 @@ export default function ChildEdit() {
         style={{ flex: 1 }}
       >
         <ScrollView contentContainerStyle={styles.scroll}>
-          <Field label="昵称">
+          <Field label={t("昵称")}>
             <TextInput
               value={nickname}
               onChangeText={setNickname}
               style={styles.input}
-              placeholder="例如：小满"
+              placeholder={t("例如：小满")}
               placeholderTextColor={colors.muted}
               testID="child-nickname"
             />
           </Field>
-          <Field label="月龄">
+          <Field label={t("月龄")}>
             <TextInput
               value={months}
               onChangeText={setMonths}
@@ -121,7 +123,7 @@ export default function ChildEdit() {
               testID="child-months"
             />
           </Field>
-          <Field label="性别">
+          <Field label={t("性别")}>
             <View style={styles.row}>
               {GENDERS.map((g) => (
                 <Pressable
@@ -138,23 +140,23 @@ export default function ChildEdit() {
                       gender === g.key && styles.chipTextActive,
                     ]}
                   >
-                    {g.label}
+                    {t(g.label)}
                   </Text>
                 </Pressable>
               ))}
             </View>
           </Field>
-          <Field label="过敏史">
+          <Field label={t("过敏史")}>
             <TextInput
               value={allergies}
               onChangeText={setAllergies}
               style={styles.input}
-              placeholder="逗号分隔"
+              placeholder={t("逗号分隔")}
               placeholderTextColor={colors.muted}
               testID="child-allergies"
             />
           </Field>
-          <Field label="特殊注意事项">
+          <Field label={t("特殊注意事项")}>
             <TextInput
               value={notes}
               onChangeText={setNotes}
@@ -171,7 +173,7 @@ export default function ChildEdit() {
               testID="child-delete-btn"
             >
               <Ionicons name="trash-outline" size={16} color={colors.error} />
-              <Text style={styles.deleteText}>删除此孩子</Text>
+              <Text style={styles.deleteText}>{t("删除此孩子")}</Text>
             </Pressable>
           )}
         </ScrollView>
