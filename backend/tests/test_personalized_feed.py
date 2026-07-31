@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -15,6 +16,7 @@ from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     LEARNING_CONTENT_CARDS,
     SUPPORTED_RESOURCE_LOCALES,
+    TRUSTED_RESOURCE_HOSTS,
     is_trusted_resource_url,
     order_learning_resources,
 )
@@ -379,6 +381,32 @@ def test_learning_resources_include_trusted_https_article_and_video(card):
     )
     assert all(str(resource.get("url") or "").startswith("https://") for resource in resources)
     assert all(is_trusted_resource_url(resource["url"]) for resource in resources)
+
+
+@pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
+def test_simplified_resources_use_reviewed_non_mainland_source(card):
+    resources = [
+        resource
+        for resource in card.get("resources", [])
+        if "zh-CN" in resource.get("locales", [])
+    ]
+
+    assert len(resources) == 2
+    assert {resource["kind"] for resource in resources} == {"article", "video"}
+    assert all(urlparse(resource["url"]).hostname == "www.fhs.gov.hk" for resource in resources)
+    assert all(urlparse(resource["url"]).path.startswith("/sc_chi/") for resource in resources)
+    assert all("香港特别行政区政府" in resource["publisher"] for resource in resources)
+
+
+def test_mainland_resource_hosts_are_not_trusted():
+    mainland_hosts = {
+        "nhc.gov.cn",
+        "www.nhc.gov.cn",
+        "unicef.cn",
+        "www.unicef.cn",
+    }
+
+    assert mainland_hosts.isdisjoint(TRUSTED_RESOURCE_HOSTS)
 
 
 def test_learning_resource_ids_are_unique():
