@@ -117,14 +117,52 @@ const previewLocalizedResources: Record<string, any[]> = {
     { id: "connection-zh-tw-video", kind: "video", title: "親子溝通（四至六個月）", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範觀察、回應和來回互動。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000025.html" },
   ],
 };
+const previewAuthorityMetadata = {
+  source_tier: "authority",
+  selection_basis: "official",
+  trust_note: "政府、大学、医院、专业医学组织或其官方频道发布。",
+  recognition: "权威机构原始发布",
+  selection_reason: "作为事实、发展里程碑和安全建议的基础来源。",
+};
+const previewCuratedMetadata = {
+  publisher: "Raising Children Network（澳大利亚）",
+  source_tier: "curated",
+  selection_basis: "expert_reviewed",
+  trust_note: "澳大利亚政府支持；网站内容由科学顾问委员会指导，并经至少两名独立专家及专业编辑团队审核。",
+  recognition: "专家审核 · 家庭实操导向",
+  locales: ["en"],
+};
+const previewCuratedResources: Record<string, any[]> = {
+  learn_sleep_routine: [
+    { ...previewCuratedMetadata, id: "sleep-rcn-article", kind: "article", title: "Toddler sleep: what to expect", language: "英文文章", description: "从睡眠时长、白天小睡到固定睡前流程，给出可直接执行的家庭建议。", selection_basis: "expert_and_audience", selection_reason: "结构清楚、步骤具体，适合把作息建议落实为家庭流程。", audience_note: "7.4k 位读者标记有帮助", url: "https://raisingchildren.net.au/toddlers/sleep/understanding-sleep/toddler-sleep" },
+    { ...previewCuratedMetadata, id: "sleep-rcn-video", kind: "video", title: "Baby sleep and settling tips", language: "英文视频 · 英文文字稿", description: "由多位家长分享夜醒、安抚和建立适合自己家庭睡眠节奏的经验。", selection_reason: "真实家庭经验配合专业内容审核，适合快速理解不同做法的取舍。", url: "https://raisingchildren.net.au/babies/videos/baby-sleep" },
+  ],
+  learn_big_feelings: [
+    { ...previewCuratedMetadata, id: "emotion-rcn-article", kind: "article", title: "Toddler emotions: learning and play ideas", language: "英文文章", description: "解释幼儿挫败、愤怒等情绪的发展，并提供游戏与陪伴方法。", selection_reason: "把发展原理转成日常可用的互动建议，适合与权威指南交叉阅读。", url: "https://raisingchildren.net.au/toddlers/play-learning/play-toddler-development/emotions-play-toddlers" },
+    { ...previewCuratedMetadata, id: "emotion-rcn-video", kind: "video", title: "Helping toddlers learn about feelings", language: "英文视频 · 英文文字稿", description: "用真实情境示范靠近、协助、安抚和为情绪命名。", selection_reason: "三分钟左右即可看完，步骤清晰并有完整文字稿。", url: "https://raisingchildren.net.au/toddlers/videos/supporting-toddler-feelings" },
+  ],
+  learn_picky_eating: [
+    { ...previewCuratedMetadata, id: "food-rcn-article", kind: "article", title: "Fussy eating in children: what to do", language: "英文文章", description: "从用餐环境、食物自主和重复接触三个方向提供挑食应对建议。", selection_reason: "避免强迫进食，方法具体，并明确何时应咨询医生或营养师。", url: "https://raisingchildren.net.au/toddlers/nutrition-fitness/common-concerns/fussy-eating" },
+    { ...previewCuratedMetadata, id: "food-rcn-video", kind: "video", title: "Is your child eating enough? How to tell", language: "英文视频 · 英文文字稿", description: "家长分享如何观察一段时间内的整体摄入，而不是纠结单独一餐。", selection_reason: "真实家长经验容易理解，并由专业平台审核内容。", url: "https://raisingchildren.net.au/toddlers/videos/eating-enough" },
+  ],
+  learn_serve_and_return: [
+    { ...previewCuratedMetadata, id: "connection-rcn-article", kind: "article", title: "Baby cues: how to know what babies want", language: "英文文章", description: "通过目光、转头、哭声和疲倦信号帮助照顾者理解宝宝的回应。", selection_reason: "图解式表达直观，能把来回互动落实到观察宝宝信号。", url: "https://raisingchildren.net.au/newborns/connecting-communicating/communicating/baby-toddler-cues" },
+    { ...previewCuratedMetadata, id: "connection-rcn-video", kind: "video", title: "Bonding and talking with babies: 0-6 months", language: "英文视频 · 英文文字稿", description: "示范眼神、拥抱、唱歌、阅读和回应声音如何形成来回互动。", selection_reason: "真实互动场景丰富，家长无需额外工具即可练习。", url: "https://raisingchildren.net.au/babies/videos/connecting-communicating-0-6-months" },
+  ],
+};
 for (const learningCard of learningCards) {
   const englishResources = (learningCard.resources || []).map((resource: any) => ({
+    ...previewAuthorityMetadata,
     ...resource,
     locales: resource.language?.includes("西班牙") ? ["en", "es"] : ["en"],
   }));
   learningCard.resources = [
-    ...(previewLocalizedResources[learningCard.id] || []),
+    ...(previewLocalizedResources[learningCard.id] || []).map((resource) => ({
+      ...previewAuthorityMetadata,
+      ...resource,
+    })),
     ...englishResources,
+    ...(previewCuratedResources[learningCard.id] || []),
   ];
 }
 function orderPreviewResources(resources: any[], language: string) {
@@ -146,7 +184,10 @@ function orderPreviewResources(resources: any[], language: string) {
         return rank < 0 ? localeOrder.length : rank;
       }));
       if (leftRank !== rightRank) return leftRank - rightRank;
-      if (left.resource.kind !== right.resource.kind) return left.resource.kind === "article" ? -1 : 1;
+      const groupOrder = ["authority:article", "curated:article", "authority:video", "curated:video"];
+      const leftGroup = groupOrder.indexOf(`${left.resource.source_tier || "authority"}:${left.resource.kind}`);
+      const rightGroup = groupOrder.indexOf(`${right.resource.source_tier || "authority"}:${right.resource.kind}`);
+      if (leftGroup !== rightGroup) return leftGroup - rightGroup;
       return left.index - right.index;
     })
     .map(({ resource }) => resource);

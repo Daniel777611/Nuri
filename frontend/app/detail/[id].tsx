@@ -49,8 +49,62 @@ type LearningResource = {
   language?: string;
   locales?: string[];
   description?: string;
+  source_tier?: "authority" | "curated";
+  selection_basis?: "official" | "expert_reviewed" | "audience_popular" | "expert_and_audience";
+  trust_note?: string;
+  recognition?: string;
+  selection_reason?: string;
+  audience_note?: string;
   url: string;
 };
+
+type ResourceSourceTier = NonNullable<LearningResource["source_tier"]>;
+
+const RESOURCE_GROUPS: {
+  key: string;
+  sourceTier: ResourceSourceTier;
+  kind: LearningResource["kind"];
+  eyebrow: string;
+  title: string;
+  description: string;
+}[] = [
+  {
+    key: "authority-article",
+    sourceTier: "authority",
+    kind: "article",
+    eyebrow: "事实与安全底线",
+    title: "权威机构 · 文章",
+    description: "政府、大学、医院、医学组织与专业期刊的原始内容。",
+  },
+  {
+    key: "curated-article",
+    sourceTier: "curated",
+    kind: "article",
+    eyebrow: "专家与读者精选",
+    title: "优质文章",
+    description: "专业团队审核、写得清楚，并适合家庭直接使用。",
+  },
+  {
+    key: "authority-video",
+    sourceTier: "authority",
+    kind: "video",
+    eyebrow: "机构正式讲解",
+    title: "权威机构 · 视频",
+    description: "由权威机构或其专业人员制作和发布。",
+  },
+  {
+    key: "curated-video",
+    sourceTier: "curated",
+    kind: "video",
+    eyebrow: "专家与用户精选",
+    title: "优质视频",
+    description: "专业可信、容易看懂，并具备真实家庭实操价值。",
+  },
+];
+
+function resourceSourceTier(resource: LearningResource): ResourceSourceTier {
+  return resource.source_tier === "curated" ? "curated" : "authority";
+}
 
 function resourceLocales(resource: LearningResource): ResourceLocale[] {
   const explicit = (resource.locales || []).filter((locale): locale is ResourceLocale =>
@@ -180,6 +234,8 @@ export default function Detail() {
         resource_id: resource.id,
         resource_kind: resource.kind,
         resource_locale: resourceLocales(resource)[0],
+        source_tier: resourceSourceTier(resource),
+        selection_basis: resource.selection_basis || "official",
       })
       .catch(() => {});
     try {
@@ -229,6 +285,13 @@ export default function Detail() {
     const visibleResources = selectedResourceLocale
       ? resources.filter((resource) => resourceLocales(resource).includes(selectedResourceLocale))
       : resources;
+    const visibleResourceGroups = RESOURCE_GROUPS.map((group) => ({
+      ...group,
+      resources: visibleResources.filter(
+        (resource) =>
+          resourceSourceTier(resource) === group.sourceTier && resource.kind === group.kind
+      ),
+    })).filter((group) => group.resources.length > 0);
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -282,9 +345,9 @@ export default function Detail() {
 
         {resources.length ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
-            <Text style={styles.sectionTitle}>继续学习</Text>
+            <Text style={styles.sectionTitle}>来源与内容目录</Text>
             <Text style={styles.resourcesIntro}>
-              以下内容来自经过审核的官方机构，可切换语言并在外部网站打开。
+              NURI 先按来源与内容形式分类。点击具体条目后，才会打开外部文章或视频。
             </Text>
             {availableResourceLocales.length > 1 ? (
               <View style={styles.resourceLocaleTabs} testID="detail-resource-locale-tabs">
@@ -315,44 +378,125 @@ export default function Detail() {
                 })}
               </View>
             ) : null}
-            {visibleResources.map((resource) => (
-              <Pressable
-                key={resource.id}
-                onPress={() => openResource(resource)}
-                style={({ pressed }) => [styles.resourceCard, pressed && styles.resourceCardPressed]}
-                accessibilityRole="link"
-                accessibilityLabel={`${resource.language ? `${resource.language}，` : ""}${resource.kind === "video" ? "视频" : "文章"}：${resource.title}`}
-                testID={`detail-resource-${resource.id}`}
+            {visibleResourceGroups.map((group) => (
+              <View
+                key={group.key}
+                style={styles.resourceGroup}
+                testID={`detail-resource-group-${group.key}`}
               >
-                <View
-                  style={[
-                    styles.resourceIcon,
-                    resource.kind === "video" && styles.videoResourceIcon,
-                  ]}
-                >
-                  <Ionicons
-                    name={resource.kind === "video" ? "play" : "document-text-outline"}
-                    size={18}
-                    color={resource.kind === "video" ? "#A34D63" : "#4F4B9C"}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={styles.resourceMetaRow}>
-                    <Text style={styles.resourceKind}>
-                      {resource.kind === "video" ? "视频" : "文章"}
-                    </Text>
-                    {resource.language ? (
-                      <Text style={styles.resourceLanguage}>{resource.language}</Text>
-                    ) : null}
+                <View style={styles.resourceGroupHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.resourceGroupEyebrow}>{group.eyebrow}</Text>
+                    <Text style={styles.resourceGroupTitle}>{group.title}</Text>
+                    <Text style={styles.resourceGroupDescription}>{group.description}</Text>
                   </View>
-                  <Text style={styles.resourceTitle}>{resource.title}</Text>
-                  <Text style={styles.resourcePublisher}>{resource.publisher}</Text>
-                  {resource.description ? (
-                    <Text style={styles.resourceDescription}>{resource.description}</Text>
-                  ) : null}
+                  <View style={styles.resourceGroupCount}>
+                    <Text
+                      style={styles.resourceGroupCountText}
+                      accessibilityLabel={`${group.resources.length} 项内容`}
+                    >
+                      {group.resources.length}
+                    </Text>
+                  </View>
                 </View>
-                <Ionicons name="open-outline" size={18} color={colors.muted} />
-              </Pressable>
+
+                {group.resources.map((resource) => (
+                  <Pressable
+                    key={resource.id}
+                    onPress={() => openResource(resource)}
+                    style={({ pressed }) => [
+                      styles.resourceCard,
+                      pressed && styles.resourceCardPressed,
+                    ]}
+                    accessibilityRole="link"
+                    accessibilityLabel={`${resourceSourceTier(resource) === "authority" ? "权威来源" : "精选内容"}，${resource.language ? `${resource.language}，` : ""}${resource.kind === "video" ? "视频" : "文章"}：${resource.title}，来源：${resource.publisher}`}
+                    accessibilityHint={`将在新标签页打开外部${resource.kind === "video" ? "视频" : "文章"}`}
+                    testID={`detail-resource-${resource.id}`}
+                  >
+                    <View
+                      style={[
+                        styles.resourceIcon,
+                        resource.kind === "video" && styles.videoResourceIcon,
+                      ]}
+                    >
+                      <Ionicons
+                        name={resource.kind === "video" ? "play" : "document-text-outline"}
+                        size={18}
+                        color={resource.kind === "video" ? "#A34D63" : "#4F4B9C"}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.resourceMetaRow}>
+                        <View
+                          style={[
+                            styles.resourceTierBadge,
+                            resourceSourceTier(resource) === "curated" &&
+                              styles.curatedResourceTierBadge,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.resourceTierBadgeText,
+                              resourceSourceTier(resource) === "curated" &&
+                                styles.curatedResourceTierBadgeText,
+                            ]}
+                          >
+                            {resourceSourceTier(resource) === "authority"
+                              ? "权威来源"
+                              : "精选内容"}
+                          </Text>
+                        </View>
+                        {resource.language ? (
+                          <Text style={styles.resourceLanguage}>{resource.language}</Text>
+                        ) : null}
+                      </View>
+                      <Text style={styles.resourceTitle}>{resource.title}</Text>
+                      <Text style={styles.resourcePublisher}>{resource.publisher}</Text>
+                      {resource.description ? (
+                        <Text style={styles.resourceDescription}>{resource.description}</Text>
+                      ) : null}
+                      {resource.recognition ? (
+                        <View style={styles.resourceEvidenceRow}>
+                          <Ionicons
+                            name={
+                              resourceSourceTier(resource) === "authority"
+                                ? "shield-checkmark-outline"
+                                : "people-outline"
+                            }
+                            size={15}
+                            color={
+                              resourceSourceTier(resource) === "authority" ? "#4F4B9C" : "#9A4D63"
+                            }
+                          />
+                          <Text style={styles.resourceEvidenceText}>
+                            {[resource.recognition, resource.audience_note]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {resource.trust_note ? (
+                        <Text style={styles.resourceTrustNote}>
+                          <Text style={styles.resourceTrustNoteLabel}>可信依据：</Text>
+                          {resource.trust_note}
+                        </Text>
+                      ) : null}
+                      {resource.selection_reason ? (
+                        <Text style={styles.resourceSelectionReason}>
+                          <Text style={styles.resourceSelectionReasonLabel}>入选理由：</Text>
+                          {resource.selection_reason}
+                        </Text>
+                      ) : null}
+                      <View style={styles.resourceOpenRow}>
+                        <Text style={styles.resourceOpenText}>
+                          {resource.kind === "video" ? "打开外部视频" : "打开外部文章"}
+                        </Text>
+                        <Ionicons name="open-outline" size={16} color={colors.brand} />
+                      </View>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
             ))}
           </View>
         ) : null}
@@ -606,6 +750,47 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   resourceLocaleTabTextSelected: { color: colors.onBrandTertiary, fontWeight: "700" },
+  resourceGroup: { marginTop: spacing.lg },
+  resourceGroupHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.md,
+    marginBottom: spacing.sm,
+    paddingHorizontal: 2,
+  },
+  resourceGroupEyebrow: {
+    fontSize: 11,
+    lineHeight: 15,
+    color: colors.brand,
+    fontWeight: "700",
+  },
+  resourceGroupTitle: {
+    fontSize: type.base,
+    lineHeight: 21,
+    color: colors.onSurface,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  resourceGroupDescription: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.muted,
+    marginTop: 2,
+  },
+  resourceGroupCount: {
+    minWidth: 28,
+    height: 28,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  resourceGroupCountText: {
+    fontSize: type.sm,
+    color: colors.onBrandTertiary,
+    fontWeight: "700",
+  },
   resourceCard: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -627,8 +812,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   videoResourceIcon: { backgroundColor: "#FCECEF" },
-  resourceMetaRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  resourceKind: { fontSize: type.sm, color: colors.brand, fontWeight: "700" },
+  resourceMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  resourceTierBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    backgroundColor: "#EFEDFA",
+  },
+  curatedResourceTierBadge: { backgroundColor: "#FCECEF" },
+  resourceTierBadgeText: { fontSize: 11, color: "#4F4B9C", fontWeight: "700" },
+  curatedResourceTierBadgeText: { color: "#9A4D63" },
   resourceLanguage: { fontSize: type.sm, color: colors.muted },
   resourceTitle: {
     fontSize: type.base,
@@ -644,6 +842,47 @@ const styles = StyleSheet.create({
     color: colors.onSurfaceSecondary,
     marginTop: spacing.sm,
   },
+  resourceEvidenceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: spacing.sm,
+  },
+  resourceEvidenceText: {
+    flex: 1,
+    fontSize: type.sm,
+    lineHeight: 17,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
+  },
+  resourceTrustNote: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.muted,
+    marginTop: spacing.sm,
+  },
+  resourceTrustNoteLabel: {
+    color: colors.onSurfaceSecondary,
+    fontWeight: "700",
+  },
+  resourceSelectionReason: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.muted,
+    marginTop: spacing.sm,
+  },
+  resourceSelectionReasonLabel: {
+    color: colors.onSurfaceSecondary,
+    fontWeight: "700",
+  },
+  resourceOpenRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 4,
+    marginTop: spacing.md,
+  },
+  resourceOpenText: { fontSize: type.sm, color: colors.brand, fontWeight: "700" },
   tags: {
     flexDirection: "row",
     flexWrap: "wrap",

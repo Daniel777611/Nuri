@@ -1,13 +1,12 @@
 """Curated learning content used by the personalized home feed.
 
-The model is never allowed to invent a resource URL.  Every external link in
-this module was reviewed against an official child-development, public-health,
-or pediatric source.  Conversation text is used only to rank these stable
-content IDs.
+The model is never allowed to invent a resource URL. Every external link in
+this module is reviewed as either an authoritative source or an editorially
+curated, expert-reviewed source. Conversation text is used only to rank these
+stable content IDs.
 """
 
 from urllib.parse import urlparse
-
 
 TRUSTED_RESOURCE_HOSTS = frozenset(
     {
@@ -25,6 +24,8 @@ TRUSTED_RESOURCE_HOSTS = frozenset(
         "youtu.be",
         "fhs.gov.hk",
         "www.fhs.gov.hk",
+        "raisingchildren.net.au",
+        "www.raisingchildren.net.au",
     }
 )
 
@@ -38,10 +39,15 @@ def is_trusted_resource_url(url: str) -> bool:
         parsed = urlparse(url)
     except (TypeError, ValueError):
         return False
-    return parsed.scheme == "https" and (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+    return (
+        parsed.scheme == "https"
+        and (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+    )
 
 
-def order_learning_resources(resources: list[dict], preferred_locale: str) -> list[dict]:
+def order_learning_resources(
+    resources: list[dict], preferred_locale: str
+) -> list[dict]:
     """Return a stable, language-aware copy of reviewed learning resources."""
 
     normalized_locale = "zh-CN" if preferred_locale == "zh" else preferred_locale
@@ -51,7 +57,12 @@ def order_learning_resources(resources: list[dict], preferred_locale: str) -> li
         "en": ("en", "zh-CN", "zh-TW", "es"),
     }.get(normalized_locale, ("zh-CN", "zh-TW", "en", "es"))
     locale_rank = {locale: index for index, locale in enumerate(locale_order)}
-    kind_rank = {"article": 0, "video": 1}
+    group_rank = {
+        ("authority", "article"): 0,
+        ("curated", "article"): 1,
+        ("authority", "video"): 2,
+        ("curated", "video"): 3,
+    }
 
     def sort_key(indexed_resource: tuple[int, dict]) -> tuple[int, int, int]:
         index, resource = indexed_resource
@@ -62,7 +73,13 @@ def order_learning_resources(resources: list[dict], preferred_locale: str) -> li
         )
         return (
             best_locale_rank,
-            kind_rank.get(str(resource.get("kind") or ""), len(kind_rank)),
+            group_rank.get(
+                (
+                    str(resource.get("source_tier") or "authority"),
+                    str(resource.get("kind") or ""),
+                ),
+                len(group_rank),
+            ),
             index,
         )
 
@@ -89,8 +106,23 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#睡眠", "#夜醒", "#睡前仪式"],
         "hook_line": "下面的文章和视频可以帮助你把方法做得更具体。",
         "match_terms": [
-            "睡眠", "睡觉", "睡不着", "不肯睡", "入睡", "哄睡", "夜醒", "醒了", "晚睡", "早醒",
-            "作息", "睡前", "小睡", "nap", "bedtime", "sleep", "wake up",
+            "睡眠",
+            "睡觉",
+            "睡不着",
+            "不肯睡",
+            "入睡",
+            "哄睡",
+            "夜醒",
+            "醒了",
+            "晚睡",
+            "早醒",
+            "作息",
+            "睡前",
+            "小睡",
+            "nap",
+            "bedtime",
+            "sleep",
+            "wake up",
         ],
         "resources": [
             {
@@ -132,8 +164,24 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#情绪", "#共调节", "#亲子沟通"],
         "hook_line": "先理解情绪发生了什么，再选择适合你家的回应。",
         "match_terms": [
-            "情绪", "焦虑", "害怕", "担心", "崩溃", "哭", "爱哭", "生气", "发火", "冷静", "压力",
-            "共情", "安抚", "情绪管理", "emotion", "anxiety", "upset", "calm",
+            "情绪",
+            "焦虑",
+            "害怕",
+            "担心",
+            "崩溃",
+            "哭",
+            "爱哭",
+            "生气",
+            "发火",
+            "冷静",
+            "压力",
+            "共情",
+            "安抚",
+            "情绪管理",
+            "emotion",
+            "anxiety",
+            "upset",
+            "calm",
         ],
         "resources": [
             {
@@ -175,8 +223,23 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#挑食", "#营养", "#餐桌关系"],
         "hook_line": "从可信儿科资源里挑一个最容易执行的改变。",
         "match_terms": [
-            "挑食", "吃饭", "不吃", "拒绝吃", "只吃", "蔬菜", "水果", "营养", "辅食", "食物", "吞咽",
-            "餐桌", "喂饭", "picky", "eating", "food", "feeding",
+            "挑食",
+            "吃饭",
+            "不吃",
+            "拒绝吃",
+            "只吃",
+            "蔬菜",
+            "水果",
+            "营养",
+            "辅食",
+            "食物",
+            "吞咽",
+            "餐桌",
+            "喂饭",
+            "picky",
+            "eating",
+            "food",
+            "feeding",
         ],
         "resources": [
             {
@@ -219,10 +282,31 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#发展里程碑", "#关键期", "#月龄发展"],
         "hook_line": "先查看对应月龄的官方里程碑，再选择一两项最适合你家孩子的日常练习。",
         "match_terms": [
-            "关键期", "敏感期", "发展阶段", "发育阶段", "发展里程碑", "发育里程碑", "月龄",
-            "9个月", "九个月", "10个月", "十个月", "11个月", "十一个月", "一岁",
-            "大运动", "爬行", "会爬", "扶站", "客体永久", "分离焦虑", "精细动作", "认知发展",
-            "developmental milestone", "developmental milestones", "milestones",
+            "关键期",
+            "敏感期",
+            "发展阶段",
+            "发育阶段",
+            "发展里程碑",
+            "发育里程碑",
+            "月龄",
+            "9个月",
+            "九个月",
+            "10个月",
+            "十个月",
+            "11个月",
+            "十一个月",
+            "一岁",
+            "大运动",
+            "爬行",
+            "会爬",
+            "扶站",
+            "客体永久",
+            "分离焦虑",
+            "精细动作",
+            "认知发展",
+            "developmental milestone",
+            "developmental milestones",
+            "milestones",
         ],
         "resources": [
             {
@@ -264,8 +348,23 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#语言发展", "#沟通", "#发育里程碑"],
         "hook_line": "对照官方里程碑时，也保留对孩子个体节奏的观察。",
         "match_terms": [
-            "说话", "不开口", "说话晚", "词汇", "发音", "语言", "听不懂", "表达", "沟通", "手势", "叫名字",
-            "里程碑", "language", "speech", "words", "milestone", "communication",
+            "说话",
+            "不开口",
+            "说话晚",
+            "词汇",
+            "发音",
+            "语言",
+            "听不懂",
+            "表达",
+            "沟通",
+            "手势",
+            "叫名字",
+            "里程碑",
+            "language",
+            "speech",
+            "words",
+            "milestone",
+            "communication",
         ],
         "resources": [
             {
@@ -307,8 +406,24 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#发脾气", "#边界", "#正向管教"],
         "hook_line": "先选一句全家都能坚持的边界话术。",
         "match_terms": [
-            "发脾气", "打人", "咬人", "踢人", "扔东西", "不听话", "不配合", "规则", "边界", "管教", "攻击",
-            "尖叫", "撒泼", "tantrum", "discipline", "hit", "bite", "behavior",
+            "发脾气",
+            "打人",
+            "咬人",
+            "踢人",
+            "扔东西",
+            "不听话",
+            "不配合",
+            "规则",
+            "边界",
+            "管教",
+            "攻击",
+            "尖叫",
+            "撒泼",
+            "tantrum",
+            "discipline",
+            "hit",
+            "bite",
+            "behavior",
         ],
         "resources": [
             {
@@ -350,8 +465,21 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#亲子互动", "#陪伴", "#发球与回应"],
         "hook_line": "看一遍示范视频，今天就能在日常里练习。",
         "match_terms": [
-            "陪伴", "亲子", "亲子关系", "不知道怎么玩", "互动", "建立连接", "连接", "读绘本", "一起玩", "共同游戏",
-            "注意力", "serve and return", "play", "connection", "bond",
+            "陪伴",
+            "亲子",
+            "亲子关系",
+            "不知道怎么玩",
+            "互动",
+            "建立连接",
+            "连接",
+            "读绘本",
+            "一起玩",
+            "共同游戏",
+            "注意力",
+            "serve and return",
+            "play",
+            "connection",
+            "bond",
         ],
         "resources": [
             {
@@ -393,8 +521,22 @@ LEARNING_CONTENT_CARDS = [
         "tags": ["#居家安全", "#儿童防护", "#急救意识"],
         "hook_line": "用官方清单，从今天最常活动的房间开始检查。",
         "match_terms": [
-            "误食", "窒息", "跌倒", "烫伤", "溺水", "药品", "电池", "居家安全", "儿童防护", "安全门", "插座",
-            "家具固定", "babyproof", "safety", "choking", "poison",
+            "误食",
+            "窒息",
+            "跌倒",
+            "烫伤",
+            "溺水",
+            "药品",
+            "电池",
+            "居家安全",
+            "儿童防护",
+            "安全门",
+            "插座",
+            "家具固定",
+            "babyproof",
+            "safety",
+            "choking",
+            "poison",
         ],
         "resources": [
             {
@@ -759,6 +901,216 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
     ],
 }
 
+_RAISING_CHILDREN_METADATA = {
+    "publisher": "Raising Children Network（澳大利亚）",
+    "source_tier": "curated",
+    "selection_basis": "expert_reviewed",
+    "trust_note": "澳大利亚政府支持；网站内容由科学顾问委员会指导，并经至少两名独立专家及专业编辑团队审核。",
+    "recognition": "专家审核 · 家庭实操导向",
+    "locales": ["en"],
+}
+
+_CURATED_RESOURCES_BY_CARD_ID = {
+    "learn_sleep_routine": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "sleep-rcn-article",
+            "kind": "article",
+            "title": "Toddler sleep: what to expect",
+            "language": "英文文章",
+            "description": "从睡眠时长、白天小睡到固定睡前流程，给出可直接执行的家庭建议。",
+            "selection_basis": "expert_and_audience",
+            "selection_reason": "结构清楚、步骤具体，适合把作息建议落实为家庭流程。",
+            "audience_note": "7.4k 位读者标记有帮助",
+            "url": "https://raisingchildren.net.au/toddlers/sleep/understanding-sleep/toddler-sleep",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "sleep-rcn-video",
+            "kind": "video",
+            "title": "Baby sleep and settling tips",
+            "language": "英文视频 · 英文文字稿",
+            "description": "由多位家长分享夜醒、安抚和建立适合自己家庭睡眠节奏的经验。",
+            "selection_reason": "真实家庭经验配合专业内容审核，适合快速理解不同做法的取舍。",
+            "url": "https://raisingchildren.net.au/babies/videos/baby-sleep",
+        },
+    ],
+    "learn_big_feelings": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "emotion-rcn-article",
+            "kind": "article",
+            "title": "Toddler emotions: learning and play ideas",
+            "language": "英文文章",
+            "description": "解释幼儿挫败、愤怒等情绪的发展，并提供游戏与陪伴方法。",
+            "selection_reason": "把发展原理转成日常可用的互动建议，适合与权威指南交叉阅读。",
+            "url": "https://raisingchildren.net.au/toddlers/play-learning/play-toddler-development/emotions-play-toddlers",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "emotion-rcn-video",
+            "kind": "video",
+            "title": "Helping toddlers learn about feelings",
+            "language": "英文视频 · 英文文字稿",
+            "description": "用真实情境示范靠近、协助、安抚和为情绪命名。",
+            "selection_reason": "三分钟左右即可看完，步骤清晰并有完整文字稿。",
+            "url": "https://raisingchildren.net.au/toddlers/videos/supporting-toddler-feelings",
+        },
+    ],
+    "learn_picky_eating": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "food-rcn-article",
+            "kind": "article",
+            "title": "Fussy eating in children: what to do",
+            "language": "英文文章",
+            "description": "从用餐环境、食物自主和重复接触三个方向提供挑食应对建议。",
+            "selection_reason": "避免强迫进食，方法具体，并明确何时应咨询医生或营养师。",
+            "url": "https://raisingchildren.net.au/toddlers/nutrition-fitness/common-concerns/fussy-eating",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "food-rcn-video",
+            "kind": "video",
+            "title": "Is your child eating enough? How to tell",
+            "language": "英文视频 · 英文文字稿",
+            "description": "家长分享如何观察一段时间内的整体摄入，而不是纠结单独一餐。",
+            "selection_reason": "真实家长经验容易理解，并由专业平台审核内容。",
+            "url": "https://raisingchildren.net.au/toddlers/videos/eating-enough",
+        },
+    ],
+    "learn_development_milestones": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "development-rcn-article",
+            "kind": "article",
+            "title": "Baby development at 10-11 months",
+            "language": "英文文章",
+            "description": "按日常动作、沟通、游戏与需要关注的信号梳理十至十一个月发展。",
+            "selection_reason": "以家庭场景解释里程碑，同时提醒发展存在个体差异。",
+            "url": "https://raisingchildren.net.au/babies/development/development-tracker-3-12-months/10-11-months",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "development-rcn-video",
+            "kind": "video",
+            "title": "Child development at 1-2 years",
+            "language": "英文视频 · 英文文字稿",
+            "description": "通过玩耍、交流和自主探索的画面说明一至两岁儿童发展。",
+            "selection_reason": "短视频示范具体，包含完整文字稿与求助提示。",
+            "url": "https://raisingchildren.net.au/toddlers/videos/development-1-2-years",
+        },
+    ],
+    "learn_language_milestones": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "language-rcn-article",
+            "kind": "article",
+            "title": "Language development in children 1-2 years",
+            "language": "英文文章",
+            "description": "按理解、词汇、句子和发音介绍一至两岁语言发展与求助信号。",
+            "selection_reason": "年龄分段明确，既给练习方法，也说明何时需要专业评估。",
+            "url": "https://raisingchildren.net.au/toddlers/development/language-development/language-1-2-years",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "language-rcn-video",
+            "kind": "video",
+            "title": "Talking and bonding with babies: 7-17 months",
+            "language": "英文视频 · 英文文字稿",
+            "description": "示范模仿声音、回应指向、使用动作词和跟随孩子兴趣。",
+            "selection_reason": "真实亲子互动可直接模仿，并有完整专业文字稿。",
+            "url": "https://raisingchildren.net.au/babies/videos/connecting-communicating-7-17-months",
+        },
+    ],
+    "learn_tantrum_boundaries": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "behavior-rcn-article",
+            "kind": "article",
+            "title": "Toddler tantrums: why they happen and how to respond",
+            "language": "英文文章",
+            "description": "解释一至三岁发脾气的原因，并提供安全、共情和一致回应步骤。",
+            "selection_reason": "兼顾情绪接纳和行为边界，适合在冲突前后快速查阅。",
+            "url": "https://raisingchildren.net.au/school-age/behaviour/crying-tantrums/tantrums",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "behavior-rcn-video",
+            "kind": "video",
+            "title": "Positive behaviour in children: tips in action",
+            "language": "英文视频 · 英文文字稿",
+            "description": "用家庭片段示范榜样、表扬、倾听和提前说明规则。",
+            "selection_reason": "真实家庭演示容易照做，内容由专业团队审核。",
+            "url": "https://raisingchildren.net.au/toddlers/videos/good-behaviour-tips-in-action",
+        },
+    ],
+    "learn_serve_and_return": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "connection-rcn-article",
+            "kind": "article",
+            "title": "Baby cues: how to know what babies want",
+            "language": "英文文章",
+            "description": "通过目光、转头、哭声和疲倦信号帮助照顾者理解宝宝的回应。",
+            "selection_reason": "图解式表达直观，能把来回互动落实到观察宝宝信号。",
+            "url": "https://raisingchildren.net.au/newborns/connecting-communicating/communicating/baby-toddler-cues",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "connection-rcn-video",
+            "kind": "video",
+            "title": "Bonding and talking with babies: 0-6 months",
+            "language": "英文视频 · 英文文字稿",
+            "description": "示范眼神、拥抱、唱歌、阅读和回应声音如何形成来回互动。",
+            "selection_reason": "真实互动场景丰富，家长无需额外工具即可练习。",
+            "url": "https://raisingchildren.net.au/babies/videos/connecting-communicating-0-6-months",
+        },
+    ],
+    "learn_home_safety": [
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "safety-rcn-article",
+            "kind": "article",
+            "title": "Child safety at home: checklist",
+            "language": "英文文章",
+            "description": "用清单覆盖跌落、烫伤、中毒、溺水、窒息和家具风险。",
+            "selection_basis": "expert_and_audience",
+            "selection_reason": "内容系统且适合逐项检查，可用于家庭安全巡检。",
+            "audience_note": "1.2k 位读者标记有帮助",
+            "url": "https://raisingchildren.net.au/babies/safety/home-pets/home-safety",
+        },
+        {
+            **_RAISING_CHILDREN_METADATA,
+            "id": "safety-rcn-video",
+            "kind": "video",
+            "title": "Protecting your baby's airways",
+            "language": "英文动画 · 英文文字稿",
+            "description": "动画说明睡眠、出行、玩耍和喂养时如何保持宝宝呼吸道通畅。",
+            "selection_reason": "关键动作可视化，短而清楚，并由专业团队审核。",
+            "url": "https://raisingchildren.net.au/newborns/videos/protecting-baby-airways-animation",
+        },
+    ],
+}
+
+_AUTHORITY_RESOURCE_DEFAULTS = {
+    "source_tier": "authority",
+    "selection_basis": "official",
+    "trust_note": "政府、大学、医院、专业医学组织或其官方频道发布。",
+    "recognition": "权威机构原始发布",
+    "selection_reason": "作为事实、发展里程碑和安全建议的基础来源。",
+}
+
+
+def _with_resource_curation_metadata(resource: dict) -> dict:
+    defaults = (
+        _AUTHORITY_RESOURCE_DEFAULTS
+        if resource.get("source_tier", "authority") == "authority"
+        else {}
+    )
+    return {**defaults, **resource}
+
+
 _MULTILINGUAL_ENGLISH_RESOURCE_IDS = frozenset(
     {
         "development-cdc-article",
@@ -772,15 +1124,21 @@ for _card in LEARNING_CONTENT_CARDS:
     _reviewed_english_resources = [
         {
             **resource,
-            "locales": ["en", "es"]
-            if resource["id"] in _MULTILINGUAL_ENGLISH_RESOURCE_IDS
-            else ["en"],
+            "locales": (
+                ["en", "es"]
+                if resource["id"] in _MULTILINGUAL_ENGLISH_RESOURCE_IDS
+                else ["en"]
+            ),
         }
         for resource in _card.get("resources", [])
     ]
     _card["resources"] = [
-        *_LOCALIZED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
-        *_reviewed_english_resources,
+        _with_resource_curation_metadata(resource)
+        for resource in [
+            *_LOCALIZED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
+            *_reviewed_english_resources,
+            *_CURATED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
+        ]
     ]
 
 

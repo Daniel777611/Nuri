@@ -71,7 +71,9 @@ def test_personalized_feed_requires_login():
     assert response.status_code == 401
 
 
-def test_memory_feed_is_uid_scoped_excludes_card_sessions_and_matches_sleep(monkeypatch):
+def test_memory_feed_is_uid_scoped_excludes_card_sessions_and_matches_sleep(
+    monkeypatch,
+):
     sessions = [
         _session("parent-main", "parent-1"),
         _session(
@@ -153,7 +155,9 @@ def test_another_parents_conversation_cannot_affect_ranking(monkeypatch):
     assert payload["items"][0]["id"] == "learn_big_feelings"
     assert payload["items"][0]["related_session_id"] == "parent-main"
     assert payload["related_session_id"] == "parent-main"
-    assert all(item.get("related_session_id") != "other-main" for item in payload["items"])
+    assert all(
+        item.get("related_session_id") != "other-main" for item in payload["items"]
+    )
 
 
 def test_latest_development_question_outranks_older_sleep_context(monkeypatch):
@@ -358,7 +362,9 @@ def test_history_training_opt_out_never_reads_or_links_conversations(monkeypatch
     assert payload["related_session_id"] is None
     assert all(item["is_conversation_match"] is False for item in payload["items"])
     assert all(item["related_session_id"] is None for item in payload["items"])
-    assert all("关闭对话个性化" in item["personalization_reason"] for item in payload["items"])
+    assert all(
+        "关闭对话个性化" in item["personalization_reason"] for item in payload["items"]
+    )
 
 
 @pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
@@ -366,9 +372,7 @@ def test_learning_resources_include_trusted_https_article_and_video(card):
     resources = card.get("resources") or []
     kinds = {resource.get("kind") for resource in resources}
     locales = {
-        locale
-        for resource in resources
-        for locale in resource.get("locales", [])
+        locale for resource in resources for locale in resource.get("locales", [])
     }
 
     assert {"article", "video"} <= kinds
@@ -379,8 +383,95 @@ def test_learning_resources_include_trusted_https_article_and_video(card):
         for resource in resources
         for locale in resource["locales"]
     )
-    assert all(str(resource.get("url") or "").startswith("https://") for resource in resources)
+    assert all(
+        str(resource.get("url") or "").startswith("https://") for resource in resources
+    )
     assert all(is_trusted_resource_url(resource["url"]) for resource in resources)
+
+
+@pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
+def test_learning_resources_include_source_curation_metadata(card):
+    resources = card.get("resources") or []
+
+    assert all(
+        resource.get("source_tier") in {"authority", "curated"}
+        for resource in resources
+    )
+    assert all(
+        resource.get("selection_basis")
+        in {"official", "expert_reviewed", "audience_popular", "expert_and_audience"}
+        for resource in resources
+    )
+    assert all(resource.get("trust_note") for resource in resources)
+    assert all(resource.get("recognition") for resource in resources)
+    assert all(resource.get("selection_reason") for resource in resources)
+
+
+@pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
+def test_english_resources_fill_all_source_and_format_groups(card):
+    groups = {
+        (resource["source_tier"], resource["kind"])
+        for resource in card.get("resources", [])
+        if "en" in resource.get("locales", [])
+    }
+
+    assert groups == {
+        ("authority", "article"),
+        ("curated", "article"),
+        ("authority", "video"),
+        ("curated", "video"),
+    }
+
+
+@pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
+def test_curated_resources_use_reviewed_non_mainland_expert_source(card):
+    resources = [
+        resource
+        for resource in card.get("resources", [])
+        if resource.get("source_tier") == "curated"
+    ]
+
+    assert len(resources) == 2
+    assert {resource["kind"] for resource in resources} == {"article", "video"}
+    assert all(
+        urlparse(resource["url"]).hostname == "raisingchildren.net.au"
+        for resource in resources
+    )
+    assert all("澳大利亚政府支持" in resource["trust_note"] for resource in resources)
+
+
+def test_audience_recognition_is_only_claimed_with_visible_evidence():
+    resources_by_id = {
+        resource["id"]: resource
+        for card in LEARNING_CONTENT_CARDS
+        for resource in card.get("resources", [])
+    }
+
+    assert (
+        resources_by_id["sleep-rcn-article"]["selection_basis"] == "expert_and_audience"
+    )
+    assert (
+        resources_by_id["sleep-rcn-article"]["audience_note"] == "7.4k 位读者标记有帮助"
+    )
+    assert (
+        resources_by_id["safety-rcn-article"]["selection_basis"]
+        == "expert_and_audience"
+    )
+    assert (
+        resources_by_id["safety-rcn-article"]["audience_note"]
+        == "1.2k 位读者标记有帮助"
+    )
+
+    unsupported = [
+        resource
+        for resource in resources_by_id.values()
+        if resource.get("source_tier") == "curated"
+        and resource["id"] not in {"sleep-rcn-article", "safety-rcn-article"}
+    ]
+    assert all(
+        resource["selection_basis"] == "expert_reviewed" for resource in unsupported
+    )
+    assert all(not resource.get("audience_note") for resource in unsupported)
 
 
 @pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
@@ -393,8 +484,12 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
 
     assert len(resources) == 2
     assert {resource["kind"] for resource in resources} == {"article", "video"}
-    assert all(urlparse(resource["url"]).hostname == "www.fhs.gov.hk" for resource in resources)
-    assert all(urlparse(resource["url"]).path.startswith("/sc_chi/") for resource in resources)
+    assert all(
+        urlparse(resource["url"]).hostname == "www.fhs.gov.hk" for resource in resources
+    )
+    assert all(
+        urlparse(resource["url"]).path.startswith("/sc_chi/") for resource in resources
+    )
     assert all("香港特别行政区政府" in resource["publisher"] for resource in resources)
 
 
@@ -435,6 +530,20 @@ def test_learning_resources_are_ordered_by_preferred_locale(
     assert LEARNING_CONTENT_CARDS[0]["resources"] == original
 
 
+def test_english_learning_resources_follow_group_order():
+    ordered = order_learning_resources(LEARNING_CONTENT_CARDS[0]["resources"], "en")
+    english = [resource for resource in ordered if "en" in resource["locales"]]
+
+    assert [
+        (resource["source_tier"], resource["kind"]) for resource in english[:4]
+    ] == [
+        ("authority", "article"),
+        ("curated", "article"),
+        ("authority", "video"),
+        ("curated", "video"),
+    ]
+
+
 def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
     monkeypatch.setattr(main, "_get_supabase", lambda: None)
 
@@ -442,8 +551,13 @@ def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
 
     assert detail["id"] == "learn_sleep_routine"
     assert detail["body"]
-    assert {resource["kind"] for resource in detail["resources"]} >= {"article", "video"}
-    assert all(is_trusted_resource_url(resource["url"]) for resource in detail["resources"])
+    assert {resource["kind"] for resource in detail["resources"]} >= {
+        "article",
+        "video",
+    }
+    assert all(
+        is_trusted_resource_url(resource["url"]) for resource in detail["resources"]
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(main.get_card_detail("learn_does_not_exist", uid=None))
@@ -470,7 +584,9 @@ def test_learning_detail_uses_saved_traditional_chinese_preference(monkeypatch):
 
 
 def test_card_context_includes_learning_content_and_resource_titles():
-    card = next(item for item in LEARNING_CONTENT_CARDS if item["id"] == "learn_sleep_routine")
+    card = next(
+        item for item in LEARNING_CONTENT_CARDS if item["id"] == "learn_sleep_routine"
+    )
 
     context = main._card_ctx(card["id"])
 
@@ -530,7 +646,9 @@ class _PrivacySupabase:
         return _PrivacySettingsTable(self.store)
 
 
-@pytest.mark.parametrize("empty_data", [None, []], ids=["maybe-single-none", "empty-list"])
+@pytest.mark.parametrize(
+    "empty_data", [None, []], ids=["maybe-single-none", "empty-list"]
+)
 def test_missing_privacy_row_defaults_to_history_personalization_enabled(
     monkeypatch, empty_data
 ):
@@ -582,9 +700,12 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
         )
     )
     assert saved["allow_history_training"] is False
-    assert json.loads(supabase.store[main._privacy_storage_key("parent-1")])[
-        "allow_history_training"
-    ] is False
+    assert (
+        json.loads(supabase.store[main._privacy_storage_key("parent-1")])[
+            "allow_history_training"
+        ]
+        is False
+    )
 
     # Simulate a Vercel cold start: process memory is empty, Supabase remains.
     monkeypatch.setattr(main, "_privacy", {})
