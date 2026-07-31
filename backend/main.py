@@ -51,6 +51,7 @@ from openai import AsyncOpenAI, OpenAI
 from backend.router import TurnRoute, route_metrics, route_turn
 from backend.websearch import (
     get_provider as get_search_provider,
+    load_domain_rules,
     search_sources,
     sources_prompt_block,
 )
@@ -147,6 +148,14 @@ THREAD_LIMIT = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_LIMIT
+    # Pull source_domains in before the first parent is waiting on it. The read
+    # is cached for SOURCE_DOMAINS_TTL_S, so without this the first chat turn
+    # after every cold start pays a database round trip in front of its first
+    # visible token. Failure is fine — load_domain_rules re-reads on demand.
+    try:
+        await load_domain_rules(_get_supabase())
+    except Exception as e:
+        print(f"[warn] source_domains warmup: {type(e).__name__}: {e}")
     yield
 
 app = FastAPI(title="Family Growth Radar API", lifespan=_lifespan)

@@ -42,8 +42,11 @@ ROUTER_MODEL = os.getenv("ROUTER_MODEL", "gpt-5-mini")
 
 #: Routing gates the search, so the two are serial: this plus
 #: WEB_SEARCH_TIMEOUT_S is the worst case added to first-token latency.
-#: Measured on gpt-5-mini at minimal reasoning: 1.65-1.69s, very consistent.
-ROUTER_TIMEOUT_S = float(os.getenv("ROUTER_TIMEOUT_S", "3.0"))
+#: gpt-5-mini at minimal reasoning is usually 1.6-2.3s but has been seen past
+#: 3s. Raising the ceiling costs nothing on a normal turn — the call returns
+#: when it returns — while a timeout costs the turn its sources entirely, so
+#: this is deliberately generous rather than tight.
+ROUTER_TIMEOUT_S = float(os.getenv("ROUTER_TIMEOUT_S", "4.5"))
 
 #: Classification needs no deliberation, and the default setting is ruinous
 #: here: the same call measured 10.5s at gpt-5-mini's default effort against
@@ -54,7 +57,7 @@ ROUTER_REASONING_EFFORT = os.getenv("ROUTER_REASONING_EFFORT", "minimal")
 #: Turns of raw history handed to the router. The main reply gets 40; the router
 #: only needs enough to tell "still venting" from "asking a concrete question",
 #: and a shorter prompt is a faster and cheaper one.
-ROUTER_HISTORY_WINDOW = int(os.getenv("ROUTER_HISTORY_WINDOW", "6"))
+ROUTER_HISTORY_WINDOW = int(os.getenv("ROUTER_HISTORY_WINDOW", "4"))
 
 _VALID_SCOPES = ("en", "zh", "both")
 
@@ -93,34 +96,29 @@ true：家长在问具体做法、月龄／年龄的发展情况、医疗或安�
 false：纯粹倾诉情绪、寒暄、道谢、只是在回答 NURI 上一个问题、补充背景信息
 判断标准是"外部资料能不能让这个回答更好"，不是"这句话里有没有育儿词"。家长说"最近好累"就是 false
 
-【search_query / search_query_zh】两组关键词，分别用于英文和中文检索
-- **最多 8 个词**，像真人在搜索框里打的那样，不是关键词堆砌
-- 只写这个问题最核心的那一件事。堆同义词会让检索结果变差，不会变好
-- 必须带上孩子的月龄或年龄（下面会给你）——4个月和2岁的答案完全不同
-- search_query 用英文写，search_query_zh 用中文写，两者是同一个问题的两种表达，不是互译腔
-- 好例子：'4 month old refusing solids' / '4个月 宝宝 不吃辅食'
-- 坏例子：'4-month-old baby spoon feeding pushes spoon away refuses solids tips introduction of solids feeding refusal'
+【search_query / search_query_zh】英文和中文各一组关键词
+- 最多 8 个词，像真人在搜索框里打的，不堆同义词——堆了结果只会更差
+- 必须带上孩子的月龄或年龄，4个月和2岁的答案完全不同
+- 例：'4 month old refusing solids' / '4个月 宝宝 不吃辅食'
 - needs_search 为 false 时两个都留空
 
 【search_scope】
-both：默认。一般育儿问题和医疗问题都用这个，英文权威来源优先
-zh：只跟中文语境有关时才用，例如国内的政策、中文资源、和长辈的教养观念冲突
-en：只跟北美体系有关时才用，例如美国的疫苗时程、保险、托育制度
+both：默认，英文权威来源优先
+zh：只跟中文语境有关时，例如国内政策、和长辈的教养观念冲突
+en：只跟北美体系有关时，例如美国疫苗时程、保险、托育制度
 
-【is_medical】是否属于医疗或安全问题
-true：发烧、用药、疫苗、过敏反应、外伤、生长发育迟缓、喂养障碍、以及任何"要不要看医生"
+【is_medical】发烧、用药、疫苗、过敏、外伤、发育迟缓、喂养障碍、以及任何"要不要看医生"
 拿不准就填 true——这会把检索限制在权威机构，宁可保守
-**is_medical 为 true 时，needs_search 也必须是 true，并且要给出两组关键词。**
-医疗问题正是最需要权威依据的场合，绝对不要凭印象直接回答
+**is_medical 为 true 时 needs_search 也必须是 true，并给出两组关键词。**
+医疗问题正是最需要权威依据的场合，绝不能凭印象直接回答
 
-【suggest_tasks】这一轮结束后是否给家长几张行动卡片
-全部满足才是 true：
-- 对话里出现了具体的育儿场景、困扰或目标，不是泛泛聊天
-- 背景已经够清楚，知道给什么任务是有意义的
+【suggest_tasks】全部满足才是 true：
+- 出现了具体的育儿场景、困扰或目标，不是泛泛聊天
+- 背景已经够清楚，知道给什么任务有意义
 - 自然到了"我来帮你整理几件可以做的事"的时机
-以下一律 false：纯情绪倾诉、寒暄、还在了解情况的追问阶段、家长只是想聊聊
+纯情绪倾诉、寒暄、还在追问了解情况的阶段，一律 false
 
-【reason】20字以内说明你为什么这样判断，中文"""
+【reason】20字以内说明理由，中文"""
 
 
 def _condense(history: Sequence[dict], window: int = ROUTER_HISTORY_WINDOW) -> str:
