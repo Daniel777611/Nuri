@@ -30,22 +30,32 @@ export default function Profile() {
   const [children, setChildren] = useState<any[]>([]);
   const [favorites, setFavorites] = useState<any[]>([]);
   const [privacy, setPrivacy] = useState<any>({
-    allow_history_training: true,
-    daily_push: true,
+    allow_history_training: false,
+    daily_push: false,
     anonymous_community_share: false,
     language: "zh",
   });
+  const [privacyUnavailable, setPrivacyUnavailable] = useState(true);
   const [confirmWipe, setConfirmWipe] = useState(false);
 
   const load = useCallback(async () => {
-    const [ks, p, favs] = await Promise.all([
+    const [childrenResult, privacyResult, favoritesResult] = await Promise.allSettled([
       api.listChildren(),
       api.getPrivacy(),
       api.listFavorites(),
     ]);
-    setChildren(ks);
-    setPrivacy(p);
-    setFavorites(favs);
+    if (childrenResult.status === "fulfilled") setChildren(childrenResult.value);
+    if (favoritesResult.status === "fulfilled") setFavorites(favoritesResult.value);
+    if (privacyResult.status === "fulfilled") {
+      setPrivacy(privacyResult.value);
+      setPrivacyUnavailable(false);
+    } else {
+      setPrivacy((current: any) => ({
+        ...current,
+        allow_history_training: false,
+      }));
+      setPrivacyUnavailable(true);
+    }
   }, []);
 
   useFocusEffect(
@@ -55,6 +65,7 @@ export default function Profile() {
   );
 
   const updatePrivacy = async (patch: any) => {
+    if (privacyUnavailable) return;
     const previous = privacy;
     const next = { ...privacy, ...patch };
     setPrivacy(next);
@@ -178,17 +189,27 @@ export default function Profile() {
               你的对话内容仅用于为你提供个性化建议，我们不会出售给第三方，也不用于训练公共模型。
             </Text>
           </View>
+          {privacyUnavailable ? (
+            <View style={styles.privacyUnavailable} testID="privacy-unavailable-message">
+              <Ionicons name="cloud-offline-outline" size={16} color={colors.error} />
+              <Text style={styles.privacyUnavailableText}>
+                隐私设置暂时无法读取。为保护你的隐私，NURI 当前不会使用对话历史；恢复后请重新查看。
+              </Text>
+            </View>
+          ) : null}
           <Toggle
             label="允许使用我的对话历史改善建议质量"
             value={privacy.allow_history_training}
             onChange={(v) => updatePrivacy({ allow_history_training: v })}
             testID="privacy-toggle-history"
+            disabled={privacyUnavailable}
           />
           <Toggle
             label="接收每日推送提醒"
             value={privacy.daily_push}
             onChange={(v) => updatePrivacy({ daily_push: v })}
             testID="privacy-toggle-push"
+            disabled={privacyUnavailable}
           />
           <Toggle
             label="允许匿名分享我的经验到社群"
@@ -197,6 +218,7 @@ export default function Profile() {
               updatePrivacy({ anonymous_community_share: v })
             }
             testID="privacy-toggle-community"
+            disabled={privacyUnavailable}
           />
           <Pressable
             style={styles.danger}
@@ -218,7 +240,12 @@ export default function Profile() {
                   <Pressable
                     key={language.value}
                     onPress={() => updatePrivacy({ language: language.value })}
-                    style={[styles.languageOption, active && styles.languageOptionActive]}
+                    disabled={privacyUnavailable}
+                    style={[
+                      styles.languageOption,
+                      active && styles.languageOptionActive,
+                      privacyUnavailable && styles.disabledControl,
+                    ]}
                     testID={`profile-language-${language.value}`}
                   >
                     <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>{language.label}</Text>
@@ -267,18 +294,21 @@ function Toggle({
   value,
   onChange,
   testID,
+  disabled = false,
 }: {
   label: string;
   value: boolean;
   onChange: (v: boolean) => void;
   testID: string;
+  disabled?: boolean;
 }) {
   return (
-    <View style={styles.toggleRow}>
+    <View style={[styles.toggleRow, disabled && styles.disabledControl]}>
       <Text style={styles.toggleLabel}>{label}</Text>
       <Switch
         value={value}
         onValueChange={onChange}
+        disabled={disabled}
         trackColor={{ true: "#3A2F5A", false: "#D6D3D1" }}
         ios_backgroundColor="#D6D3D1"
         thumbColor="#fff"
@@ -374,6 +404,22 @@ const styles = StyleSheet.create({
     color: colors.onBrandTertiary,
     lineHeight: 18,
   },
+  privacyUnavailable: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+    backgroundColor: "#FFF4F2",
+  },
+  privacyUnavailableText: {
+    flex: 1,
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.error,
+  },
+  disabledControl: { opacity: 0.55 },
   toggleRow: {
     flexDirection: "row",
     alignItems: "center",

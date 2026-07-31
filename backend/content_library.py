@@ -168,6 +168,52 @@ LEARNING_CONTENT_CARDS = [
         ],
     },
     {
+        "id": "learn_development_milestones",
+        "topic": "development",
+        "topic_label": "发展阶段与里程碑",
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "浏览详情",
+        "publisher": "美国疾病控制与预防中心 CDC",
+        "title": "孩子现在进入什么“关键期”？先看发展里程碑，再决定最值得练什么",
+        "summary": "按月龄观察社交、语言、认知和动作变化，把精力放在孩子正在形成的能力上。",
+        "body": (
+            "家长常说的“关键期”，更适合被理解为某些能力在一段时间里发展得特别活跃，而不是错过某一天就无法补回。"
+            "可以先按孩子的月龄查看社交情绪、语言沟通、认知和动作里程碑，再结合他已经会什么、正在反复练什么，决定现在最值得提供的环境和互动。\n\n"
+            "例如九个月左右，很多宝宝会更频繁地练习坐起、爬行、扶站和手部操作，也可能出现更明显的分离反应、寻找被藏起来的物品、模仿声音等变化。"
+            "照顾者可以提供安全的地面探索、简单的轮流游戏、短句回应和可预测的离开—回来。里程碑是观察与沟通工具，不是给孩子打分；"
+            "如果孩子失去已经掌握的能力，或你持续担心他的反应和发展，应及时与儿科医生讨论。"
+        ),
+        "tags": ["#发展里程碑", "#关键期", "#月龄发展"],
+        "hook_line": "先查看对应月龄的官方里程碑，再选择一两项最适合你家孩子的日常练习。",
+        "match_terms": [
+            "关键期", "敏感期", "发展阶段", "发育阶段", "发展里程碑", "发育里程碑", "月龄",
+            "9个月", "九个月", "10个月", "十个月", "11个月", "十一个月", "一岁",
+            "大运动", "爬行", "会爬", "扶站", "客体永久", "分离焦虑", "精细动作", "认知发展",
+            "developmental milestone", "developmental milestones", "milestones",
+        ],
+        "resources": [
+            {
+                "id": "development-cdc-article",
+                "kind": "article",
+                "title": "CDC's Developmental Milestones",
+                "publisher": "美国疾病控制与预防中心 CDC",
+                "language": "英文 / 西班牙文文章",
+                "description": "按孩子月龄查看社交、语言、认知与动作里程碑及家庭活动建议。",
+                "url": "https://www.cdc.gov/act-early/milestones/index.html",
+            },
+            {
+                "id": "development-cdc-video",
+                "kind": "video",
+                "title": "Milestones Matter for Families!",
+                "publisher": "CDC 官方 YouTube 频道",
+                "language": "英文视频",
+                "description": "家长分享如何使用发展里程碑工具观察孩子并与专业人员沟通。",
+                "url": "https://www.youtube.com/watch?v=S-OQXmjY53o",
+            },
+        ],
+    },
+    {
         "id": "learn_language_milestones",
         "topic": "language",
         "topic_label": "语言与沟通",

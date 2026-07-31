@@ -186,6 +186,7 @@ _DEFAULT_PRIVACY = {
     "anonymous_community_share": False,
     "language": "zh",
 }
+_PRIVACY_STORAGE_UNAVAILABLE = "_storage_unavailable"
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -350,19 +351,39 @@ async def _db_get_privacy(uid: Optional[str], fail_closed: bool = False) -> dict
                 lambda: sb.table("app_settings")
                 .select("value")
                 .eq("key", _privacy_storage_key(uid))
-                .maybe_single()
+                .limit(1)
                 .execute()
             )
-            if result.data and result.data.get("value"):
-                settings = _normalized_privacy_settings(
-                    json.loads(result.data["value"])
-                )
+            rows = list(getattr(result, "data", None) or [])
+            if rows:
+                stored_value = rows[0].get("value")
+                if isinstance(stored_value, str):
+                    stored_value = json.loads(stored_value)
+                settings = _normalized_privacy_settings(stored_value)
                 _privacy[key] = settings
                 return settings
+
+            # A successful query with no row means this user has never changed
+            # the default.  It is not a storage failure and must not be
+            # presented as an explicit privacy opt-out.  The database is the
+            # source of truth, so also replace any stale process-local value.
+            settings = dict(_DEFAULT_PRIVACY)
+            _privacy[key] = settings
+            return settings
         except Exception as exc:
             print(f"[warn] _db_get_privacy: {exc}")
-            if cached is None and fail_closed:
-                return {**_DEFAULT_PRIVACY, "allow_history_training": False}
+            if fail_closed:
+                return {
+                    **_DEFAULT_PRIVACY,
+                    "allow_history_training": False,
+                    _PRIVACY_STORAGE_UNAVAILABLE: True,
+                }
+    elif uid and fail_closed:
+        return {
+            **_DEFAULT_PRIVACY,
+            "allow_history_training": False,
+            _PRIVACY_STORAGE_UNAVAILABLE: True,
+        }
     return _normalized_privacy_settings(cached)
 
 
@@ -2194,6 +2215,8 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
     """
 
     privacy = await _db_get_privacy(uid, fail_closed=True)
+    if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
+        return {"state": "unavailable", "session_id": None, "messages": []}
     if privacy.get("allow_history_training") is False:
         return {"state": "privacy_off", "session_id": None, "messages": []}
 
@@ -2257,6 +2280,177 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
         return {"state": "unavailable", "session_id": None, "messages": []}
 
 
+_CONVERSATION_MATCH_MIN_SCORE = 8
+_WEAK_MATCH_TERMS = frozenset(
+    {
+        "沟通",
+        "表达",
+        "互动",
+        "连接",
+        "安全",
+        "压力",
+        "play",
+        "words",
+        "behavior",
+        "food",
+    }
+)
+_NEGATION_MARKERS = (
+    "不是",
+    "并不是",
+    "不属于",
+    "不用",
+    "无需",
+    "不要聊",
+    "不想聊",
+    "无关",
+    "没关系",
+    "没有关系",
+    "not about",
+    "unrelated",
+    "isn't",
+    "is not",
+    "isnt",
+    "aren't",
+    "are not",
+    "not ",
+    "don't mean",
+    "do not mean",
+    "is unrelated",
+    "isn't related",
+)
+_TOPIC_CLAUSE_BOUNDARIES = (
+    "，",
+    ",",
+    "。",
+    ".",
+    "！",
+    "!",
+    "？",
+    "?",
+    "；",
+    ";",
+    "\n",
+    " but ",
+    " however ",
+    "而是",
+    "但是",
+    "但",
+)
+_FOLLOW_UP_MARKERS = (
+    "任务",
+    "怎么做",
+    "怎么办",
+    "具体",
+    "继续",
+    "给我",
+    "建议",
+    "接下来",
+    "哪些",
+    "什么引导",
+    "什么样的引导",
+    "如何",
+)
+_CONTEXT_REJECTION_MARKERS = (
+    "不想继续",
+    "不要继续",
+    "别再",
+    "不再聊",
+    "换个话题",
+    "换一个话题",
+    "另一个话题",
+    "别聊",
+    "不想聊",
+    "stop talking",
+    "don't continue",
+    "do not continue",
+    "change the subject",
+    "different topic",
+    "move on",
+)
+_ACKNOWLEDGEMENT_ONLY = frozenset(
+    {"谢谢", "谢谢你", "好的", "好", "明白了", "知道了", "收到", "ok", "okay", "thanks", "thank you"}
+)
+
+
+def _term_occurrences(text: str, term: str) -> list[tuple[int, int]]:
+    """Find complete English terms and literal CJK phrases."""
+
+    if not text or not term:
+        return []
+    normalized_term = term.casefold()
+    if re.fullmatch(r"[a-z0-9][a-z0-9 '\-]*", normalized_term):
+        pattern = re.compile(
+            rf"(?<![a-z0-9]){re.escape(normalized_term)}(?![a-z0-9])",
+            re.IGNORECASE,
+        )
+        return [(match.start(), match.end()) for match in pattern.finditer(text)]
+
+    positions: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = text.find(normalized_term, start)
+        if index < 0:
+            break
+        positions.append((index, index + len(normalized_term)))
+        start = index + max(1, len(normalized_term))
+    return positions
+
+
+def _term_is_present(text: str, term: str) -> bool:
+    """Return True when at least one occurrence is not locally negated."""
+
+    for start, end in _term_occurrences(text, term):
+        clause_start = 0
+        clause_end = len(text)
+        for boundary in _TOPIC_CLAUSE_BOUNDARIES:
+            previous = text.rfind(boundary, 0, start)
+            if previous >= 0:
+                clause_start = max(clause_start, previous + len(boundary))
+            following = text.find(boundary, end)
+            if following >= 0:
+                clause_end = min(clause_end, following)
+        clause = text[clause_start:clause_end]
+        if not any(marker in clause for marker in _NEGATION_MARKERS):
+            return True
+    return False
+
+
+def _matched_terms(text: str, terms: list[object]) -> list[str]:
+    """Return specific, non-overlapping topic signals found in ``text``."""
+
+    matches = {
+        str(raw_term).casefold()
+        for raw_term in terms
+        if str(raw_term).strip() and _term_is_present(text, str(raw_term).casefold())
+    }
+    ordered = sorted(matches, key=lambda value: (-len(value), value))
+    selected: list[str] = []
+    for term in ordered:
+        if any(term in more_specific for more_specific in selected):
+            continue
+        selected.append(term)
+    return selected
+
+
+def _signal_score(matches: list[str], strong_base: int, weak_base: int, bonus_cap: int) -> int:
+    if not matches:
+        return 0
+    has_strong_signal = any(term not in _WEAK_MATCH_TERMS for term in matches)
+    base = strong_base if has_strong_signal else weak_base
+    return base + min(bonus_cap, max(0, len(matches) - 1))
+
+
+def _is_context_follow_up(text: str) -> bool:
+    casefolded = text.casefold()
+    normalized = re.sub(r"[\s，。！？,.!?]+", "", casefolded)
+    if not normalized or normalized in _ACKNOWLEDGEMENT_ONLY:
+        return False
+    if any(marker in casefolded for marker in _CONTEXT_REJECTION_MARKERS):
+        return False
+    return any(marker in casefolded for marker in _FOLLOW_UP_MARKERS)
+
+
 def _rank_learning_content(
     messages: list[dict],
     count: int = 4,
@@ -2271,40 +2465,76 @@ def _rank_learning_content(
         for message in messages
         if message.get("role") == "user" and str(message.get("text") or "").strip()
     ]
-    assistant_texts = [
+    last_user_text = (user_texts[-1] if user_texts else "").casefold()
+    previous_user_text = " ".join(user_texts[-4:-1]).casefold()
+    older_user_text = " ".join(user_texts[:-4]).casefold()
+    allow_assistant_context = _is_context_follow_up(last_user_text)
+
+    last_user_index = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        default=-1,
+    )
+    assistants_after_user = [
         str(message.get("text") or "").strip()
-        for message in messages
+        for message in messages[last_user_index + 1 :]
         if message.get("role") in {"ai", "assistant"}
         and str(message.get("text") or "").strip()
     ]
-    last_user_text = (user_texts[-1] if user_texts else "").casefold()
-    all_user_text = " ".join(user_texts).casefold()
-    assistant_text = " ".join(assistant_texts).casefold()
-    recent_text = " ".join(
-        str(message.get("text") or "") for message in messages[-4:]
-    ).casefold()
+    assistants_before_user = [
+        str(message.get("text") or "").strip()
+        for message in messages[:last_user_index]
+        if message.get("role") in {"ai", "assistant"}
+        and str(message.get("text") or "").strip()
+    ]
+    if assistants_after_user:
+        assistant_context_text = assistants_after_user[-1].casefold()
+    elif allow_assistant_context and assistants_before_user:
+        # A short follow-up such as “给我几个任务” legitimately refers to the
+        # immediately preceding NURI answer.  Explicit topic switches do not.
+        assistant_context_text = assistants_before_user[-1].casefold()
+    else:
+        assistant_context_text = ""
 
-    ranked: list[tuple[int, int, dict]] = []
+    ranked: list[tuple[int, int, dict, Optional[str]]] = []
     for index, card in enumerate(LEARNING_CONTENT_CARDS):
-        score = 0
-        for raw_term in card.get("match_terms", []):
-            term = str(raw_term).casefold()
-            if term and term in last_user_text:
-                score += 6
-            if term and term in all_user_text:
-                score += 3
-            if term and term in recent_text:
-                score += 2
-            elif term and term in assistant_text:
-                score += 1
-        ranked.append((score, index, card))
+        terms = card.get("match_terms", [])
+        latest_matches = _matched_terms(last_user_text, terms)
+        recent_matches = _matched_terms(previous_user_text, terms)
+        older_matches = _matched_terms(older_user_text, terms)
+        assistant_matches = _matched_terms(assistant_context_text, terms)
+
+        score = _signal_score(latest_matches, 12, 4, 3)
+        score += _signal_score(recent_matches, 4, 2, 2)
+        score += _signal_score(older_matches, 1, 0, 1)
+        if latest_matches or allow_assistant_context:
+            assistant_base = 8 if allow_assistant_context and not latest_matches else 5
+            score += _signal_score(assistant_matches, assistant_base, 2, 3)
+
+        reason_term = next(
+            (
+                candidate
+                for candidates in (latest_matches, assistant_matches, recent_matches)
+                for candidate in candidates
+                if candidate not in _WEAK_MATCH_TERMS
+            ),
+            None,
+        )
+        ranked.append((score, index, card, reason_term))
 
     ranked.sort(key=lambda item: (-item[0], item[1]))
-    has_conversation_match = bool(user_texts and ranked and ranked[0][0] > 0)
+    has_conversation_match = bool(
+        user_texts and ranked and ranked[0][0] >= _CONVERSATION_MATCH_MIN_SCORE
+    )
     selected: list[dict] = []
-    for score, _, card in ranked[: max(1, min(count, len(LEARNING_CONTENT_CARDS)))]:
-        if score > 0 and has_conversation_match:
-            reason = f"因为你最近和 NURI 聊到了“{card['topic_label']}”"
+    for score, _, card, reason_term in ranked[: max(1, min(count, len(LEARNING_CONTENT_CARDS)))]:
+        if score >= _CONVERSATION_MATCH_MIN_SCORE and has_conversation_match:
+            if reason_term:
+                reason = (
+                    f"因为你最近和 NURI 聊到“{reason_term}”，"
+                    f"这篇内容与“{card['topic_label']}”直接相关"
+                )
+            else:
+                reason = f"因为你最近和 NURI 聊到了“{card['topic_label']}”"
             related_session_id = session_id
             is_match = True
         elif context_state == "privacy_off":
@@ -3477,7 +3707,13 @@ async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
 # ── Privacy ───────────────────────────────────────────────────────────────────
 @api.get("/privacy")
 async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
-    return await _db_get_privacy(uid, fail_closed=bool(uid))
+    settings = await _db_get_privacy(uid, fail_closed=bool(uid))
+    if settings.get(_PRIVACY_STORAGE_UNAVAILABLE):
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Privacy settings are temporarily unavailable",
+        )
+    return _normalized_privacy_settings(settings)
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
