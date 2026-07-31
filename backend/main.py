@@ -55,12 +55,14 @@ try:
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         is_trusted_resource_url,
+        order_learning_resources,
     )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         is_trusted_resource_url,
+        order_learning_resources,
     )
 
 load_dotenv()
@@ -180,11 +182,22 @@ _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
 _feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
 
+_SUPPORTED_PREFERRED_LOCALES = frozenset({"zh-CN", "zh-TW", "en"})
+
+
+def _normalize_preferred_locale(value: object) -> str:
+    if value == "zh":
+        return "zh-CN"
+    if isinstance(value, str) and value in _SUPPORTED_PREFERRED_LOCALES:
+        return value
+    return "zh-CN"
+
+
 _DEFAULT_PRIVACY = {
     "allow_history_training": True,
     "daily_push": True,
     "anonymous_community_share": False,
-    "language": "zh",
+    "language": "zh-CN",
 }
 _PRIVACY_STORAGE_UNAVAILABLE = "_storage_unavailable"
 
@@ -322,8 +335,7 @@ def _normalized_privacy_settings(value: object) -> dict:
     for key in ("allow_history_training", "daily_push", "anonymous_community_share"):
         if isinstance(value.get(key), bool):
             settings[key] = value[key]
-    if isinstance(value.get("language"), str) and value["language"]:
-        settings["language"] = value["language"]
+    settings["language"] = _normalize_preferred_locale(value.get("language"))
     return settings
 
 
@@ -655,7 +667,7 @@ class PrivacySettings(BaseModel):
     allow_history_training:   bool = True
     daily_push:               bool = True
     anonymous_community_share: bool = False
-    language: Literal["zh","en"] = "zh"
+    language: Literal["zh", "zh-CN", "zh-TW", "en"] = "zh-CN"
 
 class AskRequest(BaseModel):
     question:  str
@@ -2215,14 +2227,28 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
     """
 
     privacy = await _db_get_privacy(uid, fail_closed=True)
+    preferred_locale = _normalize_preferred_locale(privacy.get("language"))
     if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
-        return {"state": "unavailable", "session_id": None, "messages": []}
+        return {
+            "state": "unavailable",
+            "session_id": None,
+            "messages": [],
+            "preferred_locale": preferred_locale,
+        }
     if privacy.get("allow_history_training") is False:
-        return {"state": "privacy_off", "session_id": None, "messages": []}
+        return {
+            "state": "privacy_off",
+            "session_id": None,
+            "messages": [],
+            "preferred_locale": preferred_locale,
+        }
 
     sb = _get_supabase()
     if not sb:
-        return _recent_main_chat_from_memory(uid, limit)
+        return {
+            **_recent_main_chat_from_memory(uid, limit),
+            "preferred_locale": preferred_locale,
+        }
 
     try:
         session_res = await anyio.to_thread.run_sync(
@@ -2237,7 +2263,12 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
             if not session.get("source_card_id")
         ]
         if not main_sessions:
-            return {"state": "no_history", "session_id": None, "messages": []}
+            return {
+                "state": "no_history",
+                "session_id": None,
+                "messages": [],
+                "preferred_locale": preferred_locale,
+            }
 
         session_ids = [session["id"] for session in main_sessions]
         last_user_res = await anyio.to_thread.run_sync(
@@ -2274,10 +2305,16 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
             "state": "ready" if last_user_message else "no_user_message",
             "session_id": session.get("id"),
             "messages": messages,
+            "preferred_locale": preferred_locale,
         }
     except Exception as exc:
         print(f"[warn] personalized feed conversation lookup failed: {exc}")
-        return {"state": "unavailable", "session_id": None, "messages": []}
+        return {
+            "state": "unavailable",
+            "session_id": None,
+            "messages": [],
+            "preferred_locale": preferred_locale,
+        }
 
 
 _CONVERSATION_MATCH_MIN_SCORE = 8
@@ -2679,7 +2716,12 @@ async def get_card_detail(card_id: str, uid: Optional[str] = Depends(_opt_uid)):
         if uid:
             context = await _load_recent_main_chat(uid)
         else:
-            context = {"state": "no_history", "session_id": None, "messages": []}
+            context = {
+                "state": "no_history",
+                "session_id": None,
+                "messages": [],
+                "preferred_locale": "zh-CN",
+            }
         ranked, _ = _rank_learning_content(
             context.get("messages") or [],
             count=len(LEARNING_CONTENT_CARDS),
@@ -2688,11 +2730,15 @@ async def get_card_detail(card_id: str, uid: Optional[str] = Depends(_opt_uid)):
             include_detail=True,
         )
         card = next(item for item in ranked if item["id"] == card_id)
-        card["resources"] = [
+        trusted_resources = [
             resource
             for resource in card.get("resources", [])
             if is_trusted_resource_url(str(resource.get("url") or ""))
         ]
+        card["resources"] = order_learning_resources(
+            trusted_resources,
+            str(context.get("preferred_locale") or "zh-CN"),
+        )
         return card
 
     gen_cards = await _db_get_gen_cards()
@@ -3717,7 +3763,7 @@ async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
-    return await _db_set_privacy(uid, body.dict())
+    return await _db_set_privacy(uid, body.model_dump())
 
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):

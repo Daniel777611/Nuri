@@ -42,7 +42,7 @@ const card = {
   body: "固定而温柔的睡前步骤，能让孩子知道一天即将结束。可以从洗漱、读一本书、说一句晚安开始，不需要复杂，关键是每天大致一致。",
   tags: ["睡眠", "亲子互动", "日常习惯"], hook_line: "从今晚开始，试试只保留一个最容易坚持的步骤。",
 };
-const learningCards = [
+const learningCards: any[] = [
   {
     id: "learn_sleep_routine",
     topic: "sleep",
@@ -91,8 +91,68 @@ const learningCards = [
     ],
   },
 ];
+const previewLocalizedResources: Record<string, any[]> = {
+  learn_sleep_routine: [
+    { id: "sleep-zh-cn-article", kind: "article", title: "0岁～5岁儿童睡眠卫生指南", publisher: "国家卫生健康委员会", language: "简体中文", locales: ["zh-CN"], description: "介绍固定睡前活动、规律作息和儿童睡眠环境。", url: "https://www.nhc.gov.cn/wjw/c100311/201710/3f9da54855444a6b8f49051993a78933.shtml" },
+    { id: "sleep-zh-cn-video", kind: "video", title: "儿童青少年睡眠健康（上）", publisher: "国家卫生健康委员会", language: "中文视频 · 简体中文页面", locales: ["zh-CN"], description: "讲解规律作息与良好睡眠习惯。", url: "https://www.nhc.gov.cn/yzygj/jswsfwn/202605/8c96e1814dd4428cbc4fe4ce9304407d.shtml" },
+    { id: "sleep-zh-tw-article", kind: "article", title: "搖籃曲之一：建立睡眠常規", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "說明嬰幼兒睡眠週期、夜醒回應及建立睡前常規的方法。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/13043.html" },
+    { id: "sleep-zh-tw-video", kind: "video", title: "建立睡前常規", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範固定而可重複的睡前步驟。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000015.html" },
+  ],
+  learn_big_feelings: [
+    { id: "emotion-zh-cn-article", kind: "article", title: "0-5岁：为孩子一生的心理健康打下基础", publisher: "联合国儿童基金会中国", language: "简体中文", locales: ["zh-CN"], description: "说明照顾者如何给予安抚、回应和共同调节。", url: "https://www.unicef.cn/mental-health/build-foundation-0-5-years" },
+    { id: "emotion-zh-cn-video", kind: "video", title: "观察孩子的需求，并给予积极的回应", publisher: "联合国儿童基金会中国", language: "中文视频 · 简体中文页面", locales: ["zh-CN"], description: "示范如何识别孩子的信号并及时回应。", url: "https://www.unicef.cn/videos/how-to-responsive-care" },
+    { id: "emotion-zh-tw-article", kind: "article", title: "培育高「EQ」孩子從零歲開始", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "用觀察、轉換角度和表達同感協助孩子調節情緒。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/30159.html" },
+    { id: "emotion-zh-tw-video", kind: "video", title: "「情緒導航」小秘訣（嬰幼兒篇）", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範如何理解、接納孩子的情緒並表達同感。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000114.html" },
+  ],
+  learn_picky_eating: [
+    { id: "food-zh-cn-article", kind: "article", title: "托育机构婴幼儿喂养与营养指南（试行）", publisher: "国家卫生健康委员会", language: "简体中文", locales: ["zh-CN"], description: "强调顺应喂养、鼓励但不强迫进食。", url: "https://www.nhc.gov.cn/rkjcyjtfzs/c100147/202201/a7d3fc17153f410ea97270814a3e662f.shtml" },
+    { id: "food-zh-cn-video", kind: "video", title: "育儿有道：宝宝拒绝辅食怎么办", publisher: "联合国儿童基金会中国", language: "中文节目 · 简体中文页面", locales: ["zh-CN"], description: "讨论添加辅食阶段常见的拒绝进食问题。", url: "https://www.unicef.cn/videos/ecd-master-class-breastfeeding-ep-3-first-part" },
+    { id: "food-zh-tw-article", kind: "article", title: "孩子「偏食」怎麼辦？", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "建議重複提供新食物、不強迫進食。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/20033.html" },
+    { id: "food-zh-tw-video", kind: "video", title: "孩子偏食，應該怎樣處理？", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "說明如何降低進餐壓力並增加接觸機會。", url: "https://www.fhs.gov.hk/tc_chi/health_info/faq/child_health/GN1_2_4_2.html" },
+  ],
+  learn_serve_and_return: [
+    { id: "connection-zh-cn-article", kind: "article", title: "通过游戏促进宝宝大脑发育", publisher: "联合国儿童基金会中国", language: "简体中文", locales: ["zh-CN"], description: "解释亲子之间“你来我往”的回应如何支持宝宝学习。", url: "https://www.unicef.cn/parenting-site/3-ways-parents-can-make-their-babies-smarter" },
+    { id: "connection-zh-cn-video", kind: "video", title: "陪伴孩子、鼓励孩子玩耍", publisher: "联合国儿童基金会中国", language: "中文视频 · 简体中文页面", locales: ["zh-CN"], description: "示范如何在互动和游戏中跟随并回应孩子。", url: "https://www.unicef.cn/videos/how-to-guide-your-children-to-learn-through-play" },
+    { id: "connection-zh-tw-article", kind: "article", title: "親子溝通——給一歲前嬰兒的家長", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "說明如何觀察寶寶訊號、回應並輪流互動。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/13046.html" },
+    { id: "connection-zh-tw-video", kind: "video", title: "親子溝通（四至六個月）", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範觀察、回應和來回互動。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000025.html" },
+  ],
+};
+for (const learningCard of learningCards) {
+  const englishResources = (learningCard.resources || []).map((resource: any) => ({
+    ...resource,
+    locales: resource.language?.includes("西班牙") ? ["en", "es"] : ["en"],
+  }));
+  learningCard.resources = [
+    ...(previewLocalizedResources[learningCard.id] || []),
+    ...englishResources,
+  ];
+}
+function orderPreviewResources(resources: any[], language: string) {
+  const preferred = language === "zh" ? "zh-CN" : language;
+  const localeOrder = preferred === "zh-TW"
+    ? ["zh-TW", "zh-CN", "en"]
+    : preferred === "en"
+      ? ["en", "zh-CN", "zh-TW"]
+      : ["zh-CN", "zh-TW", "en"];
+  return resources
+    .map((resource, index) => ({ resource, index }))
+    .sort((left, right) => {
+      const leftRank = Math.min(...left.resource.locales.map((locale: string) => {
+        const rank = localeOrder.indexOf(locale);
+        return rank < 0 ? localeOrder.length : rank;
+      }));
+      const rightRank = Math.min(...right.resource.locales.map((locale: string) => {
+        const rank = localeOrder.indexOf(locale);
+        return rank < 0 ? localeOrder.length : rank;
+      }));
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      if (left.resource.kind !== right.resource.kind) return left.resource.kind === "article" ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(({ resource }) => resource);
+}
 let favorites: any[] = [card];
-let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh" };
+let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
   {
     id: "card-chat-1",
@@ -253,6 +313,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
       return {
         ...learningCard,
+        resources: orderPreviewResources(learningCard.resources || [], privacy.language),
         personalization_reason: isSleepMatch
           ? "因为你最近和 NURI 聊到了“睡眠与作息”"
           : privacy.allow_history_training

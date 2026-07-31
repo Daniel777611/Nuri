@@ -23,8 +23,16 @@ TRUSTED_RESOURCE_HOSTS = frozenset(
         "youtube.com",
         "www.youtube.com",
         "youtu.be",
+        "unicef.cn",
+        "www.unicef.cn",
+        "nhc.gov.cn",
+        "www.nhc.gov.cn",
+        "fhs.gov.hk",
+        "www.fhs.gov.hk",
     }
 )
+
+SUPPORTED_RESOURCE_LOCALES = frozenset({"zh-CN", "zh-TW", "en", "es"})
 
 
 def is_trusted_resource_url(url: str) -> bool:
@@ -35,6 +43,34 @@ def is_trusted_resource_url(url: str) -> bool:
     except (TypeError, ValueError):
         return False
     return parsed.scheme == "https" and (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+
+
+def order_learning_resources(resources: list[dict], preferred_locale: str) -> list[dict]:
+    """Return a stable, language-aware copy of reviewed learning resources."""
+
+    normalized_locale = "zh-CN" if preferred_locale == "zh" else preferred_locale
+    locale_order = {
+        "zh-CN": ("zh-CN", "zh-TW", "en", "es"),
+        "zh-TW": ("zh-TW", "zh-CN", "en", "es"),
+        "en": ("en", "zh-CN", "zh-TW", "es"),
+    }.get(normalized_locale, ("zh-CN", "zh-TW", "en", "es"))
+    locale_rank = {locale: index for index, locale in enumerate(locale_order)}
+    kind_rank = {"article": 0, "video": 1}
+
+    def sort_key(indexed_resource: tuple[int, dict]) -> tuple[int, int, int]:
+        index, resource = indexed_resource
+        locales = resource.get("locales") or []
+        best_locale_rank = min(
+            (locale_rank.get(locale, len(locale_order)) for locale in locales),
+            default=len(locale_order),
+        )
+        return (
+            best_locale_rank,
+            kind_rank.get(str(resource.get("kind") or ""), len(kind_rank)),
+            index,
+        )
+
+    return [resource for _, resource in sorted(enumerate(resources), key=sort_key)]
 
 
 LEARNING_CONTENT_CARDS = [
@@ -386,6 +422,370 @@ LEARNING_CONTENT_CARDS = [
         ],
     },
 ]
+
+
+_LOCALIZED_RESOURCES_BY_CARD_ID = {
+    "learn_sleep_routine": [
+        {
+            "id": "sleep-zh-cn-article",
+            "kind": "article",
+            "title": "0岁～5岁儿童睡眠卫生指南",
+            "publisher": "国家卫生健康委员会",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "介绍固定睡前活动、规律作息和儿童睡眠环境等可执行建议。",
+            "url": "https://www.nhc.gov.cn/wjw/c100311/201710/3f9da54855444a6b8f49051993a78933.shtml",
+        },
+        {
+            "id": "sleep-zh-cn-video",
+            "kind": "video",
+            "title": "儿童青少年睡眠健康（上）",
+            "publisher": "国家卫生健康委员会",
+            "language": "中文视频 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "从睡眠健康角度讲解规律作息与良好睡眠习惯，可作为家庭实践的补充。",
+            "url": "https://www.nhc.gov.cn/yzygj/jswsfwn/202605/8c96e1814dd4428cbc4fe4ce9304407d.shtml",
+        },
+        {
+            "id": "sleep-zh-tw-article",
+            "kind": "article",
+            "title": "搖籃曲之一：建立睡眠常規",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "說明嬰幼兒睡眠週期、夜醒回應及建立睡前常規的方法。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/13043.html",
+        },
+        {
+            "id": "sleep-zh-tw-video",
+            "kind": "video",
+            "title": "建立睡前常規",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "示範如何依寶寶的特性安排固定、平靜而可重複的睡前步驟。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000015.html",
+        },
+    ],
+    "learn_big_feelings": [
+        {
+            "id": "emotion-zh-cn-article",
+            "kind": "article",
+            "title": "0-5岁：为孩子一生的心理健康打下基础",
+            "publisher": "联合国儿童基金会中国",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "说明照顾者如何在孩子有强烈情绪时给予安抚、回应和共同调节。",
+            "url": "https://www.unicef.cn/mental-health/build-foundation-0-5-years",
+        },
+        {
+            "id": "emotion-zh-cn-video",
+            "kind": "video",
+            "title": "观察孩子的需求，并给予积极的回应",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文视频 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "通过照顾场景介绍如何识别孩子的信号，并及时给予温和、积极的回应。",
+            "url": "https://www.unicef.cn/videos/how-to-responsive-care",
+        },
+        {
+            "id": "emotion-zh-tw-article",
+            "kind": "article",
+            "title": "培育高「EQ」孩子從零歲開始：為嬰幼兒「情緒導航」的小錦囊",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "用觀察、轉換角度和表達同感，協助嬰幼兒逐步調節情緒。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/30159.html",
+        },
+        {
+            "id": "emotion-zh-tw-video",
+            "kind": "video",
+            "title": "「情緒導航」小秘訣（嬰幼兒篇）",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "示範家長如何理解、接納孩子的情緒並表達同感。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000114.html",
+        },
+    ],
+    "learn_picky_eating": [
+        {
+            "id": "food-zh-cn-article",
+            "kind": "article",
+            "title": "托育机构婴幼儿喂养与营养指南（试行）",
+            "publisher": "国家卫生健康委员会",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "强调顺应喂养、识别饥饱信号、鼓励但不强迫孩子进食。",
+            "url": "https://www.nhc.gov.cn/rkjcyjtfzs/c100147/202201/a7d3fc17153f410ea97270814a3e662f.shtml",
+        },
+        {
+            "id": "food-zh-cn-video",
+            "kind": "video",
+            "title": "育儿有道：宝宝拒绝辅食怎么办",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文节目 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "讨论添加辅食阶段常见的拒绝进食问题和家庭应对方式。",
+            "url": "https://www.unicef.cn/videos/ecd-master-class-breastfeeding-ep-3-first-part",
+        },
+        {
+            "id": "food-zh-tw-article",
+            "kind": "article",
+            "title": "孩子「偏食」怎麼辦？",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "建議重複提供新食物、不強迫進食，也不以零食作獎勵。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/20033.html",
+        },
+        {
+            "id": "food-zh-tw-video",
+            "kind": "video",
+            "title": "孩子偏食，應該怎樣處理？",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "說明如何降低進餐壓力，並逐步增加孩子接觸新食物的機會。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/faq/child_health/GN1_2_4_2.html",
+        },
+    ],
+    "learn_development_milestones": [
+        {
+            "id": "development-zh-cn-article",
+            "kind": "article",
+            "title": "婴幼儿早期发展服务指南（试行）",
+            "publisher": "国家卫生健康委员会",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "按月龄覆盖大运动、精细动作、语言、认知和社会交往发展。",
+            "url": "https://www.nhc.gov.cn/wjw/c100378/202502/658e7e4eb5024746b13186ac0f97a27b.shtml",
+        },
+        {
+            "id": "development-zh-cn-video",
+            "kind": "video",
+            "title": "密切关注孩子的健康至关重要",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文视频 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "介绍如何观察孩子的发展轨迹，以及何时向专业人员咨询。",
+            "url": "https://www.unicef.cn/videos/how-to-make-sure-your-child-development-is-on-track",
+        },
+        {
+            "id": "development-zh-tw-article",
+            "kind": "article",
+            "title": "兒童發展 5：八至十二個月大嬰兒的發展",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "涵蓋坐、爬、扶站、精細動作、語言、認知和分離反應。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/15697.html",
+        },
+        {
+            "id": "development-zh-tw-video",
+            "kind": "video",
+            "title": "八至十二個月的發展",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "以日常畫面說明八至十二個月嬰兒常見的發展表現。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000034.html",
+        },
+    ],
+    "learn_language_milestones": [
+        {
+            "id": "language-zh-cn-article",
+            "kind": "article",
+            "title": "如何与宝宝交流",
+            "publisher": "联合国儿童基金会中国",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "介绍儿向语、重复、慢速表达、日常交流和轮流回应。",
+            "url": "https://www.unicef.cn/parenting-site/how-talk-your-baby",
+        },
+        {
+            "id": "language-zh-cn-video",
+            "kind": "video",
+            "title": "育儿有道：用早期阅读支持语言学习",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文节目 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "讲解亲子阅读和共同注意如何支持幼儿的理解与表达。",
+            "url": "https://www.unicef.cn/videos/ecd-master-class-early-learning-ep04",
+        },
+        {
+            "id": "language-zh-tw-article",
+            "kind": "article",
+            "title": "幼兒學說話之一（一至兩歲）",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "介紹一至兩歲幼兒的語言理解、表達、手勢和求助訊號。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/13049.html",
+        },
+        {
+            "id": "language-zh-tw-video",
+            "kind": "video",
+            "title": "言語治療師話你知",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "言語治療師分享親子溝通、語言發展和應留意的訊號。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000029_p2.html",
+        },
+    ],
+    "learn_tantrum_boundaries": [
+        {
+            "id": "behavior-zh-cn-article",
+            "kind": "article",
+            "title": "如何用既聪明又健康的方式管教孩子",
+            "publisher": "联合国儿童基金会中国",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "介绍明确期望、平静后果、一致执行和避免喊叫体罚。",
+            "url": "https://www.unicef.cn/parenting-site/how-discipline-your-child-smart-and-healthy-way",
+        },
+        {
+            "id": "behavior-zh-cn-video",
+            "kind": "video",
+            "title": "育儿有道：哭闹时如何沟通和建立规则",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文节目 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "讨论孩子大哭大闹时的沟通方式，以及如何建立规则意识。",
+            "url": "https://www.unicef.cn/videos/ecd-master-class-positive-parenting-ep02",
+        },
+        {
+            "id": "behavior-zh-tw-article",
+            "kind": "article",
+            "title": "正面親職（三）：應對學前兒童的不當行為",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "說明如何訂立簡短規則、即時制止危險行為並保持一致。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/14837.html",
+        },
+        {
+            "id": "behavior-zh-tw-video",
+            "kind": "video",
+            "title": "正面管教要點（適用於幼兒）",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "示範鼓勵好行為、訂立簡單規則和穩定執行的方法。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000087.html",
+        },
+    ],
+    "learn_serve_and_return": [
+        {
+            "id": "connection-zh-cn-article",
+            "kind": "article",
+            "title": "通过游戏促进宝宝大脑发育",
+            "publisher": "联合国儿童基金会中国",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "解释亲子之间“你来我往”的回应如何支持宝宝学习和大脑发育。",
+            "url": "https://www.unicef.cn/parenting-site/3-ways-parents-can-make-their-babies-smarter",
+        },
+        {
+            "id": "connection-zh-cn-video",
+            "kind": "video",
+            "title": "陪伴孩子、鼓励孩子玩耍",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文视频 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "示范如何利用日常素材，在互动和游戏中跟随并回应孩子。",
+            "url": "https://www.unicef.cn/videos/how-to-guide-your-children-to-learn-through-play",
+        },
+        {
+            "id": "connection-zh-tw-article",
+            "kind": "article",
+            "title": "親子溝通——給一歲前嬰兒的家長",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "說明如何觀察寶寶訊號、即時回應、停頓等待並輪流互動。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/13046.html",
+        },
+        {
+            "id": "connection-zh-tw-video",
+            "kind": "video",
+            "title": "親子溝通（四至六個月）",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "用照顧情境示範觀察、回應和來回互動的親子溝通。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000025.html",
+        },
+    ],
+    "learn_home_safety": [
+        {
+            "id": "safety-zh-cn-article",
+            "kind": "article",
+            "title": "预防伤害",
+            "publisher": "联合国儿童基金会中国",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "覆盖溺水、烫伤、触电、跌落、中毒和近距离看护等家庭安全重点。",
+            "url": "https://www.unicef.cn/%E9%A2%84%E9%98%B2%E4%BC%A4%E5%AE%B3",
+        },
+        {
+            "id": "safety-zh-cn-video",
+            "kind": "video",
+            "title": "预防儿童意外伤害",
+            "publisher": "联合国儿童基金会中国",
+            "language": "中文视频 · 简体中文页面",
+            "locales": ["zh-CN"],
+            "description": "用常见家庭场景讲解如何提前识别并减少儿童意外伤害风险。",
+            "url": "https://www.unicef.cn/videos/prevent-injury-children",
+        },
+        {
+            "id": "safety-zh-tw-article",
+            "kind": "article",
+            "title": "愛護兒童，慎防意外（一歲至三歲）",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "繁體中文",
+            "locales": ["zh-TW"],
+            "description": "整理跌傷、窒息、藥物、廚房、浴室、家具等家居風險。",
+            "url": "https://www.fhs.gov.hk/tc_chi/health_info/child/15663.html",
+        },
+        {
+            "id": "safety-zh-tw-video",
+            "kind": "video",
+            "title": "家居安全",
+            "publisher": "香港衞生署家庭健康服務",
+            "language": "粵語影片 · 繁體文字稿",
+            "locales": ["zh-TW"],
+            "description": "逐一示範客廳、廚房、浴室和睡房中需要留意的安全措施。",
+            "url": "https://www.fhs.gov.hk/tc_chi/mulit_med/000020.html",
+        },
+    ],
+}
+
+_MULTILINGUAL_ENGLISH_RESOURCE_IDS = frozenset(
+    {
+        "development-cdc-article",
+        "language-cdc-article",
+        "connection-harvard-article",
+        "connection-harvard-video",
+    }
+)
+
+for _card in LEARNING_CONTENT_CARDS:
+    _reviewed_english_resources = [
+        {
+            **resource,
+            "locales": ["en", "es"]
+            if resource["id"] in _MULTILINGUAL_ENGLISH_RESOURCE_IDS
+            else ["en"],
+        }
+        for resource in _card.get("resources", [])
+    ]
+    _card["resources"] = [
+        *_LOCALIZED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
+        *_reviewed_english_resources,
+    ]
 
 
 LEARNING_CONTENT_BY_ID = {card["id"]: card for card in LEARNING_CONTENT_CARDS}

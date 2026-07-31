@@ -33,7 +33,7 @@ export default function Profile() {
     allow_history_training: false,
     daily_push: false,
     anonymous_community_share: false,
-    language: "zh",
+    language: "zh-CN",
   });
   const [privacyUnavailable, setPrivacyUnavailable] = useState(true);
   const [confirmWipe, setConfirmWipe] = useState(false);

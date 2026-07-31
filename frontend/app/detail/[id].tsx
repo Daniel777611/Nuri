@@ -23,6 +23,12 @@ import { colors, radius, spacing, type } from "@/src/theme";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DETAIL_FRAME_WIDTH = 402;
+const RESOURCE_LOCALE_OPTIONS = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "en", label: "English" },
+] as const;
+type ResourceLocale = (typeof RESOURCE_LOCALE_OPTIONS)[number]["value"];
 
 const TAG_BG: Record<string, string> = {
   tip: "#EEF6F1",
@@ -41,9 +47,20 @@ type LearningResource = {
   title: string;
   publisher: string;
   language?: string;
+  locales?: string[];
   description?: string;
   url: string;
 };
+
+function resourceLocales(resource: LearningResource): ResourceLocale[] {
+  const explicit = (resource.locales || []).filter((locale): locale is ResourceLocale =>
+    RESOURCE_LOCALE_OPTIONS.some((option) => option.value === locale)
+  );
+  if (explicit.length) return explicit;
+  if (resource.language?.includes("繁") || resource.language?.includes("粵")) return ["zh-TW"];
+  if (resource.language?.includes("简") || resource.language?.includes("中文")) return ["zh-CN"];
+  return ["en"];
+}
 
 export default function Detail() {
   const router = useRouter();
@@ -54,6 +71,7 @@ export default function Detail() {
   const [reloadSequence, setReloadSequence] = useState(0);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [resourceLocale, setResourceLocale] = useState<ResourceLocale | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const frameWidth = Math.min(viewportWidth, DETAIL_FRAME_WIDTH);
@@ -110,6 +128,12 @@ export default function Detail() {
     };
   }, [id, reloadSequence]);
 
+  useEffect(() => {
+    const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
+    const firstLocale = resources.flatMap(resourceLocales)[0] || null;
+    setResourceLocale(firstLocale);
+  }, [card]);
+
   const toggleFavorite = async () => {
     if (!id) return;
     try {
@@ -155,6 +179,7 @@ export default function Detail() {
         card_id: card?.id,
         resource_id: resource.id,
         resource_kind: resource.kind,
+        resource_locale: resourceLocales(resource)[0],
       })
       .catch(() => {});
     try {
@@ -195,6 +220,15 @@ export default function Detail() {
     }
 
     const resources: LearningResource[] = Array.isArray(card.resources) ? card.resources : [];
+    const availableResourceLocales = RESOURCE_LOCALE_OPTIONS.filter((option) =>
+      resources.some((resource) => resourceLocales(resource).includes(option.value))
+    );
+    const selectedResourceLocale =
+      availableResourceLocales.find((option) => option.value === resourceLocale)?.value ||
+      availableResourceLocales[0]?.value;
+    const visibleResources = selectedResourceLocale
+      ? resources.filter((resource) => resourceLocales(resource).includes(selectedResourceLocale))
+      : resources;
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -250,15 +284,44 @@ export default function Detail() {
           <View style={styles.resourcesSection} testID="detail-learning-resources">
             <Text style={styles.sectionTitle}>继续学习</Text>
             <Text style={styles.resourcesIntro}>
-              以下内容来自经过审核的官方机构，将在外部网站打开。
+              以下内容来自经过审核的官方机构，可切换语言并在外部网站打开。
             </Text>
-            {resources.map((resource) => (
+            {availableResourceLocales.length > 1 ? (
+              <View style={styles.resourceLocaleTabs} testID="detail-resource-locale-tabs">
+                {availableResourceLocales.map((option) => {
+                  const selected = option.value === selectedResourceLocale;
+                  return (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => setResourceLocale(option.value)}
+                      style={[
+                        styles.resourceLocaleTab,
+                        selected && styles.resourceLocaleTabSelected,
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      testID={`detail-resource-locale-${option.value}`}
+                    >
+                      <Text
+                        style={[
+                          styles.resourceLocaleTabText,
+                          selected && styles.resourceLocaleTabTextSelected,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+            {visibleResources.map((resource) => (
               <Pressable
                 key={resource.id}
                 onPress={() => openResource(resource)}
                 style={({ pressed }) => [styles.resourceCard, pressed && styles.resourceCardPressed]}
                 accessibilityRole="link"
-                accessibilityLabel={`${resource.kind === "video" ? "视频" : "文章"}：${resource.title}`}
+                accessibilityLabel={`${resource.language ? `${resource.language}，` : ""}${resource.kind === "video" ? "视频" : "文章"}：${resource.title}`}
                 testID={`detail-resource-${resource.id}`}
               >
                 <View
@@ -519,6 +582,30 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: spacing.md,
   },
+  resourceLocaleTabs: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  resourceLocaleTab: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: "#FFFFFF",
+  },
+  resourceLocaleTabSelected: {
+    borderColor: colors.brand,
+    backgroundColor: colors.brandTertiary,
+  },
+  resourceLocaleTabText: {
+    fontSize: type.sm,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
+  },
+  resourceLocaleTabTextSelected: { color: colors.onBrandTertiary, fontWeight: "700" },
   resourceCard: {
     flexDirection: "row",
     alignItems: "flex-start",

@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     LEARNING_CONTENT_CARDS,
+    SUPPORTED_RESOURCE_LOCALES,
     is_trusted_resource_url,
+    order_learning_resources,
 )
 
 
@@ -361,10 +363,48 @@ def test_history_training_opt_out_never_reads_or_links_conversations(monkeypatch
 def test_learning_resources_include_trusted_https_article_and_video(card):
     resources = card.get("resources") or []
     kinds = {resource.get("kind") for resource in resources}
+    locales = {
+        locale
+        for resource in resources
+        for locale in resource.get("locales", [])
+    }
 
     assert {"article", "video"} <= kinds
+    assert {"zh-CN", "zh-TW", "en"} <= locales
+    assert all(resource.get("locales") for resource in resources)
+    assert all(
+        locale in SUPPORTED_RESOURCE_LOCALES
+        for resource in resources
+        for locale in resource["locales"]
+    )
     assert all(str(resource.get("url") or "").startswith("https://") for resource in resources)
     assert all(is_trusted_resource_url(resource["url"]) for resource in resources)
+
+
+def test_learning_resource_ids_are_unique():
+    ids = [
+        resource["id"]
+        for card in LEARNING_CONTENT_CARDS
+        for resource in card.get("resources", [])
+    ]
+
+    assert len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize(
+    ("preferred_locale", "expected_first_locale"),
+    [("zh-CN", "zh-CN"), ("zh", "zh-CN"), ("zh-TW", "zh-TW"), ("en", "en")],
+)
+def test_learning_resources_are_ordered_by_preferred_locale(
+    preferred_locale, expected_first_locale
+):
+    original = list(LEARNING_CONTENT_CARDS[0]["resources"])
+
+    ordered = order_learning_resources(original, preferred_locale)
+
+    assert expected_first_locale in ordered[0]["locales"]
+    assert ordered[0]["kind"] == "article"
+    assert LEARNING_CONTENT_CARDS[0]["resources"] == original
 
 
 def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
@@ -380,6 +420,25 @@ def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(main.get_card_detail("learn_does_not_exist", uid=None))
     assert exc_info.value.status_code == 404
+
+
+def test_learning_detail_uses_saved_traditional_chinese_preference(monkeypatch):
+    async def traditional_context(_uid):
+        return {
+            "state": "no_history",
+            "session_id": None,
+            "messages": [],
+            "preferred_locale": "zh-TW",
+        }
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", traditional_context)
+
+    detail = asyncio.run(main.get_card_detail("learn_sleep_routine", uid="parent-1"))
+
+    assert detail["resources"][0]["locales"] == ["zh-TW"]
+    assert detail["resources"][0]["kind"] == "article"
+    assert detail["resources"][1]["locales"] == ["zh-TW"]
+    assert detail["resources"][1]["kind"] == "video"
 
 
 def test_card_context_includes_learning_content_and_resource_titles():
@@ -417,6 +476,10 @@ class _PrivacySettingsTable:
     def maybe_single(self):
         return self
 
+    def limit(self, value):
+        assert value == 1
+        return self
+
     def upsert(self, row, **_kwargs):
         self.action = "upsert"
         self.pending = row
@@ -427,7 +490,7 @@ class _PrivacySettingsTable:
             self.store[self.pending["key"]] = self.pending["value"]
             return _Result([self.pending])
         value = self.store.get(self.key)
-        return _Result({"value": value} if value is not None else None)
+        return _Result([{"value": value}] if value is not None else [])
 
 
 class _PrivacySupabase:
@@ -486,7 +549,7 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
                 "allow_history_training": False,
                 "daily_push": True,
                 "anonymous_community_share": False,
-                "language": "zh",
+                "language": "zh-TW",
             },
         )
     )
@@ -499,6 +562,42 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
     monkeypatch.setattr(main, "_privacy", {})
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
     assert loaded["allow_history_training"] is False
+    assert loaded["language"] == "zh-TW"
+
+
+def test_legacy_chinese_privacy_locale_normalizes_to_simplified_chinese():
+    settings = main._normalized_privacy_settings({"language": "zh"})
+
+    assert settings["language"] == "zh-CN"
+
+
+@pytest.mark.parametrize("locale", ["zh-CN", "zh-TW", "en"])
+def test_privacy_model_accepts_supported_resource_locales(locale):
+    body = main.PrivacySettings(language=locale)
+
+    assert body.language == locale
+
+
+def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(main, "_privacy", {})
+    payload = {
+        "allow_history_training": True,
+        "daily_push": True,
+        "anonymous_community_share": False,
+        "language": "zh-TW",
+    }
+
+    with TestClient(main.app) as client:
+        saved = client.put("/api/privacy", json=payload)
+        loaded = client.get("/api/privacy")
+        rejected = client.put("/api/privacy", json={**payload, "language": "fr"})
+
+    assert saved.status_code == 200
+    assert saved.json()["language"] == "zh-TW"
+    assert loaded.status_code == 200
+    assert loaded.json()["language"] == "zh-TW"
+    assert rejected.status_code == 422
 
 
 def test_privacy_lookup_fails_closed_when_storage_is_unavailable(monkeypatch):
