@@ -824,7 +824,7 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 _NURI_JSON_SUFFIX = """
 
-以合法 JSON 格式回复：{"text": "...", "quick_replies": [...], "cited": []}
+以合法 JSON 格式回复：{"text": "...", "cited": []}
 
 text：
 - 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
@@ -834,12 +834,6 @@ text：
 - 先回应对方刚分享的内容（可以自然提一句你记得的细节），再自然延伸，不要用模板化开场白
 - 口语化但有专业感
 - 结尾一定要有一个问句，类型按上面【每次回复都以一个问句收尾】挑
-
-quick_replies（用户可能说的下一句话，不是菜单）：
-- 让它们读起来像是在回答你结尾那个问句
-- 打招呼/寒暄：0-2个，像真人回应
-- 正在聊话题：1-3个，自然接下去
-- 每个不超过10字
 
 cited（你在正文里引用了哪几条来源）：
 - 只填系统给你的来源清单里的编号，例如 [1] [3] 就填 [1, 3]
@@ -864,14 +858,13 @@ _NURI_RESPONSE_FORMAT = {
                 # `text` is declared first so it also streams first: the
                 # streaming path surfaces it while the rest is still arriving.
                 "text": {"type": "string"},
-                "quick_replies": {"type": "array", "items": {"type": "string"}},
                 # Indices into the numbered source list in the prompt — never
                 # URLs. The model physically cannot invent a link it was not
                 # given, which is the one guarantee worth designing the schema
                 # around for a parenting product.
                 "cited": {"type": "array", "items": {"type": "integer"}},
             },
-            "required": ["text", "quick_replies", "cited"],
+            "required": ["text", "cited"],
             "additionalProperties": False,
         },
     },
@@ -981,7 +974,10 @@ def _parse_nuri_reply(raw: str) -> dict:
     data = json.loads(raw)
     return {
         "text": _unescape_stray_newlines(data.get("text", "")),
-        "quick_replies": data.get("quick_replies", [])[:3],
+        # Retired: the app no longer renders suggested replies, so the model is
+        # no longer asked for them. Kept in the shape so persistence, the
+        # scripted fallback and existing rows all stay as they are.
+        "quick_replies": [],
         "cited": [n for n in (data.get("cited") or []) if isinstance(n, int)],
     }
 

@@ -233,7 +233,6 @@ export default function ChatDetail() {
               <MessageBubble
                 key={m.id}
                 msg={m}
-                onQuick={(q) => send(q)}
                 onAddTask={(task, index) => addGeneratedTask(m, task, index)}
                 isTaskAdded={(index) => approvedTaskIds.includes(`${m.id}-${index}`)}
               />
@@ -241,7 +240,6 @@ export default function ChatDetail() {
             {streamingText ? (
               <MessageBubble
                 msg={{ id: "__streaming__", role: "ai", text: streamingText }}
-                onQuick={() => {}}
                 onAddTask={() => {}}
                 isTaskAdded={() => false}
               />
@@ -293,12 +291,10 @@ export default function ChatDetail() {
 // ── Sub-component: message bubble (text, image, quick replies, transitions) ──
 function MessageBubble({
   msg,
-  onQuick,
   onAddTask,
   isTaskAdded,
 }: {
   msg: Msg;
-  onQuick: (q: string) => void;
   onAddTask: (task: any, index: number) => void;
   isTaskAdded: (index: number) => boolean;
 }) {
@@ -389,20 +385,6 @@ function MessageBubble({
           </Text>
         ) : null}
         {isAI && msg.sources?.length ? <SourceChips sources={msg.sources} /> : null}
-        {isAI && msg.quick_replies && msg.quick_replies.length > 0 ? (
-          <View style={styles.quickReplies}>
-            {msg.quick_replies.map((q) => (
-              <Pressable
-                key={q}
-                onPress={() => onQuick(q)}
-                style={styles.qrBtn}
-                testID={`quick-${q}`}
-              >
-                <Text style={styles.qrText}>{q}</Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
       </View>
     </View>
   );
@@ -560,24 +542,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceTertiary,
   },
 
-  quickReplies: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: spacing.sm,
-  },
-  qrBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceTertiary,
-    borderColor: colors.border,
-    borderWidth: 1,
-  },
-  qrText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
 
   sources: {
     marginTop: spacing.sm,
