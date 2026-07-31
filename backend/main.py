@@ -1924,6 +1924,156 @@ async def track_event(ev: AnalyticsIn):
     return {"ok": True}
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
+def _chat_preview_row(row: Optional[dict], include_role: bool = False) -> Optional[dict]:
+    if not row:
+        return None
+    preview = {
+        "id": row.get("id"),
+        "text": row.get("text") or "",
+        "created_at": row.get("created_at"),
+    }
+    if include_role:
+        preview["role"] = row.get("role")
+    return preview
+
+
+def _chat_activity_key(row: dict) -> tuple[str, str]:
+    # Supabase timestamps are ISO-8601 strings, so lexical ordering preserves
+    # chronology. The id provides a deterministic tie-break for equal times.
+    return (str(row.get("created_at") or ""), str(row.get("id") or ""))
+
+
+def _main_chat_preview_payload(
+    session: Optional[dict] = None,
+    last_message: Optional[dict] = None,
+    last_user_message: Optional[dict] = None,
+) -> dict:
+    if not session:
+        return {
+            "has_conversation": False,
+            "session_id": None,
+            "title": None,
+            "last_activity_at": None,
+            "last_user_message": None,
+            "last_message": None,
+        }
+    return {
+        "has_conversation": True,
+        "session_id": session.get("id"),
+        "title": session.get("title"),
+        "last_activity_at": (
+            (last_message or {}).get("created_at") or session.get("created_at")
+        ),
+        "last_user_message": _chat_preview_row(last_user_message),
+        "last_message": _chat_preview_row(last_message, include_role=True),
+    }
+
+
+def _main_chat_preview_from_memory(uid: str) -> dict:
+    sessions = [
+        session
+        for session in _sessions.values()
+        if session.get("user_id") == uid and not session.get("source_card_id")
+    ]
+    if not sessions:
+        return _main_chat_preview_payload()
+
+    session_ids = {session["id"] for session in sessions}
+    all_messages = [
+        {
+            **message,
+            "session_id": message.get("session_id") or session_id,
+        }
+        for session_id in session_ids
+        for message in _messages.get(session_id, [])
+    ]
+    last_user_message = max(
+        (message for message in all_messages if message.get("role") == "user"),
+        key=_chat_activity_key,
+        default=None,
+    )
+    if last_user_message:
+        session = next(
+            item
+            for item in sessions
+            if item["id"] == last_user_message.get("session_id")
+        )
+    else:
+        session = max(sessions, key=_chat_activity_key)
+
+    session_messages = _messages.get(session["id"], [])
+    last_message = max(session_messages, key=_chat_activity_key, default=None)
+    return _main_chat_preview_payload(session, last_message, last_user_message)
+
+
+@api.get("/chat/main/preview")
+async def get_main_chat_preview(uid: str = Depends(_req_uid)):
+    """Return a small, read-only resume snapshot for the signed-in parent.
+
+    The main conversation containing the parent's most recent message is
+    selected, so a newly created AI-only greeting cannot hide real history.
+    Only the text fields needed by the home card are returned; images,
+    transitions, and full history stay out of the payload.
+    """
+    sb = _get_supabase()
+    if not sb:
+        return _main_chat_preview_from_memory(uid)
+
+    try:
+        session_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions")
+            .select("id,title,source_card_id,created_at")
+            .eq("user_id", uid)
+            .execute()
+        )
+        main_sessions = [
+            session
+            for session in (session_res.data or [])
+            if not session.get("source_card_id")
+        ]
+        if not main_sessions:
+            return _main_chat_preview_payload()
+
+        session_ids = [session["id"] for session in main_sessions]
+        user_message_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .in_("session_id", session_ids)
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        last_user_message = (user_message_res.data or [None])[0]
+        if last_user_message:
+            session = next(
+                item
+                for item in main_sessions
+                if item["id"] == last_user_message.get("session_id")
+            )
+        else:
+            session = max(main_sessions, key=_chat_activity_key)
+
+        message_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .eq("session_id", session["id"])
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        last_message = (message_res.data or [None])[0]
+        return _main_chat_preview_payload(session, last_message, last_user_message)
+    except Exception as exc:
+        print(f"[warn] get_main_chat_preview error: {exc}")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Conversation preview is temporarily unavailable",
+        ) from exc
+
+
 @api.post("/chat/sessions")
 async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_opt_uid)):
     card_id = body.card_id

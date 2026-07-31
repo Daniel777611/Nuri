@@ -8,7 +8,7 @@ let profile = {
   email: "preview@nuri.app",
   nickname: "Momo妈妈",
   city: "Toronto",
-  onboarding_completed: false,
+  onboarding_completed: true,
   top_concerns: ["sleep"],
 };
 
@@ -44,10 +44,52 @@ const card = {
 };
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh" };
-let sessions = [{ id: "chat-1", title: "聊聊小满最近的睡眠", created_at: "2026-07-15T08:30:00.000Z" }];
+let sessions = [
+  {
+    id: "card-chat-1",
+    title: "如何帮孩子建立稳定的睡前仪式？",
+    source_card_id: "card-1",
+    created_at: "2026-07-16T08:30:00.000Z",
+  },
+  {
+    id: "chat-1",
+    title: "聊聊小满最近的睡眠",
+    source_card_id: null,
+    created_at: "2026-07-15T08:30:00.000Z",
+  },
+];
 let messages: Record<string, any[]> = {
+  "card-chat-1": [
+    {
+      id: "card-msg-1",
+      session_id: "card-chat-1",
+      role: "ai",
+      text: "固定的睡前步骤会让孩子更容易预期接下来要发生什么。",
+      created_at: "2026-07-16T08:31:00.000Z",
+    },
+  ],
   "chat-1": [
-    { id: "msg-1", role: "ai", text: "早上好，Momo妈妈。昨晚小满睡得怎么样？", quick_replies: ["入睡有点困难", "睡得不错", "想聊聊别的问题"] },
+    {
+      id: "msg-1",
+      session_id: "chat-1",
+      role: "ai",
+      text: "早上好，Momo妈妈。昨晚小满睡得怎么样？",
+      created_at: "2026-07-15T08:31:00.000Z",
+    },
+    {
+      id: "msg-2",
+      session_id: "chat-1",
+      role: "user",
+      text: "小满昨晚还是醒了两次，我该怎么帮他睡得更安稳？",
+      created_at: "2026-07-17T08:32:00.000Z",
+    },
+    {
+      id: "msg-3",
+      session_id: "chat-1",
+      role: "ai",
+      text: "我们可以先从固定夜醒后的回应方式开始，连续观察三晚。",
+      created_at: "2026-07-17T08:33:00.000Z",
+    },
   ],
 };
 
@@ -56,6 +98,12 @@ const bodyOf = (init?: RequestInit): any => {
 };
 let idSequence = 0;
 const id = (prefix: string) => `${prefix}-${Date.now()}-${++idSequence}`;
+const newest = (items: any[]) =>
+  [...items].sort((a, b) =>
+    `${a?.created_at || ""}:${a?.id || ""}`.localeCompare(
+      `${b?.created_at || ""}:${b?.id || ""}`,
+    )
+  ).pop() || null;
 
 export async function previewRequest(path: string, init?: RequestInit): Promise<any> {
   const method = init?.method || "GET";
@@ -112,16 +160,60 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/privacy" && method === "PUT") return (privacy = { ...privacy, ...body });
   if (path === "/privacy/wipe") return {};
 
+  if (path === "/chat/main/preview" && method === "GET") {
+    const mainSessions = sessions.filter((session) => !session.source_card_id);
+    if (!mainSessions.length) {
+      return {
+        has_conversation: false,
+        session_id: null,
+        title: null,
+        last_activity_at: null,
+        last_user_message: null,
+        last_message: null,
+      };
+    }
+    const mainIds = new Set(mainSessions.map((session) => session.id));
+    const lastUserMessage = newest(
+      Object.values(messages).flat().filter(
+        (message) => mainIds.has(message.session_id) && message.role === "user",
+      ),
+    );
+    const session = lastUserMessage
+      ? mainSessions.find((item) => item.id === lastUserMessage.session_id)!
+      : newest(mainSessions);
+    const lastMessage = newest(messages[session.id] || []);
+    return {
+      has_conversation: true,
+      session_id: session.id,
+      title: session.title,
+      last_activity_at: lastMessage?.created_at || session.created_at,
+      last_user_message: lastUserMessage
+        ? {
+            id: lastUserMessage.id,
+            text: lastUserMessage.text || "",
+            created_at: lastUserMessage.created_at,
+          }
+        : null,
+      last_message: lastMessage
+        ? {
+            id: lastMessage.id,
+            role: lastMessage.role,
+            text: lastMessage.text || "",
+            created_at: lastMessage.created_at,
+          }
+        : null,
+    };
+  }
   if (path === "/chat/sessions" && method === "GET") return sessions;
   if (path === "/chat/sessions" && method === "POST") {
-    const next = { id: id("chat"), title: body.title || "和 NURI 的新对话", created_at: new Date().toISOString() };
-    sessions = [next, ...sessions]; messages[next.id] = [{ id: id("msg"), role: "ai", text: "你好，我在这里。今天想聊聊什么？" }]; return next;
+    const next = { id: id("chat"), title: body.title || "和 NURI 的新对话", source_card_id: body.card_id || null, created_at: new Date().toISOString() };
+    sessions = [next, ...sessions]; messages[next.id] = [{ id: id("msg"), session_id: next.id, role: "ai", text: "你好，我在这里。今天想聊聊什么？", created_at: new Date().toISOString() }]; return next;
   }
   if (/^\/chat\/sessions\/[^/]+$/.test(path) && method === "DELETE") { const sessionId = path.split("/").pop()!; sessions = sessions.filter((s) => s.id !== sessionId); delete messages[sessionId]; return {}; }
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "GET") return messages[path.split("/")[3]] || [];
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "POST") {
-    const sessionId = path.split("/")[3]; const user_message = { id: id("msg"), role: "user", text: body.text || "[图片]" };
-    const ai = { id: id("msg"), role: "ai", text: "NURI 为你整理出了 2 条辅助计划，是否加入您的任务日志？", transition: { kind: "task_suggestion", tasks: [
+    const sessionId = path.split("/")[3]; const user_message = { id: id("msg"), session_id: sessionId, role: "user", text: body.text || "[图片]", created_at: new Date().toISOString() };
+    const ai = { id: id("msg"), session_id: sessionId, role: "ai", text: "NURI 为你整理出了 2 条辅助计划，是否加入您的任务日志？", created_at: new Date().toISOString(), transition: { kind: "task_suggestion", tasks: [
       { title: "尝试鲜虾并观察宝宝食欲", task_type: "observation", scope: "today", description: "从少量开始尝试，观察孩子的接受度与身体反应。", steps: ["鲜虾处理干净，少量尝试", "记录宝宝的食欲与反应"] },
       { title: "记录一周饮食偏好", task_type: "observation", scope: "week", progress_total: 7, description: "连续记录一周，寻找孩子更容易接受的食物与用餐节奏。", steps: ["每天记录一餐", "标记愿意尝试的新食物"] },
     ] } };

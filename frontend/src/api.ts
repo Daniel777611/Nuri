@@ -276,6 +276,7 @@ export const api = {
   startSession: (b: any) =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
+  getMainConversationPreview: () => req(`/chat/main/preview`),
   // Product only has one ongoing "Nuri的家" conversation (as opposed to the
   // per-card sessions started from a feed card): reuse it if one already
   // exists instead of creating a new session every time the tab is opened.

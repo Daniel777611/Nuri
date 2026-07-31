@@ -44,6 +44,29 @@ const STREAK_DAYS = 17;
 // 任务预览默认 mock（任务数据为空时展示）
 const DEFAULT_TASKS = ["自我：今天给自己留30分钟独处", "亲子：每日户外活动20分钟"];
 
+type NuriPreview = {
+  sessionId: string;
+  hasLastUserMessage: boolean;
+  lastUserMessage: string;
+};
+
+type NuriPreviewStatus = "loading" | "ready" | "empty" | "error";
+
+const conversationExcerpt = (text: string, maxLength = 26) => {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized === "[图片]") return "";
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength)}…`
+    : normalized;
+};
+
+const dayGreeting = () => {
+  const hour = new Date().getHours();
+  if (hour < 11) return "早上好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+};
+
 // 待开发占位 bottom sheet（统一规范）
 function DevSheet({
   visible,
@@ -84,7 +107,12 @@ export default function Home() {
   const [pendingCount, setPendingCount] = useState(0);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
+  const [nuriPreviewStatus, setNuriPreviewStatus] =
+    useState<NuriPreviewStatus>("loading");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nuriPreviewRequest = useRef(0);
+  const openingNuriChat = useRef(false);
 
   const showToast = (m: string) => {
     setToastMsg(m);
@@ -92,9 +120,53 @@ export default function Home() {
     toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
   };
 
+  const loadNuriPreview = useCallback(async () => {
+    const requestId = ++nuriPreviewRequest.current;
+    setNuriPreviewStatus("loading");
+    try {
+      const preview: any = await api.getMainConversationPreview();
+      if (requestId !== nuriPreviewRequest.current) return;
+      if (!preview?.has_conversation || !preview?.session_id) {
+        setNuriPreview(null);
+        setNuriPreviewStatus("empty");
+        return;
+      }
+      setNuriPreview({
+        sessionId: preview.session_id,
+        hasLastUserMessage: !!preview.last_user_message,
+        lastUserMessage: preview.last_user_message?.text || "",
+      });
+      setNuriPreviewStatus(preview.last_user_message ? "ready" : "empty");
+    } catch {
+      if (requestId === nuriPreviewRequest.current) {
+        setNuriPreviewStatus("error");
+      }
+    }
+  }, []);
+
   const openNuriChat = async () => {
-    const s = await api.getOrStartMainSession();
-    router.push(`/chat/${s.id}`);
+    if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
+    if (nuriPreviewStatus === "error" && !nuriPreview) {
+      await loadNuriPreview();
+      return;
+    }
+
+    openingNuriChat.current = true;
+    let navigated = false;
+    try {
+      if (nuriPreview?.sessionId) {
+        router.push(`/chat/${nuriPreview.sessionId}`);
+        navigated = true;
+        return;
+      }
+      const session = await api.getOrStartMainSession();
+      router.push(`/chat/${session.id}`);
+      navigated = true;
+    } catch {
+      showToast("对话暂时无法打开，请稍后再试");
+    } finally {
+      if (!navigated) openingNuriChat.current = false;
+    }
   };
 
   useFocusEffect(
@@ -116,8 +188,38 @@ export default function Home() {
     }, [])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      void loadNuriPreview();
+      return () => {
+        nuriPreviewRequest.current += 1;
+        openingNuriChat.current = false;
+      };
+    }, [loadNuriPreview])
+  );
+
   const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
   const previewCount = pendingTasks.length ? pendingCount : 3;
+  const hasLoadedPreview = !!nuriPreview;
+  const lastUserExcerpt = nuriPreview?.hasLastUserMessage
+    ? conversationExcerpt(nuriPreview.lastUserMessage)
+    : "";
+  const nuriMemo =
+    hasLoadedPreview && nuriPreview?.hasLastUserMessage
+      ? lastUserExcerpt
+        ? `Hi！${dayGreeting()}，${nickname}。上次你说：“${lastUserExcerpt}” 我们接着聊。`
+        : `Hi！${dayGreeting()}，${nickname}。上次你分享了一张图片，我们可以从那里接着聊。`
+      : nuriPreviewStatus === "error"
+        ? `Hi！${dayGreeting()}，${nickname}。上次的对话暂时没能加载，点一下再试试。`
+        : nuriPreviewStatus === "loading"
+          ? `Hi！${dayGreeting()}，${nickname}。正在整理我们上次的对话…`
+          : `Hi！${dayGreeting()}，${nickname}。今天想聊聊什么？我在这里陪你。`;
+  const nuriActionText =
+    nuriPreviewStatus === "error" && !nuriPreview
+      ? "重试加载"
+      : nuriPreview?.hasLastUserMessage
+        ? "继续对话"
+        : "开始对话";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -202,15 +304,17 @@ export default function Home() {
               style={styles.nuriCard}
             >
               <Text style={styles.moduleTitle}>Nuri的家</Text>
-              <Text style={styles.nuriMemo}>
-                Hi！早上好，{nickname}，你还记得我们上次聊到了宝宝的睡眠策略吗？最新的进展如何？
+              <Text style={styles.nuriMemo} numberOfLines={5} testID="home-nuri-memo">
+                {nuriMemo}
               </Text>
               <View style={{ flex: 1 }} />
               <View style={styles.continueCard}>
                 <View style={styles.continueRow}>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                     <Ionicons name="chatbox-ellipses-outline" size={18} color={C.text} />
-                    <Text style={styles.continueText}>继续对话</Text>
+                    <Text style={styles.continueText} testID="home-nuri-action-label">
+                      {nuriActionText}
+                    </Text>
                   </View>
                   <Ionicons name="arrow-forward" size={18} color={C.text} />
                 </View>
