@@ -313,6 +313,9 @@ export const api = {
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
+  // Keeps the account and the children; clears everything a conversation
+  // accumulates, so the same test can be run again from a clean slate.
+  resetConversations: () => req(`/privacy/reset-conversations`, { method: "POST" }),
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),

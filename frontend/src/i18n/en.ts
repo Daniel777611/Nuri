@@ -241,6 +241,12 @@ export const en: Record<string, string> = {
   "登出": "Sign out",
   "设置没能保存，请稍后再试": "Couldn't save that setting. Please try again.",
 
+  "清空对话与记忆": "Clear conversations and memory",
+  "清空对话与记忆？": "Clear conversations and memory?",
+  "会删除全部对话、长期记忆、待追踪事项和任务。账号和孩子档案会保留，可以直接开始新的对话。": "Deletes every conversation, long-term memory, pending follow-up and task. Your account and your children's profiles are kept, so you can start a new conversation right away.",
+  "已清空对话与记忆": "Conversations and memory cleared",
+  "清空失败，请稍后再试": "Couldn't clear that. Please try again.",
+
   // ── Child edit ─────────────────────────────────────────────────────────────
   "编辑信息": "Edit details",
   "保存": "Save",

@@ -3255,8 +3255,50 @@ async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_op
             raise HTTPException(503, "设置暂时无法保存，请稍后再试")
     return settings
 
+async def _reset_account_data(uid: Optional[str], *, include_children: bool) -> dict:
+    """Delete this account's accumulated data from Supabase.
+
+    Every table is attempted independently: one missing table (a migration not
+    yet run) must not leave the rest half-cleared, which would be worse than
+    either extreme for someone resetting between test runs.
+    """
+    sb = _get_supabase()
+    if not sb or not uid:
+        return {}
+    counts: dict[str, int] = {}
+
+    async def wipe(table: str, column: str = "user_id", value: Optional[str] = None) -> None:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table(table).delete().eq(column, value or uid).execute()
+            )
+            counts[table] = len(getattr(res, "data", None) or [])
+        except Exception as e:
+            print(f"[warn] reset {table}: {e}")
+            counts[table] = -1
+
+    # chat_messages cascades from chat_sessions, so the parent goes first and
+    # the child is not deleted twice.
+    await wipe("chat_sessions")
+    await wipe("user_memories")
+    await wipe("follow_ups")
+    await wipe("normalized_inputs")
+    await wipe("tasks")
+    await wipe("favorites")
+    if include_children:
+        await wipe("children")
+    return counts
+
+
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
+    """Clear everything this account has accumulated, keeping the account.
+
+    Also clears Supabase, which it never did: this only ever emptied the
+    in-memory fallback stores, so the "删除我的所有数据" button on the profile
+    screen reported success and left every row in place.
+    """
+    counts = await _reset_account_data(uid, include_children=True)
     global _children, _tasks
     if uid:
         _children = [c for c in _children if c.get("user_id") != uid]
@@ -3268,7 +3310,23 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         _children.clear(); _tasks.clear()
         _sessions.clear(); _messages.clear()
         _favorites.clear(); _analytics.clear(); _privacy.clear()
-    return {"ok": True}
+    return {"ok": True, "cleared": counts}
+
+
+@api.post("/privacy/reset-conversations")
+async def reset_conversations(uid: str = Depends(_req_uid)):
+    """Wipe the conversational slate but keep the account and the children.
+
+    Built for running the same test script repeatedly: sessions, messages,
+    long-term memories, follow-ups and drafted tasks all go, so the next
+    conversation starts exactly as a new user's would — without re-registering
+    and re-entering the children each time.
+
+    Turn logs are deliberately kept. They are the record of how the previous
+    run behaved, which is the reason for running it again.
+    """
+    counts = await _reset_account_data(uid, include_children=False)
+    return {"ok": True, "cleared": counts}
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
 app.include_router(api)

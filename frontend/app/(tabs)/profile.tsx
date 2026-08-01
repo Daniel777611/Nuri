@@ -34,6 +34,7 @@ export default function Profile() {
     language: "zh-CN",
   });
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -80,6 +81,17 @@ export default function Profile() {
       setPrivacy(previous);
       if (patch.language) await setLocale(locale);
       showToast(t("设置没能保存，请稍后再试"));
+    }
+  };
+
+  const resetConversations = async () => {
+    setConfirmReset(false);
+    try {
+      await api.resetConversations();
+      await load();
+      showToast(t("已清空对话与记忆"));
+    } catch {
+      showToast(t("清空失败，请稍后再试"));
     }
   };
 
@@ -217,6 +229,16 @@ export default function Profile() {
           />
           <Pressable
             style={styles.danger}
+            onPress={() => setConfirmReset(true)}
+            testID="privacy-reset-btn"
+          >
+            <Ionicons name="refresh-outline" size={16} color={colors.brand} />
+            <Text style={[styles.dangerText, { color: colors.brand }]}>
+              {t("清空对话与记忆")}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={styles.danger}
             onPress={() => setConfirmWipe(true)}
             testID="privacy-wipe-btn"
           >
@@ -262,6 +284,14 @@ export default function Profile() {
           danger
           onConfirm={wipeAll}
           onCancel={() => setConfirmWipe(false)}
+        />
+        <ConfirmDialog
+          visible={confirmReset}
+          title={t("清空对话与记忆？")}
+          message={t("会删除全部对话、长期记忆、待追踪事项和任务。账号和孩子档案会保留，可以直接开始新的对话。")}
+          confirmText={t("清空")}
+          onConfirm={resetConversations}
+          onCancel={() => setConfirmReset(false)}
         />
         <Toast message={toastMsg} />
       </View>
