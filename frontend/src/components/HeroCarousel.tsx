@@ -15,6 +15,7 @@ export type HeroCard = {
   related_session_id?: string | null;
   context_created_at?: string | null;
   recommendation_id?: string | null;
+  rank?: number;
   resource_status?: string;
   resource_summary?: {
     preferred_locale?: string;
@@ -111,11 +112,15 @@ export default function HeroCarousel({
   cards = EMPTY_CARDS,
   feedState = "personalized",
   onCardPress,
+  onCardVisible,
+  visibilityScope = "",
 }: {
   width: number;
   cards?: HeroCard[];
   feedState?: HeroFeedState;
   onCardPress: (card: HeroCard) => void;
+  onCardVisible?: (card: HeroCard, position: number) => void;
+  visibilityScope?: string;
 }) {
   const visibleCards =
     feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
@@ -123,14 +128,46 @@ export default function HeroCarousel({
     () => visibleCards.map((card) => card.id).join("|"),
     [visibleCards]
   );
-  const [page, setPage] = useState(0);
+  const [pageState, setPageState] = useState({ signature: cardSignature, index: 0 });
+  const page = pageState.signature === cardSignature ? pageState.index : 0;
+  const setPage = (index: number) => setPageState({ signature: cardSignature, index });
   const scrollRef = useRef<ScrollView>(null);
+  const onCardVisibleRef = useRef(onCardVisible);
+  const lastVisibilityKeyRef = useRef("");
+  const visibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageWidth = width + 12;
 
   useEffect(() => {
-    setPage(0);
+    onCardVisibleRef.current = onCardVisible;
+  }, [onCardVisible]);
+
+  useEffect(() => {
+    setPageState({ signature: cardSignature, index: 0 });
     scrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [cardSignature]);
+
+  useEffect(() => {
+    if (visibilityTimerRef.current) {
+      clearTimeout(visibilityTimerRef.current);
+      visibilityTimerRef.current = null;
+    }
+    if (feedState === "loading") return;
+    const visibleCard = visibleCards[page];
+    if (!visibleCard) return;
+    const visibilityKey = `${visibilityScope}:${cardSignature}:${page}:${visibleCard.recommendation_id || visibleCard.id}`;
+    if (lastVisibilityKeyRef.current === visibilityKey) return;
+    visibilityTimerRef.current = setTimeout(() => {
+      lastVisibilityKeyRef.current = visibilityKey;
+      visibilityTimerRef.current = null;
+      onCardVisibleRef.current?.(visibleCard, page + 1);
+    }, 500);
+    return () => {
+      if (visibilityTimerRef.current) {
+        clearTimeout(visibilityTimerRef.current);
+        visibilityTimerRef.current = null;
+      }
+    };
+  }, [cardSignature, feedState, page, visibilityScope, visibleCards]);
 
   const goToPage = (index: number) => {
     const clamped = Math.max(0, Math.min(visibleCards.length - 1, index));

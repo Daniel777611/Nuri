@@ -27,6 +27,7 @@ export type PersonalizedFeedItem = {
   related_session_id?: string | null;
   context_created_at?: string | null;
   recommendation_id?: string | null;
+  rank?: number;
   resource_status?: PersonalizedResourceStatus;
   curation_mode?: string;
   resource_summary?: {
@@ -38,10 +39,56 @@ export type PersonalizedFeedItem = {
 export type PersonalizedFeedResponse = {
   items: PersonalizedFeedItem[];
   personalization_mode: string;
+  feed_request_id?: string | null;
+  model_version?: string | null;
   matched_topic?: string | null;
   related_session_id?: string | null;
   generated_at?: string;
 };
+
+export type RecommendationEventName =
+  | "feed_impression"
+  | "card_open"
+  | "detail_view"
+  | "favorite"
+  | "external_resource_click"
+  | "continue_chat"
+  | "detail_dwell"
+  | "helpful"
+  | "not_relevant";
+
+export type RecommendationFeedbackReason =
+  | "topic_mismatch"
+  | "already_seen"
+  | "repetitive"
+  | "wrong_language"
+  | "source_not_useful"
+  | "not_now";
+
+/**
+ * Privacy-safe interaction data used to improve recommendation ordering.
+ * Never add conversation text, names, email addresses, or other user content.
+ */
+export type RecommendationEventInput = {
+  event: RecommendationEventName;
+  card_id?: string;
+  recommendation_id?: string;
+  feed_request_id?: string;
+  resource_id?: string;
+  resource_kind?: "article" | "video";
+  content_category?: "authority" | "featured" | "case";
+  locale?: string;
+  position?: number;
+  duration_ms?: number;
+  value?: number;
+  reason?: RecommendationFeedbackReason;
+};
+
+function createRecommendationEventId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+  return `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+}
 
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
@@ -349,6 +396,15 @@ export const api = {
   // ── Analytics ─────────────────────────────────────────────────────────────
   trackEvent: (event: string, payload: any = {}) =>
     req(`/analytics`, { method: "POST", body: JSON.stringify({ event, ...payload }) }),
+
+  trackRecommendationEvent: (payload: RecommendationEventInput) =>
+    req(`/recommendations/events`, {
+      method: "POST",
+      body: JSON.stringify({
+        client_event_id: createRecommendationEventId(),
+        ...payload,
+      }),
+    }),
 
   // ── Chat ──────────────────────────────────────────────────────────────────
   startSession: (b: any) =>

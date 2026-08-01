@@ -673,7 +673,7 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
 
     researched_resources = [
         {
-            "id": f"dynamic-{category}-{kind}",
+            "id": f"dynamic-{category}-{kind}-{slot}",
             "content_category": category,
             "source_tier": "authority" if category == "authority" else "curated",
             "kind": kind,
@@ -682,11 +682,11 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
             "language": "简体中文",
             "locales": ["zh-CN"],
             "description": "与当前家庭问题直接相关并已核验。",
-            "url": f"https://example.org/{category}/{kind}",
+            "url": f"https://example.org/{category}/{kind}/{slot}",
             "research_source": "openai_web_search",
         }
         for category in main.CONTENT_CATEGORIES
-        for kind in ("article", "video")
+        for kind, slot in (("article", 1), ("article", 2), ("video", 1))
     ]
     calls = []
 
@@ -694,11 +694,11 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
         calls.append((card["id"], context["session_id"], uid))
         return {
             "resources": researched_resources,
-            "dynamic_resource_count": 6,
+            "dynamic_resource_count": 9,
             "reviewed_resource_count": 0,
             "query": card["topic_label"],
-            "editor_note": "六项内容均与当前对话直接相关。",
-            "cited_source_count": 6,
+            "editor_note": "九项内容均与当前对话直接相关。",
+            "cited_source_count": 9,
         }
 
     monkeypatch.setattr(
@@ -715,7 +715,7 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
 
     assert calls == [(card["id"], "novel-topic-chat", "parent-1")]
     assert research["research_status"] == "fresh"
-    assert len(research["resources"]) == 6
+    assert len(research["resources"]) == 9
     assert {
         (resource["content_category"], resource["kind"])
         for resource in research["resources"]

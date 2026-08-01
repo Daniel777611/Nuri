@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Linking,
   Modal,
   Platform,
@@ -16,9 +17,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import * as WebBrowser from "expo-web-browser";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
-import { api } from "@/src/api";
+import {
+  api,
+  type RecommendationEventInput,
+  type RecommendationEventName,
+  type RecommendationFeedbackReason,
+} from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
@@ -29,6 +35,18 @@ const RESOURCE_LOCALE_OPTIONS = [
   { value: "en", label: "English" },
 ] as const;
 type ResourceLocale = (typeof RESOURCE_LOCALE_OPTIONS)[number]["value"];
+
+const FEEDBACK_REASONS: {
+  value: RecommendationFeedbackReason;
+  label: string;
+}[] = [
+  { value: "topic_mismatch", label: "主题不对" },
+  { value: "already_seen", label: "已经看过" },
+  { value: "repetitive", label: "内容重复" },
+  { value: "wrong_language", label: "中文或语言不好" },
+  { value: "source_not_useful", label: "来源不适合" },
+  { value: "not_now", label: "现在不需要" },
+];
 
 const TAG_BG: Record<string, string> = {
   tip: "#EEF6F1",
@@ -133,14 +151,6 @@ function resourceBadgeLabel(resource: LearningResource): string {
   return "权威发布";
 }
 
-function resourceSelectionBasis(resource: LearningResource) {
-  if (resource.selection_basis) return resource.selection_basis;
-  const category = resourceContentCategory(resource);
-  if (category === "case") return "lived_experience";
-  if (category === "featured") return "expert_and_audience";
-  return "official";
-}
-
 function resourceLocales(resource: LearningResource): ResourceLocale[] {
   const explicit = (resource.locales || []).filter((locale): locale is ResourceLocale =>
     RESOURCE_LOCALE_OPTIONS.some((option) => option.value === locale)
@@ -159,11 +169,15 @@ export default function Detail() {
     session_id: sessionId,
     context_created_at: contextCreatedAt,
     recommendation_id: recommendationId,
+    feed_request_id: feedRequestId,
+    rank: recommendationRank,
   } = useLocalSearchParams<{
     id: string;
     session_id?: string;
     context_created_at?: string;
     recommendation_id?: string;
+    feed_request_id?: string;
+    rank?: string;
   }>();
   const [card, setCard] = useState<any>(null);
   const [loadError, setLoadError] = useState<"expired" | "generic" | null>(null);
@@ -173,8 +187,50 @@ export default function Detail() {
   const [resourceLocale, setResourceLocale] = useState<ResourceLocale | null>(null);
   const [askBarHeight, setAskBarHeight] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [contentFeedback, setContentFeedback] = useState<"helpful" | "not_relevant" | null>(null);
+  const [feedbackReasonOpen, setFeedbackReasonOpen] = useState(false);
+  const [feedbackReason, setFeedbackReason] = useState<RecommendationFeedbackReason | null>(null);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const toastOpacity = useRef(new Animated.Value(0)).current;
+  const dwellStartedAt = useRef<number | null>(null);
+  const dwellSent = useRef(false);
+  const dwellContext = useRef<Omit<RecommendationEventInput, "event" | "duration_ms">>({});
   const frameWidth = Math.min(viewportWidth, DETAIL_FRAME_WIDTH);
+  const parsedRecommendationRank = Number.parseInt(recommendationRank || "", 10);
+  const recommendationPosition =
+    Number.isFinite(parsedRecommendationRank) && parsedRecommendationRank > 0
+      ? parsedRecommendationRank
+      : undefined;
+
+  const trackRecommendation = useCallback(
+    (
+      event: RecommendationEventName,
+      payload: Omit<RecommendationEventInput, "event" | "card_id"> = {},
+    ) =>
+      api.trackRecommendationEvent({
+        event,
+        card_id: typeof id === "string" ? id : undefined,
+        recommendation_id: recommendationId || undefined,
+        feed_request_id: feedRequestId || undefined,
+        position: recommendationPosition,
+        ...payload,
+      }),
+    [feedRequestId, id, recommendationId, recommendationPosition],
+  );
+
+  const flushDwell = useCallback(() => {
+    if (dwellSent.current || dwellStartedAt.current === null) return;
+    const durationMs = Math.min(30 * 60 * 1000, Math.max(0, Date.now() - dwellStartedAt.current));
+    dwellSent.current = true;
+    if (durationMs === 0) return;
+    api
+      .trackRecommendationEvent({
+        event: "detail_dwell",
+        ...dwellContext.current,
+        duration_ms: durationMs,
+      })
+      .catch(() => {});
+  }, []);
 
   const showToast = useCallback(
     (msg: string) => {
@@ -196,20 +252,44 @@ export default function Detail() {
     [toastOpacity]
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      return () => flushDwell();
+    }, [flushDwell]),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") flushDwell();
+    });
+    return () => subscription.remove();
+  }, [flushDwell]);
+
   useEffect(() => {
     if (!id) return;
     let active = true;
     setCard(null);
     setLoadError(null);
+    setContentFeedback(null);
+    setFeedbackReasonOpen(false);
+    setFeedbackReason(null);
+    setFeedbackSubmitting(false);
+    dwellStartedAt.current = null;
+    dwellSent.current = false;
 
     api
       .getCardDetail(id as string, sessionId, contextCreatedAt, recommendationId)
       .then((detail: any) => {
         if (!active) return;
         setCard(detail);
-        api
-          .trackEvent("detail_view", { card_id: id, card_type: detail.type })
-          .catch(() => {});
+        dwellContext.current = {
+          card_id: id as string,
+          recommendation_id: recommendationId || undefined,
+          feed_request_id: feedRequestId || undefined,
+          position: recommendationPosition,
+        };
+        dwellStartedAt.current = Date.now();
+        trackRecommendation("detail_view").catch(() => {});
         if (detail.research_status === "pending") {
           api
             .getCardResearch(id as string, sessionId, contextCreatedAt, recommendationId)
@@ -251,8 +331,19 @@ export default function Detail() {
 
     return () => {
       active = false;
+      flushDwell();
     };
-  }, [contextCreatedAt, id, recommendationId, reloadSequence, sessionId]);
+  }, [
+    contextCreatedAt,
+    feedRequestId,
+    flushDwell,
+    id,
+    recommendationId,
+    recommendationPosition,
+    reloadSequence,
+    sessionId,
+    trackRecommendation,
+  ]);
 
   useEffect(() => {
     const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
@@ -266,13 +357,7 @@ export default function Detail() {
       const result = await api.toggleFavorite(id as string);
       setFavorited(result.favorited);
       showToast(result.favorited ? "已收藏" : "已取消收藏");
-      api
-        .trackEvent("favorite", {
-          card_id: id,
-          card_type: card?.type,
-          value: result.favorited ? 1 : 0,
-        })
-        .catch(() => {});
+      trackRecommendation("favorite", { value: result.favorited ? 1 : 0 }).catch(() => {});
     } catch {
       showToast("收藏暂时没有保存，请稍后再试");
     }
@@ -280,9 +365,7 @@ export default function Detail() {
 
   const askAI = async () => {
     if (!card) return;
-    api
-      .trackEvent("click_ask_ai_detail", { card_id: card.id, card_type: card.type })
-      .catch(() => {});
+    trackRecommendation("continue_chat").catch(() => {});
     try {
       if (card.related_session_id) {
         router.push(`/chat/${card.related_session_id}`);
@@ -295,20 +378,18 @@ export default function Detail() {
     }
   };
 
-  const openResource = async (resource: LearningResource) => {
+  const openResource = async (resource: LearningResource, position: number) => {
     if (!/^https:\/\//i.test(resource.url || "")) {
       showToast("这个外部链接暂时不可用");
       return;
     }
-    api
-      .trackEvent("external_resource_click", {
-        card_id: card?.id,
+    flushDwell();
+    trackRecommendation("external_resource_click", {
         resource_id: resource.id,
         resource_kind: resource.kind,
-        resource_locale: resourceLocales(resource)[0],
-        source_tier: resourceSourceTier(resource),
+        locale: resourceLocale || resourceLocales(resource)[0],
         content_category: resourceContentCategory(resource),
-        selection_basis: resourceSelectionBasis(resource),
+        position,
       })
       .catch(() => {});
     try {
@@ -319,6 +400,37 @@ export default function Detail() {
       }
     } catch {
       showToast("外部内容暂时无法打开，请稍后再试");
+    }
+  };
+
+  const submitContentFeedback = async (
+    value: "helpful" | "not_relevant",
+    reason?: RecommendationFeedbackReason,
+  ) => {
+    if (contentFeedback || feedbackSubmitting) return;
+    if (value === "not_relevant" && !reason) {
+      setFeedbackReasonOpen(true);
+      return;
+    }
+    setFeedbackSubmitting(true);
+    try {
+      const result = await trackRecommendation(value, {
+        value: value === "helpful" ? 1 : 0,
+        reason,
+        locale: resourceLocale || undefined,
+      });
+      if (result?.accepted === false) {
+        setFeedbackReasonOpen(false);
+        showToast("个性化已关闭，这次选择不会保存");
+        return;
+      }
+      setContentFeedback(value);
+      setFeedbackReason(reason || null);
+      setFeedbackReasonOpen(false);
+    } catch {
+      showToast("反馈暂时没有保存，请再试一次");
+    } finally {
+      setFeedbackSubmitting(false);
     }
   };
 
@@ -447,8 +559,8 @@ export default function Detail() {
                   <Text style={styles.researchStatusLabel}>正在根据最近对话全网检索</Text>
                   <Text style={styles.researchStatusText}>
                     {resources.length
-                      ? "你可以先阅读当前的审核资料；六项个性化内容核验完成后会自动更新。"
-                      : "NURI 正在核验与你们刚才话题直接相关的来源；三类文章和视频全部准备好后才会一次性显示。"}
+                      ? `你可以先阅读当前 ${resources.length} 项审核资料；个性化内容核验完成后会更新为每类 2–3 个选择。`
+                      : "NURI 正在核验与你们刚才话题直接相关的来源；将按三类整理，每类提供 2–3 个文章或视频选择。"}
                   </Text>
                 </View>
               </View>
@@ -479,8 +591,8 @@ export default function Detail() {
                   </Text>
                   <Text style={styles.researchStatusText}>
                     {resources.length
-                      ? "实时检索暂未取得完整且全部通过核验的六项结果，因此没有展示不确定链接。"
-                      : "本次检索没有凑齐三类文章和视频，因此暂不展示空目录或不确定链接；稍后重新打开即可再试。"}
+                      ? `实时检索暂未为每类找到至少 2 个全部通过核验的结果，当前展示 ${resources.length} 项审核内容；不确定链接没有展示。`
+                      : "本次检索没有为三类内容各找到足够的可靠选择，因此暂不展示空目录或不确定链接；稍后重新打开即可再试。"}
                   </Text>
                 </View>
               </View>
@@ -491,7 +603,7 @@ export default function Detail() {
                   <Text style={styles.researchStatusLabel}>外部个性化检索尚未开启</Text>
                   <Text style={styles.researchStatusText}>
                     {resources.length
-                      ? "当前六项均来自人工审核资料库。只有你在“我的”隐私设置中明确开启后，NURI 才会使用脱敏后的对话主题检索公开网页。"
+                      ? `当前 ${resources.length} 项均来自人工审核资料库。只有你在“我的”隐私设置中明确开启后，NURI 才会使用脱敏后的对话主题检索公开网页。`
                       : "这个新话题尚未对外检索。只有你在“我的”隐私设置中明确开启后，NURI 才会使用结构化、脱敏后的主题信息检索公开网页。"}
                   </Text>
                 </View>
@@ -511,7 +623,7 @@ export default function Detail() {
             ) : null}
             {resources.length ? (
               <Text style={styles.resourcesIntro}>
-                NURI 按权威来源、优秀精彩与典型案例整理内容，并明确标注文章或视频。点击具体条目后，才会打开外部内容。
+                当前语言共 {visibleResources.length} 项。NURI 按权威来源、优秀精彩与典型案例整理，每类提供 2–3 个选择，并明确标注文章或视频；点击具体条目后才会打开外部内容。
               </Text>
             ) : null}
             {resources.length && availableResourceLocales.length > 1 ? (
@@ -566,10 +678,10 @@ export default function Detail() {
                   </View>
                 </View>
 
-                {group.resources.length ? group.resources.map((resource) => (
+                {group.resources.length ? group.resources.map((resource, resourceIndex) => (
                   <Pressable
                     key={resource.id}
-                    onPress={() => openResource(resource)}
+                    onPress={() => openResource(resource, resourceIndex + 1)}
                     style={({ pressed }) => [
                       styles.resourceCard,
                       pressed && styles.resourceCardPressed,
@@ -689,6 +801,109 @@ export default function Detail() {
                 )}
               </View>
             )) : null}
+          </View>
+        ) : null}
+
+        {resources.length ? (
+          <View style={styles.feedbackCard} testID="detail-content-feedback">
+            <Text style={styles.feedbackTitle}>这组内容贴合吗？</Text>
+            <Text style={styles.feedbackSubtitle}>你的选择只会帮助 NURI 调整后续推荐。</Text>
+            <View style={styles.feedbackActions}>
+              <Pressable
+                onPress={() => submitContentFeedback("helpful")}
+                disabled={contentFeedback !== null || feedbackSubmitting}
+                style={[
+                  styles.feedbackButton,
+                  contentFeedback === "helpful" && styles.feedbackButtonSelected,
+                  contentFeedback === "not_relevant" && styles.feedbackButtonMuted,
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: contentFeedback === "helpful" }}
+                testID="detail-feedback-helpful"
+              >
+                <Ionicons
+                  name={contentFeedback === "helpful" ? "thumbs-up" : "thumbs-up-outline"}
+                  size={16}
+                  color={contentFeedback === "helpful" ? colors.brand : colors.onSurfaceSecondary}
+                />
+                <Text
+                  style={[
+                    styles.feedbackButtonText,
+                    contentFeedback === "helpful" && styles.feedbackButtonTextSelected,
+                  ]}
+                >
+                  有帮助
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => submitContentFeedback("not_relevant")}
+                disabled={contentFeedback !== null || feedbackSubmitting}
+                style={[
+                  styles.feedbackButton,
+                  (feedbackReasonOpen || contentFeedback === "not_relevant") &&
+                    styles.feedbackButtonSelected,
+                  contentFeedback === "helpful" && styles.feedbackButtonMuted,
+                ]}
+                accessibilityRole="button"
+                accessibilityState={{
+                  expanded: feedbackReasonOpen,
+                  selected: contentFeedback === "not_relevant",
+                }}
+                testID="detail-feedback-not-relevant"
+              >
+                <Ionicons
+                  name={
+                    feedbackReasonOpen || contentFeedback === "not_relevant"
+                      ? "thumbs-down"
+                      : "thumbs-down-outline"
+                  }
+                  size={16}
+                  color={
+                    feedbackReasonOpen || contentFeedback === "not_relevant"
+                      ? colors.brand
+                      : colors.onSurfaceSecondary
+                  }
+                />
+                <Text
+                  style={[
+                    styles.feedbackButtonText,
+                    (feedbackReasonOpen || contentFeedback === "not_relevant") &&
+                      styles.feedbackButtonTextSelected,
+                  ]}
+                >
+                  需要调整
+                </Text>
+              </Pressable>
+            </View>
+            {feedbackReasonOpen && !contentFeedback ? (
+              <View style={styles.feedbackReasons} testID="detail-feedback-reasons">
+                <Text style={styles.feedbackReasonPrompt}>是哪一方面？</Text>
+                <View style={styles.feedbackReasonOptions}>
+                  {FEEDBACK_REASONS.map((option) => (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => submitContentFeedback("not_relevant", option.value)}
+                      disabled={feedbackSubmitting}
+                      style={styles.feedbackReasonButton}
+                      accessibilityRole="button"
+                      testID={`detail-feedback-reason-${option.value}`}
+                    >
+                      <Text style={styles.feedbackReasonButtonText}>{option.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+            {contentFeedback ? (
+              <Text style={styles.feedbackThanks} accessibilityLiveRegion="polite">
+                {contentFeedback === "helpful"
+                  ? "收到了，之后会多推荐这类内容。"
+                  : `已记录“${
+                      FEEDBACK_REASONS.find((option) => option.value === feedbackReason)?.label ||
+                      "需要调整"
+                    }”，之后会按这个原因调整推荐。`}
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -1129,6 +1344,88 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   resourceOpenText: { fontSize: type.sm, color: colors.brand, fontWeight: "700" },
+  feedbackCard: {
+    marginTop: spacing.xl,
+    borderTopWidth: 1,
+    borderTopColor: colors.divider,
+    paddingTop: spacing.lg,
+  },
+  feedbackTitle: {
+    fontSize: type.base,
+    color: colors.onSurface,
+    fontWeight: "700",
+  },
+  feedbackSubtitle: {
+    marginTop: 3,
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.muted,
+  },
+  feedbackActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  feedbackButton: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
+  feedbackButtonSelected: {
+    borderColor: colors.brand,
+    backgroundColor: colors.brandTertiary,
+  },
+  feedbackButtonMuted: { opacity: 0.48 },
+  feedbackButtonText: {
+    fontSize: type.sm,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
+  },
+  feedbackButtonTextSelected: { color: colors.onBrandTertiary, fontWeight: "700" },
+  feedbackReasons: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  feedbackReasonPrompt: {
+    fontSize: type.sm,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
+  },
+  feedbackReasonOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  feedbackReasonButton: {
+    minHeight: 36,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+  },
+  feedbackReasonButtonText: {
+    fontSize: type.sm,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "600",
+  },
+  feedbackThanks: {
+    marginTop: spacing.sm,
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: colors.brand,
+  },
   tags: {
     flexDirection: "row",
     flexWrap: "wrap",

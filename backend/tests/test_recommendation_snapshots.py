@@ -185,6 +185,12 @@ class _SettingsSupabase:
         self.fail_delete = fail_delete
 
     def table(self, name):
+        if name == "recommendation_events":
+            exc = RuntimeError(
+                "Could not find recommendation_events in the schema cache"
+            )
+            exc.code = "PGRST205"
+            raise exc
         assert name == "app_settings"
         return _SettingsTable(self.store, fail_delete=self.fail_delete)
 

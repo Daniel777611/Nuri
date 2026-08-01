@@ -55,6 +55,11 @@ type NuriPreview = {
 
 type NuriPreviewStatus = "loading" | "ready" | "empty" | "error";
 
+type HeroFeedMeta = {
+  feedRequestId?: string;
+  generatedAt?: string;
+};
+
 const conversationExcerpt = (text: string, maxLength = 26) => {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized || normalized === "[图片]") return "";
@@ -115,9 +120,11 @@ export default function Home() {
     useState<NuriPreviewStatus>("loading");
   const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
   const [heroFeedState, setHeroFeedState] = useState<HeroFeedState>("loading");
+  const [heroFeedMeta, setHeroFeedMeta] = useState<HeroFeedMeta>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
   const heroRequest = useRef(0);
+  const heroImpressionKeys = useRef(new Set<string>());
   const openingNuriChat = useRef(false);
 
   const showToast = (m: string) => {
@@ -154,6 +161,7 @@ export default function Home() {
     const requestId = ++heroRequest.current;
     setHeroCards([]);
     setHeroFeedState("loading");
+    setHeroFeedMeta({});
     try {
       const response = await api.getPersonalizedFeed(4);
       if (requestId !== heroRequest.current) return;
@@ -164,6 +172,10 @@ export default function Home() {
             typeof item?.id === "string" && typeof item?.title === "string",
         );
       setHeroCards(validItems);
+      setHeroFeedMeta({
+        feedRequestId: response.feed_request_id || undefined,
+        generatedAt: response.generated_at || undefined,
+      });
       setHeroFeedState(
         validItems.length > 0 && response.personalization_mode === "conversation"
           ? "personalized"
@@ -173,6 +185,7 @@ export default function Home() {
       if (requestId === heroRequest.current) {
         setHeroCards([]);
         setHeroFeedState("curated");
+        setHeroFeedMeta({});
       }
     }
   }, []);
@@ -263,6 +276,60 @@ export default function Home() {
         ? "继续对话"
         : "开始对话";
 
+  const trackHeroImpression = useCallback(
+    (card: HeroCard, position: number) => {
+      const feedKey = heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt || "curated";
+      const impressionKey = `${feedKey}:${card.recommendation_id || card.id}:${position}`;
+      if (heroImpressionKeys.current.has(impressionKey)) return;
+      heroImpressionKeys.current.add(impressionKey);
+      api
+        .trackRecommendationEvent({
+          event: "feed_impression",
+          card_id: card.id,
+          recommendation_id: card.recommendation_id || undefined,
+          feed_request_id: heroFeedMeta.feedRequestId,
+          locale: card.resource_summary?.preferred_locale,
+          position: card.rank || position,
+        })
+        .catch(() => {});
+    },
+    [heroFeedMeta.feedRequestId, heroFeedMeta.generatedAt],
+  );
+
+  const openHeroCard = useCallback(
+    (card: HeroCard) => {
+      const position = card.rank || Math.max(1, heroCards.findIndex((item) => item.id === card.id) + 1);
+      api
+        .trackRecommendationEvent({
+          event: "card_open",
+          card_id: card.id,
+          recommendation_id: card.recommendation_id || undefined,
+          feed_request_id: heroFeedMeta.feedRequestId,
+          locale: card.resource_summary?.preferred_locale,
+          position,
+        })
+        .catch(() => {});
+      router.push({
+        pathname: "/detail/[id]",
+        params: {
+          id: card.id,
+          ...(card.related_session_id ? { session_id: card.related_session_id } : {}),
+          ...(card.context_created_at
+            ? { context_created_at: card.context_created_at }
+            : {}),
+          ...(card.recommendation_id
+            ? { recommendation_id: card.recommendation_id }
+            : {}),
+          ...(heroFeedMeta.feedRequestId
+            ? { feed_request_id: heroFeedMeta.feedRequestId }
+            : {}),
+          rank: String(position),
+        },
+      });
+    },
+    [heroCards, heroFeedMeta.feedRequestId, router],
+  );
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
@@ -300,23 +367,9 @@ export default function Home() {
           width={carouselWidth}
           cards={heroCards}
           feedState={heroFeedState}
-          onCardPress={(card) => {
-            router.push({
-              pathname: "/detail/[id]",
-              params: {
-                id: card.id,
-                ...(card.related_session_id
-                  ? { session_id: card.related_session_id }
-                  : {}),
-                ...(card.context_created_at
-                  ? { context_created_at: card.context_created_at }
-                  : {}),
-                ...(card.recommendation_id
-                  ? { recommendation_id: card.recommendation_id }
-                  : {}),
-              },
-            });
-          }}
+          onCardPress={openHeroCard}
+          onCardVisible={trackHeroImpression}
+          visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}
         />
 
         {/* 第一行：今日任务 + Nuri的家 */}

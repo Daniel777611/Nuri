@@ -59,6 +59,8 @@ try:
     )
     from backend.content_research import (
         CONTENT_CATEGORIES,
+        MAX_TOTAL_RESEARCH_RESOURCES,
+        MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
         summarize_resource_slots,
@@ -70,6 +72,16 @@ try:
         snapshot_storage_key,
         snapshot_storage_prefix,
     )
+    from backend.recommendation_feedback import (
+        EVENT_RETENTION_DAYS,
+        LEARNING_EVENT_NAMES,
+        MAX_EVENTS_PER_USER,
+        card_behavior_signal,
+        event_storage_key,
+        normalize_event,
+        prune_events,
+        recent_resource_urls,
+    )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
@@ -79,6 +91,8 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
     )
     from content_research import (  # type: ignore
         CONTENT_CATEGORIES,
+        MAX_TOTAL_RESEARCH_RESOURCES,
+        MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
         summarize_resource_slots,
@@ -89,6 +103,16 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         serialize_snapshot,
         snapshot_storage_key,
         snapshot_storage_prefix,
+    )
+    from recommendation_feedback import (  # type: ignore
+        EVENT_RETENTION_DAYS,
+        LEARNING_EVENT_NAMES,
+        MAX_EVENTS_PER_USER,
+        card_behavior_signal,
+        event_storage_key,
+        normalize_event,
+        prune_events,
+        recent_resource_urls,
     )
 
 load_dotenv()
@@ -245,6 +269,9 @@ _fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
 _recommendation_snapshots: dict[tuple[str, str], dict] = {}
+_recommendation_events: dict[str, list[dict]] = {}
+_recommendation_event_locks: dict[str, asyncio.Lock] = {}
+_recommendation_events_table_available: Optional[bool] = None
 _feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
 
 _SUPPORTED_PREFERRED_LOCALES = frozenset({"zh-CN", "zh-TW", "en"})
@@ -661,6 +688,590 @@ async def _db_delete_recommendation_snapshots(uid: str) -> None:
         ) from exc
 
 
+_RECOMMENDATION_EVENTS_TABLE = "recommendation_events"
+_RECOMMENDATION_EVENTS_LIMIT = MAX_EVENTS_PER_USER
+_RECOMMENDATION_EVENTS_CLEANUP_PAGE = 1000
+_RECOMMENDATION_EVENTS_DELETE_BATCH = 50
+
+
+def _recommendation_events_table_missing(exc: Exception) -> bool:
+    """Recognise the PostgREST/Postgres errors emitted before migration.
+
+    Only an absent table activates the legacy JSON fallback. Other database
+    failures must not silently resume read/modify/write persistence, because
+    doing so would reintroduce cross-instance lost updates.
+    """
+
+    code = str(getattr(exc, "code", "") or "").upper()
+    details = " ".join(
+        str(value)
+        for value in (
+            exc,
+            getattr(exc, "message", ""),
+            getattr(exc, "details", ""),
+        )
+    ).casefold()
+    if code in {"42P01", "PGRST205"}:
+        return True
+    return "recommendation_events" in details and any(
+        marker in details
+        for marker in (
+            "does not exist",
+            "could not find",
+            "schema cache",
+            "undefined table",
+            "undefined_table",
+        )
+    )
+
+
+def _recommendation_event_row(uid: str, event: dict) -> dict:
+    """Map a normalized signal to one append-only database row."""
+
+    metadata = {
+        key: value
+        for key, value in event.items()
+        if key not in {"event_id", "event", "card_id", "occurred_at"}
+    }
+    return {
+        "user_id": uid,
+        "event_id": str(event["event_id"]),
+        "event_type": str(event["event"]),
+        "card_id": str(event["card_id"]),
+        "occurred_at": str(event["occurred_at"]),
+        "event_data": metadata,
+    }
+
+
+def _recommendation_event_setting_prefix(uid: str) -> str:
+    """Return the non-identifying per-event fallback key prefix."""
+
+    user_digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()
+    return f"recommendation_event:v2:{user_digest}:"
+
+
+def _recommendation_event_setting_key(uid: str, event_id: str) -> str:
+    event_digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()
+    return f"{_recommendation_event_setting_prefix(uid)}{event_digest}"
+
+
+def _recommendation_event_setting_rows(uid: str, events: list[dict]) -> list[dict]:
+    """Map events to independently upsertable app_settings rows."""
+
+    return [
+        {
+            "key": _recommendation_event_setting_key(uid, str(event["event_id"])),
+            "value": json.dumps(event, ensure_ascii=False),
+            "updated_at": str(event["occurred_at"]),
+        }
+        for event in events
+    ]
+
+
+def _recommendation_event_retention_cutoff() -> str:
+    """Return the UTC cutoff shared by logical and physical retention."""
+
+    return (
+        datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
+    ).isoformat()
+
+
+async def _db_cleanup_recommendation_event_table(sb: object, uid: str) -> None:
+    """Physically enforce age and count retention in the migrated row table.
+
+    The stale delete is handled entirely by PostgREST.  Overflow is paged from
+    the first row beyond the newest bounded history and removed in batches;
+    repeatedly reading from the same offset also handles histories larger than
+    PostgREST's normal 1,000-row response cap.
+    """
+
+    cutoff = _recommendation_event_retention_cutoff()
+    await anyio.to_thread.run_sync(
+        lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+        .delete()
+        .eq("user_id", uid)
+        .lt("occurred_at", cutoff)
+        .execute()
+    )
+    while True:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+            .select("event_id")
+            .eq("user_id", uid)
+            .order("occurred_at", desc=True)
+            .range(
+                _RECOMMENDATION_EVENTS_LIMIT,
+                _RECOMMENDATION_EVENTS_LIMIT
+                + _RECOMMENDATION_EVENTS_CLEANUP_PAGE
+                - 1,
+            )
+            .execute()
+        )
+        event_ids = [
+            str(row.get("event_id"))
+            for row in list(getattr(result, "data", None) or [])
+            if isinstance(row, dict) and row.get("event_id")
+        ]
+        if not event_ids:
+            return
+        for start in range(0, len(event_ids), _RECOMMENDATION_EVENTS_DELETE_BATCH):
+            batch = event_ids[start : start + _RECOMMENDATION_EVENTS_DELETE_BATCH]
+            await anyio.to_thread.run_sync(
+                lambda batch=batch: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+                .delete()
+                .eq("user_id", uid)
+                .in_("event_id", batch)
+                .execute()
+            )
+
+
+async def _db_cleanup_recommendation_event_settings(sb: object, uid: str) -> None:
+    """Physically enforce retention for migration-free atomic v2 rows."""
+
+    prefix = _recommendation_event_setting_prefix(uid)
+    cutoff = _recommendation_event_retention_cutoff()
+    await anyio.to_thread.run_sync(
+        lambda: sb.table("app_settings")
+        .delete()
+        .like("key", f"{prefix}%")
+        .lt("updated_at", cutoff)
+        .execute()
+    )
+    while True:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .select("key")
+            .like("key", f"{prefix}%")
+            .order("updated_at", desc=True)
+            .range(
+                _RECOMMENDATION_EVENTS_LIMIT,
+                _RECOMMENDATION_EVENTS_LIMIT
+                + _RECOMMENDATION_EVENTS_CLEANUP_PAGE
+                - 1,
+            )
+            .execute()
+        )
+        keys = [
+            str(row.get("key"))
+            for row in list(getattr(result, "data", None) or [])
+            if isinstance(row, dict) and row.get("key")
+        ]
+        if not keys:
+            break
+        for start in range(0, len(keys), _RECOMMENDATION_EVENTS_DELETE_BATCH):
+            batch = keys[start : start + _RECOMMENDATION_EVENTS_DELETE_BATCH]
+            await anyio.to_thread.run_sync(
+                lambda batch=batch: sb.table("app_settings")
+                .delete()
+                .like("key", f"{prefix}%")
+                .in_("key", batch)
+                .execute()
+            )
+
+    # v1 is no longer appended, so compacting its single legacy JSON value
+    # cannot race with a writer.  Keep it only for rollout compatibility while
+    # enforcing the same physical age/count boundary as both append-only paths.
+    legacy_key = event_storage_key(uid)
+    legacy_result = await anyio.to_thread.run_sync(
+        lambda: sb.table("app_settings")
+        .select("value")
+        .eq("key", legacy_key)
+        .limit(1)
+        .execute()
+    )
+    legacy_rows = list(getattr(legacy_result, "data", None) or [])
+    if not legacy_rows:
+        return
+    legacy: object = (
+        legacy_rows[0].get("value")
+        if isinstance(legacy_rows[0], dict)
+        else None
+    )
+    if isinstance(legacy, str):
+        try:
+            legacy = json.loads(legacy)
+        except (TypeError, ValueError):
+            legacy = []
+    retained = prune_events(legacy)
+    if retained == legacy:
+        return
+    if not retained:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .delete()
+            .eq("key", legacy_key)
+            .execute()
+        )
+        return
+    await anyio.to_thread.run_sync(
+        lambda: sb.table("app_settings")
+        .upsert(
+            {
+                "key": legacy_key,
+                "value": json.dumps(retained, ensure_ascii=False),
+                "updated_at": _now(),
+            },
+            on_conflict="key",
+        )
+        .execute()
+    )
+
+
+async def _db_cleanup_recommendation_events_best_effort(
+    sb: object,
+    uid: str,
+    *,
+    include_row_table: bool,
+) -> None:
+    """Run retention without changing the success of an already-stored event."""
+
+    if include_row_table:
+        try:
+            await _db_cleanup_recommendation_event_table(sb, uid)
+        except Exception as exc:
+            print(
+                "[warn] recommendation event row retention cleanup failed: "
+                f"{type(exc).__name__}"
+            )
+    # Clean rollout fallback rows even after the table becomes available so an
+    # environment cannot retain old v2 rows forever following its migration.
+    try:
+        await _db_cleanup_recommendation_event_settings(sb, uid)
+    except Exception as exc:
+        print(
+            "[warn] settings recommendation event retention cleanup failed: "
+            f"{type(exc).__name__}"
+        )
+
+
+def _recommendation_event_from_row(row: object) -> Optional[dict]:
+    """Restore and revalidate a signal loaded from the row table."""
+
+    if not isinstance(row, dict):
+        return None
+    metadata: object = row.get("event_data")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    payload = dict(metadata) if isinstance(metadata, dict) else {}
+    event_type = row.get("event_type")
+    payload.update(
+        {
+            "event_id": row.get("event_id"),
+            "event": event_type,
+            "card_id": row.get("card_id"),
+        }
+    )
+    occurred_at = row.get("occurred_at")
+    if isinstance(occurred_at, datetime):
+        occurred_at = occurred_at.isoformat()
+    if not isinstance(occurred_at, str):
+        return None
+    return normalize_event(
+        payload,
+        occurred_at=occurred_at,
+        trusted_resource_url=event_type == "resource_delivered",
+    )
+
+
+async def _db_get_recommendation_events_settings(
+    uid: str,
+    *,
+    cached: Optional[list[dict]] = None,
+) -> list[dict]:
+    """Read atomic per-event settings plus the read-only legacy JSON value."""
+
+    sb = _get_supabase()
+    if not sb:
+        return prune_events(cached or [])
+    try:
+        per_event_result = await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .select("value")
+            .like("key", f"{_recommendation_event_setting_prefix(uid)}%")
+            .order("updated_at", desc=True)
+            .limit(_RECOMMENDATION_EVENTS_LIMIT)
+            .execute()
+        )
+        legacy_result = await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .select("value")
+            .eq("key", event_storage_key(uid))
+            .limit(1)
+            .execute()
+        )
+        per_event_rows = list(getattr(per_event_result, "data", None) or [])
+        stored_events: list[object] = []
+        for row in per_event_rows:
+            stored: object = row.get("value") if isinstance(row, dict) else None
+            if isinstance(stored, str):
+                try:
+                    stored = json.loads(stored)
+                except (TypeError, ValueError):
+                    continue
+            stored_events.append(stored)
+
+        # v1 was one mutable JSON array. It remains read-only so an in-flight
+        # migration cannot lose old learning signals, but all new writes use a
+        # unique v2 key per event.
+        legacy_rows = list(getattr(legacy_result, "data", None) or [])
+        legacy: object = legacy_rows[0].get("value") if legacy_rows else []
+        if isinstance(legacy, str):
+            try:
+                legacy = json.loads(legacy)
+            except (TypeError, ValueError):
+                legacy = []
+        if isinstance(legacy, list):
+            stored_events.extend(legacy)
+        return prune_events(stored_events)
+    except Exception as exc:
+        print(f"[warn] settings recommendation event lookup failed: {type(exc).__name__}")
+        return prune_events(cached or [])
+
+
+async def _db_get_recommendation_events(uid: str) -> list[dict]:
+    """Load bounded, privacy-safe recommendation behaviour for one user."""
+
+    global _recommendation_events_table_available
+    cached = _recommendation_events.get(uid)
+    sb = _get_supabase()
+    if not sb:
+        return prune_events(cached or [])
+    if _recommendation_events_table_available is False:
+        events = await _db_get_recommendation_events_settings(uid, cached=cached)
+        _recommendation_events[uid] = events
+        return events
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+            .select("event_id,event_type,card_id,occurred_at,event_data")
+            .eq("user_id", uid)
+            .order("occurred_at", desc=True)
+            .limit(_RECOMMENDATION_EVENTS_LIMIT)
+            .execute()
+        )
+        rows = list(getattr(result, "data", None) or [])
+        row_events = [
+            event for row in rows if (event := _recommendation_event_from_row(row))
+        ]
+        # Continue reading rollout rows after the table appears. This closes the
+        # deployment window where one instance has already discovered the new
+        # table while another has just written an atomic v2 settings row.
+        settings_events = await _db_get_recommendation_events_settings(uid)
+        events = prune_events(
+            [*row_events, *settings_events]
+        )
+        _recommendation_events_table_available = True
+        _recommendation_events[uid] = events
+        return events
+    except Exception as exc:
+        if _recommendation_events_table_missing(exc):
+            _recommendation_events_table_available = False
+            events = await _db_get_recommendation_events_settings(uid, cached=cached)
+            _recommendation_events[uid] = events
+            return events
+        # Feedback may refine a recommendation but must never make the home feed
+        # unavailable. A warm process can still use its bounded local copy.
+        print(f"[warn] recommendation event lookup failed: {type(exc).__name__}")
+        return prune_events(cached or [])
+
+
+async def _db_append_recommendation_events(
+    uid: str,
+    payloads: list[dict],
+) -> tuple[list[dict], bool]:
+    """Atomically append idempotent event rows across backend instances."""
+
+    global _recommendation_events_table_available
+    if not payloads:
+        return await _db_get_recommendation_events(uid), True
+    lock = _recommendation_event_locks.setdefault(uid, asyncio.Lock())
+    async with lock:
+        existing = await _db_get_recommendation_events(uid)
+        known_ids = {
+            str(item.get("event_id") or "")
+            for item in existing
+            if item.get("event_id")
+        }
+        merged = list(existing)
+        prepared: list[dict] = []
+        for payload in payloads:
+            item = dict(payload)
+            event_id = str(item.get("event_id") or uuid.uuid4())[:80]
+            item["event_id"] = event_id
+            if event_id and event_id in known_ids:
+                continue
+            merged.append(item)
+            prepared.append(item)
+            if event_id:
+                known_ids.add(event_id)
+        merged = prune_events(merged)
+        _recommendation_events[uid] = merged
+
+        if not prepared:
+            return merged, True
+
+        sb = _get_supabase()
+        if not sb:
+            return merged, False
+        if _recommendation_events_table_available is False:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("app_settings").upsert(
+                        _recommendation_event_setting_rows(uid, prepared),
+                        on_conflict="key",
+                        ignore_duplicates=True,
+                    ).execute()
+                )
+                await _db_cleanup_recommendation_events_best_effort(
+                    sb,
+                    uid,
+                    include_row_table=False,
+                )
+                stored = await _db_get_recommendation_events_settings(
+                    uid,
+                    cached=merged,
+                )
+                _recommendation_events[uid] = stored
+                return stored, True
+            except Exception as settings_exc:
+                print(
+                    "[warn] settings recommendation event persistence failed: "
+                    f"{type(settings_exc).__name__}"
+                )
+                return merged, False
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+                .upsert(
+                    [_recommendation_event_row(uid, event) for event in prepared],
+                    on_conflict="user_id,event_id",
+                    ignore_duplicates=True,
+                )
+                .execute()
+            )
+            _recommendation_events_table_available = True
+            await _db_cleanup_recommendation_events_best_effort(
+                sb,
+                uid,
+                include_row_table=True,
+            )
+            # Re-read so this process immediately sees events appended by other
+            # instances between its initial read and atomic insert.
+            return await _db_get_recommendation_events(uid), True
+        except Exception as exc:
+            if _recommendation_events_table_missing(exc):
+                _recommendation_events_table_available = False
+                # The migration-free fallback still appends atomically: every
+                # event owns a unique app_settings key. Never rewrite the old
+                # per-user JSON array, which could lose concurrent events.
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda: sb.table("app_settings").upsert(
+                            _recommendation_event_setting_rows(uid, prepared),
+                            on_conflict="key",
+                            ignore_duplicates=True,
+                        ).execute()
+                    )
+                    await _db_cleanup_recommendation_events_best_effort(
+                        sb,
+                        uid,
+                        include_row_table=False,
+                    )
+                    stored = await _db_get_recommendation_events_settings(
+                        uid,
+                        cached=merged,
+                    )
+                    _recommendation_events[uid] = stored
+                    return stored, True
+                except Exception as settings_exc:
+                    print(
+                        "[warn] settings recommendation event persistence failed: "
+                        f"{type(settings_exc).__name__}"
+                    )
+                    return merged, False
+            print(f"[warn] recommendation event persistence failed: {type(exc).__name__}")
+            return merged, False
+
+
+async def _db_delete_recommendation_events(uid: str) -> None:
+    global _recommendation_events_table_available
+    _recommendation_events.pop(uid, None)
+    _recommendation_event_locks.pop(uid, None)
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation feedback could not be deleted",
+        )
+    if _recommendation_events_table_available is not False:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
+                .delete()
+                .eq("user_id", uid)
+                .execute()
+            )
+            _recommendation_events_table_available = True
+        except Exception as exc:
+            if _recommendation_events_table_missing(exc):
+                _recommendation_events_table_available = False
+            else:
+                print(f"[warn] recommendation event delete failed: {exc}")
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "Recommendation feedback could not be deleted",
+                ) from exc
+
+    # Delete both the atomic v2 fallback rows and read-only v1 compatibility
+    # value. Once every environment has the new table these remain harmless
+    # no-ops and guarantee privacy erasure of rollout data.
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .delete()
+            .like("key", f"{_recommendation_event_setting_prefix(uid)}%")
+            .execute()
+        )
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .delete()
+            .eq("key", event_storage_key(uid))
+            .execute()
+        )
+    except Exception as exc:
+        print(f"[warn] settings recommendation event delete failed: {exc}")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation feedback could not be deleted",
+        ) from exc
+
+
+def _new_recommendation_event(
+    *,
+    event: str,
+    card_id: str,
+    trusted_resource_url: bool = False,
+    **payload: object,
+) -> dict:
+    occurred_at = _now()
+    normalized = normalize_event(
+        {
+            "event_id": str(uuid.uuid4()),
+            "event": event,
+            "card_id": card_id,
+            **payload,
+        },
+        occurred_at=occurred_at,
+        trusted_resource_url=trusted_resource_url,
+    )
+    if not normalized:  # All server-created callers use the allowlist.
+        raise ValueError("invalid recommendation event")
+    return normalized
+
+
 async def _db_list_fav_ids(uid: str) -> set:
     sb = _get_supabase()
     if sb:
@@ -851,6 +1462,45 @@ class AnalyticsIn(BaseModel):
     card_id:   Optional[str] = None
     card_type: Optional[str] = None
     value:     Optional[int] = None
+
+
+class RecommendationEventIn(BaseModel):
+    """Strict, text-free contract for recommendation learning signals."""
+
+    client_event_id: Optional[str] = Field(None, min_length=8, max_length=80)
+    event: Literal[
+        "feed_impression",
+        "card_open",
+        "detail_view",
+        "detail_dwell",
+        "external_resource_click",
+        "favorite",
+        "continue_chat",
+        "helpful",
+        "not_relevant",
+        "resource_impression",
+    ]
+    card_id: str = Field(..., min_length=1, max_length=128)
+    recommendation_id: Optional[str] = Field(None, max_length=128)
+    feed_request_id: Optional[str] = Field(None, max_length=80)
+    resource_id: Optional[str] = Field(None, max_length=160)
+    resource_url: Optional[str] = Field(None, max_length=2048)
+    resource_kind: Optional[Literal["article", "video"]] = None
+    content_category: Optional[Literal["authority", "featured", "case"]] = None
+    locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None
+    position: Optional[int] = Field(None, ge=0, le=50)
+    duration_ms: Optional[int] = Field(None, ge=0, le=1_800_000)
+    value: Optional[int] = Field(None, ge=-1, le=1)
+    reason: Optional[
+        Literal[
+            "topic_mismatch",
+            "already_seen",
+            "repetitive",
+            "wrong_language",
+            "source_not_useful",
+            "not_now",
+        ]
+    ] = None
 
 class StartChatRequest(BaseModel):
     card_id:    Optional[str] = None
@@ -2773,7 +3423,11 @@ async def _load_recent_main_chat(
                     .eq("role", "user")
                     .order("created_at", desc=True)
                     .order("id", desc=True)
-                    .limit(4)
+                    # Fetch enough from each candidate session for the global
+                    # 18-message selector below to find durable themes. A fixed
+                    # four-message slice hid older but repeatedly important
+                    # context in accounts with one long historical main chat.
+                    .limit(_ACCOUNT_HISTORY_USER_MESSAGE_LIMIT)
                     .execute()
                 )
 
@@ -3456,7 +4110,8 @@ def _build_dynamic_research_card(
     emotion or development bundle under an unrelated topic (for example,
     Montessori school choice) is more misleading than showing a bounded
     research state.  The research endpoint only publishes a complete verified
-    3x2 bundle; the frontend hides category shelves until that bundle exists.
+    six-to-nine item bundle; the frontend hides category shelves until that
+    quality threshold is met.
     """
 
     topic = _conversation_topic_excerpt(messages)
@@ -3512,8 +4167,8 @@ def _build_dynamic_research_card(
             {
                 "body": (
                     "这是根据你刚刚提出的具体问题建立的学习主题。完成外部检索后，"
-                    "这里只会展示六项通过来源、语言和内容核验的结果：三个类别，"
-                    "每类各一篇文章和一个视频。"
+                    "这里只会展示六至九项通过来源、语言和内容核验的结果：三个类别，"
+                    "每类至少一篇文章和一个视频；第三项只有同样可靠时才会加入。"
                 ),
                 "hook_line": "让 NURI 围绕这次真实对话继续筛选。",
                 "tags": ["#对话相关", "#个性化检索"],
@@ -3666,8 +4321,9 @@ def _rank_learning_content(
     context_created_at: Optional[str] = None,
     context_state: str = "ready",
     include_detail: bool = False,
+    behavior_events: Optional[list[dict]] = None,
 ) -> tuple[list[dict], bool]:
-    """Deterministically rank reviewed content against recent conversation text."""
+    """Rank candidates by conversation relevance, affinity, and freshness."""
 
     raw_current_user_texts = [
         str(message.get("text") or "").strip()
@@ -3778,7 +4434,7 @@ def _rank_learning_content(
         assistant_context_text = ""
 
     ranked: list[
-        tuple[int, int, int, dict, Optional[str], str, str]
+        tuple[int, int, int, int, dict, Optional[str], str, str, dict]
     ] = []
     for index, card in enumerate(LEARNING_CONTENT_CARDS):
         terms = [
@@ -3830,7 +4486,12 @@ def _rank_learning_content(
             # one.  This prevents a broad AI aside such as “精细动作” from
             # outranking the parent's explicit language-interaction concern.
             assistant_score = _signal_score(assistant_matches, 3, 1, 1)
-        score = user_signal_score + assistant_score
+        conversation_score = user_signal_score + assistant_score
+        behavior = card_behavior_signal(
+            str(card.get("id") or ""),
+            behavior_events or [],
+        )
+        score = conversation_score + int(behavior.get("score") or 0)
 
         reason_term = next(
             (
@@ -3850,31 +4511,60 @@ def _rank_learning_content(
         ranked.append(
             (
                 score,
+                conversation_score,
                 user_signal_score,
                 index,
                 card,
                 reason_term,
                 focus_text,
                 focus_scope,
+                behavior,
             )
         )
 
-    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    def _eligible_match(item: tuple) -> bool:
+        return bool(
+            item[1] >= _CONVERSATION_MATCH_MIN_SCORE
+            and item[2] >= _CONVERSATION_MATCH_MIN_SCORE
+            and not item[8].get("explicit_negative")
+        )
+
+    # A prior click must never manufacture relevance for an unrelated current
+    # conversation. Eligible conversation candidates come first; behaviour and
+    # freshness only reorder candidates inside that pool.
+    ranked.sort(
+        key=lambda item: (
+            not _eligible_match(item),
+            -item[0],
+            -item[1],
+            item[3],
+        )
+    )
     has_conversation_match = bool(
         raw_current_user_texts
         and ranked
-        and ranked[0][0] >= _CONVERSATION_MATCH_MIN_SCORE
-        and ranked[0][1] >= _CONVERSATION_MATCH_MIN_SCORE
+        and any(_eligible_match(item) for item in ranked)
+    )
+    has_explicitly_rejected_match = bool(
+        raw_current_user_texts
+        and any(
+            item[1] >= _CONVERSATION_MATCH_MIN_SCORE
+            and item[2] >= _CONVERSATION_MATCH_MIN_SCORE
+            and item[8].get("explicit_negative")
+            for item in ranked
+        )
     )
     selected: list[dict] = []
     for (
         score,
+        conversation_score,
         user_signal_score,
         _,
         card,
         reason_term,
         focus_text,
         focus_scope,
+        behavior,
     ) in ranked[
         : max(1, min(count, len(LEARNING_CONTENT_CARDS)))
     ]:
@@ -3884,9 +4574,10 @@ def _rank_learning_content(
         if not safe_focus:
             safe_focus = safe_goal
         if (
-            score >= _CONVERSATION_MATCH_MIN_SCORE
+            conversation_score >= _CONVERSATION_MATCH_MIN_SCORE
             and user_signal_score >= _CONVERSATION_MATCH_MIN_SCORE
             and has_conversation_match
+            and not behavior.get("explicit_negative")
         ):
             if latest_meta_only and safe_focus:
                 continuity = (
@@ -3957,12 +4648,26 @@ def _rank_learning_content(
                         else (safe_focus or goal_text)
                     ),
                     "recommendation_score": score,
+                    "reason_codes": [
+                        "recent_conversation",
+                        *(
+                            ["learned_preference"]
+                            if int(behavior.get("affinity") or 0) > 0
+                            else []
+                        ),
+                        *(
+                            ["freshness_adjusted"]
+                            if int(behavior.get("freshness_penalty") or 0) < 0
+                            else []
+                        ),
+                    ],
                 }
             )
         selected.append(public_card)
 
     if (
         not has_conversation_match
+        and not has_explicitly_rejected_match
         and context_state == "ready"
         and raw_current_user_texts
     ):
@@ -3979,7 +4684,12 @@ def _rank_learning_content(
 
 
 def _resource_blueprint() -> dict[str, list[str]]:
-    return {category: ["article", "video"] for category in CONTENT_CATEGORIES}
+    # Each editorial lane offers a real choice while preserving format
+    # diversity. The third slot is quality-gated rather than quota-filled.
+    return {
+        category: ["article", "video", "article_or_video_optional"]
+        for category in CONTENT_CATEGORIES
+    }
 
 
 def _research_safety_identifier(uid: str) -> str:
@@ -4021,6 +4731,11 @@ async def _research_card_detail_resources(
         or not card.get("is_conversation_match")
     ):
         return None
+    behavior_events = await _db_get_recommendation_events(uid)
+    excluded_urls = recent_resource_urls(behavior_events)
+    feedback_preferences = card_behavior_signal(
+        str(card.get("id") or ""), behavior_events
+    ).get("content_refresh_reasons") or []
     try:
         return await anyio.to_thread.run_sync(
             lambda: research_learning_resources(
@@ -4030,12 +4745,14 @@ async def _research_card_detail_resources(
                 preferred_locale=str(context.get("preferred_locale") or "zh-CN"),
                 model=OPENAI_CONTENT_RESEARCH_MODEL,
                 safety_identifier=_research_safety_identifier(uid),
+                excluded_urls=excluded_urls,
+                feedback_preferences=feedback_preferences,
             ),
             limiter=content_research_limiter,
         )
     except Exception as exc:
         # Dynamic research is an enhancement.  A provider outage, timeout, bad
-        # result or incomplete 3x2 bundle must never break the reviewed detail.
+        # result or incomplete quality bundle must never break the reviewed detail.
         print(f"[warn] conversation content research fell back: {type(exc).__name__}")
         return None
 
@@ -4090,12 +4807,18 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     """Return learning topics tied to this parent's real main conversation."""
 
     context = await _load_recent_main_chat(uid)
+    behavior_events = (
+        await _db_get_recommendation_events(uid)
+        if context.get("state") == "ready"
+        else []
+    )
     items, used_conversation = _rank_learning_content(
         context.get("messages") or [],
         count=max(1, min(count, 6)),
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
+        behavior_events=behavior_events,
     )
     first_match = next(
         (item for item in items if item.get("is_conversation_match")),
@@ -4149,8 +4872,13 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
                     else "reviewed"
                 )
     await _attach_recommendation_snapshots(uid, items, context)
+    feed_request_id = str(uuid.uuid4())
+    for rank, item in enumerate(items, start=1):
+        item["rank"] = rank
     return {
         "items": items,
+        "feed_request_id": feed_request_id,
+        "model_version": "conversation-quality-feedback-v2",
         "personalization_mode": mode,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),
@@ -4286,6 +5014,11 @@ async def get_card_detail(
             context_created_at=context.get("context_created_at"),
             context_state=context.get("state", "no_history"),
             include_detail=True,
+            behavior_events=(
+                await _db_get_recommendation_events(uid)
+                if uid and context.get("state") == "ready"
+                else []
+            ),
         )
         card = next((item for item in ranked if item["id"] == card_id), None)
         if not card and snapshot and is_dynamic_request:
@@ -4378,7 +5111,7 @@ async def get_card_research(
     recommendation_id: Optional[str] = None,
     uid: str = Depends(_req_uid),
 ):
-    """Return a complete conversation-aware 3x2 bundle or a safe fallback state."""
+    """Return a complete conversation-aware 6–9 item bundle or a safe fallback."""
 
     if (
         card_id not in LEARNING_CONTENT_BY_ID
@@ -4415,6 +5148,11 @@ async def get_card_research(
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
         include_detail=True,
+        behavior_events=(
+            await _db_get_recommendation_events(uid)
+            if context.get("state") == "ready"
+            else []
+        ),
     )
     card = next((item for item in ranked if item["id"] == card_id), None)
     if (
@@ -4461,7 +5199,17 @@ async def get_card_research(
     preferred_locale = str(context.get("preferred_locale") or "zh-CN")
     resources = research["resources"]
     dynamic_count = int(research.get("dynamic_resource_count") or 0)
-    if card.get("is_dynamic_research_card") and dynamic_count != 6:
+    resource_count = len(resources)
+    complete_dynamic_bundle = bool(
+        MIN_TOTAL_RESEARCH_RESOURCES
+        <= resource_count
+        <= MAX_TOTAL_RESEARCH_RESOURCES
+        and dynamic_count == resource_count
+    )
+    if (
+        card.get("is_dynamic_research_card")
+        and not complete_dynamic_bundle
+    ):
         # There is no topic-appropriate reviewed fallback for a novel subject.
         # Never relabel unrelated library resources as personalized results.
         return {
@@ -4471,10 +5219,34 @@ async def get_card_research(
             "resource_summary": summarize_resource_slots([], preferred_locale),
         }
     research_status = (
-        "fresh" if dynamic_count == 6 else "hybrid" if dynamic_count else "reviewed_fallback"
+        "fresh"
+        if complete_dynamic_bundle
+        else "hybrid"
+        if dynamic_count
+        else "reviewed_fallback"
     )
+    content_set_id = str(uuid.uuid4())
+    resource_events = [
+        _new_recommendation_event(
+            event="resource_delivered",
+            card_id=card_id,
+            trusted_resource_url=True,
+            recommendation_id=recommendation_id,
+            resource_id=str(resource.get("id") or ""),
+            resource_url=str(resource.get("url") or ""),
+            resource_kind=str(resource.get("kind") or ""),
+            content_category=str(resource.get("content_category") or ""),
+            locale=(resource.get("locales") or [preferred_locale])[0],
+            position=index,
+        )
+        for index, resource in enumerate(resources)
+        if resource.get("id") and resource.get("url")
+    ]
+    if resource_events:
+        await _db_append_recommendation_events(uid, resource_events)
     return {
         "resources": resources,
+        "content_set_id": content_set_id,
         "research_status": research_status,
         "research_query": research.get("query"),
         "research_editor_note": research.get("editor_note"),
@@ -4559,6 +5331,45 @@ async def save_favorite(body: FavSave, uid: Optional[str] = Depends(_opt_uid)):
 async def track_event(ev: AnalyticsIn):
     _analytics.append({**ev.dict(), "ts": _now()})
     return {"ok": True}
+
+
+@api.post("/recommendations/events", status_code=status.HTTP_202_ACCEPTED)
+async def track_recommendation_event(
+    body: RecommendationEventIn,
+    uid: str = Depends(_req_uid),
+):
+    """Persist a bounded recommendation signal without conversation text/PII."""
+
+    privacy = await _db_get_privacy(uid, fail_closed=True)
+    if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation settings are temporarily unavailable",
+        )
+    if privacy.get("allow_history_training") is False:
+        return {"accepted": False, "reason": "personalization_disabled"}
+
+    raw = body.model_dump(exclude_none=True)
+    raw.setdefault("client_event_id", str(uuid.uuid4()))
+    normalized = normalize_event(raw, occurred_at=_now())
+    if not normalized or normalized.get("event") not in LEARNING_EVENT_NAMES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid event")
+    if normalized.get("event") == "not_relevant" and not normalized.get("reason"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "A not_relevant event requires a reason",
+        )
+    if normalized.get("event") != "not_relevant" and normalized.get("reason"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Feedback reason is only valid for not_relevant events",
+        )
+    _, persisted = await _db_append_recommendation_events(uid, [normalized])
+    return {
+        "accepted": True,
+        "persisted": persisted,
+        "event_id": normalized.get("event_id"),
+    }
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 def _chat_preview_row(row: Optional[dict], include_role: bool = False) -> Optional[dict]:
@@ -5496,6 +6307,7 @@ async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_op
     settings = await _db_set_privacy(uid, body.model_dump())
     if uid and settings.get("allow_history_training") is False:
         await _db_delete_recommendation_snapshots(uid)
+        await _db_delete_recommendation_events(uid)
     return settings
 
 @api.post("/privacy/wipe")
@@ -5516,6 +6328,7 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
             },
         )
         await _db_delete_recommendation_snapshots(uid)
+        await _db_delete_recommendation_events(uid)
         _children = [c for c in _children if c.get("user_id") != uid]
         _tasks    = [t for t in _tasks    if t.get("user_id") != uid]
         for sid in [s for s, d in _sessions.items() if d.get("user_id") == uid]:
@@ -5526,6 +6339,7 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         _sessions.clear(); _messages.clear()
         _favorites.clear(); _analytics.clear(); _privacy.clear()
         _recommendation_snapshots.clear()
+        _recommendation_events.clear(); _recommendation_event_locks.clear()
     return {"ok": True}
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
