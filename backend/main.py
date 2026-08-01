@@ -3902,7 +3902,14 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
         raise HTTPException(503, "Database not configured")
 
     users_res = await anyio.to_thread.run_sync(
-        lambda: sb.table("users").select("id,email,nickname,top_concerns").execute()
+        # daily_push is the parent's own setting on the profile screen. It was
+        # never consulted here, so anyone who turned "接收每日推送提醒" off kept
+        # receiving mail — and the proactive check-ins make that worse, not
+        # better. `neq false` rather than `eq true` so rows predating
+        # privacy_settings_migration.sql (null) keep their previous behaviour
+        # instead of silently going quiet.
+        lambda: sb.table("users").select("id,email,nickname,top_concerns")
+        .neq("daily_push", False).execute()
     )
     users = users_res.data or []
     if not users:
