@@ -16,6 +16,7 @@ from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     LEARNING_CONTENT_CARDS,
     SUPPORTED_RESOURCE_LOCALES,
+    TAIWAN_AUTHORITY_RESOURCE_HOSTS,
     TRUSTED_RESOURCE_HOSTS,
     is_trusted_resource_url,
     order_learning_resources,
@@ -491,6 +492,33 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         urlparse(resource["url"]).path.startswith("/sc_chi/") for resource in resources
     )
     assert all("香港特别行政区政府" in resource["publisher"] for resource in resources)
+
+
+@pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
+def test_traditional_resources_are_taiwan_authority_first(card):
+    resources = [
+        resource
+        for resource in card.get("resources", [])
+        if "zh-TW" in resource.get("locales", [])
+    ]
+
+    assert len(resources) == 2
+    assert {resource["kind"] for resource in resources} == {"article", "video"}
+    assert all(resource["source_region"] == "TW" for resource in resources)
+    assert all("台灣" in resource["language"] for resource in resources)
+    assert all(resource["source_tier"] == "authority" for resource in resources)
+    assert all(resource["selection_basis"] == "official" for resource in resources)
+
+    taiwan_video_publishers = {
+        "臺灣衛生福利部國民健康署官方頻道",
+        "埔里基督教醫院 · 小星星協奏曲",
+        "臺灣雲林縣衛生局保健科",
+    }
+    for resource in resources:
+        hostname = urlparse(resource["url"]).hostname
+        assert hostname in TAIWAN_AUTHORITY_RESOURCE_HOSTS | {"www.youtube.com"}
+        if hostname == "www.youtube.com":
+            assert resource["publisher"] in taiwan_video_publishers
 
 
 def test_mainland_resource_hosts_are_not_trusted():

@@ -95,26 +95,26 @@ const previewLocalizedResources: Record<string, any[]> = {
   learn_sleep_routine: [
     { id: "sleep-zh-cn-article", kind: "article", title: "摇篮曲之一：建立睡眠常规", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "说明婴幼儿睡眠周期、夜醒回应及建立睡前常规的方法。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/13043.html" },
     { id: "sleep-zh-cn-video", kind: "video", title: "建立睡前常规", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范固定、平静而可重复的睡前步骤。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000015.html" },
-    { id: "sleep-zh-tw-article", kind: "article", title: "搖籃曲之一：建立睡眠常規", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "說明嬰幼兒睡眠週期、夜醒回應及建立睡前常規的方法。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/13043.html" },
-    { id: "sleep-zh-tw-video", kind: "video", title: "建立睡前常規", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範固定而可重複的睡前步驟。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000015.html" },
+    { id: "sleep-zh-tw-article", kind: "article", title: "若要小孩好好睡，睡前儀式很重要", publisher: "臺灣衛生福利部 · 心快活心理健康學習平台", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "依年齡說明睡眠需求，並提供固定時間、固定步驟與安靜活動等睡前儀式建議。", url: "https://wellbeing.mohw.gov.tw/nor/pstunt/1/779" },
+    { id: "sleep-zh-tw-video", kind: "video", title: "讓寶貝們好好睡覺", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向零至二歲照顧者，介紹寶寶作息、哭鬧與建立睡前儀式的方法。", url: "https://babyedu.sfaa.gov.tw/info/10000254?lang=Big5" },
   ],
   learn_big_feelings: [
     { id: "emotion-zh-cn-article", kind: "article", title: "培育高“EQ”孩子从零岁开始", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "用观察、转换角度和表达同感协助孩子调节情绪。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/30159.html" },
     { id: "emotion-zh-cn-video", kind: "video", title: "“情绪导航”小秘诀（婴幼儿篇）", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范如何理解、接纳孩子的情绪并表达同感。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000114.html" },
-    { id: "emotion-zh-tw-article", kind: "article", title: "培育高「EQ」孩子從零歲開始", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "用觀察、轉換角度和表達同感協助孩子調節情緒。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/30159.html" },
-    { id: "emotion-zh-tw-video", kind: "video", title: "「情緒導航」小秘訣（嬰幼兒篇）", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範如何理解、接納孩子的情緒並表達同感。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000114.html" },
+    { id: "emotion-zh-tw-article", kind: "article", title: "一起來想想，我們如何回應孩子的心情？", publisher: "國立臺灣大學醫學院附設醫院臨床心理中心", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "由臨床心理師說明如何注意、命名並回應孩子的感受，逐步支持情緒理解與調節。", url: "https://epaper.ntuh.gov.tw/health/202507/child_1.html" },
+    { id: "emotion-zh-tw-video", kind: "video", title: "玩遊戲解情緒：幫助寶寶認識與表達自己的情緒", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "以親子遊戲示範情緒覺察、理解、表達與調節，適合零至二歲照顧者。", url: "https://babyedu.sfaa.gov.tw/info/10000213" },
   ],
   learn_picky_eating: [
     { id: "food-zh-cn-article", kind: "article", title: "孩子“偏食”怎么办？", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "建议重复提供新食物、不强迫进食。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/20033.html" },
     { id: "food-zh-cn-video", kind: "video", title: "孩子偏食，应该怎样处理？", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "说明如何降低进餐压力并增加接触机会。", url: "https://www.fhs.gov.hk/sc_chi/health_info/faq/child_health/GN1_2_4_2.html" },
-    { id: "food-zh-tw-article", kind: "article", title: "孩子「偏食」怎麼辦？", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "建議重複提供新食物、不強迫進食。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/20033.html" },
-    { id: "food-zh-tw-video", kind: "video", title: "孩子偏食，應該怎樣處理？", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "說明如何降低進餐壓力並增加接觸機會。", url: "https://www.fhs.gov.hk/tc_chi/health_info/faq/child_health/GN1_2_4_2.html" },
+    { id: "food-zh-tw-article", kind: "article", title: "幼兒偏食行為", publisher: "中國醫藥大學附設醫院臨床營養科", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "說明偏食的判定與原因，並提供規律進餐、愉快氣氛、食物多樣化與避免強迫等家庭方法。", url: "https://www.cmuh.org.tw/HealthEdus/Detail?no=5466" },
+    { id: "food-zh-tw-video", kind: "video", title: "一歲寶貝本事多", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向一至二歲家庭，介紹規律用餐、健康飲食與培養孩子自主進食的方法。", url: "https://babyedu.sfaa.gov.tw/info/10000131?lang=Big5" },
   ],
   learn_serve_and_return: [
     { id: "connection-zh-cn-article", kind: "article", title: "亲子沟通——给一岁前婴儿的家长", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "说明如何观察宝宝信号、回应并轮流互动。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/13046.html" },
     { id: "connection-zh-cn-video", kind: "video", title: "亲子沟通（四至六个月）", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范观察、回应和来回互动。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000025.html" },
-    { id: "connection-zh-tw-article", kind: "article", title: "親子溝通——給一歲前嬰兒的家長", publisher: "香港衞生署家庭健康服務", language: "繁體中文", locales: ["zh-TW"], description: "說明如何觀察寶寶訊號、回應並輪流互動。", url: "https://www.fhs.gov.hk/tc_chi/health_info/child/13046.html" },
-    { id: "connection-zh-tw-video", kind: "video", title: "親子溝通（四至六個月）", publisher: "香港衞生署家庭健康服務", language: "粵語影片 · 繁體文字稿", locales: ["zh-TW"], description: "示範觀察、回應和來回互動。", url: "https://www.fhs.gov.hk/tc_chi/mulit_med/000025.html" },
+    { id: "connection-zh-tw-article", kind: "article", title: "用愛說故事，親子共讀從零歲開始", publisher: "臺灣衛生福利部國民健康署", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "說明如何用聲音、表情與對話式共讀形成親子來回互動，促進親密感和語言發展。", url: "https://www.mohw.gov.tw/cp-16-48967-1.html" },
+    { id: "connection-zh-tw-video", kind: "video", title: "親子互動秘笈 1：怎麼樣「互動」最好？", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向零至二歲照顧者，示範互動環境、溝通、感官遊戲與來回回應的原則。", url: "https://babyedu.sfaa.gov.tw/info/10000138?lang=Big5" },
   ],
 };
 const previewAuthorityMetadata = {
