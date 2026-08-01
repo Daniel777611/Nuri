@@ -2407,6 +2407,7 @@ def _recommendation_activity_key(row: dict) -> tuple[str, str]:
 
 _ACCOUNT_HISTORY_SESSION_LIMIT = 5
 _ACCOUNT_HISTORY_USER_MESSAGE_LIMIT = 18
+_CURRENT_SESSION_USER_HISTORY_LIMIT = 24
 
 
 def _safe_context_message(message: dict, *, context_scope: str) -> dict:
@@ -2526,7 +2527,7 @@ def _recent_main_chat_from_memory(
     else:
         session = max(sessions, key=_recommendation_activity_key)
 
-    messages = sorted(
+    all_current_messages = sorted(
         [
             message
             for message in _messages.get(session["id"], [])
@@ -2534,7 +2535,8 @@ def _recent_main_chat_from_memory(
             or str(message.get("created_at") or "") <= through_created_at
         ],
         key=_recommendation_activity_key,
-    )[-limit:]
+    )
+    messages = all_current_messages[-limit:]
     safe_messages = [
         _safe_context_message(
             {**message, "session_id": message.get("session_id") or session["id"]},
@@ -2542,6 +2544,22 @@ def _recent_main_chat_from_memory(
         )
         for message in messages
         if message.get("role") in {"user", "ai", "assistant"}
+    ]
+    recent_message_ids = {
+        str(message.get("id") or "") for message in safe_messages if message.get("id")
+    }
+    bounded_current_user_messages = [
+        item
+        for item in all_current_messages
+        if item.get("role") == "user" and str(item.get("text") or "").strip()
+    ][-_CURRENT_SESSION_USER_HISTORY_LIMIT:]
+    deeper_current_user_messages = [
+        _safe_context_message(
+            {**message, "session_id": message.get("session_id") or session["id"]},
+            context_scope="current_session_history",
+        )
+        for message in bounded_current_user_messages
+        if str(message.get("id") or "") not in recent_message_ids
     ]
     history_messages = (
         []
@@ -2554,12 +2572,21 @@ def _recent_main_chat_from_memory(
     return {
         "state": "ready" if last_user_message else "no_user_message",
         "session_id": session.get("id"),
-        "messages": [*history_messages, *safe_messages],
+        "messages": [
+            *history_messages,
+            *deeper_current_user_messages,
+            *safe_messages,
+        ],
         "context_created_at": (safe_messages[-1].get("created_at") if safe_messages else None),
         "history_session_count": len(
             {message.get("session_id") for message in history_messages}
         ),
         "history_user_message_count": len(history_messages),
+        "current_session_user_message_count": sum(
+            1
+            for message in [*deeper_current_user_messages, *safe_messages]
+            if message.get("role") == "user"
+        ),
     }
 
 
@@ -2693,6 +2720,39 @@ async def _load_recent_main_chat(
 
         message_res = await anyio.to_thread.run_sync(load_context_messages)
         current_messages = list(reversed(message_res.data or []))
+
+        def load_current_user_history():
+            query = (
+                sb.table("chat_messages")
+                .select("id,session_id,role,text,created_at")
+                .eq("session_id", session["id"])
+                .eq("role", "user")
+            )
+            if through_created_at:
+                query = query.lte("created_at", through_created_at)
+            return (
+                query.order("created_at", desc=True)
+                .order("id", desc=True)
+                .limit(_CURRENT_SESSION_USER_HISTORY_LIMIT)
+                .execute()
+            )
+
+        current_user_history_res = await anyio.to_thread.run_sync(
+            load_current_user_history
+        )
+        recent_message_ids = {
+            str(message.get("id") or "")
+            for message in current_messages
+            if message.get("id")
+        }
+        deeper_current_user_messages = [
+            _safe_context_message(
+                message,
+                context_scope="current_session_history",
+            )
+            for message in reversed(current_user_history_res.data or [])
+            if str(message.get("id") or "") not in recent_message_ids
+        ]
         history_messages: list[dict] = []
         if not preferred_session_id and not through_created_at:
             history_sessions = sorted(
@@ -2734,6 +2794,7 @@ async def _load_recent_main_chat(
             )
         messages = [
             *history_messages,
+            *deeper_current_user_messages,
             *[
                 _safe_context_message(message, context_scope="current_session")
                 for message in current_messages
@@ -2743,7 +2804,7 @@ async def _load_recent_main_chat(
         session_has_user_message = any(
             message.get("role") == "user"
             and str(message.get("text") or "").strip()
-            for message in current_messages
+            for message in [*deeper_current_user_messages, *current_messages]
         )
         return {
             "state": "ready" if session_has_user_message else "no_user_message",
@@ -2756,6 +2817,11 @@ async def _load_recent_main_chat(
                 {message.get("session_id") for message in history_messages}
             ),
             "history_user_message_count": len(history_messages),
+            "current_session_user_message_count": sum(
+                1
+                for message in [*deeper_current_user_messages, *current_messages]
+                if message.get("role") == "user"
+            ),
             "preferred_locale": preferred_locale,
             "external_research_allowed": external_research_allowed,
         }
@@ -2864,6 +2930,8 @@ _ACTION_REQUEST_LABELS = (
     ("task", "可执行任务"),
 )
 _ACTION_ONLY_FILLERS = (
+    "也",
+    "再",
     "请",
     "帮我",
     "给我",
@@ -2883,6 +2951,26 @@ _ACTION_ONLY_FILLERS = (
     "please",
     "give me",
     "some",
+    "a",
+    "an",
+    "the",
+    "for me",
+    "create",
+    "make",
+    "can you",
+    "could you",
+    "would you",
+    "你",
+    "适合我的",
+    "適合我的",
+    "适合我",
+    "適合我",
+    "个",
+    "個",
+    "项",
+    "項",
+    "条",
+    "條",
 )
 _TOPIC_SIGNAL_ALIASES: dict[str, tuple[str, ...]] = {
     "learn_language_milestones": (
@@ -2894,8 +2982,181 @@ _TOPIC_SIGNAL_ALIASES: dict[str, tuple[str, ...]] = {
         "声音回应",
         "短句回应",
     ),
-    "learn_serve_and_return": ("轮流互动", "轮流回应", "跟随孩子"),
+    "learn_serve_and_return": (
+        "轮流互动",
+        "轮流回应",
+        "跟随孩子",
+        "陪孩子",
+        "陪娃",
+        "陪他的时间",
+        "陪她的时间",
+        "陪孩子的时间",
+        "陪宝宝的时间",
+        "陪娃的时间",
+        "陪伴时间",
+        "没空陪孩子",
+        "没空陪他",
+        "没空陪她",
+        "很少陪孩子",
+        "很少陪他",
+        "很少陪她",
+        "主要是妈妈在照顾",
+        "主要是妈妈再照顾",
+        "主要是爸爸在照顾",
+        "主要是爸爸再照顾",
+        "主要由妈妈照顾",
+        "主要由爸爸照顾",
+    ),
 }
+_PRODUCT_META_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:为什么|为何|为啥|怎么|怎么会|还是|又|一直|现在|这里|这个地方)?"
+        r"[^，。！？,;!?\n]{0,10}(?:没有|没|未|不显示|看不到|找不到|没收到)"
+        r"[^，。！？,;!?\n]{0,16}(?:任[务務]卡(?:片)?|推送卡片|推荐卡片|推薦卡片)",
+        r"(?:任[务務]卡(?:片)?|推送卡片|推荐卡片|推薦卡片)"
+        r"[^，。！？,;!?\n]{0,16}(?:在哪|在哪里|不见|不見|没有|沒有|没了|沒了|"
+        r"不显示|不顯示|看不到|找不到|没生成|沒生成|未生成)",
+        r"(?:系统|系統|页面|頁面|首页|首頁|应用|應用|app|nuri|你)"
+        r"[^，。！？,;!?\n]{0,16}(?:没有|沒有|没|沒|未|不)"
+        r"[^，。！？,;!?\n]{0,12}(?:生成|显示|顯示|给|給)"
+        r"[^，。！？,;!?\n]{0,8}(?:任[务務]卡(?:片)?|推荐卡片|推薦卡片)",
+        r"\b(?:why|where|how come)\b[^.?!\n]{0,32}"
+        r"\b(?:task cards?|recommendation cards?)\b|"
+        r"\b(?:task cards?|recommendation cards?)\b[^.?!\n]{0,24}"
+        r"\b(?:missing|not showing|not generated|gone)\b",
+    )
+)
+_RECOMMENDATION_FEEDBACK_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:(?:这个|這個|这条|這條|这些|這些)\s*)?"
+        r"(?:这段内容|這段內容|这段推荐|這段推薦|推荐(?:卡片|内容)?|"
+        r"推薦(?:卡片|內容)?|推送(?:卡片|内容|內容)?|"
+        r"卡片|你给的(?:推荐|内容|卡片)|你給的(?:推薦|內容|卡片))"
+        r"[^，。！？,;!?\n]{0,24}(?:不相关|不相關|无关|無關|不准确|不準確|"
+        r"不够准确|不夠準確|不合适|不合適|不适合|不適合|"
+        r"关系不大|關係不大|不是我想要的)",
+        r"(?:不相关|不相關|无关|無關|不准确|不準確|不够准确|不夠準確)"
+        r"[^，。！？,;!?\n]{0,16}(?:推荐|推薦|推送|内容|內容|卡片|对话|對話)",
+        r"\b(?:this|these|the|your)?\s*"
+        r"(?:recommendations?|suggestions?|recommended\s+content|suggested\s+content|"
+        r"content|cards?)\b[^.?!\n]{0,32}"
+        r"\b(?:irrelevant|not\s+relevant|inaccurate|not\s+accurate|"
+        r"unsuitable|not\s+suitable)\b",
+        r"\b(?:irrelevant|not\s+relevant|inaccurate|not\s+accurate|"
+        r"unsuitable|not\s+suitable)\b[^.?!\n]{0,32}"
+        r"\b(?:recommendations?|suggestions?|content|cards?)\b",
+    )
+)
+_CONVERSATION_META_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:我们|我們).{0,8}(?:讨论过|討論過|聊过|聊過).{0,8}(?:什么|什麼)",
+        r"你.{0,8}(?:记得|記得).{0,8}(?:什么|什麼)",
+        r"你.{0,8}(?:认为|認為|觉得|覺得)我.{0,12}(?:什么样|什麼樣).{0,8}(?:父亲|父親|爸爸|母亲|母親|妈妈|媽媽)",
+        r"\bwhat\s+(?:have|did)\s+we\s+(?:discuss(?:ed)?|talk(?:ed)?\s+about)\b",
+        r"\bwhat\s+do\s+you\s+remember\s+about\s+me\b",
+        r"\bwhat\s+kind\s+of\s+(?:father|mother|parent)\s+do\s+you\s+think\s+i\s+am\b",
+    )
+)
+_GENERIC_CONTEXT_REQUEST_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"你?.{0,6}(?:认为|認為|觉得|覺得)?我(?:现在|現在)?"
+        r".{0,6}最需要.{0,8}(?:什么样|什麼樣|什么|什麼)?"
+        r".{0,6}(?:引导|引導|帮助|幫助|建议|建議|支持)",
+        r"(?:结合|結合|根据|根據).{0,12}(?:我的情况|我的情況|我们的对话|我們的對話)"
+        r".{0,12}(?:给我|給我|推荐|推薦|建议|建議)",
+    )
+)
+_CONTEXT_CORRECTION_ONLY_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"^我?(?:并|並)?(?:没有|沒有|没|沒|不是|并不是|並不是|不觉得|不覺得|不认为|不認為)"
+        r".{0,12}(?:愧疚|内疚|內疚|自责|自責|后悔|後悔|焦虑|焦慮)[啊呀吧呢]?$",
+    )
+)
+_NON_PARENTING_TOPIC_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:只|只是|仅仅|僅僅).{0,10}(?:创业|創業|公司|工作|生意)"
+        r".{0,12}(?:没有|沒有|没|沒|未|不).{0,8}(?:谈|談|聊|说|說|涉及)"
+        r".{0,6}(?:孩子|宝宝|寶寶|育儿|育兒)",
+        r"(?:创业|創業|公司|工作|生意).{0,12}(?:和|与|與)"
+        r".{0,6}(?:孩子|宝宝|寶寶|育儿|育兒).{0,6}(?:无关|無關|没关系|沒關係)",
+        r"(?:这次|這次|这里|這裡|当前|當前)?\s*"
+        r"(?:没有|沒有|没|沒|未|不在|不是在)"
+        r".{0,4}(?:谈|談|聊|说|說|讨论|討論|涉及)"
+        r".{0,10}(?:孩子|宝宝|寶寶|育儿|育兒|陪伴|亲子|親子)",
+    )
+)
+_PARENTING_CONTEXT_TERMS = (
+    "孩子",
+    "宝宝",
+    "寶寶",
+    "宝贝",
+    "寶貝",
+    "育儿",
+    "育兒",
+    "亲子",
+    "親子",
+    "陪伴",
+    "陪他",
+    "陪她",
+    "照顾他",
+    "照顧他",
+    "照顾她",
+    "照顧她",
+    "儿子",
+    "兒子",
+    "女儿",
+    "女兒",
+)
+_DYNAMIC_PARENTING_DOMAIN_TERMS = (
+    "child",
+    "children",
+    "baby",
+    "parent",
+    "family",
+    "caregiver",
+    "father",
+    "mother",
+    "dad",
+    "mom",
+    "school",
+    "preschool",
+    "daycare",
+    "父亲",
+    "父親",
+    "母亲",
+    "母親",
+    "爸爸",
+    "妈妈",
+    "媽媽",
+    "家长",
+    "家長",
+    "家庭",
+    "照顾者",
+    "照顧者",
+    "蒙特梭利",
+    "montessori",
+    "森林学校",
+    "森林學校",
+    "forest school",
+    "幼儿园",
+    "幼兒園",
+    "托育",
+    "早教",
+    "学校",
+    "學校",
+    "堂兄",
+    "堂姐",
+    "亲属",
+    "親屬",
+    "霸凌",
+    "移居",
+)
 _CONTEXT_REJECTION_MARKERS = (
     "不想继续",
     "不要继续",
@@ -2939,6 +3200,82 @@ def _is_acknowledgement_only(text: str) -> bool:
     return not residue
 
 
+def _is_product_meta_request(text: str) -> bool:
+    """Exclude feedback about NURI's UI/cards from parenting-topic ranking."""
+
+    normalized = " ".join((text or "").strip().split())
+    return bool(normalized) and any(
+        pattern.search(normalized) for pattern in _PRODUCT_META_PATTERNS
+    )
+
+
+def _is_recommendation_feedback(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split())
+    return bool(normalized) and any(
+        pattern.search(normalized) for pattern in _RECOMMENDATION_FEEDBACK_PATTERNS
+    )
+
+
+def _is_conversation_meta_request(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split())
+    return bool(normalized) and any(
+        pattern.search(normalized) for pattern in _CONVERSATION_META_PATTERNS
+    )
+
+
+def _is_context_correction_only(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split()).strip("，。！？,.!?；;：:")
+    return bool(normalized) and any(
+        pattern.fullmatch(normalized)
+        for pattern in _CONTEXT_CORRECTION_ONLY_PATTERNS
+    )
+
+
+def _is_explicitly_non_parenting_topic(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split())
+    return bool(normalized) and any(
+        pattern.search(normalized) for pattern in _NON_PARENTING_TOPIC_PATTERNS
+    )
+
+
+def _is_generic_context_request(text: str) -> bool:
+    normalized = " ".join((text or "").strip().split()).strip(
+        "，。！？,.!?；;：:"
+    )
+    if _is_action_only_request(normalized):
+        return True
+    return bool(normalized) and any(
+        pattern.fullmatch(normalized) for pattern in _GENERIC_CONTEXT_REQUEST_PATTERNS
+    )
+
+
+def _clean_parenting_signal(text: str) -> str:
+    """Remove product/conversation feedback clauses, preserving family facts."""
+
+    normalized = " ".join((text or "").strip().split())
+    if not normalized:
+        return ""
+    clauses = re.split(
+        r"(?:[，,。！？!?；;]+|但是|但|不过|不過|其实|其實|然而)",
+        normalized,
+    )
+    kept: list[str] = []
+    for raw_clause in clauses:
+        clause = raw_clause.strip(" \t\r\n，。！？,.!?；;：:")
+        if not clause:
+            continue
+        if (
+            _is_product_meta_request(clause)
+            or _is_recommendation_feedback(clause)
+            or _is_conversation_meta_request(clause)
+            or _is_context_correction_only(clause)
+            or _is_explicitly_non_parenting_topic(clause)
+        ):
+            continue
+        kept.append(clause)
+    return "，".join(kept)
+
+
 def _current_action_intent(text: str) -> Optional[str]:
     casefolded = text.casefold()
     return next(
@@ -2976,11 +3313,27 @@ def _is_action_only_request(text: str) -> bool:
         return False
     residue = text.casefold()
     for marker, _label in _ACTION_REQUEST_LABELS:
-        residue = residue.replace(marker, "")
+        if re.fullmatch(r"[a-z][a-z ]*", marker):
+            suffix = "s?" if marker == "task" else ""
+            residue = re.sub(
+                rf"(?<![a-z0-9]){re.escape(marker)}{suffix}(?![a-z0-9])",
+                " ",
+                residue,
+            )
+        else:
+            residue = residue.replace(marker, "")
     for filler in _ACTION_ONLY_FILLERS:
-        residue = residue.replace(filler, "")
+        if re.fullmatch(r"[a-z][a-z ]*", filler):
+            residue = re.sub(
+                rf"(?<![a-z0-9]){re.escape(filler)}(?![a-z0-9])",
+                " ",
+                residue,
+            )
+        else:
+            residue = residue.replace(filler, "")
+    residue = re.sub(r"(?:\d+|[一二两兩三四五六七八九十百几幾]+)", "", residue)
     residue = re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", residue)
-    return len(residue) < 3
+    return not residue
 
 
 def _conversation_goal_signal(messages: list[dict]) -> tuple[str, str]:
@@ -3006,11 +3359,18 @@ def _conversation_goal_signal(messages: list[dict]) -> tuple[str, str]:
         ("account_history", history_messages),
     ):
         for message in reversed(candidates):
-            text = str(message.get("text") or "").strip()
-            if _is_acknowledgement_only(text) or _is_action_only_request(text):
+            raw_text = str(message.get("text") or "").strip()
+            text = _clean_parenting_signal(raw_text)
+            if (
+                _is_acknowledgement_only(text)
+                or _is_generic_context_request(raw_text)
+                or not text
+            ):
                 continue
             return text, scope
-    latest = str((current_messages or history_messages or [{}])[-1].get("text") or "")
+    latest = _clean_parenting_signal(
+        str((current_messages or history_messages or [{}])[-1].get("text") or "")
+    )
     return latest, "current_session" if current_messages else "account_history"
 
 
@@ -3025,10 +3385,38 @@ def _conversation_topic_excerpt(messages: list[dict], limit: int = 84) -> str:
     return topic
 
 
+def _has_parenting_domain_signal(topic: str) -> bool:
+    normalized = " ".join((topic or "").casefold().split())
+    if not normalized:
+        return False
+    if _matched_terms(
+        normalized,
+        [*_PARENTING_CONTEXT_TERMS, *_DYNAMIC_PARENTING_DOMAIN_TERMS],
+    ):
+        return True
+    for card in LEARNING_CONTENT_CARDS:
+        terms = [
+            *card.get("match_terms", []),
+            *_TOPIC_SIGNAL_ALIASES.get(str(card.get("id") or ""), ()),
+        ]
+        if _matched_terms(normalized, terms):
+            return True
+    return False
+
+
 def _is_dynamic_topic_candidate(topic: str) -> bool:
     if _is_acknowledgement_only(topic):
         return False
-    if _is_action_only_request(topic):
+    if _is_generic_context_request(topic):
+        return False
+    if (
+        _is_product_meta_request(topic)
+        or _is_recommendation_feedback(topic)
+        or _is_conversation_meta_request(topic)
+        or _is_explicitly_non_parenting_topic(topic)
+    ):
+        return False
+    if not _has_parenting_domain_signal(topic):
         return False
     # “换个话题” alone contains no topic to research.  Once the user names a
     # concrete new subject, the longer message remains eligible.
@@ -3079,6 +3467,25 @@ def _build_dynamic_research_card(
         context_created_at=context_created_at,
         topic=topic,
     )
+    latest_current_user_text = next(
+        (
+            str(message.get("text") or "")
+            for message in reversed(messages)
+            if message.get("role") == "user"
+            and message.get("context_scope") != "account_history"
+        ),
+        topic,
+    )
+    intent_source = (
+        topic
+        if (
+            _is_product_meta_request(latest_current_user_text)
+            or _is_recommendation_feedback(latest_current_user_text)
+            or _is_conversation_meta_request(latest_current_user_text)
+            or _is_context_correction_only(latest_current_user_text)
+        )
+        else latest_current_user_text
+    )
     card = {
         "id": card_id,
         "topic": topic,
@@ -3097,17 +3504,7 @@ def _build_dynamic_research_card(
         "related_session_id": session_id,
         "context_created_at": context_created_at,
         "recommendation_focus": topic,
-        "recommendation_intent": _recommendation_intent_code(
-            next(
-                (
-                    str(message.get("text") or "")
-                    for message in reversed(messages)
-                    if message.get("role") == "user"
-                    and message.get("context_scope") != "account_history"
-                ),
-                topic,
-            )
-        ),
+        "recommendation_intent": _recommendation_intent_code(intent_source),
         "recommendation_score": _CONVERSATION_MATCH_MIN_SCORE,
     }
     if include_detail:
@@ -3236,6 +3633,32 @@ def _is_context_follow_up(text: str) -> bool:
     return any(marker in casefolded for marker in _FOLLOW_UP_MARKERS)
 
 
+def _conversation_focus_for_terms(
+    messages: list[dict], terms: list[object]
+) -> tuple[str, str]:
+    """Return the closest substantive user statement matching one card."""
+
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        raw_text = str(message.get("text") or "").strip()
+        text = _clean_parenting_signal(raw_text)
+        if (
+            not text
+            or _is_acknowledgement_only(text)
+            or _is_generic_context_request(raw_text)
+        ):
+            continue
+        if _matched_terms(text.casefold(), terms):
+            scope = (
+                "account_history"
+                if message.get("context_scope") == "account_history"
+                else "current_session"
+            )
+            return text, scope
+    return "", "current_session"
+
+
 def _rank_learning_content(
     messages: list[dict],
     count: int = 4,
@@ -3246,27 +3669,62 @@ def _rank_learning_content(
 ) -> tuple[list[dict], bool]:
     """Deterministically rank reviewed content against recent conversation text."""
 
-    current_user_texts = [
+    raw_current_user_texts = [
         str(message.get("text") or "").strip()
         for message in messages
         if message.get("role") == "user" and str(message.get("text") or "").strip()
         and message.get("context_scope") != "account_history"
     ]
-    historical_user_texts = [
+    raw_historical_user_texts = [
         str(message.get("text") or "").strip()
         for message in messages
         if message.get("role") == "user" and str(message.get("text") or "").strip()
         and message.get("context_scope") == "account_history"
     ]
+    current_user_texts = [
+        cleaned
+        for text in raw_current_user_texts
+        if (cleaned := _clean_parenting_signal(text))
+    ]
+    historical_user_texts = [
+        cleaned
+        for text in raw_historical_user_texts
+        if (cleaned := _clean_parenting_signal(text))
+    ]
     user_texts = [*historical_user_texts, *current_user_texts]
-    last_user_text = (current_user_texts[-1] if current_user_texts else "").casefold()
-    previous_user_text = " ".join(current_user_texts[-4:-1]).casefold()
-    older_user_text = " ".join(current_user_texts[:-4]).casefold()
+    raw_last_user_text = raw_current_user_texts[-1] if raw_current_user_texts else ""
+    cleaned_last_user_text = _clean_parenting_signal(raw_last_user_text)
+    latest_meta_feedback = bool(raw_last_user_text) and (
+        _is_product_meta_request(raw_last_user_text)
+        or _is_recommendation_feedback(raw_last_user_text)
+        or _is_conversation_meta_request(raw_last_user_text)
+        or _is_context_correction_only(raw_last_user_text)
+    )
+    latest_meta_only = latest_meta_feedback and not cleaned_last_user_text
+    generic_context_request = _is_generic_context_request(raw_last_user_text)
+    topical_current_user_texts = [
+        cleaned
+        for raw_text in raw_current_user_texts
+        if (cleaned := _clean_parenting_signal(raw_text))
+        and not _is_acknowledgement_only(cleaned)
+        and not _is_generic_context_request(raw_text)
+    ]
+    # Partition only substantive family statements.  Generic task/guidance
+    # requests, corrections and product feedback therefore do not consume the
+    # four-message topical window in a long-running main conversation.
+    last_user_text = (
+        topical_current_user_texts[-1].casefold()
+        if topical_current_user_texts
+        else ""
+    )
+    previous_user_text = " ".join(topical_current_user_texts[-4:-1]).casefold()
+    older_user_text = " ".join(topical_current_user_texts[:-4]).casefold()
     substantive_history_texts = [
-        text
-        for text in historical_user_texts
-        if not _is_acknowledgement_only(text)
-        and not _is_action_only_request(text)
+        cleaned
+        for raw_text in raw_historical_user_texts
+        if (cleaned := _clean_parenting_signal(raw_text))
+        and not _is_acknowledgement_only(cleaned)
+        and not _is_generic_context_request(raw_text)
     ]
     latest_history_text = (
         substantive_history_texts[-1].casefold()
@@ -3274,9 +3732,14 @@ def _rank_learning_content(
         else ""
     )
     older_history_text = " ".join(substantive_history_texts[:-1]).casefold()
-    allow_assistant_context = _is_context_follow_up(last_user_text)
-    action_intent = _current_action_intent(last_user_text)
-    action_only_request = _is_action_only_request(last_user_text)
+    allow_assistant_context = (
+        not latest_meta_only and _is_context_follow_up(raw_last_user_text)
+    )
+    action_intent = (
+        None if latest_meta_only else _current_action_intent(raw_last_user_text)
+    )
+    action_only_request = _is_action_only_request(raw_last_user_text)
+    inherit_prior_context = generic_context_request or latest_meta_only
     goal_text, goal_scope = _conversation_goal_signal(messages)
     safe_goal = " ".join(redact_conversation_text(goal_text, 160).split())
     if len(safe_goal) > 48:
@@ -3303,7 +3766,9 @@ def _rank_learning_content(
         if message.get("role") in {"ai", "assistant"}
         and str(message.get("text") or "").strip()
     ]
-    if assistants_after_user:
+    if latest_meta_only:
+        assistant_context_text = ""
+    elif assistants_after_user:
         assistant_context_text = assistants_after_user[-1].casefold()
     elif allow_assistant_context and assistants_before_user:
         # A short follow-up such as “给我几个任务” legitimately refers to the
@@ -3312,7 +3777,9 @@ def _rank_learning_content(
     else:
         assistant_context_text = ""
 
-    ranked: list[tuple[int, int, int, dict, Optional[str]]] = []
+    ranked: list[
+        tuple[int, int, int, dict, Optional[str], str, str]
+    ] = []
     for index, card in enumerate(LEARNING_CONTENT_CARDS):
         terms = [
             *card.get("match_terms", []),
@@ -3327,14 +3794,32 @@ def _rank_learning_content(
 
         latest_score = _signal_score(latest_matches, 14, 5, 3)
         recent_score = _signal_score(recent_matches, 10, 3, 3)
-        older_score = _signal_score(older_matches, 4, 1, 1)
+        # Older statements provide continuity, but cannot outweigh a concrete
+        # need the parent expressed more recently.  This matters in one long
+        # main chat where a topic may have been repeated many times before the
+        # user's situation changed (for example, a busy parent asking for
+        # short, high-quality ways to connect after discussing milestones).
+        older_matching_message_count = sum(
+            1
+            for text in topical_current_user_texts[:-4]
+            if _matched_terms(text.casefold(), terms)
+        )
+        # One old mention stays below the personalization threshold.  A topic
+        # the parent returned to several times remains eligible as a secondary
+        # card even when a newer concern becomes Top-1.  This preserves durable
+        # themes such as repeated questions about a child's key developmental
+        # window without letting one stale aside outrank the current need.
+        older_repeat_bonus = min(4, max(0, older_matching_message_count - 1))
+        older_score = (
+            _signal_score(older_matches, 5, 1, 1) + older_repeat_bonus
+        )
         # Cross-session history is continuity, not the present request.  It can
         # resolve a generic “give me a task” follow-up, but otherwise remains a
         # weak preference signal and cannot establish a personalized match.
         history_score = _signal_score(
             latest_history_matches,
-            8 if action_only_request and not recent_matches else 3,
-            2 if action_only_request and not recent_matches else 1,
+            8 if inherit_prior_context and not recent_matches else 3,
+            2 if inherit_prior_context and not recent_matches else 1,
             2,
         )
         history_score += _signal_score(older_history_matches, 1, 0, 1)
@@ -3361,28 +3846,68 @@ def _rank_learning_content(
             ),
             None,
         )
-        ranked.append((score, user_signal_score, index, card, reason_term))
+        focus_text, focus_scope = _conversation_focus_for_terms(messages, terms)
+        ranked.append(
+            (
+                score,
+                user_signal_score,
+                index,
+                card,
+                reason_term,
+                focus_text,
+                focus_scope,
+            )
+        )
 
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
     has_conversation_match = bool(
-        current_user_texts
+        raw_current_user_texts
         and ranked
         and ranked[0][0] >= _CONVERSATION_MATCH_MIN_SCORE
         and ranked[0][1] >= _CONVERSATION_MATCH_MIN_SCORE
     )
     selected: list[dict] = []
-    for score, user_signal_score, _, card, reason_term in ranked[
+    for (
+        score,
+        user_signal_score,
+        _,
+        card,
+        reason_term,
+        focus_text,
+        focus_scope,
+    ) in ranked[
         : max(1, min(count, len(LEARNING_CONTENT_CARDS)))
     ]:
+        safe_focus = " ".join(redact_conversation_text(focus_text, 160).split())
+        if len(safe_focus) > 48:
+            safe_focus = f"{safe_focus[:47].rstrip()}…"
+        if not safe_focus:
+            safe_focus = safe_goal
         if (
             score >= _CONVERSATION_MATCH_MIN_SCORE
             and user_signal_score >= _CONVERSATION_MATCH_MIN_SCORE
             and has_conversation_match
         ):
-            if action_intent and safe_goal:
-                continuity = "结合你最近其他对话里提到的" if goal_scope == "account_history" else "延续你提到的"
+            if latest_meta_only and safe_focus:
+                continuity = (
+                    "结合你最近其他对话里提到的"
+                    if focus_scope == "account_history"
+                    else "延续你之前提到的"
+                )
                 reason = (
-                    f"你现在想要{action_intent}，{continuity}“{safe_goal}”；"
+                    f"{continuity}“{safe_focus}”，"
+                    f"这篇内容与“{card['topic_label']}”直接相关"
+                )
+            elif action_intent and safe_focus:
+                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你提到的"
+                reason = (
+                    f"你现在想要{action_intent}，{continuity}“{safe_focus}”；"
+                    f"这篇内容与“{card['topic_label']}”直接相关"
+                )
+            elif inherit_prior_context and safe_focus:
+                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你之前提到的"
+                reason = (
+                    f"{continuity}“{safe_focus}”，"
                     f"这篇内容与“{card['topic_label']}”直接相关"
                 )
             elif reason_term:
@@ -3425,14 +3950,22 @@ def _rank_learning_content(
         if is_match:
             public_card.update(
                 {
-                    "recommendation_focus": safe_goal or reason_term or card["topic_label"],
-                    "recommendation_intent": _recommendation_intent_code(last_user_text),
+                    "recommendation_focus": safe_focus or reason_term or card["topic_label"],
+                    "recommendation_intent": _recommendation_intent_code(
+                        raw_last_user_text
+                        if action_intent
+                        else (safe_focus or goal_text)
+                    ),
                     "recommendation_score": score,
                 }
             )
         selected.append(public_card)
 
-    if not has_conversation_match and context_state == "ready" and current_user_texts:
+    if (
+        not has_conversation_match
+        and context_state == "ready"
+        and raw_current_user_texts
+    ):
         dynamic_card = _build_dynamic_research_card(
             messages,
             session_id=session_id,
@@ -3507,6 +4040,51 @@ async def _research_card_detail_resources(
         return None
 
 
+def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) -> None:
+    """Emit ranking diagnostics without storing conversation text or user IDs."""
+
+    try:
+        user_messages = [
+            message
+            for message in (context.get("messages") or [])
+            if message.get("role") == "user"
+        ]
+        payload = {
+            "event": "personalized_feed_ranked",
+            "user_ref": hashlib.sha256(
+                f"nuri-feed:{uid}".encode("utf-8")
+            ).hexdigest()[:12],
+            "context_state": context.get("state", "no_history"),
+            "message_count": len(context.get("messages") or []),
+            "user_message_count": len(user_messages),
+            "current_session_user_message_count": int(
+                context.get("current_session_user_message_count") or 0
+            ),
+            "account_history_user_message_count": int(
+                context.get("history_user_message_count") or 0
+            ),
+            "filtered_product_feedback_count": sum(
+                1
+                for message in user_messages
+                if _is_product_meta_request(str(message.get("text") or ""))
+                or _is_recommendation_feedback(str(message.get("text") or ""))
+            ),
+            "selected": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "match": bool(item.get("is_conversation_match")),
+                    "dynamic": bool(item.get("is_dynamic_research_card")),
+                    "score": item.get("recommendation_score"),
+                }
+                for item in items
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    except Exception as exc:
+        # Observability must never be allowed to break a parent's home feed.
+        print(f"[warn] personalized feed diagnostics failed: {type(exc).__name__}")
+
+
 @api.get("/feed/personalized")
 async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     """Return learning topics tied to this parent's real main conversation."""
@@ -3531,6 +4109,7 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
         mode = "default_unavailable"
     else:
         mode = "default"
+    _log_personalized_feed_decision(uid, context, items)
     preferred_locale = str(context.get("preferred_locale") or "zh-CN")
     urgent_suppressed = _context_requires_urgent_handoff(context)
     for item in items:

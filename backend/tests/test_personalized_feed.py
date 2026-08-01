@@ -1034,6 +1034,371 @@ def test_generic_task_and_ai_only_topic_do_not_force_static_personalization(
     assert all("recommendation_score" not in item for item in payload["items"])
 
 
+def test_product_task_card_feedback_inherits_recent_parenting_goal(monkeypatch):
+    """Regression: app feedback must not become the homepage learning topic."""
+
+    sessions = [
+        _session(
+            "product-feedback",
+            "parent-1",
+            created_at="2026-08-01T10:00:00+00:00",
+        ),
+        _session(
+            "parenting-context",
+            "parent-1",
+            created_at="2026-07-31T10:00:00+00:00",
+        ),
+    ]
+    messages = {
+        "parenting-context": [
+            _message(
+                "development-question",
+                "user",
+                "宝宝现在九个月，未来两个月有什么关键期和发展重点？",
+                "2026-07-31T10:01:00+00:00",
+            ),
+            _message(
+                "development-answer",
+                "ai",
+                "可以关注语言、动作和亲子互动的发展变化。",
+                "2026-07-31T10:02:00+00:00",
+            ),
+            _message(
+                "busy-parent",
+                "user",
+                "我自己在创业，工作很忙，平时陪孩子的时间很少。",
+                "2026-07-31T10:03:00+00:00",
+            ),
+        ],
+        "product-feedback": [
+            _message(
+                "missing-task-card",
+                "user",
+                "为什么现在还是没有给我生成任务卡片？",
+                "2026-08-01T10:01:00+00:00",
+            )
+        ],
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+    card = payload["items"][0]
+
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["matched_topic"] == "connection"
+    assert card["id"] == "learn_serve_and_return"
+    assert card["is_conversation_match"] is True
+    assert card.get("is_dynamic_research_card") is not True
+    assert "没有给我生成任务卡片" not in card["title"]
+    assert "创业" in card["recommendation_focus"]
+    assert "结合你最近其他对话" in card["personalization_reason"]
+
+
+def test_product_feedback_without_parenting_context_does_not_create_dynamic_card(
+    monkeypatch,
+):
+    sessions = [_session("product-feedback", "parent-1")]
+    messages = {
+        "product-feedback": [
+            _message(
+                "missing-task-card",
+                "user",
+                "为什么没有任务卡片？",
+                "2026-08-01T10:01:00+00:00",
+            )
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+
+    assert payload["personalization_mode"] == "default"
+    assert payload["matched_topic"] is None
+    assert all(not item["is_conversation_match"] for item in payload["items"])
+    assert all(not item.get("is_dynamic_research_card") for item in payload["items"])
+
+
+def test_long_single_session_keeps_busy_parent_and_key_period_as_top_two(
+    monkeypatch,
+):
+    """Production regression: 12 recent turns must not erase 24 user signals."""
+
+    # Mirrors the production account's real chronological user-message shape,
+    # including repeated context-dependent questions between the two topics.
+    user_texts = [
+        "我想了解他现在有哪些关键期",
+        "给我一些任务卡片让我可以做这些任务帮助他的关键期发展",
+        "你就个我一个任务吧",
+        "你告诉我他从现在到未来两个月会出现什么关键期，我应该怎么准备？",
+        "给我硕鼠哦这段时期的关键期",
+        "我现在和他相处要注意什么？",
+        "你能告诉我小啊谷最需要什么嘛？",
+        "你能告诉我小啊谷最需要什么嘛？",
+        "你能告诉我小啊谷最需要什么嘛？",
+        "你能告诉我小啊谷最需要什么嘛？",
+        "你能告诉我小啊谷最需要什么嘛？",
+        "我想我再语言开发这个部分肯恶搞做得比较差。",
+        "你觉得我是一个好父亲嘛？",
+        "你觉得我是一个好父亲嘛？",
+        "你觉得我是一个好父亲嘛？",
+        "你觉得我是一个好父亲嘛？",
+        "你觉得我是一个好父亲嘛？",
+        "我感觉我现在再创业太忙了，陪他的时间都很少，主要是妈妈再照顾他。",
+        "我们讨论过什么？你认为我是一共什么样的父亲",
+        "我并没有愧疚啊",
+        "你认为我现在最需要什么样的引导？",
+        "你给我3个适合我的任务吧",
+        "没有任务卡片？",
+        "给我一些任务吧",
+    ]
+    assert len(user_texts) == 24
+    session_messages = []
+    for index, text in enumerate(user_texts, start=1):
+        session_messages.extend(
+            [
+                _message(
+                    f"u-{index:02d}",
+                    "user",
+                    text,
+                    f"2026-08-01T10:{(index - 1) * 2:02d}:00+00:00",
+                ),
+                _message(
+                    f"a-{index:02d}",
+                    "ai",
+                    "我记住了，我们继续围绕你的情况来聊。",
+                    f"2026-08-01T10:{(index - 1) * 2 + 1:02d}:00+00:00",
+                ),
+            ]
+        )
+    sessions = [_session("long-main", "parent-1")]
+    messages = {"long-main": session_messages}
+    monkeypatch.setattr(main, "_sessions", {"long-main": sessions[0]})
+    monkeypatch.setattr(main, "_messages", messages)
+
+    context = main._recent_main_chat_from_memory("parent-1", limit=12)
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+    first, second = payload["items"][:2]
+
+    assert context["current_session_user_message_count"] == 24
+    assert any(
+        message["id"] == "u-18"
+        and message["context_scope"] == "current_session_history"
+        for message in context["messages"]
+    )
+    assert [first["id"], second["id"]] == [
+        "learn_serve_and_return",
+        "learn_development_milestones",
+    ]
+    assert first["recommendation_intent"] == "action_plan"
+    assert second["recommendation_intent"] == "action_plan"
+    assert "创业" in first["recommendation_focus"]
+    assert any(
+        marker in second["recommendation_focus"]
+        for marker in ("关键期", "发展阶段", "发育里程碑")
+    )
+    assert first["recommendation_focus"] != second["recommendation_focus"]
+    assert first["recommendation_focus"] in first["personalization_reason"]
+    assert second["recommendation_focus"] in second["personalization_reason"]
+    assert all("任务卡片" not in item["title"] for item in payload["items"])
+
+
+def test_recommendation_feedback_clause_keeps_real_parenting_fact():
+    assert main._clean_parenting_signal(
+        "这个推荐和我的对话不相关，我创业很忙，陪孩子时间很少。"
+    ) == "我创业很忙，陪孩子时间很少"
+    assert main._clean_parenting_signal(
+        "这段内容不准确，宝宝现在九个月，未来两个月想关注关键期。"
+    ) == "宝宝现在九个月，未来两个月想关注关键期"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "These recommendations are irrelevant to my child.",
+        "The suggested content is inaccurate for my baby.",
+        "This card is not suitable for my family.",
+    ],
+)
+def test_english_recommendation_feedback_is_not_a_parenting_topic(text):
+    assert main._is_recommendation_feedback(text) is True
+    assert main._clean_parenting_signal(text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "What kind of father do you think I am?",
+        "What have we discussed?",
+        "What do you remember about me?",
+    ],
+)
+def test_english_conversation_meta_is_not_a_parenting_topic(text):
+    assert main._is_conversation_meta_request(text) is True
+    assert main._clean_parenting_signal(text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Give me some tasks.",
+        "Give me an action plan.",
+        "Could you create a task for me?",
+    ],
+)
+def test_english_generic_action_requests_inherit_the_existing_topic(text):
+    assert main._is_action_only_request(text) is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "为什么没有任务卡片但我想知道孩子夜醒怎么办",
+            "我想知道孩子夜醒怎么办",
+        ),
+        (
+            "这个推荐和我的对话不相关但我创业很忙陪孩子很少",
+            "我创业很忙陪孩子很少",
+        ),
+        (
+            "我只是说创业公司业务没有聊孩子，但现在孩子每天夜醒",
+            "现在孩子每天夜醒",
+        ),
+        (
+            "这个阶段孩子夜醒和白天小睡无关，我想知道原因",
+            "这个阶段孩子夜醒和白天小睡无关，我想知道原因",
+        ),
+        (
+            "这些行为与自闭症无关，孩子只是最近压力大",
+            "这些行为与自闭症无关，孩子只是最近压力大",
+        ),
+    ],
+)
+def test_signal_cleaning_drops_only_product_or_non_parenting_clauses(raw, expected):
+    assert main._clean_parenting_signal(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "我只是说创业公司业务没有聊孩子，但我家娃最近夜醒",
+            "我家娃最近夜醒",
+        ),
+        (
+            "我只是说创业公司业务没有聊孩子，但小啊谷最近夜醒",
+            "小啊谷最近夜醒",
+        ),
+        (
+            "我只是说创业公司业务没有聊孩子，但他最近每天夜醒",
+            "他最近每天夜醒",
+        ),
+    ],
+)
+def test_non_parenting_clause_does_not_erase_a_real_child_fact(raw, expected):
+    assert main._clean_parenting_signal(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("给我一些任务吧", True),
+        ("也给我一些任务吧", True),
+        ("你给我3个适合我的任务吧", True),
+        ("给我一些睡眠任务", False),
+        ("给我一些情绪任务", False),
+        ("给我一些语言任务", False),
+    ],
+)
+def test_action_only_classifier_preserves_short_parenting_topics(text, expected):
+    assert main._is_action_only_request(text) is expected
+
+
+def test_generic_context_request_does_not_swallow_a_trailing_real_topic():
+    assert main._is_generic_context_request("你认为我最需要什么引导？") is True
+    assert (
+        main._is_generic_context_request("你认为我最需要什么引导？孩子最近夜醒")
+        is False
+    )
+
+
+def test_recommendation_diagnostics_never_log_conversation_text(capsys):
+    main._log_personalized_feed_decision(
+        "parent-secret-id",
+        {
+            "state": "ready",
+            "messages": [
+                {
+                    "role": "user",
+                    "text": "PRIVATE_CONVERSATION_TEXT 没有任务卡片",
+                }
+            ],
+            "current_session_user_message_count": 1,
+            "history_user_message_count": 0,
+        },
+        [
+            {
+                "id": "learn_serve_and_return",
+                "is_conversation_match": True,
+                "recommendation_score": 15,
+            }
+        ],
+    )
+
+    logged = capsys.readouterr().out
+    assert "personalized_feed_ranked" in logged
+    assert "learn_serve_and_return" in logged
+    assert "PRIVATE_CONVERSATION_TEXT" not in logged
+    assert "parent-secret-id" not in logged
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我最近在创业公司做融资，工作很忙，但这次没有聊孩子或陪伴。",
+        "我最近在创业公司做融资，工作很忙。",
+        "我最近正在创业，白天都在见投资人。",
+        "公司下个月要融资，我最近都在做商业计划书。",
+        "We need a transparent fundraising plan.",
+        "At this moment I am meeting investors.",
+        "The company needs an apparent growth strategy.",
+    ],
+)
+def test_startup_company_only_does_not_become_parenting_recommendation(
+    monkeypatch, text
+):
+    sessions = [_session("startup-only", "parent-1")]
+    messages = {
+        "startup-only": [
+            _message(
+                "startup",
+                "user",
+                text,
+                "2026-08-01T10:00:00+00:00",
+            )
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+
+    assert payload["personalization_mode"] == "default"
+    assert payload["matched_topic"] is None
+    assert all(not item["is_conversation_match"] for item in payload["items"])
+    assert all(not item.get("is_dynamic_research_card") for item in payload["items"])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("为什么现在还是没有给我生成任务卡片？", True),
+        ("任务卡片在哪里？", True),
+        ("NURI 没有显示推荐卡片。", True),
+        ("请给我两个任务卡。", False),
+        ("给我一个未来两个月的陪伴计划。", False),
+    ],
+)
+def test_product_meta_detection_does_not_consume_real_task_requests(text, expected):
+    assert main._is_product_meta_request(text) is expected
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
