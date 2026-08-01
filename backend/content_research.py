@@ -796,6 +796,12 @@ _RESEARCH_CONTEXT_FIELD_LIMITS = {
     "topic_label": 120,
     "title": 180,
     "summary": 300,
+    # These are bounded, redacted need-state fields persisted in the
+    # recommendation snapshot.  They let a detail opened from a generic
+    # follow-up (for example “给我一些任务”) keep the concrete user goal without
+    # sending raw account history to external research.
+    "recommendation_focus": 120,
+    "recommendation_intent": 48,
 }
 
 

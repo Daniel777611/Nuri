@@ -603,6 +603,9 @@ def test_research_uses_only_structured_card_context_and_ignores_raw_messages():
             "topic_label": "My kid's name is Alex; toddler bedtime resistance",
             "title": "Continue learning about toddler bedtime resistance",
             "summary": "固定睡前节奏。",
+            "recommendation_focus": "九个月宝宝轮流发声",
+            "recommendation_intent": "action_plan",
+            "unapproved_context": "THIS_MUST_NOT_REACH_RESEARCH",
         },
         "messages": [
             {"role": "user", "text": raw_message_texts[0]},
@@ -648,6 +651,9 @@ def test_research_uses_only_structured_card_context_and_ignores_raw_messages():
         assert "RAW_PRIVATE" not in request["input"]
         assert "Alex" not in request["input"]
         assert "toddler bedtime resistance" in request["input"]
+        assert "九个月宝宝轮流发声" in request["input"]
+        assert "action_plan" in request["input"]
+        assert "THIS_MUST_NOT_REACH_RESEARCH" not in request["input"]
     finally:
         clear_research_cache()
 

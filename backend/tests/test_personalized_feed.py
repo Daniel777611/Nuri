@@ -76,6 +76,70 @@ def _run_personalized(
     return asyncio.run(main.get_personalized_feed(count=count, uid=uid))
 
 
+class _ChatQueryResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _ChatQuery:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.filters = []
+        self.orders = []
+        self.row_limit = None
+
+    def select(self, *_args):
+        return self
+
+    def eq(self, field, value):
+        self.filters.append(("eq", field, value))
+        return self
+
+    def in_(self, field, values):
+        self.filters.append(("in", field, set(values)))
+        return self
+
+    def lte(self, field, value):
+        self.filters.append(("lte", field, value))
+        return self
+
+    def order(self, field, desc=False):
+        self.orders.append((field, desc))
+        return self
+
+    def limit(self, value):
+        self.row_limit = value
+        return self
+
+    def execute(self):
+        rows = list(self.rows)
+        for operation, field, value in self.filters:
+            if operation == "eq":
+                rows = [row for row in rows if row.get(field) == value]
+            elif operation == "in":
+                rows = [row for row in rows if row.get(field) in value]
+            else:
+                rows = [row for row in rows if str(row.get(field) or "") <= value]
+        for field, desc in reversed(self.orders):
+            rows.sort(key=lambda row: str(row.get(field) or ""), reverse=desc)
+        if self.row_limit is not None:
+            rows = rows[: self.row_limit]
+        return _ChatQueryResult(rows)
+
+
+class _ChatSupabase:
+    def __init__(self, sessions, messages):
+        self.sessions = sessions
+        self.messages = messages
+
+    def table(self, name):
+        if name == "chat_sessions":
+            return _ChatQuery(self.sessions)
+        if name == "chat_messages":
+            return _ChatQuery(self.messages)
+        raise AssertionError(name)
+
+
 def test_personalized_feed_requires_login():
     with TestClient(main.app) as client:
         response = client.get("/api/feed/personalized")
@@ -136,6 +200,149 @@ def test_memory_feed_is_uid_scoped_excludes_card_sessions_and_matches_sleep(
     assert payload["items"][0]["is_conversation_match"] is True
     assert payload["items"][0]["related_session_id"] == "parent-main"
     assert payload["related_session_id"] == "parent-main"
+
+
+def test_supabase_long_current_chat_keeps_substantive_cross_session_goal(monkeypatch):
+    sessions = [
+        {
+            **_session("history-main", "parent-1", created_at="2026-07-31T09:00:00+00:00"),
+        },
+        {
+            **_session("current-main", "parent-1", created_at="2026-08-01T09:00:00+00:00"),
+        },
+    ]
+    messages = [
+        {
+            **_message(
+                f"current-{index:02d}",
+                "user",
+                "给我一些任务吧。",
+                f"2026-08-01T10:{index:02d}:00+00:00",
+            ),
+            "session_id": "current-main",
+        }
+        for index in range(40)
+    ]
+    messages.extend(
+        [
+            {
+                **_message(
+                    "history-specific",
+                    "user",
+                    "九个月宝宝需要练习轮流发声和语言理解。",
+                    "2026-07-31T10:00:00+00:00",
+                ),
+                "session_id": "history-main",
+            },
+            {
+                **_message(
+                    "history-ack",
+                    "user",
+                    "好的，谢谢。",
+                    "2026-07-31T10:01:00+00:00",
+                ),
+                "session_id": "history-main",
+            },
+            {
+                **_message(
+                    "history-action",
+                    "user",
+                    "也给我一些任务吧。",
+                    "2026-07-31T10:02:00+00:00",
+                ),
+                "session_id": "history-main",
+            },
+        ]
+    )
+    supabase = _ChatSupabase(sessions, messages)
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "content_research_oai", None)
+
+    async def verified_privacy(_uid, fail_closed=False):
+        del fail_closed
+        return main._normalized_privacy_settings({})
+
+    async def skip_snapshots(_uid, cards, _context):
+        return cards
+
+    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    monkeypatch.setattr(main, "_attach_recommendation_snapshots", skip_snapshots)
+
+    payload = asyncio.run(main.get_personalized_feed(count=4, uid="parent-1"))
+
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["items"][0]["id"] == "learn_language_milestones"
+    assert payload["items"][0]["recommendation_intent"] == "action_plan"
+    assert "轮流发声" in payload["items"][0]["personalization_reason"]
+    assert payload["history_session_count"] == 1
+    assert payload["history_user_message_count"] == 3
+
+
+def test_supabase_missing_requested_session_does_not_fall_through(monkeypatch):
+    sessions = [_session("different-main", "parent-1")]
+    messages = [
+        {
+            **_message(
+                "different-user",
+                "user",
+                "这是另一段仍然存在的对话。",
+                "2026-08-01T10:00:00+00:00",
+            ),
+            "session_id": "different-main",
+        }
+    ]
+    monkeypatch.setattr(main, "_get_supabase", lambda: _ChatSupabase(sessions, messages))
+
+    async def verified_privacy(_uid, fail_closed=False):
+        del fail_closed
+        return main._normalized_privacy_settings({})
+
+    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    context = asyncio.run(
+        main._load_recent_main_chat(
+            "parent-1",
+            preferred_session_id="deleted-main",
+            through_created_at="2026-07-31T10:00:00+00:00",
+        )
+    )
+
+    assert context["state"] == "context_not_found"
+    assert context["session_id"] is None
+    assert context["messages"] == []
+
+
+def test_memory_missing_requested_session_does_not_fall_through(monkeypatch):
+    sessions = [_session("different-main", "parent-1")]
+    messages = {
+        "different-main": [
+            _message(
+                "different-user",
+                "user",
+                "这是另一段仍然存在的对话。",
+                "2026-08-01T10:00:00+00:00",
+            )
+        ]
+    }
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(main, "_messages", messages)
+
+    async def verified_privacy(_uid, fail_closed=False):
+        del fail_closed
+        return main._normalized_privacy_settings({})
+
+    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    context = asyncio.run(
+        main._load_recent_main_chat(
+            "parent-1",
+            preferred_session_id="deleted-main",
+            through_created_at="2026-07-31T10:00:00+00:00",
+        )
+    )
+
+    assert context["state"] == "context_not_found"
+    assert context["session_id"] is None
+    assert context["messages"] == []
 
 
 def test_another_parents_conversation_cannot_affect_ranking(monkeypatch):
@@ -663,6 +870,182 @@ def test_memory_context_honors_preferred_session_for_followup_binding(monkeypatc
     assert context["state"] == "ready"
     assert context["session_id"] == "preferred-chat"
     assert [message["id"] for message in context["messages"]] == ["preferred-user"]
+
+
+def test_memory_context_aggregates_only_same_users_recent_main_chats(monkeypatch):
+    sessions = [
+        _session("current-main", "parent-1", created_at="2026-07-31T10:00:00+00:00"),
+        _session("older-main", "parent-1", created_at="2026-07-29T10:00:00+00:00"),
+        _session(
+            "card-chat",
+            "parent-1",
+            source_card_id="learn_sleep_routine",
+            created_at="2026-07-30T10:00:00+00:00",
+        ),
+        _session("other-parent-main", "parent-2", created_at="2026-07-30T11:00:00+00:00"),
+    ]
+    messages = {
+        "current-main": [
+            _message(
+                "current-task",
+                "user",
+                "给我一些任务吧。",
+                "2026-07-31T10:01:00+00:00",
+            )
+        ],
+        "older-main": [
+            _message(
+                "older-language",
+                "user",
+                "我想练习九个月宝宝的轮流发声和语言理解。",
+                "2026-07-29T10:01:00+00:00",
+            )
+        ],
+        "card-chat": [
+            _message("card-sleep", "user", "最近总夜醒。", "2026-07-30T10:01:00+00:00")
+        ],
+        "other-parent-main": [
+            _message(
+                "other-emotion",
+                "user",
+                "孩子总是崩溃大哭。",
+                "2026-07-30T11:01:00+00:00",
+            )
+        ],
+    }
+    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(main, "_messages", messages)
+
+    context = main._recent_main_chat_from_memory("parent-1")
+
+    assert context["session_id"] == "current-main"
+    assert [message["id"] for message in context["messages"]] == [
+        "older-language",
+        "current-task",
+    ]
+    assert context["messages"][0]["context_scope"] == "account_history"
+    assert context["messages"][-1]["context_scope"] == "current_session"
+    assert context["history_session_count"] == 1
+    assert context["history_user_message_count"] == 1
+
+
+def test_action_request_keeps_user_language_goal_ahead_of_ai_fine_motor_aside(
+    monkeypatch,
+):
+    sessions = [_session("parent-main", "parent-1")]
+    messages = {
+        "parent-main": [
+            _message(
+                "language-goal",
+                "user",
+                "我想在换尿布和看窗外时，练习九个月宝宝轮流发声和语音理解。",
+                "2026-07-31T09:58:00+00:00",
+            ),
+            _message(
+                "ai-aside",
+                "ai",
+                "这个月龄也可以关注抓握、爬行和精细动作等发展里程碑。",
+                "2026-07-31T09:59:00+00:00",
+            ),
+            _message(
+                "latest-task",
+                "user",
+                "那给我一些任务吧。",
+                "2026-07-31T10:00:00+00:00",
+            ),
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+    card = payload["items"][0]
+
+    assert payload["personalization_mode"] == "conversation"
+    assert card["id"] == "learn_language_milestones"
+    assert card["recommendation_intent"] == "action_plan"
+    assert card["recommendation_score"] >= main._CONVERSATION_MATCH_MIN_SCORE
+    assert "轮流发声" in card["recommendation_focus"]
+    assert "可执行任务" in card["personalization_reason"]
+    assert "轮流发声" in card["personalization_reason"]
+
+
+def test_generic_task_can_continue_recent_same_account_user_goal(monkeypatch):
+    sessions = [
+        _session("current-main", "parent-1", created_at="2026-07-31T10:00:00+00:00"),
+        _session("recent-language", "parent-1", created_at="2026-07-30T10:00:00+00:00"),
+        _session("stale-sleep", "parent-1", created_at="2026-07-20T10:00:00+00:00"),
+    ]
+    messages = {
+        "current-main": [
+            _message("task", "user", "给我一个任务。", "2026-07-31T10:01:00+00:00")
+        ],
+        "recent-language": [
+            _message(
+                "language",
+                "user",
+                "宝宝还不会轮流发声，我想加强语言互动。",
+                "2026-07-30T10:01:00+00:00",
+            )
+        ],
+        "stale-sleep": [
+            _message(
+                "sleep",
+                "user",
+                "很久以前孩子夜醒睡不好。",
+                "2026-07-20T10:01:00+00:00",
+            )
+        ],
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+    card = payload["items"][0]
+
+    assert card["id"] == "learn_language_milestones"
+    assert card["recommendation_intent"] == "action_plan"
+    assert "结合你最近其他对话" in card["personalization_reason"]
+    assert "语言互动" in card["recommendation_focus"]
+
+
+def test_generic_task_and_ai_only_topic_do_not_force_static_personalization(
+    monkeypatch,
+):
+    sessions = [_session("parent-main", "parent-1")]
+    messages = {
+        "parent-main": [
+            _message(
+                "ai-development",
+                "ai",
+                "可以关注精细动作、爬行和发展里程碑。",
+                "2026-07-31T09:59:00+00:00",
+            ),
+            _message(
+                "generic-task",
+                "user",
+                "给我一些任务吧。",
+                "2026-07-31T10:00:00+00:00",
+            ),
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+
+    assert payload["personalization_mode"] == "default"
+    assert payload["matched_topic"] is None
+    assert all(not item["is_conversation_match"] for item in payload["items"])
+    assert all("recommendation_score" not in item for item in payload["items"])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("请给我一个今晚能做的方案。", "action_plan"),
+        ("蒙特梭利和森林学校怎么选？", "compare"),
+        ("我快崩溃了，先陪陪我。", "support"),
+        ("九个月宝宝通常会有哪些语言变化？", "learn"),
+        ("孩子崩溃大哭时该怎么理解？", "learn"),
+    ],
+)
+def test_recommendation_intent_codes_describe_the_users_request(text, expected):
+    assert main._recommendation_intent_code(text) == expected
 
 
 def test_history_training_opt_out_never_reads_or_links_conversations(monkeypatch):

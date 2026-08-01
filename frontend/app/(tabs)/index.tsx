@@ -14,10 +14,13 @@ import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
-import { api } from "@/src/api";
+import { api, type PersonalizedFeedItem } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
-import HeroCarousel, { type HeroCard } from "@/src/components/HeroCarousel";
+import HeroCarousel, {
+  type HeroCard,
+  type HeroFeedState,
+} from "@/src/components/HeroCarousel";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
@@ -111,6 +114,7 @@ export default function Home() {
   const [nuriPreviewStatus, setNuriPreviewStatus] =
     useState<NuriPreviewStatus>("loading");
   const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
+  const [heroFeedState, setHeroFeedState] = useState<HeroFeedState>("loading");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
   const heroRequest = useRef(0);
@@ -148,15 +152,28 @@ export default function Home() {
 
   const loadPersonalizedFeed = useCallback(async () => {
     const requestId = ++heroRequest.current;
+    setHeroCards([]);
+    setHeroFeedState("loading");
     try {
-      const response: any = await api.getPersonalizedFeed(4);
+      const response = await api.getPersonalizedFeed(4);
       if (requestId !== heroRequest.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
-      setHeroCards(items.filter((item: any) => item?.id && item?.title));
+      const validItems = items
+        .filter(
+          (item): item is PersonalizedFeedItem =>
+            typeof item?.id === "string" && typeof item?.title === "string",
+        );
+      setHeroCards(validItems);
+      setHeroFeedState(
+        validItems.length > 0 && response.personalization_mode === "conversation"
+          ? "personalized"
+          : "curated",
+      );
     } catch {
-      // HeroCarousel uses real, backend-backed curated IDs as its loading and
-      // network fallback, so a transient request failure never revives c1-c6.
-      if (requestId === heroRequest.current) setHeroCards([]);
+      if (requestId === heroRequest.current) {
+        setHeroCards([]);
+        setHeroFeedState("curated");
+      }
     }
   }, []);
 
@@ -282,6 +299,7 @@ export default function Home() {
         <HeroCarousel
           width={carouselWidth}
           cards={heroCards}
+          feedState={heroFeedState}
           onCardPress={(card) => {
             router.push({
               pathname: "/detail/[id]",
@@ -292,6 +310,9 @@ export default function Home() {
                   : {}),
                 ...(card.context_created_at
                   ? { context_created_at: card.context_created_at }
+                  : {}),
+                ...(card.recommendation_id
+                  ? { recommendation_id: card.recommendation_id }
                   : {}),
               },
             });

@@ -6,6 +6,43 @@ import { API } from "./theme";
 import { isPreviewMode, previewRequest } from "./preview-api";
 import { storage } from "./utils/storage";
 
+export type PersonalizedResourceStatus =
+  | "research_on_open"
+  | "reviewed"
+  | "reviewed_fallback"
+  | "consent_required"
+  | "unavailable"
+  | "urgent_suppressed"
+  | string;
+
+export type PersonalizedFeedItem = {
+  id: string;
+  title: string;
+  summary?: string;
+  publisher?: string;
+  topic?: string;
+  topic_label?: string;
+  personalization_reason?: string;
+  is_conversation_match?: boolean;
+  related_session_id?: string | null;
+  context_created_at?: string | null;
+  recommendation_id?: string | null;
+  resource_status?: PersonalizedResourceStatus;
+  curation_mode?: string;
+  resource_summary?: {
+    preferred_locale?: string;
+    categories?: Record<string, Record<string, number>>;
+  };
+};
+
+export type PersonalizedFeedResponse = {
+  items: PersonalizedFeedItem[];
+  personalization_mode: string;
+  matched_topic?: string | null;
+  related_session_id?: string | null;
+  generated_at?: string;
+};
+
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
 // Last known onboarding state. Lets the launch route send a returning user to
@@ -244,23 +281,40 @@ export const api = {
 
   // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
-  getPersonalizedFeed: (count = 4) => req(`/feed/personalized?count=${count}`),
-  getCardDetail: (id: string, sessionId?: string, contextCreatedAt?: string) => {
+  getPersonalizedFeed: (count = 4) =>
+    req<PersonalizedFeedResponse>(`/feed/personalized?count=${count}`),
+  getCardDetail: (
+    id: string,
+    sessionId?: string,
+    contextCreatedAt?: string,
+    recommendationId?: string,
+  ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
       contextCreatedAt
         ? `context_created_at=${encodeURIComponent(contextCreatedAt)}`
+        : "",
+      recommendationId
+        ? `recommendation_id=${encodeURIComponent(recommendationId)}`
         : "",
     ].filter(Boolean).join("&");
     return req(`/feed/${id}/detail${query ? `?${query}` : ""}`);
   },
   // The detail first paints its reviewed fallback, then this longer request
   // replaces it with a citation-backed 3 categories x article/video bundle.
-  getCardResearch: (id: string, sessionId?: string, contextCreatedAt?: string) => {
+  getCardResearch: (
+    id: string,
+    sessionId?: string,
+    contextCreatedAt?: string,
+    recommendationId?: string,
+  ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
       contextCreatedAt
         ? `context_created_at=${encodeURIComponent(contextCreatedAt)}`
+        : "",
+      recommendationId
+        ? `recommendation_id=${encodeURIComponent(recommendationId)}`
         : "",
     ].filter(Boolean).join("&");
     return req(

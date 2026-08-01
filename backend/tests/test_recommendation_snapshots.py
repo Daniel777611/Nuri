@@ -1,0 +1,632 @@
+"""Coverage for stable personalized recommendation snapshots."""
+
+import asyncio
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from backend import main
+from backend.recommendation_snapshots import (
+    build_snapshot,
+    parse_snapshot,
+    recommendation_id,
+    serialize_snapshot,
+    snapshot_storage_key,
+    snapshot_storage_prefix,
+)
+
+
+TEST_SNAPSHOT_SECRET = "unit-test-snapshot-secret"
+
+
+@pytest.fixture(autouse=True)
+def _stable_snapshot_secret(monkeypatch):
+    monkeypatch.setattr(
+        main, "RECOMMENDATION_SNAPSHOT_SECRET", TEST_SNAPSHOT_SECRET
+    )
+
+
+def test_recommendation_id_is_stable_and_opaque():
+    first = recommendation_id(
+        "private-user-123",
+        card_id="learn_language_milestones",
+        session_id="session-secret",
+        context_created_at="2026-08-01T10:00:00+00:00",
+    )
+    second = recommendation_id(
+        "private-user-123",
+        card_id="learn_language_milestones",
+        session_id="session-secret",
+        context_created_at="2026-08-01T10:00:00+00:00",
+    )
+
+    assert first == second
+    assert first.startswith("rec_")
+    assert "private-user" not in first
+    assert "session-secret" not in first
+
+
+def test_snapshot_round_trip_is_bounded_and_user_namespaced():
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        "parent-1",
+        {
+            "id": "learn_language_milestones",
+            "personalization_reason": "因为你希望获得九个月宝宝的轮流发声练习",
+            "recommendation_focus": "轮流发声",
+            "recommendation_intent": "action_plan",
+            "recommendation_score": 27,
+        },
+        {
+            "session_id": "main-session",
+            "context_created_at": "2026-08-01T10:00:00+00:00",
+        },
+        now=now,
+    )
+
+    serialized = serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET)
+    restored = parse_snapshot(
+        serialized,
+        now=now,
+        secret=TEST_SNAPSHOT_SECRET,
+    )
+
+    assert restored == snapshot
+    assert serialized.startswith("fernet:v1:")
+    assert "main-session" not in serialized
+    assert "action_plan" not in serialized
+    assert restored["session_id"] == "main-session"
+    assert restored["recommendation_intent"] == "action_plan"
+    assert snapshot_storage_key("parent-1", snapshot["recommendation_id"]).endswith(
+        snapshot["recommendation_id"]
+    )
+    assert "parent-1" not in snapshot_storage_key(
+        "parent-1", snapshot["recommendation_id"]
+    )
+    assert snapshot_storage_key(
+        "parent-1", snapshot["recommendation_id"]
+    ).startswith(snapshot_storage_prefix("parent-1"))
+
+
+def test_expired_or_malformed_snapshot_is_rejected():
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        "parent-1",
+        {"id": "learn_sleep_routine"},
+        {"session_id": "session-1", "context_created_at": now.isoformat()},
+        now=now - timedelta(days=91),
+    )
+
+    assert parse_snapshot(
+        serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET),
+        now=now,
+        secret=TEST_SNAPSHOT_SECRET,
+    ) is None
+    assert parse_snapshot("not json", now=now) is None
+    assert parse_snapshot(
+        json.dumps(snapshot),
+        now=now,
+        secret=TEST_SNAPSHOT_SECRET,
+    ) is None
+    assert parse_snapshot(
+        serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET),
+        now=now - timedelta(days=92),
+        secret="wrong-secret",
+    ) is None
+    with pytest.raises(ValueError):
+        snapshot_storage_key("parent-1", "bad-id")
+
+
+class _Result:
+    def __init__(self, data=None):
+        self.data = data
+
+
+class _SettingsTable:
+    def __init__(self, store, *, fail_delete=False):
+        self.store = store
+        self.fail_delete = fail_delete
+        self.action = "select"
+        self.rows = None
+        self.key = None
+        self.key_prefix = None
+
+    def upsert(self, rows, **_kwargs):
+        self.action = "upsert"
+        self.rows = rows
+        return self
+
+    def select(self, *_args):
+        self.action = "select"
+        return self
+
+    def delete(self):
+        self.action = "delete"
+        return self
+
+    def eq(self, field, value):
+        assert field == "key"
+        self.key = value
+        return self
+
+    def limit(self, value):
+        assert value == 1
+        return self
+
+    def like(self, field, value):
+        assert field == "key"
+        assert value.endswith("%")
+        self.key_prefix = value[:-1]
+        return self
+
+    def execute(self):
+        if self.action == "upsert":
+            rows = self.rows if isinstance(self.rows, list) else [self.rows]
+            for row in rows:
+                self.store[row["key"]] = row["value"]
+            return _Result(rows)
+        if self.action == "delete":
+            if self.fail_delete:
+                raise RuntimeError("delete unavailable")
+            deleted = [
+                key for key in self.store if key.startswith(self.key_prefix or "")
+            ]
+            for key in deleted:
+                self.store.pop(key, None)
+            return _Result([{"key": key} for key in deleted])
+        value = self.store.get(self.key)
+        return _Result([{"value": value}] if value is not None else [])
+
+
+class _SettingsSupabase:
+    def __init__(self, *, fail_delete=False):
+        self.store = {}
+        self.fail_delete = fail_delete
+
+    def table(self, name):
+        assert name == "app_settings"
+        return _SettingsTable(self.store, fail_delete=self.fail_delete)
+
+
+def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    context = {
+        "state": "ready",
+        "session_id": "main-session",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": False,
+        "messages": [
+            {
+                "id": "message-1",
+                "session_id": "main-session",
+                "role": "user",
+                "text": "我想练习九个月宝宝轮流发声和语言理解。",
+                "created_at": "2026-08-01T10:00:00+00:00",
+                "context_scope": "current_session",
+            }
+        ],
+    }
+    cards, _ = main._rank_learning_content(
+        context["messages"],
+        count=4,
+        session_id=context["session_id"],
+        context_created_at=context["context_created_at"],
+    )
+    language_card = next(
+        card for card in cards if card["id"] == "learn_language_milestones"
+    )
+    language_card["personalization_reason"] = "冻结后的具体推荐理由"
+
+    asyncio.run(
+        main._attach_recommendation_snapshots("parent-1", [language_card], context)
+    )
+    rec_id = language_card["recommendation_id"]
+    assert language_card["recommendation_context_status"] == "persisted"
+
+    # Simulate a Vercel cold start: process-local cache disappears while the
+    # existing app_settings row remains available.
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    restored = asyncio.run(main._db_get_recommendation_snapshot("parent-1", rec_id))
+    assert restored["personalization_reason"] == "冻结后的具体推荐理由"
+
+    async def load_context(*_args, **_kwargs):
+        return context
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_language_milestones",
+            recommendation_id=rec_id,
+            uid="parent-1",
+        )
+    )
+
+    assert detail["recommendation_id"] == rec_id
+    assert detail["recommendation_context_status"] == "snapshot"
+    assert detail["personalization_reason"] == "冻结后的具体推荐理由"
+    assert detail["is_conversation_match"] is True
+    assert detail["related_session_id"] == "main-session"
+
+
+def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(main, "content_research_oai", None)
+    context = {
+        "state": "ready",
+        "session_id": "main-session",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": False,
+        "messages": [
+            {
+                "id": "message-1",
+                "session_id": "main-session",
+                "role": "user",
+                "text": "宝宝晚上总是夜醒，我也想练习轮流发声和语言理解。",
+                "created_at": "2026-08-01T10:00:00+00:00",
+                "context_scope": "current_session",
+            }
+        ],
+    }
+
+    async def load_context(*_args, **_kwargs):
+        return context
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    payload = asyncio.run(main.get_personalized_feed(count=4, uid="parent-1"))
+    matched = [
+        item for item in payload["items"] if item.get("is_conversation_match")
+    ]
+
+    assert "recommendation_id" not in payload
+    assert len(matched) >= 2
+    recommendation_ids = [item.get("recommendation_id") for item in matched]
+    assert all(recommendation_ids)
+    assert len(recommendation_ids) == len(set(recommendation_ids))
+    for item in matched:
+        snapshot = asyncio.run(
+            main._db_get_recommendation_snapshot(
+                "parent-1", item["recommendation_id"]
+            )
+        )
+        assert snapshot["card_id"] == item["id"]
+
+
+def test_recommendation_id_cannot_be_reused_for_another_card(monkeypatch):
+    snapshot = build_snapshot(
+        "parent-1",
+        {"id": "learn_language_milestones"},
+        {"session_id": "session-1", "context_created_at": "2026-08-01T10:00:00+00:00"},
+    )
+
+    async def stored_snapshot(_uid, _recommendation_id):
+        return snapshot
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                "learn_sleep_routine",
+                recommendation_id=snapshot["recommendation_id"],
+                uid="parent-1",
+            )
+        )
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_explicit_missing_recommendation_id_fails_closed(monkeypatch):
+    async def missing_snapshot(_uid, _recommendation_id):
+        return None
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", missing_snapshot)
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                "learn_language_milestones",
+                recommendation_id="rec_0123456789abcdef01234567",
+                uid="parent-1",
+            )
+        )
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_recommendation_id_is_user_bound_in_persistent_lookup(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    card = {
+        "id": "learn_language_milestones",
+        "is_conversation_match": True,
+        "personalization_reason": "语言互动",
+    }
+    context = {
+        "session_id": "session-1",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+    }
+    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    rec_id = card["recommendation_id"]
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+
+    assert asyncio.run(
+        main._db_get_recommendation_snapshot("parent-2", rec_id)
+    ) is None
+
+
+def test_snapshot_privacy_delete_removes_cache_and_persistent_rows(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    card = {"id": "learn_sleep_routine", "is_conversation_match": True}
+    context = {
+        "session_id": "session-1",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+    }
+    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    rec_id = card["recommendation_id"]
+
+    asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+
+    assert not supabase.store
+    assert asyncio.run(
+        main._db_get_recommendation_snapshot("parent-1", rec_id)
+    ) is None
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                "learn_sleep_routine",
+                recommendation_id=rec_id,
+                uid="parent-1",
+            )
+        )
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_snapshot_privacy_delete_failure_is_fail_closed(monkeypatch):
+    supabase = _SettingsSupabase(fail_delete=True)
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    snapshot = build_snapshot(
+        "parent-1",
+        {"id": "learn_sleep_routine"},
+        {"session_id": "session-1", "context_created_at": "2026-08-01T10:00:00+00:00"},
+    )
+    supabase.store[
+        snapshot_storage_key("parent-1", snapshot["recommendation_id"])
+    ] = serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET)
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+
+    assert getattr(error.value, "status_code", None) == 503
+    assert supabase.store
+
+
+def test_snapshot_delete_without_database_returns_503(monkeypatch):
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+
+    assert getattr(error.value, "status_code", None) == 503
+
+
+def test_authenticated_privacy_update_without_database_returns_503(monkeypatch):
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(
+        main,
+        "_privacy",
+        {"parent-1": main._normalized_privacy_settings({})},
+    )
+    previous = dict(main._privacy["parent-1"])
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main._db_set_privacy(
+                "parent-1",
+                {"allow_history_training": False},
+            )
+        )
+
+    assert getattr(error.value, "status_code", None) == 503
+    assert main._privacy["parent-1"] == previous
+
+
+def test_wipe_keeps_history_opt_out_when_snapshot_delete_fails(monkeypatch):
+    supabase = _SettingsSupabase(fail_delete=True)
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(main.wipe_all(uid="parent-1"))
+
+    assert getattr(error.value, "status_code", None) == 503
+    privacy_value = supabase.store[main._privacy_storage_key("parent-1")]
+    assert json.loads(privacy_value)["allow_history_training"] is False
+    assert main._privacy["parent-1"]["allow_history_training"] is False
+
+
+def test_snapshot_cannot_restore_context_when_history_privacy_is_off(monkeypatch):
+    snapshot = build_snapshot(
+        "parent-1",
+        {
+            "id": "learn_sleep_routine",
+            "recommendation_focus": "宝宝反复夜醒",
+        },
+        {"session_id": "session-1", "context_created_at": "2026-08-01T10:00:00+00:00"},
+    )
+
+    async def stored_snapshot(_uid, _recommendation_id):
+        return snapshot
+
+    async def privacy_off_context(*_args, **_kwargs):
+        return {
+            "state": "privacy_off",
+            "session_id": None,
+            "messages": [],
+            "preferred_locale": "zh-CN",
+            "external_research_allowed": False,
+        }
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
+    monkeypatch.setattr(main, "_load_recent_main_chat", privacy_off_context)
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                "learn_sleep_routine",
+                recommendation_id=snapshot["recommendation_id"],
+                uid="parent-1",
+            )
+        )
+
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_snapshot_cannot_bind_to_a_different_resolved_session(monkeypatch):
+    snapshot = build_snapshot(
+        "parent-1",
+        {"id": "learn_sleep_routine", "recommendation_focus": "宝宝反复夜醒"},
+        {"session_id": "deleted-session", "context_created_at": "2026-08-01T10:00:00+00:00"},
+    )
+
+    async def stored_snapshot(_uid, _recommendation_id):
+        return snapshot
+
+    async def wrong_session_context(*_args, **_kwargs):
+        return {
+            "state": "ready",
+            "session_id": "different-session",
+            "context_created_at": "2026-08-01T09:00:00+00:00",
+            "preferred_locale": "zh-CN",
+            "external_research_allowed": False,
+            "messages": [
+                {
+                    "role": "user",
+                    "text": "这是另一段对话。",
+                    "context_scope": "current_session",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
+    monkeypatch.setattr(main, "_load_recent_main_chat", wrong_session_context)
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                "learn_sleep_routine",
+                recommendation_id=snapshot["recommendation_id"],
+                uid="parent-1",
+            )
+        )
+
+    assert getattr(error.value, "status_code", None) == 404
+
+
+def test_disabling_history_invalidates_old_recommendation_link(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    card = {"id": "learn_sleep_routine", "is_conversation_match": True}
+    context = {
+        "session_id": "session-1",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+    }
+    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    rec_id = card["recommendation_id"]
+
+    async def save_privacy(_uid, values):
+        return values
+
+    monkeypatch.setattr(main, "_db_set_privacy", save_privacy)
+    asyncio.run(
+        main.update_privacy(
+            main.PrivacySettings(allow_history_training=False),
+            uid="parent-1",
+        )
+    )
+
+    assert asyncio.run(
+        main._db_get_recommendation_snapshot("parent-1", rec_id)
+    ) is None
+
+
+def test_unpersisted_feed_card_uses_legacy_context_only(monkeypatch):
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    card = {
+        "id": "learn_language_milestones",
+        "is_conversation_match": True,
+        "personalization_reason": "语言互动",
+    }
+    context = {
+        "session_id": "session-1",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+    }
+
+    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+
+    assert "recommendation_id" not in card
+    assert card["recommendation_context_status"] == "legacy_fallback"
+
+
+def test_dynamic_cross_session_card_restores_from_snapshot_focus(monkeypatch):
+    dynamic_id = "learn_conversation_0123456789abcdef0123"
+    snapshot = build_snapshot(
+        "parent-1",
+        {
+            "id": dynamic_id,
+            "personalization_reason": "结合近期对话继续研究蒙特梭利幼儿园选择",
+            "recommendation_focus": "蒙特梭利幼儿园选择",
+            "recommendation_intent": "action_plan",
+            "recommendation_score": 12,
+        },
+        {
+            "session_id": "current-main",
+            "context_created_at": "2026-08-01T10:00:00+00:00",
+        },
+    )
+
+    async def stored_snapshot(_uid, _recommendation_id):
+        return snapshot
+
+    async def generic_current_context(*_args, **_kwargs):
+        return {
+            "state": "ready",
+            "session_id": "current-main",
+            "context_created_at": "2026-08-01T10:00:00+00:00",
+            "preferred_locale": "zh-CN",
+            "external_research_allowed": False,
+            "messages": [
+                {
+                    "role": "user",
+                    "text": "给我一些任务吧。",
+                    "context_scope": "current_session",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
+    monkeypatch.setattr(main, "_load_recent_main_chat", generic_current_context)
+    monkeypatch.setattr(main, "content_research_oai", None)
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            dynamic_id,
+            recommendation_id=snapshot["recommendation_id"],
+            uid="parent-1",
+        )
+    )
+
+    assert detail["id"] == dynamic_id
+    assert detail["is_dynamic_research_card"] is True
+    assert detail["is_conversation_match"] is True
+    assert detail["recommendation_focus"] == "蒙特梭利幼儿园选择"
+    assert detail["recommendation_context_status"] == "snapshot"

@@ -63,6 +63,13 @@ try:
         research_learning_resources,
         summarize_resource_slots,
     )
+    from backend.recommendation_snapshots import (
+        build_snapshot,
+        parse_snapshot,
+        serialize_snapshot,
+        snapshot_storage_key,
+        snapshot_storage_prefix,
+    )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
@@ -75,6 +82,13 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         redact_conversation_text,
         research_learning_resources,
         summarize_resource_slots,
+    )
+    from recommendation_snapshots import (  # type: ignore
+        build_snapshot,
+        parse_snapshot,
+        serialize_snapshot,
+        snapshot_storage_key,
+        snapshot_storage_prefix,
     )
 
 load_dotenv()
@@ -96,7 +110,8 @@ except ImportError:
 # ── Env ──────────────────────────────────────────────────────────────────────
 OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL     = os.getenv("SUPABASE_URL")
-SUPABASE_KEY     = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY     = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_ANON_KEY")
 VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
 FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
@@ -107,6 +122,9 @@ INTERNAL_NAMESPACE      = os.getenv("INTERNAL_VECTOR_NAMESPACE", "internal")
 INTERNAL_TOP_K          = int(os.getenv("INTERNAL_TOP_K", "3"))
 INTERNAL_MIN_SIMILARITY = float(os.getenv("INTERNAL_MIN_SIMILARITY", "0.5"))
 JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+RECOMMENDATION_SNAPSHOT_SECRET = (
+    os.getenv("RECOMMENDATION_SNAPSHOT_SECRET") or SUPABASE_SERVICE_ROLE_KEY
+)
 ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
 JWT_ALG          = "HS256"
 JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
@@ -226,6 +244,7 @@ _collections: dict[str, list] = {}     # uid_or_anon -> [{id, name, created_at}]
 _fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|None}
 _analytics:   list[dict]      = []
 _privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
+_recommendation_snapshots: dict[tuple[str, str], dict] = {}
 _feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
 
 _SUPPORTED_PREFERRED_LOCALES = frozenset({"zh-CN", "zh-TW", "en"})
@@ -457,6 +476,15 @@ async def _db_set_privacy(uid: Optional[str], settings: dict) -> dict:
     previous = _privacy.get(key)
     _privacy[key] = normalized
     sb = _get_supabase()
+    if uid and not sb:
+        if previous is None:
+            _privacy.pop(key, None)
+        else:
+            _privacy[key] = previous
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Privacy settings could not be saved",
+        )
     if sb and uid:
         try:
             await anyio.to_thread.run_sync(
@@ -486,7 +514,10 @@ async def _db_delete_privacy(uid: str) -> None:
     _privacy.pop(uid, None)
     sb = _get_supabase()
     if not sb:
-        return
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Privacy settings could not be deleted",
+        )
     try:
         await anyio.to_thread.run_sync(
             lambda: sb.table("app_settings")
@@ -496,6 +527,138 @@ async def _db_delete_privacy(uid: str) -> None:
         )
     except Exception as exc:
         print(f"[warn] _db_delete_privacy: {exc}")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Privacy settings could not be deleted",
+        ) from exc
+
+
+async def _attach_recommendation_snapshots(
+    uid: str,
+    cards: list[dict],
+    context: dict,
+) -> list[dict]:
+    """Persist one bounded snapshot per conversation-matched card.
+
+    ``app_settings`` already exists in every deployed NURI database, so this
+    adds stable detail links without making a schema migration a prerequisite.
+    A process-local copy keeps local preview/tests useful; the legacy session
+    and cutoff fields remain on every card as a safe compatibility fallback.
+    """
+
+    pairs: list[tuple[dict, dict]] = []
+    for card in cards:
+        if not card.get("is_conversation_match"):
+            continue
+        snapshot = build_snapshot(uid, card, context)
+        pairs.append((card, snapshot))
+        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
+
+    if not pairs:
+        return cards
+
+    persisted = False
+    sb = _get_supabase()
+    if sb and RECOMMENDATION_SNAPSHOT_SECRET:
+        rows = [
+            {
+                "key": snapshot_storage_key(uid, snapshot["recommendation_id"]),
+                "value": serialize_snapshot(
+                    snapshot,
+                    secret=RECOMMENDATION_SNAPSHOT_SECRET,
+                ),
+                "updated_at": _now(),
+            }
+            for _, snapshot in pairs
+        ]
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings")
+                .upsert(rows, on_conflict="key")
+                .execute()
+            )
+            persisted = True
+        except Exception as exc:
+            print(f"[warn] recommendation snapshot persistence failed: {exc}")
+
+    for card, snapshot in pairs:
+        if persisted:
+            card["recommendation_id"] = snapshot["recommendation_id"]
+            card["recommendation_context_status"] = "persisted"
+        else:
+            card.pop("recommendation_id", None)
+            card["recommendation_context_status"] = "legacy_fallback"
+    return cards
+
+
+async def _db_get_recommendation_snapshot(
+    uid: str,
+    recommendation_id: Optional[str],
+) -> Optional[dict]:
+    if not recommendation_id:
+        return None
+    try:
+        key = snapshot_storage_key(uid, recommendation_id)
+    except ValueError:
+        return None
+
+    cached = parse_snapshot(_recommendation_snapshots.get((uid, recommendation_id)))
+    if cached:
+        return cached
+
+    sb = _get_supabase()
+    if not sb:
+        return None
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .select("value")
+            .eq("key", key)
+            .limit(1)
+            .execute()
+        )
+        rows = list(getattr(result, "data", None) or [])
+        snapshot = (
+            parse_snapshot(
+                rows[0].get("value"),
+                secret=RECOMMENDATION_SNAPSHOT_SECRET,
+            )
+            if rows and RECOMMENDATION_SNAPSHOT_SECRET
+            else None
+        )
+        if snapshot:
+            _recommendation_snapshots[(uid, recommendation_id)] = snapshot
+        return snapshot
+    except Exception as exc:
+        print(f"[warn] recommendation snapshot lookup failed: {exc}")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation context is temporarily unavailable",
+        ) from exc
+
+
+async def _db_delete_recommendation_snapshots(uid: str) -> None:
+    for cache_key in [key for key in _recommendation_snapshots if key[0] == uid]:
+        _recommendation_snapshots.pop(cache_key, None)
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation history could not be deleted",
+        )
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("app_settings")
+            .delete()
+            .like("key", f"{snapshot_storage_prefix(uid)}%")
+            .execute()
+        )
+    except Exception as exc:
+        print(f"[warn] recommendation snapshot delete failed: {exc}")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Recommendation history could not be deleted",
+        ) from exc
 
 
 async def _db_list_fav_ids(uid: str) -> set:
@@ -2242,6 +2405,60 @@ def _recommendation_activity_key(row: dict) -> tuple[str, str]:
     return (str(row.get("created_at") or ""), str(row.get("id") or ""))
 
 
+_ACCOUNT_HISTORY_SESSION_LIMIT = 5
+_ACCOUNT_HISTORY_USER_MESSAGE_LIMIT = 18
+
+
+def _safe_context_message(message: dict, *, context_scope: str) -> dict:
+    """Return only the conversation fields needed by recommendation ranking."""
+
+    return {
+        "id": message.get("id"),
+        "session_id": message.get("session_id"),
+        "role": message.get("role"),
+        "text": str(message.get("text") or ""),
+        "created_at": message.get("created_at"),
+        "context_scope": context_scope,
+    }
+
+
+def _recent_account_user_signals(
+    messages: list[dict],
+    *,
+    current_session_id: str,
+) -> list[dict]:
+    """Select a bounded, balanced set of user-authored account history.
+
+    The caller must already have scoped ``messages`` to one authenticated user
+    and excluded card-linked sessions.  We keep at most five other main chats
+    and at most four messages from any one chat so a long stale conversation
+    cannot drown out the current request.
+    """
+
+    selected: list[dict] = []
+    session_counts: dict[str, int] = {}
+    for message in sorted(messages, key=_recommendation_activity_key, reverse=True):
+        session_id = str(message.get("session_id") or "")
+        if not session_id or session_id == current_session_id:
+            continue
+        if message.get("role") != "user" or not str(message.get("text") or "").strip():
+            continue
+        if session_id not in session_counts:
+            if len(session_counts) >= _ACCOUNT_HISTORY_SESSION_LIMIT:
+                continue
+            session_counts[session_id] = 0
+        if session_counts[session_id] >= 4:
+            continue
+        session_counts[session_id] += 1
+        selected.append(message)
+        if len(selected) >= _ACCOUNT_HISTORY_USER_MESSAGE_LIMIT:
+            break
+    return [
+        _safe_context_message(message, context_scope="account_history")
+        for message in reversed(selected)
+    ]
+
+
 def _recent_main_chat_from_memory(
     uid: str,
     limit: int = 12,
@@ -2274,6 +2491,15 @@ def _recent_main_chat_from_memory(
         (session for session in sessions if session.get("id") == preferred_session_id),
         None,
     )
+    if preferred_session_id and not preferred_session:
+        return {
+            "state": "context_not_found",
+            "session_id": None,
+            "messages": [],
+            "context_created_at": None,
+            "history_session_count": 0,
+            "history_user_message_count": 0,
+        }
     if preferred_session:
         session = preferred_session
         preferred_messages = [
@@ -2310,20 +2536,30 @@ def _recent_main_chat_from_memory(
         key=_recommendation_activity_key,
     )[-limit:]
     safe_messages = [
-        {
-            "id": message.get("id"),
-            "role": message.get("role"),
-            "text": str(message.get("text") or ""),
-            "created_at": message.get("created_at"),
-        }
+        _safe_context_message(
+            {**message, "session_id": message.get("session_id") or session["id"]},
+            context_scope="current_session",
+        )
         for message in messages
         if message.get("role") in {"user", "ai", "assistant"}
     ]
+    history_messages = (
+        []
+        if preferred_session_id or through_created_at
+        else _recent_account_user_signals(
+            all_user_messages,
+            current_session_id=session["id"],
+        )
+    )
     return {
         "state": "ready" if last_user_message else "no_user_message",
         "session_id": session.get("id"),
-        "messages": safe_messages,
+        "messages": [*history_messages, *safe_messages],
         "context_created_at": (safe_messages[-1].get("created_at") if safe_messages else None),
+        "history_session_count": len(
+            {message.get("session_id") for message in history_messages}
+        ),
+        "history_user_message_count": len(history_messages),
     }
 
 
@@ -2394,17 +2630,6 @@ async def _load_recent_main_chat(
             }
 
         session_ids = [session["id"] for session in main_sessions]
-        last_user_res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_messages")
-            .select("id,session_id,role,text,created_at")
-            .in_("session_id", session_ids)
-            .eq("role", "user")
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        last_user_message = (last_user_res.data or [None])[0]
         preferred_session = next(
             (
                 item
@@ -2413,16 +2638,43 @@ async def _load_recent_main_chat(
             ),
             None,
         )
+        if preferred_session_id and not preferred_session:
+            return {
+                "state": "context_not_found",
+                "session_id": None,
+                "messages": [],
+                "context_created_at": None,
+                "history_session_count": 0,
+                "history_user_message_count": 0,
+                "preferred_locale": preferred_locale,
+                "external_research_allowed": external_research_allowed,
+            }
         if preferred_session:
             session = preferred_session
-        elif last_user_message:
-            session = next(
-                item
-                for item in main_sessions
-                if item["id"] == last_user_message.get("session_id")
-            )
         else:
-            session = max(main_sessions, key=_recommendation_activity_key)
+            # This first query only identifies the active main conversation.
+            # Account history is loaded separately below; otherwise a long
+            # current chat can consume the global PostgREST limit and erase all
+            # continuity signals from the user's other conversations.
+            latest_user_res = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages")
+                .select("id,session_id,role,text,created_at")
+                .in_("session_id", session_ids)
+                .eq("role", "user")
+                .order("created_at", desc=True)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            last_user_message = ((latest_user_res.data or []) or [None])[0]
+            if last_user_message:
+                session = next(
+                    item
+                    for item in main_sessions
+                    if item["id"] == last_user_message.get("session_id")
+                )
+            else:
+                session = max(main_sessions, key=_recommendation_activity_key)
 
         def load_context_messages():
             query = (
@@ -2440,17 +2692,70 @@ async def _load_recent_main_chat(
             )
 
         message_res = await anyio.to_thread.run_sync(load_context_messages)
-        messages = list(reversed(message_res.data or []))
+        current_messages = list(reversed(message_res.data or []))
+        history_messages: list[dict] = []
+        if not preferred_session_id and not through_created_at:
+            history_sessions = sorted(
+                (
+                    item
+                    for item in main_sessions
+                    if item.get("id") != session["id"]
+                ),
+                key=_recommendation_activity_key,
+                reverse=True,
+            )[:_ACCOUNT_HISTORY_SESSION_LIMIT]
+
+            async def load_history_session(history_session_id: str):
+                return await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_messages")
+                    .select("id,session_id,role,text,created_at")
+                    .eq("session_id", history_session_id)
+                    .eq("role", "user")
+                    .order("created_at", desc=True)
+                    .order("id", desc=True)
+                    .limit(4)
+                    .execute()
+                )
+
+            history_results = await asyncio.gather(
+                *(
+                    load_history_session(str(item["id"]))
+                    for item in history_sessions
+                )
+            )
+            history_user_messages = [
+                message
+                for result in history_results
+                for message in (result.data or [])
+            ]
+            history_messages = _recent_account_user_signals(
+                history_user_messages,
+                current_session_id=session["id"],
+            )
+        messages = [
+            *history_messages,
+            *[
+                _safe_context_message(message, context_scope="current_session")
+                for message in current_messages
+                if message.get("role") in {"user", "ai", "assistant"}
+            ],
+        ]
         session_has_user_message = any(
             message.get("role") == "user"
             and str(message.get("text") or "").strip()
-            for message in messages
+            for message in current_messages
         )
         return {
             "state": "ready" if session_has_user_message else "no_user_message",
             "session_id": session.get("id"),
             "messages": messages,
-            "context_created_at": (messages[-1].get("created_at") if messages else None),
+            "context_created_at": (
+                current_messages[-1].get("created_at") if current_messages else None
+            ),
+            "history_session_count": len(
+                {message.get("session_id") for message in history_messages}
+            ),
+            "history_user_message_count": len(history_messages),
             "preferred_locale": preferred_locale,
             "external_research_allowed": external_research_allowed,
         }
@@ -2478,6 +2783,17 @@ _WEAK_MATCH_TERMS = frozenset(
         "words",
         "behavior",
         "food",
+        # Age alone describes context, not the family's current goal.  It may
+        # support a development match but must not beat an explicit language,
+        # sleep or behavior concern.
+        "月龄",
+        "9个月",
+        "九个月",
+        "10个月",
+        "十个月",
+        "11个月",
+        "十一个月",
+        "一岁",
     }
 )
 _NEGATION_MARKERS = (
@@ -2536,6 +2852,50 @@ _FOLLOW_UP_MARKERS = (
     "什么样的引导",
     "如何",
 )
+_ACTION_REQUEST_LABELS = (
+    ("任务", "可执行任务"),
+    ("方案", "可执行方案"),
+    ("计划", "行动计划"),
+    ("练习", "日常练习"),
+    ("步骤", "具体步骤"),
+    ("怎么做", "具体做法"),
+    ("怎么办", "具体做法"),
+    ("action plan", "行动方案"),
+    ("task", "可执行任务"),
+)
+_ACTION_ONLY_FILLERS = (
+    "请",
+    "帮我",
+    "给我",
+    "可以",
+    "能不能",
+    "想要",
+    "需要",
+    "一些",
+    "几个",
+    "一个",
+    "具体",
+    "接下来",
+    "现在",
+    "吧",
+    "吗",
+    "呢",
+    "please",
+    "give me",
+    "some",
+)
+_TOPIC_SIGNAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "learn_language_milestones": (
+        "发声",
+        "轮流发声",
+        "咿呀",
+        "语音理解",
+        "模仿声音",
+        "声音回应",
+        "短句回应",
+    ),
+    "learn_serve_and_return": ("轮流互动", "轮流回应", "跟随孩子"),
+}
 _CONTEXT_REJECTION_MARKERS = (
     "不想继续",
     "不要继续",
@@ -2559,17 +2919,105 @@ _ACKNOWLEDGEMENT_ONLY = frozenset(
 _DYNAMIC_RESEARCH_CARD_PREFIX = "learn_conversation_"
 
 
+def _is_acknowledgement_only(text: str) -> bool:
+    """Recognize one or more acknowledgement phrases with no real topic."""
+
+    normalized = re.sub(r"[\s，。！？,.!?]+", "", text.casefold())
+    if not normalized:
+        return True
+    tokens = sorted(
+        {
+            re.sub(r"[\s，。！？,.!?]+", "", value.casefold())
+            for value in _ACKNOWLEDGEMENT_ONLY
+        },
+        key=len,
+        reverse=True,
+    )
+    residue = normalized
+    for token in tokens:
+        residue = residue.replace(token, "")
+    return not residue
+
+
+def _current_action_intent(text: str) -> Optional[str]:
+    casefolded = text.casefold()
+    return next(
+        (label for marker, label in _ACTION_REQUEST_LABELS if marker in casefolded),
+        None,
+    )
+
+
+def _recommendation_intent_code(text: str) -> str:
+    casefolded = text.casefold()
+    if _current_action_intent(casefolded):
+        return "action_plan"
+    if any(marker in casefolded for marker in ("比较", "对比", "区别", "怎么选", "选择", " vs ", " versus ")):
+        return "compare"
+    if any(
+        marker in casefolded
+        for marker in (
+            "我很累",
+            "我撑不住",
+            "我快崩溃",
+            "我很焦虑",
+            "安慰我",
+            "陪陪我",
+            "support me",
+        )
+    ):
+        return "support"
+    return "learn"
+
+
+def _is_action_only_request(text: str) -> bool:
+    """Detect generic requests such as “给我一些任务吧” without a topic."""
+
+    if not _current_action_intent(text):
+        return False
+    residue = text.casefold()
+    for marker, _label in _ACTION_REQUEST_LABELS:
+        residue = residue.replace(marker, "")
+    for filler in _ACTION_ONLY_FILLERS:
+        residue = residue.replace(filler, "")
+    residue = re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", residue)
+    return len(residue) < 3
+
+
+def _conversation_goal_signal(messages: list[dict]) -> tuple[str, str]:
+    """Return the nearest concrete user goal and whether it is cross-session."""
+
+    user_messages = [
+        message
+        for message in messages
+        if message.get("role") == "user" and str(message.get("text") or "").strip()
+    ]
+    current_messages = [
+        message
+        for message in user_messages
+        if message.get("context_scope") != "account_history"
+    ]
+    history_messages = [
+        message
+        for message in user_messages
+        if message.get("context_scope") == "account_history"
+    ]
+    for scope, candidates in (
+        ("current_session", current_messages),
+        ("account_history", history_messages),
+    ):
+        for message in reversed(candidates):
+            text = str(message.get("text") or "").strip()
+            if _is_acknowledgement_only(text) or _is_action_only_request(text):
+                continue
+            return text, scope
+    latest = str((current_messages or history_messages or [{}])[-1].get("text") or "")
+    return latest, "current_session" if current_messages else "account_history"
+
+
 def _conversation_topic_excerpt(messages: list[dict], limit: int = 84) -> str:
     """Return a short, redacted description of the latest real user topic."""
 
-    latest = next(
-        (
-            str(message.get("text") or "").strip()
-            for message in reversed(messages)
-            if message.get("role") == "user" and str(message.get("text") or "").strip()
-        ),
-        "",
-    )
+    latest, _scope = _conversation_goal_signal(messages)
     topic = " ".join(redact_conversation_text(latest, 240).split())
     topic = topic.strip(" \t\r\n，。！？,.!?；;：:")
     if len(topic) > limit:
@@ -2578,12 +3026,9 @@ def _conversation_topic_excerpt(messages: list[dict], limit: int = 84) -> str:
 
 
 def _is_dynamic_topic_candidate(topic: str) -> bool:
-    normalized = re.sub(r"[\s，。！？,.!?]+", "", topic.casefold())
-    normalized_acknowledgements = {
-        re.sub(r"[\s，。！？,.!?]+", "", value.casefold())
-        for value in _ACKNOWLEDGEMENT_ONLY
-    }
-    if not normalized or normalized in normalized_acknowledgements:
+    if _is_acknowledgement_only(topic):
+        return False
+    if _is_action_only_request(topic):
         return False
     # “换个话题” alone contains no topic to research.  Once the user names a
     # concrete new subject, the longer message remains eligible.
@@ -2651,6 +3096,19 @@ def _build_dynamic_research_card(
         "is_dynamic_research_card": True,
         "related_session_id": session_id,
         "context_created_at": context_created_at,
+        "recommendation_focus": topic,
+        "recommendation_intent": _recommendation_intent_code(
+            next(
+                (
+                    str(message.get("text") or "")
+                    for message in reversed(messages)
+                    if message.get("role") == "user"
+                    and message.get("context_scope") != "account_history"
+                ),
+                topic,
+            )
+        ),
+        "recommendation_score": _CONVERSATION_MATCH_MIN_SCORE,
     }
     if include_detail:
         card.update(
@@ -2665,6 +3123,39 @@ def _build_dynamic_research_card(
                 "resources": [],
             }
         )
+    return card
+
+
+def _restore_dynamic_research_card_from_snapshot(
+    snapshot: dict,
+    *,
+    include_detail: bool,
+) -> Optional[dict]:
+    """Rebuild a novel-topic card when its goal came from account history.
+
+    A detail request deliberately reloads only the bound main session.  For a
+    generic current follow-up such as “给我任务”, that session may not contain
+    the concrete cross-session topic that originally created the dynamic card.
+    The snapshot keeps only the bounded, redacted focus required to restore it.
+    """
+
+    focus = str(snapshot.get("recommendation_focus") or "").strip()
+    if not focus:
+        return None
+    card = _build_dynamic_research_card(
+        [
+            {
+                "role": "user",
+                "text": focus,
+                "context_scope": "current_session",
+            }
+        ],
+        session_id=snapshot.get("session_id"),
+        context_created_at=snapshot.get("context_created_at"),
+        include_detail=include_detail,
+    )
+    if card:
+        card["id"] = snapshot["card_id"]
     return card
 
 
@@ -2738,8 +3229,7 @@ def _signal_score(matches: list[str], strong_base: int, weak_base: int, bonus_ca
 
 def _is_context_follow_up(text: str) -> bool:
     casefolded = text.casefold()
-    normalized = re.sub(r"[\s，。！？,.!?]+", "", casefolded)
-    if not normalized or normalized in _ACKNOWLEDGEMENT_ONLY:
+    if _is_acknowledgement_only(text):
         return False
     if any(marker in casefolded for marker in _CONTEXT_REJECTION_MARKERS):
         return False
@@ -2756,18 +3246,49 @@ def _rank_learning_content(
 ) -> tuple[list[dict], bool]:
     """Deterministically rank reviewed content against recent conversation text."""
 
-    user_texts = [
+    current_user_texts = [
         str(message.get("text") or "").strip()
         for message in messages
         if message.get("role") == "user" and str(message.get("text") or "").strip()
+        and message.get("context_scope") != "account_history"
     ]
-    last_user_text = (user_texts[-1] if user_texts else "").casefold()
-    previous_user_text = " ".join(user_texts[-4:-1]).casefold()
-    older_user_text = " ".join(user_texts[:-4]).casefold()
+    historical_user_texts = [
+        str(message.get("text") or "").strip()
+        for message in messages
+        if message.get("role") == "user" and str(message.get("text") or "").strip()
+        and message.get("context_scope") == "account_history"
+    ]
+    user_texts = [*historical_user_texts, *current_user_texts]
+    last_user_text = (current_user_texts[-1] if current_user_texts else "").casefold()
+    previous_user_text = " ".join(current_user_texts[-4:-1]).casefold()
+    older_user_text = " ".join(current_user_texts[:-4]).casefold()
+    substantive_history_texts = [
+        text
+        for text in historical_user_texts
+        if not _is_acknowledgement_only(text)
+        and not _is_action_only_request(text)
+    ]
+    latest_history_text = (
+        substantive_history_texts[-1].casefold()
+        if substantive_history_texts
+        else ""
+    )
+    older_history_text = " ".join(substantive_history_texts[:-1]).casefold()
     allow_assistant_context = _is_context_follow_up(last_user_text)
+    action_intent = _current_action_intent(last_user_text)
+    action_only_request = _is_action_only_request(last_user_text)
+    goal_text, goal_scope = _conversation_goal_signal(messages)
+    safe_goal = " ".join(redact_conversation_text(goal_text, 160).split())
+    if len(safe_goal) > 48:
+        safe_goal = f"{safe_goal[:47].rstrip()}…"
 
     last_user_index = max(
-        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        (
+            index
+            for index, message in enumerate(messages)
+            if message.get("role") == "user"
+            and message.get("context_scope") != "account_history"
+        ),
         default=-1,
     )
     assistants_after_user = [
@@ -2791,42 +3312,82 @@ def _rank_learning_content(
     else:
         assistant_context_text = ""
 
-    ranked: list[tuple[int, int, dict, Optional[str]]] = []
+    ranked: list[tuple[int, int, int, dict, Optional[str]]] = []
     for index, card in enumerate(LEARNING_CONTENT_CARDS):
-        terms = card.get("match_terms", [])
+        terms = [
+            *card.get("match_terms", []),
+            *_TOPIC_SIGNAL_ALIASES.get(str(card.get("id") or ""), ()),
+        ]
         latest_matches = _matched_terms(last_user_text, terms)
         recent_matches = _matched_terms(previous_user_text, terms)
         older_matches = _matched_terms(older_user_text, terms)
+        latest_history_matches = _matched_terms(latest_history_text, terms)
+        older_history_matches = _matched_terms(older_history_text, terms)
         assistant_matches = _matched_terms(assistant_context_text, terms)
 
-        score = _signal_score(latest_matches, 12, 4, 3)
-        score += _signal_score(recent_matches, 4, 2, 2)
-        score += _signal_score(older_matches, 1, 0, 1)
-        if latest_matches or allow_assistant_context:
-            assistant_base = 8 if allow_assistant_context and not latest_matches else 5
-            score += _signal_score(assistant_matches, assistant_base, 2, 3)
+        latest_score = _signal_score(latest_matches, 14, 5, 3)
+        recent_score = _signal_score(recent_matches, 10, 3, 3)
+        older_score = _signal_score(older_matches, 4, 1, 1)
+        # Cross-session history is continuity, not the present request.  It can
+        # resolve a generic “give me a task” follow-up, but otherwise remains a
+        # weak preference signal and cannot establish a personalized match.
+        history_score = _signal_score(
+            latest_history_matches,
+            8 if action_only_request and not recent_matches else 3,
+            2 if action_only_request and not recent_matches else 1,
+            2,
+        )
+        history_score += _signal_score(older_history_matches, 1, 0, 1)
+        user_signal_score = latest_score + recent_score + older_score + history_score
+        assistant_score = 0
+        if assistant_context_text and (latest_matches or recent_matches or history_score):
+            # Assistant text may clarify a user-established goal, never create
+            # one.  This prevents a broad AI aside such as “精细动作” from
+            # outranking the parent's explicit language-interaction concern.
+            assistant_score = _signal_score(assistant_matches, 3, 1, 1)
+        score = user_signal_score + assistant_score
 
         reason_term = next(
             (
                 candidate
-                for candidates in (latest_matches, assistant_matches, recent_matches)
+                for candidates in (
+                    latest_matches,
+                    recent_matches,
+                    latest_history_matches,
+                    assistant_matches,
+                )
                 for candidate in candidates
                 if candidate not in _WEAK_MATCH_TERMS
             ),
             None,
         )
-        ranked.append((score, index, card, reason_term))
+        ranked.append((score, user_signal_score, index, card, reason_term))
 
-    ranked.sort(key=lambda item: (-item[0], item[1]))
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
     has_conversation_match = bool(
-        user_texts and ranked and ranked[0][0] >= _CONVERSATION_MATCH_MIN_SCORE
+        current_user_texts
+        and ranked
+        and ranked[0][0] >= _CONVERSATION_MATCH_MIN_SCORE
+        and ranked[0][1] >= _CONVERSATION_MATCH_MIN_SCORE
     )
     selected: list[dict] = []
-    for score, _, card, reason_term in ranked[: max(1, min(count, len(LEARNING_CONTENT_CARDS)))]:
-        if score >= _CONVERSATION_MATCH_MIN_SCORE and has_conversation_match:
-            if reason_term:
+    for score, user_signal_score, _, card, reason_term in ranked[
+        : max(1, min(count, len(LEARNING_CONTENT_CARDS)))
+    ]:
+        if (
+            score >= _CONVERSATION_MATCH_MIN_SCORE
+            and user_signal_score >= _CONVERSATION_MATCH_MIN_SCORE
+            and has_conversation_match
+        ):
+            if action_intent and safe_goal:
+                continuity = "结合你最近其他对话里提到的" if goal_scope == "account_history" else "延续你提到的"
                 reason = (
-                    f"因为你最近和 NURI 聊到“{reason_term}”，"
+                    f"你现在想要{action_intent}，{continuity}“{safe_goal}”；"
+                    f"这篇内容与“{card['topic_label']}”直接相关"
+                )
+            elif reason_term:
+                reason = (
+                    f"因为你最近重点聊到“{reason_term}”，"
                     f"这篇内容与“{card['topic_label']}”直接相关"
                 )
             else:
@@ -2861,9 +3422,17 @@ def _rank_learning_content(
                 "related_session_id": related_session_id,
             }
         )
+        if is_match:
+            public_card.update(
+                {
+                    "recommendation_focus": safe_goal or reason_term or card["topic_label"],
+                    "recommendation_intent": _recommendation_intent_code(last_user_text),
+                    "recommendation_score": score,
+                }
+            )
         selected.append(public_card)
 
-    if not has_conversation_match and context_state == "ready" and user_texts:
+    if not has_conversation_match and context_state == "ready" and current_user_texts:
         dynamic_card = _build_dynamic_research_card(
             messages,
             session_id=session_id,
@@ -3000,11 +3569,17 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
                     if item["curation_mode"] == "conversation_web_research"
                     else "reviewed"
                 )
+    await _attach_recommendation_snapshots(uid, items, context)
     return {
         "items": items,
         "personalization_mode": mode,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),
+        "context_status": context.get("state", "no_history"),
+        "history_session_count": int(context.get("history_session_count") or 0),
+        "history_user_message_count": int(
+            context.get("history_user_message_count") or 0
+        ),
         "generated_at": _now(),
     }
 
@@ -3086,10 +3661,23 @@ async def get_card_detail(
     card_id: str,
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
+    recommendation_id: Optional[str] = None,
     uid: Optional[str] = Depends(_opt_uid),
 ):
     is_dynamic_request = card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
     if card_id in LEARNING_CONTENT_BY_ID or is_dynamic_request:
+        snapshot = (
+            await _db_get_recommendation_snapshot(uid, recommendation_id)
+            if uid and recommendation_id
+            else None
+        )
+        if recommendation_id and not snapshot:
+            raise HTTPException(404, "recommendation not found")
+        if snapshot and snapshot.get("card_id") != card_id:
+            raise HTTPException(404, "recommendation not found")
+        if snapshot:
+            session_id = snapshot.get("session_id")
+            context_created_at = snapshot.get("context_created_at")
         if uid:
             context = await _load_recent_main_chat(
                 uid,
@@ -3104,6 +3692,14 @@ async def get_card_detail(
                 "preferred_locale": "zh-CN",
                 "external_research_allowed": False,
             }
+        if snapshot and (
+            context.get("state") != "ready"
+            or context.get("session_id") != snapshot.get("session_id")
+        ):
+            # A persisted recommendation must never resurrect conversation-
+            # derived context after history personalization is disabled, wiped,
+            # or no longer verifiably available.
+            raise HTTPException(404, "recommendation not found")
         ranked, _ = _rank_learning_content(
             context.get("messages") or [],
             count=len(LEARNING_CONTENT_CARDS),
@@ -3113,8 +3709,29 @@ async def get_card_detail(
             include_detail=True,
         )
         card = next((item for item in ranked if item["id"] == card_id), None)
+        if not card and snapshot and is_dynamic_request:
+            card = _restore_dynamic_research_card_from_snapshot(
+                snapshot,
+                include_detail=True,
+            )
         if not card:
             raise HTTPException(404, "card not found")
+        if snapshot and context.get("state") == "ready":
+            for field in (
+                "personalization_reason",
+                "recommendation_focus",
+                "recommendation_intent",
+                "recommendation_score",
+            ):
+                if snapshot.get(field) not in (None, ""):
+                    card[field] = snapshot[field]
+            card["recommendation_id"] = snapshot["recommendation_id"]
+            card["recommendation_context_status"] = "snapshot"
+            card["is_conversation_match"] = True
+            card["related_session_id"] = snapshot.get("session_id")
+            card["context_created_at"] = snapshot.get("context_created_at")
+        elif recommendation_id:
+            card["recommendation_context_status"] = "legacy_fallback"
         trusted_resources = [
             resource
             for resource in card.get("resources", [])
@@ -3179,6 +3796,7 @@ async def get_card_research(
     card_id: str,
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
+    recommendation_id: Optional[str] = None,
     uid: str = Depends(_req_uid),
 ):
     """Return a complete conversation-aware 3x2 bundle or a safe fallback state."""
@@ -3188,11 +3806,24 @@ async def get_card_research(
         and not card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
     ):
         raise HTTPException(404, "card not found")
+    snapshot = await _db_get_recommendation_snapshot(uid, recommendation_id)
+    if recommendation_id and not snapshot:
+        raise HTTPException(404, "recommendation not found")
+    if snapshot and snapshot.get("card_id") != card_id:
+        raise HTTPException(404, "recommendation not found")
+    if snapshot:
+        session_id = snapshot.get("session_id")
+        context_created_at = snapshot.get("context_created_at")
     context = await _load_recent_main_chat(
         uid,
         preferred_session_id=session_id,
         through_created_at=context_created_at,
     )
+    if snapshot and (
+        context.get("state") != "ready"
+        or context.get("session_id") != snapshot.get("session_id")
+    ):
+        raise HTTPException(404, "recommendation not found")
     # This gate deliberately precedes the external-research consent branch.
     # An emergency always returns the same non-research state, whether consent
     # is on or off, and no provider call is attempted.
@@ -3207,8 +3838,31 @@ async def get_card_research(
         include_detail=True,
     )
     card = next((item for item in ranked if item["id"] == card_id), None)
+    if (
+        not card
+        and snapshot
+        and card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+    ):
+        card = _restore_dynamic_research_card_from_snapshot(
+            snapshot,
+            include_detail=True,
+        )
     if not card:
         raise HTTPException(404, "card not found")
+    if snapshot and context.get("state") == "ready":
+        for field in (
+            "personalization_reason",
+            "recommendation_focus",
+            "recommendation_intent",
+            "recommendation_score",
+        ):
+            if snapshot.get(field) not in (None, ""):
+                card[field] = snapshot[field]
+        card["recommendation_id"] = snapshot["recommendation_id"]
+        card["recommendation_context_status"] = "snapshot"
+        card["is_conversation_match"] = True
+        card["related_session_id"] = snapshot.get("session_id")
+        card["context_created_at"] = snapshot.get("context_created_at")
     if not card.get("is_conversation_match"):
         return {"research_status": "reviewed_fallback"}
     if not context.get("external_research_allowed"):
@@ -4260,22 +4914,39 @@ async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
-    return await _db_set_privacy(uid, body.model_dump())
+    settings = await _db_set_privacy(uid, body.model_dump())
+    if uid and settings.get("allow_history_training") is False:
+        await _db_delete_recommendation_snapshots(uid)
+    return settings
 
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
     global _children, _tasks
     if uid:
+        # Keep an explicit opt-out tombstone instead of deleting the privacy
+        # row.  If any later deletion fails, history must remain disabled rather
+        # than falling back to the default-on setting while user data survives.
+        await _db_set_privacy(
+            uid,
+            {
+                "allow_history_training": False,
+                "allow_external_content_research": False,
+                "daily_push": False,
+                "anonymous_community_share": False,
+                "language": "zh-CN",
+            },
+        )
+        await _db_delete_recommendation_snapshots(uid)
         _children = [c for c in _children if c.get("user_id") != uid]
         _tasks    = [t for t in _tasks    if t.get("user_id") != uid]
         for sid in [s for s, d in _sessions.items() if d.get("user_id") == uid]:
             _sessions.pop(sid, None); _messages.pop(sid, None)
         _favorites.pop(uid, None)
-        await _db_delete_privacy(uid)
     else:
         _children.clear(); _tasks.clear()
         _sessions.clear(); _messages.clear()
         _favorites.clear(); _analytics.clear(); _privacy.clear()
+        _recommendation_snapshots.clear()
     return {"ok": True}
 
 # ── Mount /api router ─────────────────────────────────────────────────────────

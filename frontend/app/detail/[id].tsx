@@ -158,13 +158,15 @@ export default function Detail() {
     id,
     session_id: sessionId,
     context_created_at: contextCreatedAt,
+    recommendation_id: recommendationId,
   } = useLocalSearchParams<{
     id: string;
     session_id?: string;
     context_created_at?: string;
+    recommendation_id?: string;
   }>();
   const [card, setCard] = useState<any>(null);
-  const [loadError, setLoadError] = useState(false);
+  const [loadError, setLoadError] = useState<"expired" | "generic" | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -198,10 +200,10 @@ export default function Detail() {
     if (!id) return;
     let active = true;
     setCard(null);
-    setLoadError(false);
+    setLoadError(null);
 
     api
-      .getCardDetail(id as string, sessionId, contextCreatedAt)
+      .getCardDetail(id as string, sessionId, contextCreatedAt, recommendationId)
       .then((detail: any) => {
         if (!active) return;
         setCard(detail);
@@ -210,7 +212,7 @@ export default function Detail() {
           .catch(() => {});
         if (detail.research_status === "pending") {
           api
-            .getCardResearch(id as string, sessionId, contextCreatedAt)
+            .getCardResearch(id as string, sessionId, contextCreatedAt, recommendationId)
             .then((research: any) => {
               if (!active) return;
               setCard((current: any) =>
@@ -232,8 +234,11 @@ export default function Detail() {
             });
         }
       })
-      .catch(() => {
-        if (active) setLoadError(true);
+      .catch((error: unknown) => {
+        if (!active) return;
+        const status =
+          error && typeof error === "object" ? (error as any).status : null;
+        setLoadError(status === 404 && recommendationId ? "expired" : "generic");
       });
 
     // A favorites outage must not prevent the article itself from rendering.
@@ -247,7 +252,7 @@ export default function Detail() {
     return () => {
       active = false;
     };
-  }, [contextCreatedAt, id, reloadSequence, sessionId]);
+  }, [contextCreatedAt, id, recommendationId, reloadSequence, sessionId]);
 
   useEffect(() => {
     const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
@@ -319,17 +324,36 @@ export default function Detail() {
 
   const renderBody = () => {
     if (loadError) {
+      const recommendationExpired = loadError === "expired";
       return (
         <View style={styles.stateBox} testID="detail-error-state">
-          <Ionicons name="cloud-offline-outline" size={28} color={colors.muted} />
-          <Text style={styles.stateTitle}>内容暂时没有加载出来</Text>
-          <Text style={styles.stateText}>可以返回首页，或在网络恢复后重试。</Text>
+          <Ionicons
+            name={recommendationExpired ? "time-outline" : "cloud-offline-outline"}
+            size={28}
+            color={colors.muted}
+          />
+          <Text style={styles.stateTitle}>
+            {recommendationExpired ? "这条个性化推荐已更新" : "内容暂时没有加载出来"}
+          </Text>
+          <Text style={styles.stateText}>
+            {recommendationExpired
+              ? "可以根据你现在的对话，重新查看这个学习主题。"
+              : "可以返回首页，或在网络恢复后重试。"}
+          </Text>
           <Pressable
-            onPress={() => setReloadSequence((value) => value + 1)}
+            onPress={() => {
+              if (recommendationExpired) {
+                router.replace({ pathname: "/detail/[id]", params: { id: id as string } });
+                return;
+              }
+              setReloadSequence((value) => value + 1);
+            }}
             style={styles.retryBtn}
             testID="detail-retry-btn"
           >
-            <Text style={styles.retryBtnText}>重新加载</Text>
+            <Text style={styles.retryBtnText}>
+              {recommendationExpired ? "查看当前主题" : "重新加载"}
+            </Text>
           </Pressable>
         </View>
       );
