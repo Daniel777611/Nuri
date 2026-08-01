@@ -4878,7 +4878,7 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     return {
         "items": items,
         "feed_request_id": feed_request_id,
-        "model_version": "conversation-quality-feedback-v2",
+        "model_version": "conversation-quality-cn-sources-v3",
         "personalization_mode": mode,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),

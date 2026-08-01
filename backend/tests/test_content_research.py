@@ -121,6 +121,12 @@ def _raw_resources(
                         "page_language_evidence_url": (
                             url if locale in {"zh-CN", "zh-TW"} else ""
                         ),
+                        "video_page_evidence": (
+                            "页面明确标识这是可播放的视频或短视频。"
+                            if kind == "video"
+                            else ""
+                        ),
+                        "video_page_evidence_url": url if kind == "video" else "",
                         "description": description,
                         "url": url,
                         "trust_note": "The source and page were checked.",
@@ -390,6 +396,35 @@ def test_queryless_event_url_excludes_research_query_variant():
     assert query_variant not in {item["url"] for item in parsed["resources"]}
 
 
+def test_douyin_share_alias_is_excluded_as_the_same_video():
+    resources = _raw_resources()
+    featured_video = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("featured", "video")
+    )
+    video_id = "1234567890123456789"
+    direct_url = f"https://www.douyin.com/video/{video_id}"
+    featured_video.update(
+        {
+            "url": direct_url,
+            "evidence_url": direct_url,
+            "spoken_language_evidence_url": direct_url,
+            "page_language_evidence_url": direct_url,
+            "video_page_evidence_url": direct_url,
+        }
+    )
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+        excluded_urls=[f"https://www.iesdouyin.com/share/video/{video_id}"],
+    )
+
+    assert parsed is None
+
+
 def test_topic_context_rejects_broad_but_unrelated_chinese_results():
     resources = _raw_resources()
     for resource in resources:
@@ -433,6 +468,108 @@ def test_simplified_chinese_authority_rejects_mainland_institution_source():
     assert authority_article["url"] not in {
         resource["url"] for resource in parsed["resources"]
     }
+
+
+def test_simplified_chinese_authority_accepts_reviewed_mainland_childrens_hospital():
+    resources = _raw_resources()
+    authority_article = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("authority", "article")
+    )
+    hospital_url = "https://www.zjuch.cn/health/sleep-routine.html"
+    authority_article.update(
+        {
+            "url": hospital_url,
+            "publisher": "浙江大学医学院附属儿童医院",
+            "page_language_evidence_url": hospital_url,
+        }
+    )
+    authority_video = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("authority", "video")
+    )
+    authority_video["evidence_url"] = authority_video["url"]
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert hospital_url in {resource["url"] for resource in parsed["resources"]}
+
+
+def test_reviewed_hospital_source_cannot_be_misclassified_as_featured():
+    resources = _raw_resources()
+    featured_article = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("featured", "article")
+    )
+    hospital_url = "https://www.zjuch.cn/health/sleep-routine.html"
+    featured_article.update(
+        {
+            "url": hospital_url,
+            "publisher": "浙江大学医学院附属儿童医院",
+            "page_language_evidence_url": hospital_url,
+        }
+    )
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert hospital_url not in {resource["url"] for resource in parsed["resources"]}
+
+
+def test_verified_hospital_public_account_article_requires_official_cited_evidence():
+    resources = _raw_resources()
+    authority_article = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("authority", "article")
+    )
+    wechat_url = "https://mp.weixin.qq.com/s/zjuch-sleep-guide"
+    official_evidence = "https://www.zjuch.cn/news/default/id/9382/cid/99"
+    authority_article.update(
+        {
+            "url": wechat_url,
+            "publisher": "浙大儿院",
+            "page_language_evidence_url": wechat_url,
+            "evidence_url": official_evidence,
+        }
+    )
+    authority_video = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("authority", "video")
+    )
+    authority_video["evidence_url"] = authority_video["url"]
+    cited_urls = [item["url"] for item in resources] + [official_evidence]
+
+    parsed = parse_research_response(
+        _response(resources, cited_urls=cited_urls),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert wechat_url in {resource["url"] for resource in parsed["resources"]}
+
+    authority_article["publisher"] = "未经核验的健康公众号"
+    rejected = parse_research_response(
+        _response(resources, cited_urls=cited_urls),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+    assert rejected is not None
+    assert wechat_url not in {resource["url"] for resource in rejected["resources"]}
 
 
 @pytest.mark.parametrize(
@@ -504,6 +641,165 @@ def test_new_mandarin_video_rejects_evidence_from_a_different_page():
     )
 
     assert parsed is None
+
+
+@pytest.mark.parametrize(
+    "video_url",
+    [
+        "https://www.youtube.com/shorts/AbCdEf12345",
+        "https://www.douyin.com/video/1234567890123456789",
+        "https://www.iesdouyin.com/share/video/1234567890123456789",
+        "https://www.kuaishou.com/short-video/3xExampleVideoId",
+        "https://www.bilibili.com/video/BV1xx411c7mD",
+    ],
+)
+def test_direct_mandarin_short_video_pages_are_supported(video_url):
+    resources = _raw_resources()
+    featured_video = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("featured", "video")
+    )
+    featured_video.update(
+        {
+            "url": video_url,
+            "evidence_url": video_url,
+            "spoken_language_evidence_url": video_url,
+            "page_language_evidence_url": video_url,
+            "video_page_evidence_url": video_url,
+        }
+    )
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert video_url in {resource["url"] for resource in parsed["resources"]}
+
+
+def test_xiaohongshu_video_requires_same_page_video_note_evidence():
+    resources = _raw_resources()
+    featured_video = next(
+        item
+        for item in resources
+        if (item["content_category"], item["kind"]) == ("featured", "video")
+    )
+    video_url = "https://www.xiaohongshu.com/explore/66abc123def456"
+    featured_video.update(
+        {
+            "url": video_url,
+            "publisher": "年糕妈妈",
+            "evidence_url": video_url,
+            "spoken_language_evidence_url": video_url,
+            "page_language_evidence_url": video_url,
+            "video_page_evidence": "落地页明确显示这是一条可播放的短视频笔记。",
+            "video_page_evidence_url": video_url,
+        }
+    )
+
+    accepted = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+    assert accepted is not None
+    assert video_url in {resource["url"] for resource in accepted["resources"]}
+
+    featured_video["video_page_evidence"] = "这是一篇图文笔记。"
+    rejected = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+    assert rejected is None
+
+
+def test_zh_cn_selection_prefers_reviewed_creator_seed_at_equal_quality():
+    resources = _raw_resources()
+    preferred = deepcopy(
+        next(
+            item
+            for item in resources
+            if (item["content_category"], item["kind"])
+            == ("featured", "article")
+        )
+    )
+    preferred_url = "https://www.nicomama.com/parenting/sleep-guide"
+    preferred.update(
+        {
+            "title": "年糕妈妈：孩子夜醒与睡前节奏建议",
+            "publisher": "年糕妈妈",
+            "url": preferred_url,
+            "page_language_evidence_url": preferred_url,
+        }
+    )
+    resources.append(preferred)
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert preferred_url in {resource["url"] for resource in parsed["resources"]}
+
+
+def test_creator_seed_name_does_not_boost_an_arbitrary_host():
+    resources = _raw_resources()
+    spoofed = deepcopy(
+        next(
+            item
+            for item in resources
+            if (item["content_category"], item["kind"])
+            == ("featured", "article")
+        )
+    )
+    spoofed_url = "https://unverified.example.org/parenting/sleep-guide"
+    spoofed.update(
+        {
+            "title": "冒用名称的育儿内容",
+            "publisher": "年糕妈妈",
+            "url": spoofed_url,
+            "page_language_evidence_url": spoofed_url,
+        }
+    )
+    resources.append(spoofed)
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert spoofed_url not in {resource["url"] for resource in parsed["resources"]}
+
+
+def test_zh_cn_prompt_contains_tiered_sources_short_video_and_commercial_guardrails():
+    prompt = build_research_prompt(
+        {
+            "id": "learn_sleep_routine",
+            "recommendation_focus": "孩子夜醒与睡前节奏",
+        },
+        [],
+        "zh-CN",
+    )
+
+    assert "北京儿童医院服务号" in prompt
+    assert "广州妇儿中心" in prompt
+    assert "浙大儿院" in prompt
+    assert "年糕妈妈" in prompt
+    assert "育婴师安安米琪" in prompt
+    assert "一颗金豆子" in prompt
+    assert "奶爸小虹哥" in prompt
+    assert "抖音、快手、小红书" in prompt
+    assert "最长不超过10分钟" in prompt
+    assert "商业风险" in prompt
+    assert "一律不把自述资历当医学权威" in prompt
 
 
 def test_conversation_text_is_redacted_before_web_research():
@@ -1011,12 +1307,21 @@ def test_research_uses_only_structured_card_context_and_ignores_raw_messages():
             "medium",
             "high",
         }
+        assert request["tools"][0]["user_location"] == {
+            "type": "approximate",
+            "country": "CN",
+        }
         assert request["include"] == ["web_search_call.action.sources"]
         assert request["store"] is False
         resource_schema = request["text"]["format"]["schema"]["properties"][
             "resources"
         ]["items"]
-        for field in ("page_language_evidence", "page_language_evidence_url"):
+        for field in (
+            "page_language_evidence",
+            "page_language_evidence_url",
+            "video_page_evidence",
+            "video_page_evidence_url",
+        ):
             assert field in resource_schema["properties"]
             assert field in resource_schema["required"]
         assert all(text not in request["input"] for text in raw_message_texts)
