@@ -185,6 +185,8 @@ export default function Detail() {
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [resourceLocale, setResourceLocale] = useState<ResourceLocale | null>(null);
+  const [resourceLocaleLoading, setResourceLocaleLoading] =
+    useState<ResourceLocale | null>(null);
   const [askBarHeight, setAskBarHeight] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [contentFeedback, setContentFeedback] = useState<"helpful" | "not_relevant" | null>(null);
@@ -194,6 +196,7 @@ export default function Detail() {
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const dwellStartedAt = useRef<number | null>(null);
   const dwellSent = useRef(false);
+  const contentRequestId = useRef(0);
   const dwellContext = useRef<Omit<RecommendationEventInput, "event" | "duration_ms">>({});
   const frameWidth = Math.min(viewportWidth, DETAIL_FRAME_WIDTH);
   const parsedRecommendationRank = Number.parseInt(recommendationRank || "", 10);
@@ -268,8 +271,10 @@ export default function Detail() {
   useEffect(() => {
     if (!id) return;
     let active = true;
+    const requestId = ++contentRequestId.current;
     setCard(null);
     setLoadError(null);
+    setResourceLocaleLoading(null);
     setContentFeedback(null);
     setFeedbackReasonOpen(false);
     setFeedbackReason(null);
@@ -280,7 +285,7 @@ export default function Detail() {
     api
       .getCardDetail(id as string, sessionId, contextCreatedAt, recommendationId)
       .then((detail: any) => {
-        if (!active) return;
+        if (!active || contentRequestId.current !== requestId) return;
         setCard(detail);
         dwellContext.current = {
           card_id: id as string,
@@ -294,13 +299,13 @@ export default function Detail() {
           api
             .getCardResearch(id as string, sessionId, contextCreatedAt, recommendationId)
             .then((research: any) => {
-              if (!active) return;
+              if (!active || contentRequestId.current !== requestId) return;
               setCard((current: any) =>
                 current ? { ...current, ...research } : current
               );
             })
             .catch(() => {
-              if (!active) return;
+              if (!active || contentRequestId.current !== requestId) return;
               setCard((current: any) =>
                 current
                   ? {
@@ -315,7 +320,7 @@ export default function Detail() {
         }
       })
       .catch((error: unknown) => {
-        if (!active) return;
+        if (!active || contentRequestId.current !== requestId) return;
         const status =
           error && typeof error === "object" ? (error as any).status : null;
         setLoadError(status === 404 && recommendationId ? "expired" : "generic");
@@ -331,6 +336,9 @@ export default function Detail() {
 
     return () => {
       active = false;
+      // Invalidate whichever detail/research request is current, including a
+      // locale switch that may have started after this initial request.
+      contentRequestId.current += 1;
       flushDwell();
     };
   }, [
@@ -347,9 +355,78 @@ export default function Detail() {
 
   useEffect(() => {
     const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
+    const preferredLocale = RESOURCE_LOCALE_OPTIONS.find(
+      (option) => option.value === card?.preferred_locale,
+    )?.value;
     const firstLocale = resources.flatMap(resourceLocales)[0] || null;
-    setResourceLocale(firstLocale);
+    setResourceLocale(preferredLocale || firstLocale);
   }, [card]);
+
+  const switchResourceLocale = async (nextLocale: ResourceLocale) => {
+    if (!id || nextLocale === resourceLocale || resourceLocaleLoading) return;
+    const requestId = ++contentRequestId.current;
+    setResourceLocaleLoading(nextLocale);
+    try {
+      const detail: any = await api.getCardDetail(
+        id as string,
+        sessionId,
+        contextCreatedAt,
+        recommendationId,
+        nextLocale,
+      );
+      if (contentRequestId.current !== requestId) return;
+      setCard(detail);
+      setResourceLocale(nextLocale);
+      setLoadError(null);
+      setResourceLocaleLoading(null);
+
+      if (detail.research_status === "pending") {
+        try {
+          const research: any = await api.getCardResearch(
+            id as string,
+            sessionId,
+            contextCreatedAt,
+            recommendationId,
+            nextLocale,
+          );
+          if (contentRequestId.current !== requestId) return;
+          setCard((current: any) =>
+            current ? { ...current, ...research, preferred_locale: nextLocale } : current,
+          );
+        } catch {
+          if (contentRequestId.current !== requestId) return;
+          setCard((current: any) =>
+            current
+              ? {
+                  ...current,
+                  research_status: current.is_dynamic_research_card
+                    ? "unavailable"
+                    : "reviewed_fallback",
+                }
+              : current,
+          );
+        }
+      }
+    } catch {
+      if (contentRequestId.current !== requestId) return;
+      setCard((current: any) =>
+        current?.research_status === "pending"
+          ? {
+              ...current,
+              research_status:
+                Array.isArray(current.resources) && current.resources.length
+                  ? "reviewed_fallback"
+                  : "unavailable",
+            }
+          : current,
+      );
+      showToast("这个语言的资源暂时没有加载出来，请稍后再试");
+    } finally {
+      if (contentRequestId.current === requestId) {
+        setResourceLocaleLoading(null);
+      }
+    }
+  };
 
   const toggleFavorite = async () => {
     if (!id) return;
@@ -480,14 +557,20 @@ export default function Detail() {
     }
 
     const resources: LearningResource[] = Array.isArray(card.resources) ? card.resources : [];
-    const availableResourceLocales = RESOURCE_LOCALE_OPTIONS.filter((option) =>
-      resources.some((resource) => resourceLocales(resource).includes(option.value))
-    );
-    const selectedResourceLocale =
-      availableResourceLocales.find((option) => option.value === resourceLocale)?.value ||
-      availableResourceLocales[0]?.value;
-    const visibleResources = selectedResourceLocale
-      ? resources.filter((resource) => resourceLocales(resource).includes(selectedResourceLocale))
+    const responseResourceLocale =
+      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === card.preferred_locale)?.value ||
+      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === resourceLocale)?.value ||
+      resources.flatMap(resourceLocales)[0] ||
+      "zh-CN";
+    const activeResourceLocale = responseResourceLocale;
+    const activeResourceLocaleLabel =
+      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === activeResourceLocale)?.label ||
+      "简体中文";
+    const loadingResourceLocaleLabel = RESOURCE_LOCALE_OPTIONS.find(
+      (option) => option.value === resourceLocaleLoading,
+    )?.label;
+    const visibleResources = responseResourceLocale
+      ? resources.filter((resource) => resourceLocales(resource).includes(responseResourceLocale))
       : resources;
     const visibleResourceGroups = RESOURCE_CATEGORIES.map((group) => ({
       ...group,
@@ -552,6 +635,57 @@ export default function Detail() {
         {resources.length || card.research_status ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
             <Text style={styles.sectionTitle}>来源与内容目录</Text>
+            <View style={styles.resourceLocaleBlock}>
+              <View style={styles.resourceLocaleHeader}>
+                <Text style={styles.resourceLocaleLabel}>资源语言</Text>
+                {resourceLocaleLoading ? (
+                  <View style={styles.resourceLocaleLoading}>
+                    <ActivityIndicator size="small" color="#4F4B9C" />
+                    <Text
+                      style={styles.resourceLocaleLoadingText}
+                      accessibilityLiveRegion="polite"
+                    >
+                      正在切换为{loadingResourceLocaleLabel}…
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <View
+                style={styles.resourceLocaleTabs}
+                accessibilityRole="tablist"
+                testID="detail-resource-locale-tabs"
+              >
+                {RESOURCE_LOCALE_OPTIONS.map((option) => {
+                  const selected = option.value === activeResourceLocale;
+                  return (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => switchResourceLocale(option.value)}
+                      disabled={Boolean(resourceLocaleLoading)}
+                      hitSlop={6}
+                      style={({ pressed }) => [
+                        styles.resourceLocaleTab,
+                        selected && styles.resourceLocaleTabSelected,
+                        pressed && !resourceLocaleLoading && styles.resourceLocaleTabPressed,
+                      ]}
+                      accessibilityRole="tab"
+                      accessibilityLabel={`切换为${option.label}资源`}
+                      accessibilityState={{ selected, disabled: Boolean(resourceLocaleLoading) }}
+                      testID={`detail-resource-locale-${option.value}`}
+                    >
+                      <Text
+                        style={[
+                          styles.resourceLocaleTabText,
+                          selected && styles.resourceLocaleTabTextSelected,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
             {card.research_status === "pending" ? (
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <ActivityIndicator size="small" color="#4F4B9C" />
@@ -623,38 +757,8 @@ export default function Detail() {
             ) : null}
             {resources.length ? (
               <Text style={styles.resourcesIntro}>
-                当前语言共 {visibleResources.length} 项。NURI 按权威来源、优秀精彩与典型案例整理，每类提供 2–3 个选择，并明确标注文章或视频；点击具体条目后才会打开外部内容。
+                {activeResourceLocaleLabel}共 {visibleResources.length} 项。NURI 按权威来源、优秀精彩与典型案例整理，每类提供 2–3 个选择，并明确标注文章或视频；点击具体条目后才会打开外部内容。
               </Text>
-            ) : null}
-            {resources.length && availableResourceLocales.length > 1 ? (
-              <View style={styles.resourceLocaleTabs} testID="detail-resource-locale-tabs">
-                {availableResourceLocales.map((option) => {
-                  const selected = option.value === selectedResourceLocale;
-                  return (
-                    <Pressable
-                      key={option.value}
-                      onPress={() => setResourceLocale(option.value)}
-                      hitSlop={6}
-                      style={[
-                        styles.resourceLocaleTab,
-                        selected && styles.resourceLocaleTabSelected,
-                      ]}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      testID={`detail-resource-locale-${option.value}`}
-                    >
-                      <Text
-                        style={[
-                          styles.resourceLocaleTabText,
-                          selected && styles.resourceLocaleTabTextSelected,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
             ) : null}
             {resources.length ? visibleResourceGroups.map((group) => (
               <View
@@ -1129,6 +1233,35 @@ const styles = StyleSheet.create({
   },
   body: { fontSize: type.lg, color: colors.onSurfaceSecondary, lineHeight: 27 },
   resourcesSection: { marginTop: spacing.xl },
+  resourceLocaleBlock: {
+    borderWidth: 1,
+    borderColor: "#D8D2F2",
+    borderRadius: radius.md,
+    backgroundColor: "#F7F5FF",
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  resourceLocaleHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  resourceLocaleLabel: {
+    fontSize: type.sm,
+    color: "#4F4B9C",
+    fontWeight: "700",
+  },
+  resourceLocaleLoading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  resourceLocaleLoadingText: {
+    fontSize: 12,
+    color: colors.muted,
+  },
   researchStatusCard: {
     flexDirection: "row",
     gap: spacing.sm,
@@ -1158,13 +1291,12 @@ const styles = StyleSheet.create({
   },
   resourceLocaleTabs: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: spacing.sm,
-    marginBottom: spacing.md,
   },
   resourceLocaleTab: {
+    flex: 1,
     minHeight: 44,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
@@ -1173,6 +1305,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  resourceLocaleTabPressed: { opacity: 0.72 },
   resourceLocaleTabSelected: {
     borderColor: colors.brand,
     backgroundColor: colors.brandTertiary,

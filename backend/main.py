@@ -287,6 +287,20 @@ def _normalize_preferred_locale(value: object) -> str:
     return "zh-CN"
 
 
+def _with_requested_preferred_locale(
+    context: dict,
+    requested_locale: Optional[str],
+) -> dict:
+    """Apply a one-request resource locale without mutating saved privacy."""
+
+    effective_locale = (
+        requested_locale
+        if requested_locale in _SUPPORTED_PREFERRED_LOCALES
+        else _normalize_preferred_locale(context.get("preferred_locale"))
+    )
+    return {**context, "preferred_locale": effective_locale}
+
+
 _DEFAULT_PRIVACY = {
     "allow_history_training": True,
     "allow_external_content_research": False,
@@ -5109,6 +5123,7 @@ async def get_card_detail(
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
     recommendation_id: Optional[str] = None,
+    preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: Optional[str] = Depends(_opt_uid),
 ):
     is_dynamic_request = card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
@@ -5140,6 +5155,9 @@ async def get_card_detail(
                 "preferred_locale": "zh-CN",
                 "external_research_allowed": False,
             }
+        # A detail-page language choice is request-scoped. It must not silently
+        # rewrite the account's saved privacy/language setting.
+        context = _with_requested_preferred_locale(context, preferred_locale)
         if snapshot and (
             context.get("state") != "ready"
             or context.get("session_id") != snapshot.get("session_id")
@@ -5256,6 +5274,7 @@ async def get_card_research(
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
     recommendation_id: Optional[str] = None,
+    preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: str = Depends(_req_uid),
 ):
     """Return a complete conversation-aware 6–9 item bundle or a safe fallback."""
@@ -5279,6 +5298,10 @@ async def get_card_research(
         through_created_at=context_created_at,
     )
     await _attach_child_recommendation_context(uid, context)
+    # Keep the selected resource language consistent across the reviewed first
+    # paint, live research, cache key and response summary without mutating the
+    # account's saved privacy/language setting.
+    context = _with_requested_preferred_locale(context, preferred_locale)
     if snapshot and (
         context.get("state") != "ready"
         or context.get("session_id") != snapshot.get("session_id")

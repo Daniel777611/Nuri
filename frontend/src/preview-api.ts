@@ -230,6 +230,15 @@ function orderPreviewResources(resources: any[], language: string) {
     })
     .map(({ resource }) => resource);
 }
+
+function previewResourceLocale(path: string) {
+  const query = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
+  const requested = new URLSearchParams(query).get("preferred_locale");
+  if (requested === "zh-CN" || requested === "zh-TW" || requested === "en") {
+    return requested;
+  }
+  return privacy.language === "zh" ? "zh-CN" : privacy.language;
+}
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
@@ -391,9 +400,15 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     const learningCard = learningCards.find((item) => item.id === contentId);
     if (learningCard) {
       const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
+      const preferredLocale = previewResourceLocale(path);
+      const resources = orderPreviewResources(
+        learningCard.resources || [],
+        preferredLocale,
+      ).filter((resource) => resource.locales?.includes(preferredLocale));
       return {
         ...learningCard,
-        resources: orderPreviewResources(learningCard.resources || [], privacy.language),
+        resources,
+        preferred_locale: preferredLocale,
         personalization_reason: isSleepMatch
           ? "因为你最近和 NURI 聊到了“睡眠与作息”"
           : privacy.allow_history_training
@@ -416,7 +431,10 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     routePath.endsWith("/research") &&
     method === "POST"
   ) {
-    return { research_status: "reviewed_fallback" };
+    return {
+      research_status: "reviewed_fallback",
+      preferred_locale: previewResourceLocale(path),
+    };
   }
   if (path === "/feed" || path.startsWith("/feed?")) return [card];
   if (path.startsWith("/feed/search") || path.startsWith("/feed/alt")) return [card];

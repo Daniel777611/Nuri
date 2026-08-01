@@ -1715,6 +1715,152 @@ def test_research_route_is_post_only_and_requires_login():
     assert unauthenticated.headers["vary"] == "Authorization"
 
 
+def test_detail_request_locale_override_returns_only_traditional_resources_without_persisting(
+    monkeypatch,
+):
+    original_context = {
+        "state": "ready",
+        "session_id": "session-locale-detail",
+        "messages": [{"role": "user", "text": "recent bedtime sleep problem"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": False,
+    }
+    saved_privacy = {"language": "zh-CN"}
+
+    async def ready_context(
+        _uid,
+        preferred_session_id=None,
+        through_created_at=None,
+    ):
+        assert preferred_session_id is None
+        assert through_created_at is None
+        return original_context
+
+    async def leave_child_context_unchanged(_uid, context):
+        return context
+
+    async def no_events(_uid):
+        return []
+
+    async def must_not_persist_locale(*_args, **_kwargs):
+        raise AssertionError("request locale must not update saved privacy")
+
+    def ranked_sleep_card(*_args, **_kwargs):
+        card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+        card["is_conversation_match"] = True
+        return [card], True
+
+    monkeypatch.setattr(main, "_privacy", {"parent-locale": saved_privacy})
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_db_set_privacy", must_not_persist_locale)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(main, "content_research_oai", None)
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_sleep_routine",
+            preferred_locale="zh-TW",
+            uid="parent-locale",
+        )
+    )
+
+    assert detail["preferred_locale"] == "zh-TW"
+    assert detail["resources"]
+    assert all(
+        "zh-TW" in (resource.get("locales") or [])
+        for resource in detail["resources"]
+    )
+    assert detail["resource_summary"]["preferred_locale"] == "zh-TW"
+    assert original_context["preferred_locale"] == "zh-CN"
+    assert saved_privacy == {"language": "zh-CN"}
+    assert main._privacy["parent-locale"] == {"language": "zh-CN"}
+
+
+def test_research_request_locale_override_uses_english_provider_and_summary(
+    monkeypatch,
+):
+    original_context = {
+        "state": "ready",
+        "session_id": "session-locale-research",
+        "messages": [{"role": "user", "text": "recent bedtime sleep problem"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": True,
+    }
+    bundle = _parsed_bundle("en", include_optional_third=False)
+    calls = []
+
+    async def ready_context(
+        _uid,
+        preferred_session_id=None,
+        through_created_at=None,
+    ):
+        assert preferred_session_id is None
+        assert through_created_at is None
+        return original_context
+
+    async def leave_child_context_unchanged(_uid, context):
+        return context
+
+    async def no_events(_uid):
+        return []
+
+    def ranked_sleep_card(*_args, **_kwargs):
+        card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+        card["is_conversation_match"] = True
+        return [card], True
+
+    def fake_research(passed_client, **kwargs):
+        calls.append((passed_client, kwargs))
+        return deepcopy(bundle)
+
+    research_client = object()
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(main, "content_research_oai", research_client)
+    monkeypatch.setattr(main, "research_learning_resources", fake_research)
+
+    research = asyncio.run(
+        main.get_card_research(
+            "learn_sleep_routine",
+            preferred_locale="en",
+            uid="parent-locale",
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is research_client
+    assert calls[0][1]["preferred_locale"] == "en"
+    assert research["research_status"] == "fresh"
+    assert research["resources"]
+    assert all(
+        "en" in (resource.get("locales") or [])
+        for resource in research["resources"]
+    )
+    assert research["resource_summary"]["preferred_locale"] == "en"
+    assert original_context["preferred_locale"] == "zh-CN"
+
+
+def test_detail_request_rejects_unsupported_preferred_locale():
+    with TestClient(main.app) as client:
+        response = client.get(
+            "/api/feed/learn_sleep_routine/detail?preferred_locale=fr"
+        )
+
+    assert response.status_code == 422
+
+
 def test_research_uses_only_structured_card_context_and_ignores_raw_messages():
     clear_research_cache()
     client = _FakeClient(_response())

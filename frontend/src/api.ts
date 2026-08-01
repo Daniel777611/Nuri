@@ -335,6 +335,7 @@ export const api = {
     sessionId?: string,
     contextCreatedAt?: string,
     recommendationId?: string,
+    preferredLocale?: "zh-CN" | "zh-TW" | "en",
   ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
@@ -343,6 +344,9 @@ export const api = {
         : "",
       recommendationId
         ? `recommendation_id=${encodeURIComponent(recommendationId)}`
+        : "",
+      preferredLocale
+        ? `preferred_locale=${encodeURIComponent(preferredLocale)}`
         : "",
     ].filter(Boolean).join("&");
     return req(`/feed/${id}/detail${query ? `?${query}` : ""}`);
@@ -354,6 +358,7 @@ export const api = {
     sessionId?: string,
     contextCreatedAt?: string,
     recommendationId?: string,
+    preferredLocale?: "zh-CN" | "zh-TW" | "en",
   ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
@@ -362,6 +367,9 @@ export const api = {
         : "",
       recommendationId
         ? `recommendation_id=${encodeURIComponent(recommendationId)}`
+        : "",
+      preferredLocale
+        ? `preferred_locale=${encodeURIComponent(preferredLocale)}`
         : "",
     ].filter(Boolean).join("&");
     return req(
