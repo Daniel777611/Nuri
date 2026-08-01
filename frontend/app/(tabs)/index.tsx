@@ -282,7 +282,20 @@ export default function Home() {
         <HeroCarousel
           width={carouselWidth}
           cards={heroCards}
-          onCardPress={(card) => router.push(`/detail/${encodeURIComponent(card.id)}`)}
+          onCardPress={(card) => {
+            router.push({
+              pathname: "/detail/[id]",
+              params: {
+                id: card.id,
+                ...(card.related_session_id
+                  ? { session_id: card.related_session_id }
+                  : {}),
+                ...(card.context_created_at
+                  ? { context_created_at: card.context_created_at }
+                  : {}),
+              },
+            });
+          }}
         />
 
         {/* 第一行：今日任务 + Nuri的家 */}

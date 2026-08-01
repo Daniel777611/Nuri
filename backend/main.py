@@ -42,7 +42,7 @@ import anyio
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, UploadFile, File, status
+from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -57,12 +57,24 @@ try:
         is_trusted_resource_url,
         order_learning_resources,
     )
+    from backend.content_research import (
+        CONTENT_CATEGORIES,
+        redact_conversation_text,
+        research_learning_resources,
+        summarize_resource_slots,
+    )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         is_trusted_resource_url,
         order_learning_resources,
+    )
+    from content_research import (  # type: ignore
+        CONTENT_CATEGORIES,
+        redact_conversation_text,
+        research_learning_resources,
+        summarize_resource_slots,
     )
 
 load_dotenv()
@@ -117,6 +129,15 @@ SMTP_FROM        = os.getenv("SMTP_FROM", "")
 OPENAI_TIMEOUT_S       = float(os.getenv("OPENAI_TIMEOUT_S", "45"))   # main chat reply
 OPENAI_FAST_TIMEOUT_S  = float(os.getenv("OPENAI_FAST_TIMEOUT_S", "15"))  # titles, embeddings, #fix
 OPENAI_TASKS_TIMEOUT_S = float(os.getenv("OPENAI_TASKS_TIMEOUT_S", "25"))  # task suggestions
+OPENAI_CONTENT_RESEARCH_TIMEOUT_S = float(
+    os.getenv("OPENAI_CONTENT_RESEARCH_TIMEOUT_S", "100")
+)
+OPENAI_CONTENT_RESEARCH_MODEL = os.getenv(
+    "OPENAI_CONTENT_RESEARCH_MODEL", "gpt-5.4-mini"
+)
+OPENAI_CONTENT_RESEARCH_CONCURRENCY = int(
+    os.getenv("OPENAI_CONTENT_RESEARCH_CONCURRENCY", "2")
+)
 OPENAI_MAX_RETRIES     = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
 
 oai = (
@@ -128,6 +149,18 @@ oai = (
 aoai = (
     AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_S, max_retries=OPENAI_MAX_RETRIES)
     if OPENAI_API_KEY else None
+)
+content_research_oai = (
+    OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=OPENAI_CONTENT_RESEARCH_TIMEOUT_S,
+        max_retries=0,
+    )
+    if OPENAI_API_KEY
+    else None
+)
+content_research_limiter = anyio.CapacityLimiter(
+    max(1, OPENAI_CONTENT_RESEARCH_CONCURRENCY)
 )
 
 supabase_client = None
@@ -158,6 +191,19 @@ async def _lifespan(_app: FastAPI):
     yield
 
 app = FastAPI(title="Family Growth Radar API", lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def _protect_personalized_feed_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    is_private_feed = path.endswith("/feed/personalized") or bool(
+        re.search(r"/feed/[^/]+/(?:detail|research)$", path)
+    )
+    if is_private_feed:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Vary"] = "Authorization"
+    return response
 api = APIRouter(prefix="/api")
 
 app.add_middleware(
@@ -195,6 +241,7 @@ def _normalize_preferred_locale(value: object) -> str:
 
 _DEFAULT_PRIVACY = {
     "allow_history_training": True,
+    "allow_external_content_research": False,
     "daily_push": True,
     "anonymous_community_share": False,
     "language": "zh-CN",
@@ -332,7 +379,12 @@ def _normalized_privacy_settings(value: object) -> dict:
     settings = dict(_DEFAULT_PRIVACY)
     if not isinstance(value, dict):
         return settings
-    for key in ("allow_history_training", "daily_push", "anonymous_community_share"):
+    for key in (
+        "allow_history_training",
+        "allow_external_content_research",
+        "daily_push",
+        "anonymous_community_share",
+    ):
         if isinstance(value.get(key), bool):
             settings[key] = value[key]
     settings["language"] = _normalize_preferred_locale(value.get("language"))
@@ -665,6 +717,7 @@ class TaskUpdate(BaseModel):
 
 class PrivacySettings(BaseModel):
     allow_history_training:   bool = True
+    allow_external_content_research: bool = False
     daily_push:               bool = True
     anonymous_community_share: bool = False
     language: Literal["zh", "zh-CN", "zh-TW", "en"] = "zh-CN"
@@ -1090,13 +1143,35 @@ _TASK_TYPES = {"interaction", "observation", "care", "selfcare"}
 _URGENT_TASK_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"(?:喘不上气|喘不過氣|不能呼吸|無法呼吸|呼吸困难|呼吸困難|停止呼吸|窒息|嘴唇发紫|嘴唇發紫)",
-        r"(?:昏迷|失去意识|失去意識|叫不醒|没有反应|沒有反應|抽搐|癫痫发作|癲癇發作)",
-        r"(?:严重出血|嚴重出血|流血不止|误食|誤食|中毒|过量服药|過量服藥)",
+        r"(?:喘不上气|喘不過氣|不能呼吸|無法呼吸|不呼吸|没(?:有)?呼吸|沒有呼吸|"
+        r"呼吸停(?:止|了)|停止呼吸|呼吸困难|呼吸困難|窒息|嘴唇发紫|嘴唇發紫|"
+        r"嘴唇发蓝|嘴唇發藍|脸色发青|臉色發青|脸色发蓝|臉色發藍|"
+        r"全身发蓝|全身發藍)",
+        r"(?:昏迷|失去意识|失去意識|叫不醒|没有反应|沒有反應|抽搐|癫痫发作|癲癇發作|"
+        r"瘫软|癱軟|软趴趴|軟趴趴|浑身无力|渾身無力)",
+        r"(?:没有脉搏|沒有脈搏|无脉搏|無脈搏|摸不到.{0,8}(?:脉搏|脈搏)|"
+        r"没有心跳|沒有心跳|心跳停止|心脏停止跳动|心臟停止跳動)",
+        r"(?:严重出血|嚴重出血|流血不止|误食|誤食|误吞|誤吞|中毒|过量服药|過量服藥|"
+        r"(?:吞|喝|吃|咽)(?:下)?(?:了)?[^，。！？,.!?]{0,8}(?:漂白水|漂白剂|漂白劑|清洁剂|清潔劑|洗衣液|"
+        r"防冻液|防凍液|纽扣电池|紐扣電池|鈕扣電池|扣式电池|扣式電池|"
+        r"一瓶药|一瓶藥|整瓶药|整瓶藥|一瓶药片|一瓶藥片))",
         r"(?:自杀|自殺|伤害自己|傷害自己|伤害他人|傷害他人)",
         r"(?:立即|马上|立刻|趕快|赶快).{0,6}(?:急诊|急診|就医|就醫|打120|拨打120|撥打120)",
-        r"\b(?:can(?:not|'t) breathe|trouble breathing|choking|unconscious|unresponsive|"
+        r"\b(?:can(?:not|'t) breathe|isn(?:'t|t) breathing|is not breathing|not breathing|"
+        r"stopp?ed breathing|trouble breathing|choking|unconscious|unresponsive|limp|"
         r"seizure|severe bleeding|poison(?:ed|ing)?|overdose|self[- ]harm|suicid(?:e|al))\b",
+        r"\b(?:won't|will not|doesn't|does not) wake up\b|"
+        r"\b(?:can(?:not|'t)|could(?:not|n't)) wake (?:him|her|them|the baby|my baby|my child) up\b",
+        r"\b(?:no pulse|has no pulse|doesn't have a pulse|does not have a pulse|"
+        r"cannot feel (?:a|the|his|her) pulse|can't feel (?:a|the|his|her) pulse)\b",
+        r"\b(?:swallow(?:ed|ing)?|drank|drunk|ingest(?:ed|ing)?|ate|took|got into)\b"
+        r"[^.?!\n]{0,40}\b(?:bleach|cleaner|cleaning fluid|detergent|chemical|"
+        r"antifreeze|button batter(?:y|ies)|coin batter(?:y|ies)|"
+        r"bottle of pills?|whole bottle of (?:medicine|pills?))\b",
+        r"\b(?:turn(?:ed|ing)?|look(?:ed|ing|s)?)\s+(?:blue|bluish)\b|"
+        r"\b(?:lips?|face|skin)\s+(?:is|are|look|looks|looked|turned)\s+(?:blue|bluish)\b|"
+        r"\b(?:blue|bluish)\b[^.?!\n]{0,24}\blimp\b|"
+        r"\blimp\b[^.?!\n]{0,24}\b(?:blue|bluish)\b",
         r"\b(?:call 911|emergency room|seek immediate medical (?:help|care)|medical emergency)\b",
     )
 )
@@ -2167,7 +2242,12 @@ def _recommendation_activity_key(row: dict) -> tuple[str, str]:
     return (str(row.get("created_at") or ""), str(row.get("id") or ""))
 
 
-def _recent_main_chat_from_memory(uid: str, limit: int = 12) -> dict:
+def _recent_main_chat_from_memory(
+    uid: str,
+    limit: int = 12,
+    preferred_session_id: Optional[str] = None,
+    through_created_at: Optional[str] = None,
+) -> dict:
     """Resolve the user's real main conversation without trusting a client ID."""
 
     sessions = [
@@ -2190,7 +2270,30 @@ def _recent_main_chat_from_memory(uid: str, limit: int = 12) -> dict:
         key=_recommendation_activity_key,
         default=None,
     )
-    if last_user_message:
+    preferred_session = next(
+        (session for session in sessions if session.get("id") == preferred_session_id),
+        None,
+    )
+    if preferred_session:
+        session = preferred_session
+        preferred_messages = [
+            message
+            for message in _messages.get(session["id"], [])
+            if not through_created_at
+            or str(message.get("created_at") or "") <= through_created_at
+        ]
+        last_user_message = next(
+            (
+                message
+                for message in reversed(
+                    sorted(preferred_messages, key=_recommendation_activity_key)
+                )
+                if message.get("role") == "user"
+                and str(message.get("text") or "").strip()
+            ),
+            None,
+        )
+    elif last_user_message:
         session = next(
             item for item in sessions if item["id"] == last_user_message.get("session_id")
         )
@@ -2198,7 +2301,12 @@ def _recent_main_chat_from_memory(uid: str, limit: int = 12) -> dict:
         session = max(sessions, key=_recommendation_activity_key)
 
     messages = sorted(
-        _messages.get(session["id"], []),
+        [
+            message
+            for message in _messages.get(session["id"], [])
+            if not through_created_at
+            or str(message.get("created_at") or "") <= through_created_at
+        ],
         key=_recommendation_activity_key,
     )[-limit:]
     safe_messages = [
@@ -2215,10 +2323,16 @@ def _recent_main_chat_from_memory(uid: str, limit: int = 12) -> dict:
         "state": "ready" if last_user_message else "no_user_message",
         "session_id": session.get("id"),
         "messages": safe_messages,
+        "context_created_at": (safe_messages[-1].get("created_at") if safe_messages else None),
     }
 
 
-async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
+async def _load_recent_main_chat(
+    uid: str,
+    limit: int = 12,
+    preferred_session_id: Optional[str] = None,
+    through_created_at: Optional[str] = None,
+) -> dict:
     """Load recent main-chat context scoped to ``uid``.
 
     Card-linked conversations are intentionally excluded.  When Supabase is
@@ -2228,12 +2342,16 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
 
     privacy = await _db_get_privacy(uid, fail_closed=True)
     preferred_locale = _normalize_preferred_locale(privacy.get("language"))
+    external_research_allowed = bool(
+        privacy.get("allow_external_content_research") is True
+    )
     if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
         return {
             "state": "unavailable",
             "session_id": None,
             "messages": [],
             "preferred_locale": preferred_locale,
+            "external_research_allowed": False,
         }
     if privacy.get("allow_history_training") is False:
         return {
@@ -2241,13 +2359,17 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
             "session_id": None,
             "messages": [],
             "preferred_locale": preferred_locale,
+            "external_research_allowed": False,
         }
 
     sb = _get_supabase()
     if not sb:
         return {
-            **_recent_main_chat_from_memory(uid, limit),
+            **_recent_main_chat_from_memory(
+                uid, limit, preferred_session_id, through_created_at
+            ),
             "preferred_locale": preferred_locale,
+            "external_research_allowed": external_research_allowed,
         }
 
     try:
@@ -2268,6 +2390,7 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
                 "session_id": None,
                 "messages": [],
                 "preferred_locale": preferred_locale,
+                "external_research_allowed": external_research_allowed,
             }
 
         session_ids = [session["id"] for session in main_sessions]
@@ -2282,7 +2405,17 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
             .execute()
         )
         last_user_message = (last_user_res.data or [None])[0]
-        if last_user_message:
+        preferred_session = next(
+            (
+                item
+                for item in main_sessions
+                if item.get("id") == preferred_session_id
+            ),
+            None,
+        )
+        if preferred_session:
+            session = preferred_session
+        elif last_user_message:
             session = next(
                 item
                 for item in main_sessions
@@ -2291,21 +2424,35 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
         else:
             session = max(main_sessions, key=_recommendation_activity_key)
 
-        message_res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_messages")
-            .select("id,session_id,role,text,created_at")
-            .eq("session_id", session["id"])
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        def load_context_messages():
+            query = (
+                sb.table("chat_messages")
+                .select("id,session_id,role,text,created_at")
+                .eq("session_id", session["id"])
+            )
+            if through_created_at:
+                query = query.lte("created_at", through_created_at)
+            return (
+                query.order("created_at", desc=True)
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+
+        message_res = await anyio.to_thread.run_sync(load_context_messages)
         messages = list(reversed(message_res.data or []))
+        session_has_user_message = any(
+            message.get("role") == "user"
+            and str(message.get("text") or "").strip()
+            for message in messages
+        )
         return {
-            "state": "ready" if last_user_message else "no_user_message",
+            "state": "ready" if session_has_user_message else "no_user_message",
             "session_id": session.get("id"),
             "messages": messages,
+            "context_created_at": (messages[-1].get("created_at") if messages else None),
             "preferred_locale": preferred_locale,
+            "external_research_allowed": external_research_allowed,
         }
     except Exception as exc:
         print(f"[warn] personalized feed conversation lookup failed: {exc}")
@@ -2314,6 +2461,7 @@ async def _load_recent_main_chat(uid: str, limit: int = 12) -> dict:
             "session_id": None,
             "messages": [],
             "preferred_locale": preferred_locale,
+            "external_research_allowed": False,
         }
 
 
@@ -2408,6 +2556,116 @@ _CONTEXT_REJECTION_MARKERS = (
 _ACKNOWLEDGEMENT_ONLY = frozenset(
     {"谢谢", "谢谢你", "好的", "好", "明白了", "知道了", "收到", "ok", "okay", "thanks", "thank you"}
 )
+_DYNAMIC_RESEARCH_CARD_PREFIX = "learn_conversation_"
+
+
+def _conversation_topic_excerpt(messages: list[dict], limit: int = 84) -> str:
+    """Return a short, redacted description of the latest real user topic."""
+
+    latest = next(
+        (
+            str(message.get("text") or "").strip()
+            for message in reversed(messages)
+            if message.get("role") == "user" and str(message.get("text") or "").strip()
+        ),
+        "",
+    )
+    topic = " ".join(redact_conversation_text(latest, 240).split())
+    topic = topic.strip(" \t\r\n，。！？,.!?；;：:")
+    if len(topic) > limit:
+        topic = f"{topic[: limit - 1].rstrip()}…"
+    return topic
+
+
+def _is_dynamic_topic_candidate(topic: str) -> bool:
+    normalized = re.sub(r"[\s，。！？,.!?]+", "", topic.casefold())
+    normalized_acknowledgements = {
+        re.sub(r"[\s，。！？,.!?]+", "", value.casefold())
+        for value in _ACKNOWLEDGEMENT_ONLY
+    }
+    if not normalized or normalized in normalized_acknowledgements:
+        return False
+    # “换个话题” alone contains no topic to research.  Once the user names a
+    # concrete new subject, the longer message remains eligible.
+    if len(topic) <= 60 and any(
+        marker in topic.casefold() for marker in _CONTEXT_REJECTION_MARKERS
+    ):
+        return False
+    return True
+
+
+def _dynamic_research_card_id(
+    *,
+    session_id: Optional[str],
+    context_created_at: Optional[str],
+    topic: str,
+) -> str:
+    """Build an addressable ID without placing conversation text in the URL."""
+
+    normalized_topic = " ".join(topic.casefold().split())
+    material = "\n".join(
+        (session_id or "no-session", context_created_at or "no-time", normalized_topic)
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
+    return f"{_DYNAMIC_RESEARCH_CARD_PREFIX}{digest}"
+
+
+def _build_dynamic_research_card(
+    messages: list[dict],
+    *,
+    session_id: Optional[str],
+    context_created_at: Optional[str],
+    include_detail: bool,
+) -> Optional[dict]:
+    """Create a transient card for a real topic outside the reviewed library.
+
+    A dynamic card deliberately has no static resources.  Presenting a sleep,
+    emotion or development bundle under an unrelated topic (for example,
+    Montessori school choice) is more misleading than showing a bounded
+    research state.  The research endpoint only publishes a complete verified
+    3x2 bundle; the frontend hides category shelves until that bundle exists.
+    """
+
+    topic = _conversation_topic_excerpt(messages)
+    if not _is_dynamic_topic_candidate(topic):
+        return None
+    card_id = _dynamic_research_card_id(
+        session_id=session_id,
+        context_created_at=context_created_at,
+        topic=topic,
+    )
+    card = {
+        "id": card_id,
+        "topic": topic,
+        "topic_label": topic,
+        "type": "tip",
+        "type_label": "对话精选",
+        "cta": "为这次对话检索内容",
+        "publisher": "NURI 个性化内容研究",
+        "title": f"继续了解：{topic}",
+        "summary": (
+            "NURI 会依据这次对话，分别核验权威内容、精彩解读和真实家庭案例。"
+        ),
+        "personalization_reason": f"因为你最近和 NURI 聊到“{topic}”",
+        "is_conversation_match": True,
+        "is_dynamic_research_card": True,
+        "related_session_id": session_id,
+        "context_created_at": context_created_at,
+    }
+    if include_detail:
+        card.update(
+            {
+                "body": (
+                    "这是根据你刚刚提出的具体问题建立的学习主题。完成外部检索后，"
+                    "这里只会展示六项通过来源、语言和内容核验的结果：三个类别，"
+                    "每类各一篇文章和一个视频。"
+                ),
+                "hook_line": "让 NURI 围绕这次真实对话继续筛选。",
+                "tags": ["#对话相关", "#个性化检索"],
+                "resources": [],
+            }
+        )
+    return card
 
 
 def _term_occurrences(text: str, term: str) -> list[tuple[int, int]]:
@@ -2492,6 +2750,7 @@ def _rank_learning_content(
     messages: list[dict],
     count: int = 4,
     session_id: Optional[str] = None,
+    context_created_at: Optional[str] = None,
     context_state: str = "ready",
     include_detail: bool = False,
 ) -> tuple[list[dict], bool]:
@@ -2603,18 +2862,92 @@ def _rank_learning_content(
             }
         )
         selected.append(public_card)
+
+    if not has_conversation_match and context_state == "ready" and user_texts:
+        dynamic_card = _build_dynamic_research_card(
+            messages,
+            session_id=session_id,
+            context_created_at=context_created_at,
+            include_detail=include_detail,
+        )
+        if dynamic_card:
+            selected = [dynamic_card, *selected[: max(0, count - 1)]]
+            has_conversation_match = True
     return selected, has_conversation_match
+
+
+def _resource_blueprint() -> dict[str, list[str]]:
+    return {category: ["article", "video"] for category in CONTENT_CATEGORIES}
+
+
+def _research_safety_identifier(uid: str) -> str:
+    """Create a stable, privacy-preserving API safety identifier."""
+
+    digest = hashlib.sha256(f"nuri-content:{uid}".encode("utf-8")).hexdigest()
+    return f"nuri_{digest[:32]}"
+
+
+def _context_requires_urgent_handoff(context: dict) -> bool:
+    """Keep emergencies out of learning-content research."""
+
+    recent_text = "\n".join(
+        str(message.get("text") or "")
+        for message in (context.get("messages") or [])[-6:]
+    )
+    return bool(recent_text and _urgent_task_suppressed(recent_text))
+
+
+async def _research_card_detail_resources(
+    *,
+    card: dict,
+    context: dict,
+    uid: Optional[str],
+) -> Optional[dict]:
+    """Run one bounded web-research pass for a conversation-matched detail page."""
+
+    # Safety is evaluated before consent/provider eligibility.  Emergency text
+    # must never be used for external research, regardless of the user's saved
+    # privacy setting or the availability of an OpenAI client.
+    if _context_requires_urgent_handoff(context):
+        return None
+    if (
+        not uid
+        or not content_research_oai
+        or not context.get("external_research_allowed")
+        or context.get("state") != "ready"
+        or not context.get("messages")
+        or not card.get("is_conversation_match")
+    ):
+        return None
+    try:
+        return await anyio.to_thread.run_sync(
+            lambda: research_learning_resources(
+                content_research_oai,
+                card=card,
+                messages=context.get("messages") or [],
+                preferred_locale=str(context.get("preferred_locale") or "zh-CN"),
+                model=OPENAI_CONTENT_RESEARCH_MODEL,
+                safety_identifier=_research_safety_identifier(uid),
+            ),
+            limiter=content_research_limiter,
+        )
+    except Exception as exc:
+        # Dynamic research is an enhancement.  A provider outage, timeout, bad
+        # result or incomplete 3x2 bundle must never break the reviewed detail.
+        print(f"[warn] conversation content research fell back: {type(exc).__name__}")
+        return None
 
 
 @api.get("/feed/personalized")
 async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
-    """Return stable learning recommendations tied to this parent's main chat."""
+    """Return learning topics tied to this parent's real main conversation."""
 
     context = await _load_recent_main_chat(uid)
     items, used_conversation = _rank_learning_content(
         context.get("messages") or [],
         count=max(1, min(count, 6)),
         session_id=context.get("session_id"),
+        context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
     )
     first_match = next(
@@ -2629,6 +2962,44 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
         mode = "default_unavailable"
     else:
         mode = "default"
+    preferred_locale = str(context.get("preferred_locale") or "zh-CN")
+    urgent_suppressed = _context_requires_urgent_handoff(context)
+    for item in items:
+        if item.get("is_conversation_match"):
+            item["context_created_at"] = context.get("context_created_at")
+        reviewed = LEARNING_CONTENT_BY_ID.get(item["id"], {}).get("resources", [])
+        item["resource_summary"] = summarize_resource_slots(reviewed, preferred_locale)
+        item["resource_blueprint"] = _resource_blueprint()
+        if item.get("is_dynamic_research_card"):
+            if urgent_suppressed:
+                item["curation_mode"] = "dynamic_research_suppressed"
+                item["resource_status"] = "urgent_suppressed"
+            elif not content_research_oai:
+                item["curation_mode"] = "dynamic_research_unavailable"
+                item["resource_status"] = "unavailable"
+            elif not context.get("external_research_allowed"):
+                item["curation_mode"] = "dynamic_research_consent_required"
+                item["resource_status"] = "consent_required"
+            else:
+                item["curation_mode"] = "conversation_web_research"
+                item["resource_status"] = "research_on_open"
+        else:
+            if urgent_suppressed:
+                item["curation_mode"] = "research_suppressed"
+                item["resource_status"] = "urgent_suppressed"
+            else:
+                item["curation_mode"] = (
+                    "conversation_web_research"
+                    if item.get("is_conversation_match")
+                    and content_research_oai
+                    and context.get("external_research_allowed")
+                    else "reviewed_library"
+                )
+                item["resource_status"] = (
+                    "research_on_open"
+                    if item["curation_mode"] == "conversation_web_research"
+                    else "reviewed"
+                )
     return {
         "items": items,
         "personalization_mode": mode,
@@ -2711,33 +3082,80 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
     return new_cards
 
 @api.get("/feed/{card_id}/detail")
-async def get_card_detail(card_id: str, uid: Optional[str] = Depends(_opt_uid)):
-    if card_id in LEARNING_CONTENT_BY_ID:
+async def get_card_detail(
+    card_id: str,
+    session_id: Optional[str] = None,
+    context_created_at: Optional[str] = None,
+    uid: Optional[str] = Depends(_opt_uid),
+):
+    is_dynamic_request = card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+    if card_id in LEARNING_CONTENT_BY_ID or is_dynamic_request:
         if uid:
-            context = await _load_recent_main_chat(uid)
+            context = await _load_recent_main_chat(
+                uid,
+                preferred_session_id=session_id,
+                through_created_at=context_created_at,
+            )
         else:
             context = {
                 "state": "no_history",
                 "session_id": None,
                 "messages": [],
                 "preferred_locale": "zh-CN",
+                "external_research_allowed": False,
             }
         ranked, _ = _rank_learning_content(
             context.get("messages") or [],
             count=len(LEARNING_CONTENT_CARDS),
             session_id=context.get("session_id"),
+            context_created_at=context.get("context_created_at"),
             context_state=context.get("state", "no_history"),
             include_detail=True,
         )
-        card = next(item for item in ranked if item["id"] == card_id)
+        card = next((item for item in ranked if item["id"] == card_id), None)
+        if not card:
+            raise HTTPException(404, "card not found")
         trusted_resources = [
             resource
             for resource in card.get("resources", [])
             if is_trusted_resource_url(str(resource.get("url") or ""))
         ]
+        preferred_locale = str(context.get("preferred_locale") or "zh-CN")
         card["resources"] = order_learning_resources(
             trusted_resources,
-            str(context.get("preferred_locale") or "zh-CN"),
+            preferred_locale,
+        )
+        # Return the reviewed library immediately.  The client then calls the
+        # research endpoint and can show these resources while web search runs.
+        urgent_suppressed = _context_requires_urgent_handoff(context)
+        research_eligible = bool(
+            uid
+            and content_research_oai
+            and not urgent_suppressed
+            and context.get("external_research_allowed")
+            and context.get("state") == "ready"
+            and context.get("messages")
+            and card.get("is_conversation_match")
+        )
+        if urgent_suppressed:
+            card["research_status"] = "urgent_suppressed"
+        elif research_eligible:
+            card["research_status"] = "pending"
+        elif (
+            uid
+            and card.get("is_conversation_match")
+            and content_research_oai
+            and not context.get("external_research_allowed")
+        ):
+            card["research_status"] = "consent_required"
+        elif card.get("is_dynamic_research_card"):
+            card["research_status"] = "unavailable"
+        else:
+            card["research_status"] = "reviewed_fallback"
+        card["preferred_locale"] = preferred_locale
+        card["resource_blueprint"] = _resource_blueprint()
+        card["resource_summary"] = summarize_resource_slots(
+            card["resources"], preferred_locale
         )
         return card
 
@@ -2754,6 +3172,85 @@ async def get_card_detail(card_id: str, uid: Optional[str] = Depends(_opt_uid)):
                 }
             return {**c, **extra}
     raise HTTPException(404, "card not found")
+
+
+@api.post("/feed/{card_id}/research")
+async def get_card_research(
+    card_id: str,
+    session_id: Optional[str] = None,
+    context_created_at: Optional[str] = None,
+    uid: str = Depends(_req_uid),
+):
+    """Return a complete conversation-aware 3x2 bundle or a safe fallback state."""
+
+    if (
+        card_id not in LEARNING_CONTENT_BY_ID
+        and not card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+    ):
+        raise HTTPException(404, "card not found")
+    context = await _load_recent_main_chat(
+        uid,
+        preferred_session_id=session_id,
+        through_created_at=context_created_at,
+    )
+    # This gate deliberately precedes the external-research consent branch.
+    # An emergency always returns the same non-research state, whether consent
+    # is on or off, and no provider call is attempted.
+    if _context_requires_urgent_handoff(context):
+        return {"research_status": "urgent_suppressed"}
+    ranked, _ = _rank_learning_content(
+        context.get("messages") or [],
+        count=len(LEARNING_CONTENT_CARDS),
+        session_id=context.get("session_id"),
+        context_created_at=context.get("context_created_at"),
+        context_state=context.get("state", "no_history"),
+        include_detail=True,
+    )
+    card = next((item for item in ranked if item["id"] == card_id), None)
+    if not card:
+        raise HTTPException(404, "card not found")
+    if not card.get("is_conversation_match"):
+        return {"research_status": "reviewed_fallback"}
+    if not context.get("external_research_allowed"):
+        return {"research_status": "consent_required"}
+    research = await _research_card_detail_resources(card=card, context=context, uid=uid)
+    if not research:
+        if card.get("is_dynamic_research_card"):
+            return {
+                "resources": [],
+                "research_status": "unavailable",
+                "resource_blueprint": _resource_blueprint(),
+                "resource_summary": summarize_resource_slots(
+                    [], str(context.get("preferred_locale") or "zh-CN")
+                ),
+            }
+        return {"research_status": "reviewed_fallback"}
+    preferred_locale = str(context.get("preferred_locale") or "zh-CN")
+    resources = research["resources"]
+    dynamic_count = int(research.get("dynamic_resource_count") or 0)
+    if card.get("is_dynamic_research_card") and dynamic_count != 6:
+        # There is no topic-appropriate reviewed fallback for a novel subject.
+        # Never relabel unrelated library resources as personalized results.
+        return {
+            "resources": [],
+            "research_status": "unavailable",
+            "resource_blueprint": _resource_blueprint(),
+            "resource_summary": summarize_resource_slots([], preferred_locale),
+        }
+    research_status = (
+        "fresh" if dynamic_count == 6 else "hybrid" if dynamic_count else "reviewed_fallback"
+    )
+    return {
+        "resources": resources,
+        "research_status": research_status,
+        "research_query": research.get("query"),
+        "research_editor_note": research.get("editor_note"),
+        "research_source_count": research.get("cited_source_count", 0),
+        "dynamic_resource_count": dynamic_count,
+        "reviewed_resource_count": int(research.get("reviewed_resource_count") or 0),
+        "resource_blueprint": _resource_blueprint(),
+        "resource_summary": summarize_resource_slots(resources, preferred_locale),
+    }
 
 # ── Collections ───────────────────────────────────────────────────────────────
 MAX_COLLECTIONS = 12

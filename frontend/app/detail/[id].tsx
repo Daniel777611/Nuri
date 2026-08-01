@@ -47,10 +47,19 @@ type LearningResource = {
   title: string;
   publisher: string;
   language?: string;
+  spoken_language?: "mandarin" | "english" | "not_applicable";
+  spoken_language_evidence?: string;
+  spoken_language_evidence_url?: string;
   locales?: string[];
   description?: string;
   source_tier?: "authority" | "curated";
-  selection_basis?: "official" | "expert_reviewed" | "audience_popular" | "expert_and_audience";
+  content_category?: "authority" | "featured" | "case";
+  selection_basis?:
+    | "official"
+    | "expert_reviewed"
+    | "audience_popular"
+    | "expert_and_audience"
+    | "lived_experience";
   trust_note?: string;
   recognition?: string;
   selection_reason?: string;
@@ -59,51 +68,77 @@ type LearningResource = {
 };
 
 type ResourceSourceTier = NonNullable<LearningResource["source_tier"]>;
+type ResourceContentCategory = NonNullable<LearningResource["content_category"]>;
 
-const RESOURCE_GROUPS: {
+const RESOURCE_CATEGORIES: {
   key: string;
-  sourceTier: ResourceSourceTier;
-  kind: LearningResource["kind"];
+  category: ResourceContentCategory;
   eyebrow: string;
   title: string;
   description: string;
 }[] = [
   {
-    key: "authority-article",
-    sourceTier: "authority",
-    kind: "article",
+    key: "authority",
+    category: "authority",
     eyebrow: "事实与安全底线",
-    title: "权威机构 · 文章",
-    description: "政府、大学、医院、医学组织与专业期刊的原始内容。",
+    title: "权威来源",
+    description: "政府、大学、医院、医学组织与专业期刊发布的文章和视频。",
   },
   {
-    key: "curated-article",
-    sourceTier: "curated",
-    kind: "article",
+    key: "featured",
+    category: "featured",
     eyebrow: "专家与读者精选",
-    title: "优质文章",
-    description: "专业团队审核、写得清楚，并适合家庭直接使用。",
+    title: "优秀精彩",
+    description: "专业可信、讲解清楚，并适合家庭直接使用的文章和视频。",
   },
   {
-    key: "authority-video",
-    sourceTier: "authority",
-    kind: "video",
-    eyebrow: "机构正式讲解",
-    title: "权威机构 · 视频",
-    description: "由权威机构或其专业人员制作和发布。",
-  },
-  {
-    key: "curated-video",
-    sourceTier: "curated",
-    kind: "video",
-    eyebrow: "专家与用户精选",
-    title: "优质视频",
-    description: "专业可信、容易看懂，并具备真实家庭实操价值。",
+    key: "case",
+    category: "case",
+    eyebrow: "真实经验与实践参考",
+    title: "典型案例",
+    description: "用具体家庭情境说明问题、过程和可借鉴做法的文章和视频。",
   },
 ];
 
 function resourceSourceTier(resource: LearningResource): ResourceSourceTier {
-  return resource.source_tier === "curated" ? "curated" : "authority";
+  return resource.source_tier === "authority" ? "authority" : "curated";
+}
+
+function resourceContentCategory(resource: LearningResource): ResourceContentCategory {
+  if (
+    resource.content_category === "authority" ||
+    resource.content_category === "featured" ||
+    resource.content_category === "case"
+  ) {
+    return resource.content_category;
+  }
+  return resourceSourceTier(resource) === "curated" ? "featured" : "authority";
+}
+
+function resourceCategoryLabel(resource: LearningResource): string {
+  const category = resourceContentCategory(resource);
+  if (category === "featured") return "优秀精彩";
+  if (category === "case") return "典型案例";
+  return "权威来源";
+}
+
+function resourceKindLabel(resource: LearningResource): string {
+  return resource.kind === "video" ? "视频" : "文章";
+}
+
+function resourceBadgeLabel(resource: LearningResource): string {
+  const category = resourceContentCategory(resource);
+  if (category === "case") return "真实案例";
+  if (category === "featured") return "专业 / 口碑精选";
+  return "权威发布";
+}
+
+function resourceSelectionBasis(resource: LearningResource) {
+  if (resource.selection_basis) return resource.selection_basis;
+  const category = resourceContentCategory(resource);
+  if (category === "case") return "lived_experience";
+  if (category === "featured") return "expert_and_audience";
+  return "official";
 }
 
 function resourceLocales(resource: LearningResource): ResourceLocale[] {
@@ -119,13 +154,22 @@ function resourceLocales(resource: LearningResource): ResourceLocale[] {
 export default function Detail() {
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const {
+    id,
+    session_id: sessionId,
+    context_created_at: contextCreatedAt,
+  } = useLocalSearchParams<{
+    id: string;
+    session_id?: string;
+    context_created_at?: string;
+  }>();
   const [card, setCard] = useState<any>(null);
   const [loadError, setLoadError] = useState(false);
   const [reloadSequence, setReloadSequence] = useState(0);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [resourceLocale, setResourceLocale] = useState<ResourceLocale | null>(null);
+  const [askBarHeight, setAskBarHeight] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const frameWidth = Math.min(viewportWidth, DETAIL_FRAME_WIDTH);
@@ -157,13 +201,36 @@ export default function Detail() {
     setLoadError(false);
 
     api
-      .getCardDetail(id as string)
+      .getCardDetail(id as string, sessionId, contextCreatedAt)
       .then((detail: any) => {
         if (!active) return;
         setCard(detail);
         api
           .trackEvent("detail_view", { card_id: id, card_type: detail.type })
           .catch(() => {});
+        if (detail.research_status === "pending") {
+          api
+            .getCardResearch(id as string, sessionId, contextCreatedAt)
+            .then((research: any) => {
+              if (!active) return;
+              setCard((current: any) =>
+                current ? { ...current, ...research } : current
+              );
+            })
+            .catch(() => {
+              if (!active) return;
+              setCard((current: any) =>
+                current
+                  ? {
+                      ...current,
+                      research_status: current.is_dynamic_research_card
+                        ? "unavailable"
+                        : "reviewed_fallback",
+                    }
+                  : current
+              );
+            });
+        }
       })
       .catch(() => {
         if (active) setLoadError(true);
@@ -180,7 +247,7 @@ export default function Detail() {
     return () => {
       active = false;
     };
-  }, [id, reloadSequence]);
+  }, [contextCreatedAt, id, reloadSequence, sessionId]);
 
   useEffect(() => {
     const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
@@ -235,7 +302,8 @@ export default function Detail() {
         resource_kind: resource.kind,
         resource_locale: resourceLocales(resource)[0],
         source_tier: resourceSourceTier(resource),
-        selection_basis: resource.selection_basis || "official",
+        content_category: resourceContentCategory(resource),
+        selection_basis: resourceSelectionBasis(resource),
       })
       .catch(() => {});
     try {
@@ -285,13 +353,15 @@ export default function Detail() {
     const visibleResources = selectedResourceLocale
       ? resources.filter((resource) => resourceLocales(resource).includes(selectedResourceLocale))
       : resources;
-    const visibleResourceGroups = RESOURCE_GROUPS.map((group) => ({
+    const visibleResourceGroups = RESOURCE_CATEGORIES.map((group) => ({
       ...group,
-      resources: visibleResources.filter(
-        (resource) =>
-          resourceSourceTier(resource) === group.sourceTier && resource.kind === group.kind
-      ),
-    })).filter((group) => group.resources.length > 0);
+      resources: visibleResources
+        .filter((resource) => resourceContentCategory(resource) === group.category)
+        .sort((left, right) => {
+          if (left.kind === right.kind) return 0;
+          return left.kind === "article" ? -1 : 1;
+        }),
+    }));
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -343,13 +413,84 @@ export default function Detail() {
         <Text style={styles.sectionTitle}>NURI 内容导读</Text>
         <Text style={styles.body}>{card.body}</Text>
 
-        {resources.length ? (
+        {resources.length || card.research_status ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
             <Text style={styles.sectionTitle}>来源与内容目录</Text>
-            <Text style={styles.resourcesIntro}>
-              NURI 先按来源与内容形式分类。点击具体条目后，才会打开外部文章或视频。
-            </Text>
-            {availableResourceLocales.length > 1 ? (
+            {card.research_status === "pending" ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                <ActivityIndicator size="small" color="#4F4B9C" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>正在根据最近对话全网检索</Text>
+                  <Text style={styles.researchStatusText}>
+                    {resources.length
+                      ? "你可以先阅读当前的审核资料；六项个性化内容核验完成后会自动更新。"
+                      : "NURI 正在核验与你们刚才话题直接相关的来源；三类文章和视频全部准备好后才会一次性显示。"}
+                  </Text>
+                </View>
+              </View>
+            ) : card.research_status === "fresh" || card.research_status === "hybrid" ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                <Ionicons name="search" size={16} color="#4F4B9C" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>
+                    {card.research_status === "fresh"
+                      ? "根据最近对话为你检索"
+                      : "实时检索与审核资料组合"}
+                  </Text>
+                  <Text style={styles.researchStatusText}>
+                    {card.research_status === "hybrid"
+                      ? `本次采用 ${card.dynamic_resource_count || 0} 项实时核验结果，其余由人工审核资料补齐；不合格链接没有展示。`
+                      : card.research_editor_note ||
+                        "NURI 已结合你们刚聊到的情境，从公开网络中核验并整理这组内容。"}
+                  </Text>
+                </View>
+              </View>
+            ) : card.research_status === "reviewed_fallback" ||
+              card.research_status === "unavailable" ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                <Ionicons name="shield-checkmark-outline" size={17} color="#4F4B9C" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>
+                    {resources.length ? "当前展示审核资料库" : "暂未找到完整且可核验的内容"}
+                  </Text>
+                  <Text style={styles.researchStatusText}>
+                    {resources.length
+                      ? "实时检索暂未取得完整且全部通过核验的六项结果，因此没有展示不确定链接。"
+                      : "本次检索没有凑齐三类文章和视频，因此暂不展示空目录或不确定链接；稍后重新打开即可再试。"}
+                  </Text>
+                </View>
+              </View>
+            ) : card.research_status === "consent_required" ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                <Ionicons name="lock-closed-outline" size={17} color="#4F4B9C" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>外部个性化检索尚未开启</Text>
+                  <Text style={styles.researchStatusText}>
+                    {resources.length
+                      ? "当前六项均来自人工审核资料库。只有你在“我的”隐私设置中明确开启后，NURI 才会使用脱敏后的对话主题检索公开网页。"
+                      : "这个新话题尚未对外检索。只有你在“我的”隐私设置中明确开启后，NURI 才会使用结构化、脱敏后的主题信息检索公开网页。"}
+                  </Text>
+                </View>
+              </View>
+            ) : card.research_status === "urgent_suppressed" ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                <Ionicons name="alert-circle-outline" size={17} color={colors.error} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>紧急情境不会启动内容检索</Text>
+                  <Text style={styles.researchStatusText}>
+                    {resources.length
+                      ? "请优先联系当地急救、医疗或紧急支持服务；这里仅保留审核资料，不用文章或案例延误求助。"
+                      : "请优先联系当地急救、医疗或紧急支持服务；NURI 不会在此显示文章或案例，以免延误求助。"}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+            {resources.length ? (
+              <Text style={styles.resourcesIntro}>
+                NURI 按权威来源、优秀精彩与典型案例整理内容，并明确标注文章或视频。点击具体条目后，才会打开外部内容。
+              </Text>
+            ) : null}
+            {resources.length && availableResourceLocales.length > 1 ? (
               <View style={styles.resourceLocaleTabs} testID="detail-resource-locale-tabs">
                 {availableResourceLocales.map((option) => {
                   const selected = option.value === selectedResourceLocale;
@@ -357,6 +498,7 @@ export default function Detail() {
                     <Pressable
                       key={option.value}
                       onPress={() => setResourceLocale(option.value)}
+                      hitSlop={6}
                       style={[
                         styles.resourceLocaleTab,
                         selected && styles.resourceLocaleTabSelected,
@@ -378,7 +520,7 @@ export default function Detail() {
                 })}
               </View>
             ) : null}
-            {visibleResourceGroups.map((group) => (
+            {resources.length ? visibleResourceGroups.map((group) => (
               <View
                 key={group.key}
                 style={styles.resourceGroup}
@@ -400,7 +542,7 @@ export default function Detail() {
                   </View>
                 </View>
 
-                {group.resources.map((resource) => (
+                {group.resources.length ? group.resources.map((resource) => (
                   <Pressable
                     key={resource.id}
                     onPress={() => openResource(resource)}
@@ -409,8 +551,8 @@ export default function Detail() {
                       pressed && styles.resourceCardPressed,
                     ]}
                     accessibilityRole="link"
-                    accessibilityLabel={`${resourceSourceTier(resource) === "authority" ? "权威来源" : "精选内容"}，${resource.language ? `${resource.language}，` : ""}${resource.kind === "video" ? "视频" : "文章"}：${resource.title}，来源：${resource.publisher}`}
-                    accessibilityHint={`将在新标签页打开外部${resource.kind === "video" ? "视频" : "文章"}`}
+                    accessibilityLabel={`${resourceCategoryLabel(resource)}，${resource.language ? `${resource.language}，` : ""}${resourceKindLabel(resource)}：${resource.title}，来源：${resource.publisher}`}
+                    accessibilityHint={`将在新标签页打开外部${resourceKindLabel(resource)}`}
                     testID={`detail-resource-${resource.id}`}
                   >
                     <View
@@ -429,6 +571,21 @@ export default function Detail() {
                       <View style={styles.resourceMetaRow}>
                         <View
                           style={[
+                            styles.resourceKindBadge,
+                            resource.kind === "video" && styles.videoResourceKindBadge,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.resourceKindBadgeText,
+                              resource.kind === "video" && styles.videoResourceKindBadgeText,
+                            ]}
+                          >
+                            {resourceKindLabel(resource)}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
                             styles.resourceTierBadge,
                             resourceSourceTier(resource) === "curated" &&
                               styles.curatedResourceTierBadge,
@@ -441,9 +598,7 @@ export default function Detail() {
                                 styles.curatedResourceTierBadgeText,
                             ]}
                           >
-                            {resourceSourceTier(resource) === "authority"
-                              ? "权威来源"
-                              : "精选内容"}
+                            {resourceBadgeLabel(resource)}
                           </Text>
                         </View>
                         {resource.language ? (
@@ -454,6 +609,12 @@ export default function Detail() {
                       <Text style={styles.resourcePublisher}>{resource.publisher}</Text>
                       {resource.description ? (
                         <Text style={styles.resourceDescription}>{resource.description}</Text>
+                      ) : null}
+                      {resource.kind === "video" && resource.spoken_language_evidence ? (
+                        <Text style={styles.resourceLanguageEvidence}>
+                          <Text style={styles.resourceTrustNoteLabel}>口语核验：</Text>
+                          {resource.spoken_language_evidence}
+                        </Text>
                       ) : null}
                       {resource.recognition ? (
                         <View style={styles.resourceEvidenceRow}>
@@ -495,9 +656,15 @@ export default function Detail() {
                       </View>
                     </View>
                   </Pressable>
-                ))}
+                )) : (
+                  <View style={styles.emptyResourceGroup}>
+                    <Text style={styles.emptyResourceGroupText}>
+                      当前审核库在这个语言下暂无完整的文章和视频组合。
+                    </Text>
+                  </View>
+                )}
               </View>
-            ))}
+            )) : null}
           </View>
         ) : null}
 
@@ -513,7 +680,7 @@ export default function Detail() {
             {card.hook_line}
           </Text>
         ) : null}
-        <View style={{ height: 104 }} />
+        <View style={{ height: Math.max(104, askBarHeight + spacing.xl * 2) }} />
       </ScrollView>
     );
   };
@@ -561,7 +728,10 @@ export default function Detail() {
         {renderBody()}
 
         {card ? (
-          <View style={styles.askBar}>
+          <View
+            style={styles.askBar}
+            onLayout={(event) => setAskBarHeight(event.nativeEvent.layout.height)}
+          >
             <Pressable onPress={askAI} style={styles.askBtn} testID="detail-ask-ai-btn">
               <Ionicons name="sparkles" size={16} color="#fff" />
               <Text style={styles.askBtnText}>和 NURI 继续聊这个话题</Text>
@@ -720,6 +890,27 @@ const styles = StyleSheet.create({
   },
   body: { fontSize: type.lg, color: colors.onSurfaceSecondary, lineHeight: 27 },
   resourcesSection: { marginTop: spacing.xl },
+  researchStatusCard: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: "#D8D2F2",
+    borderRadius: radius.md,
+    backgroundColor: "#F7F5FF",
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  researchStatusLabel: {
+    fontSize: type.sm,
+    color: "#4F4B9C",
+    fontWeight: "700",
+  },
+  researchStatusText: {
+    fontSize: type.sm,
+    lineHeight: 19,
+    color: colors.onSurfaceSecondary,
+    marginTop: 2,
+  },
   resourcesIntro: {
     fontSize: type.sm,
     color: colors.muted,
@@ -733,12 +924,15 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   resourceLocaleTab: {
+    minHeight: 44,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
   },
   resourceLocaleTabSelected: {
     borderColor: colors.brand,
@@ -751,6 +945,19 @@ const styles = StyleSheet.create({
   },
   resourceLocaleTabTextSelected: { color: colors.onBrandTertiary, fontWeight: "700" },
   resourceGroup: { marginTop: spacing.lg },
+  emptyResourceGroup: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+  },
+  emptyResourceGroupText: {
+    fontSize: type.sm,
+    lineHeight: 19,
+    color: colors.muted,
+  },
   resourceGroupHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -818,6 +1025,15 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: spacing.sm,
   },
+  resourceKindBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    backgroundColor: "#EFEDFA",
+  },
+  videoResourceKindBadge: { backgroundColor: "#FCECEF" },
+  resourceKindBadgeText: { fontSize: 11, color: "#4F4B9C", fontWeight: "700" },
+  videoResourceKindBadgeText: { color: "#9A4D63" },
   resourceTierBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 3,
@@ -840,6 +1056,12 @@ const styles = StyleSheet.create({
     fontSize: type.sm,
     lineHeight: 18,
     color: colors.onSurfaceSecondary,
+    marginTop: spacing.sm,
+  },
+  resourceLanguageEvidence: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: "#4F4B9C",
     marginTop: spacing.sm,
   },
   resourceEvidenceRow: {

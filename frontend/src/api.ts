@@ -245,7 +245,30 @@ export const api = {
   // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
   getPersonalizedFeed: (count = 4) => req(`/feed/personalized?count=${count}`),
-  getCardDetail: (id: string) => req(`/feed/${id}/detail`),
+  getCardDetail: (id: string, sessionId?: string, contextCreatedAt?: string) => {
+    const query = [
+      sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
+      contextCreatedAt
+        ? `context_created_at=${encodeURIComponent(contextCreatedAt)}`
+        : "",
+    ].filter(Boolean).join("&");
+    return req(`/feed/${id}/detail${query ? `?${query}` : ""}`);
+  },
+  // The detail first paints its reviewed fallback, then this longer request
+  // replaces it with a citation-backed 3 categories x article/video bundle.
+  getCardResearch: (id: string, sessionId?: string, contextCreatedAt?: string) => {
+    const query = [
+      sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
+      contextCreatedAt
+        ? `context_created_at=${encodeURIComponent(contextCreatedAt)}`
+        : "",
+    ].filter(Boolean).join("&");
+    return req(
+      `/feed/${id}/research${query ? `?${query}` : ""}`,
+      { method: "POST" },
+      110000
+    );
+  },
   getAltCard: (exclude: string) =>
     req(`/feed/alt?exclude=${encodeURIComponent(exclude)}`),
   searchCards: (q: string, type?: string) =>

@@ -48,10 +48,21 @@ def _message(message_id: str, role: str, text: str, created_at: str):
     }
 
 
-def _run_personalized(monkeypatch, uid, sessions, messages, privacy=None, count=4):
+def _run_personalized(
+    monkeypatch,
+    uid,
+    sessions,
+    messages,
+    privacy=None,
+    count=4,
+    research_client=None,
+):
     monkeypatch.setattr(main, "_get_supabase", lambda: None)
     monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
     monkeypatch.setattr(main, "_messages", messages)
+    # Keep deterministic ranking tests independent of developer-machine API
+    # credentials. Tests for open-topic research opt in with a sentinel client.
+    monkeypatch.setattr(main, "content_research_oai", research_client)
 
     async def verified_privacy(request_uid, fail_closed=False):
         del fail_closed
@@ -306,9 +317,15 @@ def test_english_keyword_matching_uses_word_boundaries(monkeypatch):
 
     payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
 
-    assert payload["personalization_mode"] != "conversation"
-    assert payload["matched_topic"] is None
-    assert all(item["is_conversation_match"] is False for item in payload["items"])
+    # "displays" must not accidentally match the static "play" term.  The
+    # real, otherwise-unmapped question now receives a dynamic research card.
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["items"][0]["is_dynamic_research_card"] is True
+    assert payload["items"][0]["topic"] == "My child displays pictures at school"
+    assert all(
+        not item.get("is_conversation_match")
+        for item in payload["items"][1:]
+    )
 
 
 def test_assistant_boilerplate_cannot_establish_a_conversation_match(monkeypatch):
@@ -335,6 +352,317 @@ def test_assistant_boilerplate_cannot_establish_a_conversation_match(monkeypatch
     assert payload["personalization_mode"] != "conversation"
     assert payload["matched_topic"] is None
     assert all(item["is_conversation_match"] is False for item in payload["items"])
+
+
+def test_unmapped_conversation_gets_addressable_dynamic_research_card(monkeypatch):
+    sessions = [_session("montessori-chat", "parent-1")]
+    messages = {
+        "montessori-chat": [
+            _message(
+                "latest-user",
+                "user",
+                "我们正在考虑让孩子上哪一种幼儿园，蒙特梭利和森林学校该怎么选择？",
+                "2026-07-31T10:00:00+00:00",
+            )
+        ]
+    }
+
+    payload = _run_personalized(
+        monkeypatch,
+        "parent-1",
+        sessions,
+        messages,
+        privacy={
+            "parent-1": {
+                "allow_history_training": True,
+                "allow_external_content_research": True,
+            }
+        },
+        research_client=object(),
+    )
+
+    card = payload["items"][0]
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["matched_topic"] == card["topic"]
+    assert payload["related_session_id"] == "montessori-chat"
+    assert card["id"].startswith("learn_conversation_")
+    assert card["is_dynamic_research_card"] is True
+    assert card["is_conversation_match"] is True
+    assert card["related_session_id"] == "montessori-chat"
+    assert card["context_created_at"] == "2026-07-31T10:00:00+00:00"
+    assert card["resource_status"] == "research_on_open"
+    assert "蒙特梭利" in card["title"]
+    assert all(
+        all(count == 0 for count in category.values())
+        for category in card["resource_summary"]["categories"].values()
+    )
+
+
+@pytest.mark.parametrize(
+    "topic_text, expected_fragment",
+    [
+        (
+            "我们在比较 Montessori 蒙特梭利和 forest school 森林学校，应该怎么选？",
+            "Montessori",
+        ),
+        (
+            "孩子的堂兄经常排挤和羞辱他，这种亲属之间的霸凌该怎么处理？",
+            "亲属之间的霸凌",
+        ),
+        (
+            "我们刚移居到另一个国家，怎样帮助孩子适应新的文化和学校？",
+            "移居",
+        ),
+    ],
+    ids=["montessori-forest-school", "relative-bullying", "relocation-adjustment"],
+)
+def test_novel_real_topics_are_conversation_matches_and_can_research(
+    monkeypatch, topic_text, expected_fragment
+):
+    sessions = [_session("novel-topic-chat", "parent-1")]
+    messages = {
+        "novel-topic-chat": [
+            _message(
+                "latest-user",
+                "user",
+                topic_text,
+                "2026-07-31T10:00:00+00:00",
+            )
+        ]
+    }
+    payload = _run_personalized(
+        monkeypatch,
+        "parent-1",
+        sessions,
+        messages,
+        privacy={
+            "parent-1": {
+                "allow_history_training": True,
+                "allow_external_content_research": True,
+            }
+        },
+        research_client=object(),
+    )
+    card = payload["items"][0]
+
+    assert payload["personalization_mode"] == "conversation"
+    assert card["is_conversation_match"] is True
+    assert card["is_dynamic_research_card"] is True
+    assert card["resource_status"] == "research_on_open"
+    assert expected_fragment in card["title"]
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            card["id"],
+            session_id=card["related_session_id"],
+            context_created_at=card["context_created_at"],
+            uid="parent-1",
+        )
+    )
+    assert detail["id"] == card["id"]
+    assert detail["is_dynamic_research_card"] is True
+    assert detail["resources"] == []
+    assert detail["research_status"] == "pending"
+
+    researched_resources = [
+        {
+            "id": f"dynamic-{category}-{kind}",
+            "content_category": category,
+            "source_tier": "authority" if category == "authority" else "curated",
+            "kind": kind,
+            "title": f"{category} {kind}",
+            "publisher": "Verified source",
+            "language": "简体中文",
+            "locales": ["zh-CN"],
+            "description": "与当前家庭问题直接相关并已核验。",
+            "url": f"https://example.org/{category}/{kind}",
+            "research_source": "openai_web_search",
+        }
+        for category in main.CONTENT_CATEGORIES
+        for kind in ("article", "video")
+    ]
+    calls = []
+
+    async def complete_dynamic_research(*, card, context, uid):
+        calls.append((card["id"], context["session_id"], uid))
+        return {
+            "resources": researched_resources,
+            "dynamic_resource_count": 6,
+            "reviewed_resource_count": 0,
+            "query": card["topic_label"],
+            "editor_note": "六项内容均与当前对话直接相关。",
+            "cited_source_count": 6,
+        }
+
+    monkeypatch.setattr(
+        main, "_research_card_detail_resources", complete_dynamic_research
+    )
+    research = asyncio.run(
+        main.get_card_research(
+            card["id"],
+            session_id=card["related_session_id"],
+            context_created_at=card["context_created_at"],
+            uid="parent-1",
+        )
+    )
+
+    assert calls == [(card["id"], "novel-topic-chat", "parent-1")]
+    assert research["research_status"] == "fresh"
+    assert len(research["resources"]) == 6
+    assert {
+        (resource["content_category"], resource["kind"])
+        for resource in research["resources"]
+    } == {
+        (category, kind)
+        for category in main.CONTENT_CATEGORIES
+        for kind in ("article", "video")
+    }
+
+
+@pytest.mark.parametrize("external_consent", [False, True], ids=["no-consent", "consent"])
+@pytest.mark.parametrize(
+    "urgent_text",
+    [
+        "My child isn't breathing.",
+        "My child is not breathing.",
+        "She swallowed bleach.",
+        "My toddler got into a bottle of pills.",
+        "He turned blue and limp.",
+        "My baby won't wake up.",
+        "Her lips are blue.",
+        "There is no pulse.",
+        "He drank antifreeze.",
+        "He swallowed a button battery.",
+        "孩子没有呼吸了。",
+        "孩子呼吸停了。",
+        "孩子吞了漂白水。",
+        "孩子误吞了一瓶药片。",
+        "孩子全身发蓝而且软趴趴。",
+        "宝宝怎么都叫不醒。",
+        "孩子的嘴唇发蓝了。",
+        "我摸不到孩子的脉搏。",
+        "孩子喝了防冻液。",
+        "孩子吞下了一颗纽扣电池。",
+    ],
+    ids=[
+        "isnt-breathing",
+        "is-not-breathing",
+        "swallowed-bleach",
+        "bottle-of-pills",
+        "blue-and-limp",
+        "wont-wake-up",
+        "blue-lips",
+        "no-pulse",
+        "drank-antifreeze",
+        "swallowed-button-battery",
+        "zh-no-breathing",
+        "zh-stopped-breathing",
+        "zh-swallowed-bleach",
+        "zh-bottle-of-pills",
+        "zh-blue-and-limp",
+        "zh-wont-wake-up",
+        "zh-blue-lips",
+        "zh-no-pulse",
+        "zh-drank-antifreeze",
+        "zh-swallowed-button-battery",
+    ],
+)
+def test_urgent_research_gate_precedes_consent_and_never_calls_research(
+    monkeypatch, urgent_text, external_consent
+):
+    sessions = [_session("urgent-chat", "parent-1")]
+    messages = {
+        "urgent-chat": [
+            _message(
+                "urgent-user",
+                "user",
+                urgent_text,
+                "2026-07-31T10:00:00+00:00",
+            )
+        ]
+    }
+    payload = _run_personalized(
+        monkeypatch,
+        "parent-1",
+        sessions,
+        messages,
+        privacy={
+            "parent-1": {
+                "allow_history_training": True,
+                "allow_external_content_research": external_consent,
+            }
+        },
+        research_client=object(),
+    )
+    assert main._urgent_task_suppressed(urgent_text) is True
+    assert payload["items"][0]["resource_status"] == "urgent_suppressed"
+
+    async def research_must_not_run(**_kwargs):
+        raise AssertionError("urgent context reached external research")
+
+    monkeypatch.setattr(main, "_research_card_detail_resources", research_must_not_run)
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_sleep_routine",
+            session_id="urgent-chat",
+            context_created_at="2026-07-31T10:00:00+00:00",
+            uid="parent-1",
+        )
+    )
+    research = asyncio.run(
+        main.get_card_research(
+            "learn_sleep_routine",
+            session_id="urgent-chat",
+            context_created_at="2026-07-31T10:00:00+00:00",
+            uid="parent-1",
+        )
+    )
+
+    assert detail["research_status"] == "urgent_suppressed"
+    assert research == {"research_status": "urgent_suppressed"}
+
+
+def test_memory_context_honors_preferred_session_for_followup_binding(monkeypatch):
+    sessions = [
+        _session(
+            "preferred-chat",
+            "parent-1",
+            created_at="2026-07-29T10:00:00+00:00",
+        ),
+        _session(
+            "newer-chat",
+            "parent-1",
+            created_at="2026-07-31T10:00:00+00:00",
+        ),
+    ]
+    messages = {
+        "preferred-chat": [
+            _message(
+                "preferred-user",
+                "user",
+                "我们正在比较蒙特梭利和森林学校。",
+                "2026-07-29T10:01:00+00:00",
+            )
+        ],
+        "newer-chat": [
+            _message(
+                "newer-user",
+                "user",
+                "孩子昨晚一直夜醒。",
+                "2026-07-31T10:01:00+00:00",
+            )
+        ],
+    }
+    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(main, "_messages", messages)
+
+    context = main._recent_main_chat_from_memory(
+        "parent-1", preferred_session_id="preferred-chat"
+    )
+
+    assert context["state"] == "ready"
+    assert context["session_id"] == "preferred-chat"
+    assert [message["id"] for message in context["messages"]] == ["preferred-user"]
 
 
 def test_history_training_opt_out_never_reads_or_links_conversations(monkeypatch):
@@ -395,12 +723,22 @@ def test_learning_resources_include_source_curation_metadata(card):
     resources = card.get("resources") or []
 
     assert all(
+        resource.get("content_category") in {"authority", "featured", "case"}
+        for resource in resources
+    )
+    assert all(
         resource.get("source_tier") in {"authority", "curated"}
         for resource in resources
     )
     assert all(
         resource.get("selection_basis")
-        in {"official", "expert_reviewed", "audience_popular", "expert_and_audience"}
+        in {
+            "official",
+            "expert_reviewed",
+            "audience_popular",
+            "expert_and_audience",
+            "lived_experience",
+        }
         for resource in resources
     )
     assert all(resource.get("trust_note") for resource in resources)
@@ -425,11 +763,12 @@ def test_english_resources_fill_all_source_and_format_groups(card):
 
 
 @pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
-def test_curated_resources_use_reviewed_non_mainland_expert_source(card):
+def test_english_curated_resources_use_reviewed_non_mainland_expert_source(card):
     resources = [
         resource
         for resource in card.get("resources", [])
         if resource.get("source_tier") == "curated"
+        and "en" in resource.get("locales", [])
     ]
 
     assert len(resources) == 2
@@ -467,6 +806,7 @@ def test_audience_recognition_is_only_claimed_with_visible_evidence():
         resource
         for resource in resources_by_id.values()
         if resource.get("source_tier") == "curated"
+        and "en" in resource.get("locales", [])
         and resource["id"] not in {"sleep-rcn-article", "safety-rcn-article"}
     ]
     assert all(
@@ -483,15 +823,42 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         if "zh-CN" in resource.get("locales", [])
     ]
 
-    assert len(resources) == 2
-    assert {resource["kind"] for resource in resources} == {"article", "video"}
-    assert all(
-        urlparse(resource["url"]).hostname == "www.fhs.gov.hk" for resource in resources
+    groups = {
+        (resource["content_category"], resource["kind"]) for resource in resources
+    }
+    assert len(resources) == 6
+    assert groups == {
+        (category, kind)
+        for category in ("authority", "featured", "case")
+        for kind in ("article", "video")
+    }
+    authority_article = next(
+        resource
+        for resource in resources
+        if (resource["content_category"], resource["kind"])
+        == ("authority", "article")
     )
-    assert all(
-        urlparse(resource["url"]).path.startswith("/sc_chi/") for resource in resources
-    )
-    assert all("香港特别行政区政府" in resource["publisher"] for resource in resources)
+    videos = [resource for resource in resources if resource["kind"] == "video"]
+
+    # Simplified-Chinese fallback articles remain outside mainland China. Videos
+    # may come from reviewed Hong Kong or Taiwan public-health publishers, but
+    # must be explicitly verified as Mandarin rather than inferred from script.
+    assert urlparse(authority_article["url"]).hostname == "www.fhs.gov.hk"
+    assert urlparse(authority_article["url"]).path.startswith("/sc_chi/")
+    assert "香港特别行政区政府" in authority_article["publisher"]
+    for video in videos:
+        assert video["spoken_language"] == "mandarin"
+        assert video["spoken_language_status"] == "verified"
+        assert video["language_evidence"]
+        assert video["spoken_language_evidence"]
+        assert video["spoken_language_evidence_url"] == video["url"]
+        assert not any(
+            marker in " ".join(
+                str(video.get(field) or "").casefold()
+                for field in ("title", "description", "language", "spoken_language")
+            )
+            for marker in ("cantonese", "粤语", "粵語", "广东话", "廣東話")
+        )
 
 
 @pytest.mark.parametrize("card", LEARNING_CONTENT_CARDS, ids=lambda card: card["id"])
@@ -502,19 +869,37 @@ def test_traditional_resources_are_taiwan_authority_first(card):
         if "zh-TW" in resource.get("locales", [])
     ]
 
-    assert len(resources) == 2
-    assert {resource["kind"] for resource in resources} == {"article", "video"}
+    groups = {
+        (resource["content_category"], resource["kind"]) for resource in resources
+    }
+    assert len(resources) == 6
+    assert groups == {
+        (category, kind)
+        for category in ("authority", "featured", "case")
+        for kind in ("article", "video")
+    }
     assert all(resource["source_region"] == "TW" for resource in resources)
     assert all("台灣" in resource["language"] for resource in resources)
-    assert all(resource["source_tier"] == "authority" for resource in resources)
-    assert all(resource["selection_basis"] == "official" for resource in resources)
+    authority_resources = [
+        resource
+        for resource in resources
+        if resource["content_category"] == "authority"
+    ]
+    assert len(authority_resources) == 2
+    assert all(
+        resource["source_tier"] == "authority" for resource in authority_resources
+    )
+    assert all(
+        resource["selection_basis"] == "official"
+        for resource in authority_resources
+    )
 
     taiwan_video_publishers = {
         "臺灣衛生福利部國民健康署官方頻道",
         "埔里基督教醫院 · 小星星協奏曲",
         "臺灣雲林縣衛生局保健科",
     }
-    for resource in resources:
+    for resource in authority_resources:
         hostname = urlparse(resource["url"]).hostname
         assert hostname in TAIWAN_AUTHORITY_RESOURCE_HOSTS | {"www.youtube.com"}
         if hostname == "www.youtube.com":
@@ -566,8 +951,8 @@ def test_english_learning_resources_follow_group_order():
         (resource["source_tier"], resource["kind"]) for resource in english[:4]
     ] == [
         ("authority", "article"),
-        ("curated", "article"),
         ("authority", "video"),
+        ("curated", "article"),
         ("curated", "video"),
     ]
 
@@ -593,7 +978,11 @@ def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
 
 
 def test_learning_detail_uses_saved_traditional_chinese_preference(monkeypatch):
-    async def traditional_context(_uid):
+    async def traditional_context(
+        _uid, preferred_session_id=None, through_created_at=None
+    ):
+        assert preferred_session_id is None
+        assert through_created_at is None
         return {
             "state": "no_history",
             "session_id": None,
@@ -709,6 +1098,7 @@ def test_missing_privacy_row_defaults_to_history_personalization_enabled(
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
 
     assert loaded["allow_history_training"] is True
+    assert loaded["allow_external_content_research"] is False
 
 
 def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
@@ -760,6 +1150,7 @@ def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
     monkeypatch.setattr(main, "_privacy", {})
     payload = {
         "allow_history_training": True,
+        "allow_external_content_research": True,
         "daily_push": True,
         "anonymous_community_share": False,
         "language": "zh-TW",
@@ -772,8 +1163,10 @@ def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
 
     assert saved.status_code == 200
     assert saved.json()["language"] == "zh-TW"
+    assert saved.json()["allow_external_content_research"] is True
     assert loaded.status_code == 200
     assert loaded.json()["language"] == "zh-TW"
+    assert loaded.json()["allow_external_content_research"] is True
     assert rejected.status_code == 422
 
 

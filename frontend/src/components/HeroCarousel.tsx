@@ -12,6 +12,7 @@ export type HeroCard = {
   personalization_reason?: string;
   is_conversation_match?: boolean;
   related_session_id?: string | null;
+  context_created_at?: string | null;
   colors?: readonly [string, string, ...string[]];
 };
 

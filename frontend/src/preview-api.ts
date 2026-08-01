@@ -94,31 +94,58 @@ const learningCards: any[] = [
 const previewLocalizedResources: Record<string, any[]> = {
   learn_sleep_routine: [
     { id: "sleep-zh-cn-article", kind: "article", title: "摇篮曲之一：建立睡眠常规", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "说明婴幼儿睡眠周期、夜醒回应及建立睡前常规的方法。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/13043.html" },
-    { id: "sleep-zh-cn-video", kind: "video", title: "建立睡前常规", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范固定、平静而可重复的睡前步骤。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000015.html" },
+    { id: "sleep-zh-cn-video", kind: "video", title: "建立睡前常规", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", spoken_language: "mandarin", spoken_language_status: "verified", locales: ["zh-CN"], description: "示范固定、平静而可重复的睡前步骤。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000015.html" },
     { id: "sleep-zh-tw-article", kind: "article", title: "若要小孩好好睡，睡前儀式很重要", publisher: "臺灣衛生福利部 · 心快活心理健康學習平台", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "依年齡說明睡眠需求，並提供固定時間、固定步驟與安靜活動等睡前儀式建議。", url: "https://wellbeing.mohw.gov.tw/nor/pstunt/1/779" },
     { id: "sleep-zh-tw-video", kind: "video", title: "讓寶貝們好好睡覺", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向零至二歲照顧者，介紹寶寶作息、哭鬧與建立睡前儀式的方法。", url: "https://babyedu.sfaa.gov.tw/info/10000254?lang=Big5" },
   ],
   learn_big_feelings: [
     { id: "emotion-zh-cn-article", kind: "article", title: "培育高“EQ”孩子从零岁开始", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "用观察、转换角度和表达同感协助孩子调节情绪。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/30159.html" },
-    { id: "emotion-zh-cn-video", kind: "video", title: "“情绪导航”小秘诀（婴幼儿篇）", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范如何理解、接纳孩子的情绪并表达同感。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000114.html" },
+    { id: "emotion-zh-cn-video", kind: "video", title: "玩游戏解情绪：帮助宝宝认识与表达自己的情绪", publisher: "台湾卫生福利部社会及家庭署 · 育儿亲职网", language: "普通话影音课 · 台湾繁体页面", spoken_language: "mandarin", spoken_language_status: "verified", locales: ["zh-CN"], description: "用亲子游戏示范情绪觉察、理解、表达与调节。", url: "https://babyedu.sfaa.gov.tw/info/10000213" },
     { id: "emotion-zh-tw-article", kind: "article", title: "一起來想想，我們如何回應孩子的心情？", publisher: "國立臺灣大學醫學院附設醫院臨床心理中心", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "由臨床心理師說明如何注意、命名並回應孩子的感受，逐步支持情緒理解與調節。", url: "https://epaper.ntuh.gov.tw/health/202507/child_1.html" },
     { id: "emotion-zh-tw-video", kind: "video", title: "玩遊戲解情緒：幫助寶寶認識與表達自己的情緒", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "以親子遊戲示範情緒覺察、理解、表達與調節，適合零至二歲照顧者。", url: "https://babyedu.sfaa.gov.tw/info/10000213" },
   ],
   learn_picky_eating: [
     { id: "food-zh-cn-article", kind: "article", title: "孩子“偏食”怎么办？", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "建议重复提供新食物、不强迫进食。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/20033.html" },
-    { id: "food-zh-cn-video", kind: "video", title: "孩子偏食，应该怎样处理？", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "说明如何降低进餐压力并增加接触机会。", url: "https://www.fhs.gov.hk/sc_chi/health_info/faq/child_health/GN1_2_4_2.html" },
+    { id: "food-zh-cn-video", kind: "video", title: "一岁宝宝本事多：建立良好饮食习惯", publisher: "台湾卫生福利部社会及家庭署 · 育儿亲职网", language: "普通话影音课 · 台湾繁体页面", spoken_language: "mandarin", spoken_language_status: "verified", locales: ["zh-CN"], description: "介绍规律用餐、降低压力并培养幼儿自主进食的方法。", url: "https://babyedu.sfaa.gov.tw/info/10000131?lang=Big5" },
     { id: "food-zh-tw-article", kind: "article", title: "幼兒偏食行為", publisher: "中國醫藥大學附設醫院臨床營養科", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "說明偏食的判定與原因，並提供規律進餐、愉快氣氛、食物多樣化與避免強迫等家庭方法。", url: "https://www.cmuh.org.tw/HealthEdus/Detail?no=5466" },
     { id: "food-zh-tw-video", kind: "video", title: "一歲寶貝本事多", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向一至二歲家庭，介紹規律用餐、健康飲食與培養孩子自主進食的方法。", url: "https://babyedu.sfaa.gov.tw/info/10000131?lang=Big5" },
   ],
   learn_serve_and_return: [
     { id: "connection-zh-cn-article", kind: "article", title: "亲子沟通——给一岁前婴儿的家长", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "简体中文", locales: ["zh-CN"], description: "说明如何观察宝宝信号、回应并轮流互动。", url: "https://www.fhs.gov.hk/sc_chi/health_info/child/13046.html" },
-    { id: "connection-zh-cn-video", kind: "video", title: "亲子沟通（四至六个月）", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", locales: ["zh-CN"], description: "示范观察、回应和来回互动。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000025.html" },
+    { id: "connection-zh-cn-video", kind: "video", title: "亲子沟通（四至六个月）", publisher: "香港特别行政区政府卫生署家庭健康服务", language: "普通话影片 · 简体剧本", spoken_language: "mandarin", spoken_language_status: "verified", locales: ["zh-CN"], description: "示范观察、回应和来回互动。", url: "https://www.fhs.gov.hk/sc_chi/mulit_med/000025.html" },
     { id: "connection-zh-tw-article", kind: "article", title: "用愛說故事，親子共讀從零歲開始", publisher: "臺灣衛生福利部國民健康署", language: "繁體中文 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "說明如何用聲音、表情與對話式共讀形成親子來回互動，促進親密感和語言發展。", url: "https://www.mohw.gov.tw/cp-16-48967-1.html" },
     { id: "connection-zh-tw-video", kind: "video", title: "親子互動秘笈 1：怎麼樣「互動」最好？", publisher: "臺灣衛生福利部社會及家庭署 · 育兒親職網", language: "華語影音課 · 台灣", locales: ["zh-TW"], source_region: "TW", description: "面向零至二歲照顧者，示範互動環境、溝通、感官遊戲與來回回應的原則。", url: "https://babyedu.sfaa.gov.tw/info/10000138?lang=Big5" },
   ],
 };
+const previewReviewedChineseResources: Record<string, any[]> = {
+  learn_sleep_routine: [
+    { id: "sleep-parenting-featured-article", kind: "article", content_category: "featured", source_tier: "curated", selection_basis: "expert_and_audience", title: "寶寶多大能睡過夜？醫師教如何訓練、詳解嬰兒睡眠時間", publisher: "親子天下", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "由編輯整理兒科醫師與國際醫療來源，說明睡眠節奏、夜醒與睡前儀式。", trust_note: "成熟親子媒體的專業資料整理。", recognition: "專家資料整理 · 家庭實操導向", selection_reason: "把睡前節奏與夜醒問題轉成容易執行的家庭步驟。", url: "https://www.parenting.com.tw/article/5096297" },
+    { id: "sleep-huang-featured-video", kind: "video", content_category: "featured", source_tier: "curated", selection_basis: "expert_and_audience", title: "讓寶寶睡好的祕訣是什麼？解答睡眠常見問題！", publisher: "黃瑽寧醫師健康講堂", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "兒科醫師解答幼兒睡眠常見問題。", trust_note: "兒科醫師本人講解。", recognition: "醫師專業頻道", selection_reason: "資訊密度高且容易看完。", url: "https://www.youtube.com/watch?v=CnYahVdAcm0" },
+    { id: "sleep-ptt-parent-case-article", kind: "article", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "[寶寶] 睡眠習慣建立經驗分享（上）", publisher: "PTT BabyMother · 台灣家長", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "母親記錄女兒月齡、原始作息與一個月調整過程。", trust_note: "第一人稱家長經驗，不作醫療證據。", recognition: "真實父母經驗", selection_reason: "呈現家庭如何記錄、調整和面對不完美。", url: "https://www.ptt.cc/bbs/BabyMother/M.1632016044.A.AE1.html" },
+    { id: "sleep-li-parent-case-video", kind: "video", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "育兒心得分享：寶寶的睡眠作息、喝奶與副食品", publisher: "李佳穎 · 台灣家長", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "母親分享孩子九個月時的睡眠與餵養作息。", trust_note: "真實家長分享，含商業合作。", recognition: "公開家長頻道", selection_reason: "呈現真實家庭如何安排一天節奏。", url: "https://www.youtube.com/watch?v=yxT5cQ_-qaA" },
+  ],
+  learn_big_feelings: [
+    { id: "emotion-parenting-featured-article", kind: "article", content_category: "featured", source_tier: "curated", selection_basis: "expert_reviewed", title: "小孩崩潰尖叫怎麼辦？四句訣處理幼兒尖叫", publisher: "親子天下 · 羅寶鴻", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "用四個步驟處理幼兒尖叫與崩潰。", trust_note: "具幼教與正向教養背景的署名專家文章。", recognition: "專家方法", selection_reason: "把情緒接納、界限和家長能說的話放在同一流程。", url: "https://www.parenting.com.tw/article/5087348" },
+    { id: "emotion-parenting-featured-video", kind: "video", content_category: "featured", source_tier: "curated", selection_basis: "expert_and_audience", title: "父母也會有情緒：心理師的情緒控制方法", publisher: "親子天下 · 諮商心理師黃之盈", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "心理師說明孩子大情緒時如何避免失控升級。", trust_note: "諮商心理師專業講解。", recognition: "親子媒體製作", selection_reason: "先照顧家長情緒，再陪孩子。", url: "https://www.youtube.com/watch?v=mLpWc1mKEUk" },
+    { id: "emotion-mamibuy-parent-case-article", kind: "article", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "1Y5M 起：老母學會欣賞你的叛逆", publisher: "MamiBuy · 邱言言媽咪", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "母親記錄兩個月調整期與多個鬧情緒場景。", trust_note: "第一人稱母親經驗。", recognition: "真實家庭案例", selection_reason: "看見家長的情緒、試錯與孩子變化。", url: "https://mamibuy.com.tw/talk/article/2876" },
+    { id: "emotion-wanling-parent-case-video", kind: "video", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "一到兩歲寶寶：面對鬧脾氣與愛說不要", publisher: "創業系媽媽婉翎", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "母親以一歲半雙胞胎的真實情境分享家庭做法。", trust_note: "真實母親經驗。", recognition: "長期育兒創作者", selection_reason: "具體呈現衝突場景與家長回應。", url: "https://www.youtube.com/watch?v=Z8EHP_znnVo" },
+  ],
+  learn_picky_eating: [
+    { id: "food-mombaby-featured-article", kind: "article", content_category: "featured", source_tier: "curated", selection_basis: "expert_reviewed", title: "寶寶不愛吃飯的 5 大原因！營養師提供 8 招", publisher: "媽媽寶寶 · 營養師徐裴莉", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "醫院營養師說明常見原因和可執行的用餐方法。", trust_note: "專業營養師訪談。", recognition: "營養師受訪", selection_reason: "同時涵蓋原因判斷和家庭方法。", url: "https://www.mombaby.com.tw/articles/5509" },
+    { id: "food-huang-featured-video", kind: "video", content_category: "featured", source_tier: "curated", selection_basis: "expert_and_audience", title: "小孩不肯乖乖吃飯：挑食與餐桌衝突", publisher: "黃瑽寧愛+好醫生", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "兒科醫師討論挑食、生理問題和降低餐桌衝突。", trust_note: "兒科醫師與專業來賓講解。", recognition: "醫師專業頻道", selection_reason: "把需就醫的可能性與一般餐桌衝突分開。", url: "https://www.youtube.com/watch?v=O_djZ-0jfAw" },
+    { id: "food-fishball-parent-case-article", kind: "article", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "魚丸醫師的媽媽經：兒醫媽媽對戰挑食寶寶", publisher: "媽媽寶寶 · 魚丸醫師（四寶媽）", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "四寶媽記錄孩子成長曲線、餵養焦慮與家庭調整。", trust_note: "兒科醫師兼母親的親身經驗。", recognition: "專業背景家長案例", selection_reason: "呈現專業家長也會焦慮與試錯。", url: "https://www.mombaby.com.tw/articles/9928389" },
+    { id: "food-wanling-parent-case-video", kind: "video", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "2～3 歲孩子挑食：十個家庭方法", publisher: "創業系媽媽婉翎", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "母親整理自家孩子實際用過的方法。", trust_note: "真實家庭經驗。", recognition: "長期育兒創作者", selection_reason: "看見家庭如何逐步調整。", url: "https://www.youtube.com/watch?v=RpYhoFN3dOc" },
+  ],
+  learn_serve_and_return: [
+    { id: "connection-cylaw-featured-article", kind: "article", content_category: "featured", source_tier: "curated", selection_basis: "expert_reviewed", title: "改變世界的躲貓貓遊戲", publisher: "兒少權益網 · 兒福聯盟", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "以日常遊戲解釋 Serve and Return。", trust_note: "台灣兒少專業平台導讀。", recognition: "兒少機構導讀", selection_reason: "把回應式互動轉成每天能練習的小片段。", url: "https://www.cylaw.org.tw/about/advocacy/10/566" },
+    { id: "connection-wanling-featured-video", kind: "video", content_category: "featured", source_tier: "curated", selection_basis: "expert_and_audience", title: "在家玩什麼？一到六歲孩子發展遊戲", publisher: "創業系媽媽婉翎", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "用家中物品示範輪流和親子互動遊戲。", trust_note: "長期育兒創作者實作示範。", recognition: "實作型育兒內容", selection_reason: "看完就能挑一個遊戲開始。", url: "https://www.youtube.com/watch?v=6oEc7lrSTeA" },
+    { id: "connection-mommycarry-parent-case-article", kind: "article", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "0–1 歲寶寶親子互動遊戲", publisher: "媽咪凱瑞 MommyCarry", language: "繁體中文 · 台灣", locales: ["zh-CN", "zh-TW"], description: "母親按月齡分享自己夫妻與寶寶的家庭互動。", trust_note: "第一人稱家庭經驗。", recognition: "真實新手父母經驗", selection_reason: "把互動放進換尿布和玩耍等日常。", url: "https://www.mommycarry.com/?p=1400" },
+    { id: "connection-peter-parent-case-video", kind: "video", content_category: "case", source_tier: "curated", selection_basis: "lived_experience", title: "一歲孩子挑戰背後畫畫遊戲", publisher: "彼得爸與蘇珊媽", language: "普通話視頻 · 台灣", locales: ["zh-CN", "zh-TW"], spoken_language: "mandarin", spoken_language_evidence: "已人工聽檢，確認為台灣普通話，未發現粵語。", description: "一家人實際玩輪流猜圖遊戲。", trust_note: "真實家庭互動。", recognition: "真實家庭頻道", selection_reason: "保留孩子不按腳本反應的真實感。", url: "https://www.youtube.com/watch?v=j50rZljX8XI" },
+  ],
+};
 const previewAuthorityMetadata = {
   source_tier: "authority",
+  content_category: "authority",
   selection_basis: "official",
   trust_note: "政府、大学、医院、专业医学组织或其官方频道发布。",
   recognition: "权威机构原始发布",
@@ -127,6 +154,7 @@ const previewAuthorityMetadata = {
 const previewCuratedMetadata = {
   publisher: "Raising Children Network（澳大利亚）",
   source_tier: "curated",
+  content_category: "featured",
   selection_basis: "expert_reviewed",
   trust_note: "澳大利亚政府支持；网站内容由科学顾问委员会指导，并经至少两名独立专家及专业编辑团队审核。",
   recognition: "专家审核 · 家庭实操导向",
@@ -161,6 +189,7 @@ for (const learningCard of learningCards) {
       ...previewAuthorityMetadata,
       ...resource,
     })),
+    ...(previewReviewedChineseResources[learningCard.id] || []),
     ...englishResources,
     ...(previewCuratedResources[learningCard.id] || []),
   ];
@@ -184,16 +213,25 @@ function orderPreviewResources(resources: any[], language: string) {
         return rank < 0 ? localeOrder.length : rank;
       }));
       if (leftRank !== rightRank) return leftRank - rightRank;
-      const groupOrder = ["authority:article", "curated:article", "authority:video", "curated:video"];
-      const leftGroup = groupOrder.indexOf(`${left.resource.source_tier || "authority"}:${left.resource.kind}`);
-      const rightGroup = groupOrder.indexOf(`${right.resource.source_tier || "authority"}:${right.resource.kind}`);
+      const groupOrder = [
+        "authority:article",
+        "authority:video",
+        "featured:article",
+        "featured:video",
+        "case:article",
+        "case:video",
+      ];
+      const categoryFor = (resource: any) =>
+        resource.content_category || (resource.source_tier === "curated" ? "featured" : "authority");
+      const leftGroup = groupOrder.indexOf(`${categoryFor(left.resource)}:${left.resource.kind}`);
+      const rightGroup = groupOrder.indexOf(`${categoryFor(right.resource)}:${right.resource.kind}`);
       if (leftGroup !== rightGroup) return leftGroup - rightGroup;
       return left.index - right.index;
     })
     .map(({ resource }) => resource);
 }
 let favorites: any[] = [card];
-let privacy = { allow_history_training: true, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
+let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
   {
     id: "card-chat-1",
@@ -286,6 +324,7 @@ const previewRequestedTaskCount = (text: string) => {
 export async function previewRequest(path: string, init?: RequestInit): Promise<any> {
   const method = init?.method || "GET";
   const body = bodyOf(init);
+  const routePath = path.split("?")[0];
 
   if (path === "/auth/register" || path === "/auth/login") {
     profile = { ...profile, email: body.email || profile.email };
@@ -347,8 +386,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       generated_at: new Date().toISOString(),
     };
   }
-  if (path.startsWith("/feed/") && path.endsWith("/detail")) {
-    const contentId = path.split("/")[2];
+  if (routePath.startsWith("/feed/") && routePath.endsWith("/detail")) {
+    const contentId = routePath.split("/")[2];
     const learningCard = learningCards.find((item) => item.id === contentId);
     if (learningCard) {
       const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
@@ -362,9 +401,22 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
             : "你已关闭对话个性化，这是 NURI 的可信来源精选",
         is_conversation_match: isSleepMatch,
         related_session_id: isSleepMatch ? "chat-1" : null,
+        research_status:
+          isSleepMatch && privacy.allow_external_content_research
+            ? "pending"
+            : isSleepMatch
+              ? "consent_required"
+              : "reviewed_fallback",
       };
     }
     return { ...card, id: contentId };
+  }
+  if (
+    routePath.startsWith("/feed/") &&
+    routePath.endsWith("/research") &&
+    method === "POST"
+  ) {
+    return { research_status: "reviewed_fallback" };
   }
   if (path === "/feed" || path.startsWith("/feed?")) return [card];
   if (path.startsWith("/feed/search") || path.startsWith("/feed/alt")) return [card];

@@ -31,6 +31,7 @@ export default function Profile() {
   const [favorites, setFavorites] = useState<any[]>([]);
   const [privacy, setPrivacy] = useState<any>({
     allow_history_training: false,
+    allow_external_content_research: false,
     daily_push: false,
     anonymous_community_share: false,
     language: "zh-CN",
@@ -185,8 +186,8 @@ export default function Profile() {
               size={16}
               color={colors.brand}
             />
-            <Text style={styles.policyText}>
-              你的对话内容仅用于为你提供个性化建议，我们不会出售给第三方，也不用于训练公共模型。
+              <Text style={styles.policyText}>
+              对话个性化只在 NURI 内部选择相关主题。只有你另外开启“外部内容检索”后，NURI 才会先去除明显身份信息，再把必要的主题与家庭情境用于公开网页检索。我们不会出售对话，也不用于训练公共模型。
             </Text>
           </View>
           {privacyUnavailable ? (
@@ -198,11 +199,29 @@ export default function Profile() {
             </View>
           ) : null}
           <Toggle
-            label="允许使用我的对话历史改善建议质量"
+            label="允许使用对话历史个性化建议与学习资源"
             value={privacy.allow_history_training}
-            onChange={(v) => updatePrivacy({ allow_history_training: v })}
+            onChange={(v) =>
+              updatePrivacy(
+                v
+                  ? { allow_history_training: true }
+                  : {
+                      allow_history_training: false,
+                      allow_external_content_research: false,
+                    }
+              )
+            }
             testID="privacy-toggle-history"
             disabled={privacyUnavailable}
+          />
+          <Toggle
+            label="允许将脱敏后的对话主题用于外部内容检索"
+            value={privacy.allow_external_content_research === true}
+            onChange={(v) =>
+              updatePrivacy({ allow_external_content_research: v })
+            }
+            testID="privacy-toggle-external-research"
+            disabled={privacyUnavailable || !privacy.allow_history_training}
           />
           <Toggle
             label="接收每日推送提醒"
