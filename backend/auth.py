@@ -1,3 +1,14 @@
+"""UNUSED. Nothing imports this module.
+
+The live auth path is in main.py (_make_token / _decode_token / _opt_uid).
+This file is a superseded copy that drifted: its JWT_SECRET falls back to
+"dev-secret" where main.py uses "dev-secret-change-in-prod", so if it were ever
+wired back up while both were unset, tokens minted by one half would fail
+verification in the other — an intermittent-logout bug with no obvious cause.
+
+Left in place rather than deleted because that is a call for whoever owns the
+auth surface, but it should not be imported without reconciling it first.
+"""
 """JWT auth + per-user soft scoping helpers."""
 
 import os

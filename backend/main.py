@@ -87,6 +87,8 @@ VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
 INTERNAL_NAMESPACE      = os.getenv("INTERNAL_VECTOR_NAMESPACE", "internal")
 INTERNAL_TOP_K          = int(os.getenv("INTERNAL_TOP_K", "3"))
 INTERNAL_MIN_SIMILARITY = float(os.getenv("INTERNAL_MIN_SIMILARITY", "0.5"))
+# Falls back to a value committed in this file; _warn_on_insecure_config()
+# reports it at startup, because nothing else would.
 JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
 ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
 JWT_ALG          = "HS256"
@@ -145,9 +147,34 @@ def _get_supabase() -> Optional["Client"]:
 # slow model turn reads as a total app freeze.
 THREAD_LIMIT = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
 
+#: The fallback baked into the source. Anyone who can read the repository can
+#: read this, so a deployment still using it can have session tokens forged for
+#: any account — no password needed, since the token *is* the credential.
+_DEV_JWT_SECRET = "dev-secret-change-in-prod"
+
+
+def _warn_on_insecure_config() -> None:
+    """Say so, loudly, at startup rather than never.
+
+    Not fatal: local development should keep working without a .env. But the
+    failure mode this guards against is silent — an unset JWT_SECRET behaves
+    exactly like a correctly configured one until someone notices they can mint
+    tokens, and there is no way to detect it from outside the deployment.
+    """
+    if JWT_SECRET == _DEV_JWT_SECRET:
+        print("[SECURITY] JWT_SECRET is unset and falling back to the value "
+              "committed in main.py. Anyone with repository access can forge a "
+              "session token for any account. Set JWT_SECRET in the environment "
+              "(Production *and* Preview).")
+    if not ADMIN_KEY:
+        print("[SECURITY] ADMIN_KEY is unset; /admin endpoints have no shared "
+              "secret to check against.")
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_LIMIT
+    _warn_on_insecure_config()
     # Pull source_domains in before the first parent is waiting on it. The read
     # is cached for SOURCE_DOMAINS_TTL_S, so without this the first chat turn
     # after every cold start pays a database round trip in front of its first
