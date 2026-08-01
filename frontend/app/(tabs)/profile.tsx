@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api, auth } from "@/src/api";
+import { completedAgeMonths } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { colors, radius, spacing, type } from "@/src/theme";
 
@@ -132,7 +133,7 @@ export default function Profile() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.childName}>{c.nickname}</Text>
                 <Text style={styles.childMeta}>
-                  {monthsOf(c.birth_date)} 月龄
+                  {ageLabel(c.birth_date)}
                   {c.allergies?.length ? ` · 过敏：${c.allergies.join(", ")}` : ""}
                 </Text>
               </View>
@@ -337,17 +338,9 @@ function Toggle({
   );
 }
 
-function monthsOf(birth: string) {
-  try {
-    const b = new Date(birth);
-    const n = new Date();
-    return Math.max(
-      0,
-      (n.getFullYear() - b.getFullYear()) * 12 + (n.getMonth() - b.getMonth())
-    );
-  } catch {
-    return 0;
-  }
+function ageLabel(birthDate: string) {
+  const months = completedAgeMonths(birthDate);
+  return months === null ? "出生日期待确认" : `${months} 月龄`;
 }
 
 const styles = StyleSheet.create({

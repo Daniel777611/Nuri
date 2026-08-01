@@ -12,7 +12,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.main import _age_label, _profile_ctx  # noqa: E402
+import backend.main as main_module  # noqa: E402
+from backend.main import (  # noqa: E402
+    ChildCreate,
+    _age_label,
+    _child_payload,
+    _profile_ctx,
+    _resource_matches_preferred_locale,
+    _safe_child_recommendation_context,
+)
 
 
 def _shift_months(delta: int) -> str:
@@ -52,6 +60,75 @@ def test_age_label_rejects_bad_input(bad):
 
 def test_future_birth_date_yields_no_age():
     assert _age_label(_shift_months(2)) == ""
+
+
+@pytest.mark.parametrize(
+    "today,birth_date,expected",
+    [
+        (date(2026, 2, 28), "2026-01-31", "1个月"),
+        (date(2026, 4, 30), "2026-03-31", "1个月"),
+        (date(2025, 2, 28), "2024-02-29", "12个月"),
+    ],
+)
+def test_age_label_treats_short_month_end_as_anniversary(
+    monkeypatch, today, birth_date, expected
+):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(today.year, today.month, today.day)
+
+    monkeypatch.setattr(main_module, "date", FixedDate)
+    assert _age_label(birth_date) == expected
+
+
+def test_child_model_preserves_date_only_value_and_rejects_future_date():
+    child = ChildCreate(nickname="小满", birth_date="2025-10-01")
+    assert _child_payload(child)["birth_date"] == "2025-10-01"
+
+    with pytest.raises(ValueError):
+        ChildCreate(nickname="小满", birth_date=_shift_months(2))
+
+
+def test_recommendation_child_context_contains_age_but_not_identity_or_birthday():
+    child = {
+        "nickname": "不应外发的名字",
+        "birth_date": "2025-10-01",
+        "gender": "boy",
+    }
+    context = _safe_child_recommendation_context([child])
+
+    assert _age_label("2025-10-01") in context["child_age_context"]
+    assert "不应外发的名字" not in context["child_age_context"]
+    assert "2025-10-01" not in context["child_age_context"]
+    assert len(context["child_profile_fingerprint"]) == 24
+
+    changed = _safe_child_recommendation_context(
+        [{**child, "birth_date": "2025-09-01"}]
+    )
+    assert (
+        changed["child_profile_fingerprint"]
+        != context["child_profile_fingerprint"]
+    )
+
+
+def test_simplified_locale_does_not_accept_taiwan_fallback_label():
+    assert not _resource_matches_preferred_locale(
+        {
+            "locales": ["zh-CN", "zh-TW"],
+            "language": "普通话视频 · 台湾",
+            "publisher": "台湾育儿频道",
+        },
+        "zh-CN",
+    )
+    assert _resource_matches_preferred_locale(
+        {
+            "locales": ["zh-CN"],
+            "language": "简体中文",
+            "publisher": "香港卫生署家庭健康服务",
+        },
+        "zh-CN",
+    )
 
 
 FULL_PROFILE = {

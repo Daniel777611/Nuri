@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     LEARNING_CONTENT_CARDS,
+    LEARNING_CONTENT_BY_ID,
     SUPPORTED_RESOURCE_LOCALES,
     TAIWAN_AUTHORITY_RESOURCE_HOSTS,
     TRUSTED_RESOURCE_HOSTS,
@@ -1588,12 +1589,19 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
     )
     videos = [resource for resource in resources if resource["kind"] == "video"]
 
-    # Simplified-Chinese fallback articles remain outside mainland China. Videos
-    # may come from reviewed Hong Kong or Taiwan public-health publishers, but
-    # must be explicitly verified as Mandarin rather than inferred from script.
-    assert urlparse(authority_article["url"]).hostname == "www.fhs.gov.hk"
-    assert urlparse(authority_article["url"]).path.startswith("/sc_chi/")
-    assert "香港特别行政区政府" in authority_article["publisher"]
+    # Authority articles remain from reviewed institutions outside mainland
+    # government sources. The milestone card uses Mayo's exact 10-12 month
+    # Simplified-Chinese guide; older cards retain the Hong Kong health service.
+    if card["id"] == "learn_development_milestones":
+        assert urlparse(authority_article["url"]).hostname == "www.mayoclinic.org"
+        assert "/zh-hans/" in urlparse(authority_article["url"]).path
+        assert "Mayo Clinic" in authority_article["publisher"]
+        assert all(resource.get("source_region") != "TW" for resource in resources)
+        assert all(resource.get("script_language") != "zh-Hant" for resource in resources)
+    else:
+        assert urlparse(authority_article["url"]).hostname == "www.fhs.gov.hk"
+        assert urlparse(authority_article["url"]).path.startswith("/sc_chi/")
+        assert "香港特别行政区政府" in authority_article["publisher"]
     for video in videos:
         assert video["spoken_language"] == "mandarin"
         assert video["spoken_language_status"] == "verified"
@@ -1673,6 +1681,84 @@ def test_learning_resource_ids_are_unique():
     ]
 
     assert len(ids) == len(set(ids))
+
+
+def test_development_reviewed_resources_cover_age_and_busy_parent_focus():
+    resources = {
+        resource["id"]: resource
+        for resource in LEARNING_CONTENT_BY_ID["learn_development_milestones"][
+            "resources"
+        ]
+        if "zh-CN" in resource.get("locales", [])
+    }
+
+    assert "10 到 12 月龄" in resources["development-zh-cn-article"]["title"]
+    assert "关键阶段" in resources["development-zh-cn-video"]["title"]
+    assert "10—12 月" in resources["development-mama-cn-featured-article"][
+        "description"
+    ]
+    assert "10 个月" in resources["development-guoma-featured-video"]["title"]
+    assert "10 月龄" in resources["development-sina-parent-case-article"][
+        "description"
+    ]
+    busy_case = resources["development-ahnian-parent-case-video"]
+    assert "工作" in busy_case["title"]
+    assert "时间" in busy_case["selection_reason"]
+    assert "月龄不同" in busy_case["trust_note"]
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        {
+            "locales": ["zh-CN"],
+            "source_region": "TW",
+            "language": "简体中文",
+            "publisher": "未标注地区的来源",
+        },
+        {
+            "locales": ["zh-CN"],
+            "script_language": "zh-Hant",
+            "language": "简体中文",
+            "publisher": "未标注地区的来源",
+        },
+    ],
+)
+def test_runtime_zh_cn_filter_rejects_structurally_mislabeled_taiwan_resource(
+    resource,
+):
+    assert not main._resource_matches_preferred_locale(resource, "zh-CN")
+
+
+def test_reviewed_resource_summary_uses_runtime_locale_filter():
+    mixed_resources = [
+        {
+            "id": "valid-cn",
+            "kind": "article",
+            "content_category": "authority",
+            "locales": ["zh-CN"],
+            "source_region": "US",
+            "script_language": "zh-Hans",
+            "url": (
+                "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/"
+                "infant-and-toddler-health/in-depth/infant-development/art-20047380"
+            ),
+        },
+        {
+            "id": "mislabeled-tw",
+            "kind": "video",
+            "content_category": "authority",
+            "locales": ["zh-CN", "zh-TW"],
+            "source_region": "TW",
+            "url": "https://www.youtube.com/watch?v=trustedTaiwanSource",
+        },
+    ]
+
+    filtered = main._reviewed_resources_for_context(mixed_resources, "zh-CN")
+    summary = main.summarize_resource_slots(filtered, "zh-CN")
+
+    assert [resource["id"] for resource in filtered] == ["valid-cn"]
+    assert summary["categories"]["authority"] == {"article": 1, "video": 0}
 
 
 @pytest.mark.parametrize(

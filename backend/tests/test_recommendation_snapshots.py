@@ -47,6 +47,23 @@ def test_recommendation_id_is_stable_and_opaque():
     assert "session-secret" not in first
 
 
+def test_recommendation_id_changes_with_child_profile_version():
+    base = dict(
+        card_id="learn_language_milestones",
+        session_id="session-secret",
+        context_created_at="2026-08-01T10:00:00+00:00",
+    )
+
+    first = recommendation_id(
+        "private-user-123", **base, profile_fingerprint="age-profile-a"
+    )
+    second = recommendation_id(
+        "private-user-123", **base, profile_fingerprint="age-profile-b"
+    )
+
+    assert first != second
+
+
 def test_snapshot_round_trip_is_bounded_and_user_namespaced():
     now = datetime(2026, 8, 1, tzinfo=timezone.utc)
     snapshot = build_snapshot(
@@ -61,6 +78,8 @@ def test_snapshot_round_trip_is_bounded_and_user_namespaced():
         {
             "session_id": "main-session",
             "context_created_at": "2026-08-01T10:00:00+00:00",
+            "child_profile_fingerprint": "safe-profile-version",
+            "child_age_context": "孩子当前年龄：10个月",
         },
         now=now,
     )
@@ -78,6 +97,8 @@ def test_snapshot_round_trip_is_bounded_and_user_namespaced():
     assert "action_plan" not in serialized
     assert restored["session_id"] == "main-session"
     assert restored["recommendation_intent"] == "action_plan"
+    assert restored["child_profile_fingerprint"] == "safe-profile-version"
+    assert restored["child_age_context"] == "孩子当前年龄：10个月"
     assert snapshot_storage_key("parent-1", snapshot["recommendation_id"]).endswith(
         snapshot["recommendation_id"]
     )
@@ -116,6 +137,31 @@ def test_expired_or_malformed_snapshot_is_rejected():
     ) is None
     with pytest.raises(ValueError):
         snapshot_storage_key("parent-1", "bad-id")
+
+
+def test_version_one_snapshot_remains_readable_during_upgrade():
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        "parent-1",
+        {"id": "learn_sleep_routine"},
+        {"session_id": "session-1", "context_created_at": now.isoformat()},
+        now=now,
+    )
+    snapshot["version"] = 1
+    snapshot["context_version"] = "multi-session-intent-v1"
+    snapshot.pop("child_profile_fingerprint", None)
+    snapshot.pop("child_age_context", None)
+
+    restored = parse_snapshot(
+        serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET),
+        now=now,
+        secret=TEST_SNAPSHOT_SECRET,
+    )
+
+    assert restored is not None
+    assert restored["version"] == 1
+    assert restored["child_profile_fingerprint"] is None
+    assert restored["child_age_context"] == ""
 
 
 class _Result:

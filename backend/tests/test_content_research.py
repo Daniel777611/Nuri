@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend import main  # noqa: E402
+from backend.content_library import LEARNING_CONTENT_BY_ID  # noqa: E402
 from backend.content_research import (  # noqa: E402
     CONTENT_CATEGORIES,
     MAX_RESOURCES_PER_CATEGORY,
@@ -22,11 +23,17 @@ from backend.content_research import (  # noqa: E402
     MIN_TOTAL_RESEARCH_RESOURCES,
     MAX_RESOURCES_PER_PUBLISHER,
     RESOURCE_KINDS,
+    _context_child_age_months,
+    _is_evidenced_video_page,
+    _resource_source_category_allowed,
+    _reviewed_resource_matches_policy,
+    _resource_matches_topic,
     build_research_prompt,
     clear_research_cache,
     parse_research_response,
     redact_conversation_text,
     research_learning_resources,
+    reviewed_resource_matches_context,
 )
 
 _URLS_BY_SLOT = {
@@ -39,7 +46,7 @@ _URLS_BY_SLOT = {
         "https://raisingchildren.net.au/sleep/featured-guide",
         "https://parenting.example.com/sleep-practical-guide",
     ],
-    ("featured", "video"): ["https://babyedu.sfaa.gov.tw/info/10000213"],
+    ("featured", "video"): ["https://www.youtube.com/watch?v=EtfYKMI6At8"],
     ("case", "article"): [
         "https://parenting.example.com/our-sleep-story",
         "https://familystories.example.org/parent-sleep-case",
@@ -98,7 +105,15 @@ def _raw_resources(
                         "content_category": category,
                         "kind": kind,
                         "title": title,
-                        "publisher": f"{category} publisher {kind} {item_index}",
+                        "publisher": (
+                            (
+                                "小丹丹育儿成长记"
+                                if kind == "video"
+                                else ("年糕妈妈" if item_index == 1 else "育婴师安安米琪")
+                            )
+                            if locale == "zh-CN" and category == "featured"
+                            else f"{category} publisher {kind} {item_index}"
+                        ),
                         "language": language,
                         "spoken_language": (
                             spoken_language if kind == "video" else "not_applicable"
@@ -502,7 +517,7 @@ def test_simplified_chinese_authority_accepts_reviewed_mainland_childrens_hospit
     assert hospital_url in {resource["url"] for resource in parsed["resources"]}
 
 
-def test_reviewed_hospital_source_cannot_be_misclassified_as_featured():
+def test_reviewed_hospital_source_is_reclassified_as_authority_not_featured():
     resources = _raw_resources()
     featured_article = next(
         item
@@ -525,7 +540,10 @@ def test_reviewed_hospital_source_cannot_be_misclassified_as_featured():
     )
 
     assert parsed is not None
-    assert hospital_url not in {resource["url"] for resource in parsed["resources"]}
+    hospital = next(
+        resource for resource in parsed["resources"] if resource["url"] == hospital_url
+    )
+    assert hospital["content_category"] == "authority"
 
 
 def test_verified_hospital_public_account_article_requires_official_cited_evidence():
@@ -723,8 +741,7 @@ def test_zh_cn_selection_prefers_reviewed_creator_seed_at_equal_quality():
         next(
             item
             for item in resources
-            if (item["content_category"], item["kind"])
-            == ("featured", "article")
+            if (item["content_category"], item["kind"]) == ("featured", "article")
         )
     )
     preferred_url = "https://www.nicomama.com/parenting/sleep-guide"
@@ -754,8 +771,7 @@ def test_creator_seed_name_does_not_boost_an_arbitrary_host():
         next(
             item
             for item in resources
-            if (item["content_category"], item["kind"])
-            == ("featured", "article")
+            if (item["content_category"], item["kind"]) == ("featured", "article")
         )
     )
     spoofed_url = "https://unverified.example.org/parenting/sleep-guide"
@@ -800,6 +816,42 @@ def test_zh_cn_prompt_contains_tiered_sources_short_video_and_commercial_guardra
     assert "最长不超过10分钟" in prompt
     assert "商业风险" in prompt
     assert "一律不把自述资历当医学权威" in prompt
+    assert "台湾来源、繁体中文页面和繁体中文翻译页全部禁止" in prompt
+    assert "不能作为找不到简体内容时的回退" in prompt
+
+
+@pytest.mark.parametrize(
+    "mutations",
+    [
+        {"language": "繁體中文"},
+        {
+            "url": "https://health.gov.tw/parenting/sleep-guide",
+            "publisher": "臺灣衛生機構",
+        },
+    ],
+)
+def test_zh_cn_hard_language_gate_rejects_traditional_or_taiwan_resources(
+    mutations,
+):
+    resources = _raw_resources()
+    resource = next(
+        item
+        for item in resources
+        if item["url"] == _URLS_BY_SLOT[("authority", "article")][1]
+    )
+    resource.update(mutations)
+    resource["page_language_evidence_url"] = resource["url"]
+    rejected_url = resource["url"]
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    assert len(parsed["resources"]) == MAX_TOTAL_RESEARCH_RESOURCES - 1
+    assert rejected_url not in {item["url"] for item in parsed["resources"]}
 
 
 def test_conversation_text_is_redacted_before_web_research():
@@ -1227,17 +1279,429 @@ def test_research_bundle_drops_private_or_local_optional_urls(private_url):
 
 class _FakeResponses:
     def __init__(self, response):
-        self.response = response
+        self.responses = list(response) if isinstance(response, tuple) else [response]
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return deepcopy(self.response)
+        response_index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return deepcopy(self.responses[response_index])
 
 
 class _FakeClient:
     def __init__(self, response):
         self.responses = _FakeResponses(response)
+
+
+def test_bounded_repair_fills_only_missing_slot_preserves_first_candidates_and_caches(
+    capsys,
+):
+    clear_research_cache()
+    complete_six = _raw_resources(include_optional_third=False)
+    case_video = next(
+        resource
+        for resource in complete_six
+        if (resource["content_category"], resource["kind"]) == ("case", "video")
+    )
+    first_valid = [resource for resource in complete_six if resource is not case_video]
+    invalid_case_video = deepcopy(case_video)
+    invalid_raw_url = "https://www.youtube.com/watch?v=FirstAttemptInvalid"
+    invalid_case_video.update(
+        {
+            "url": invalid_raw_url,
+            "evidence_url": invalid_raw_url,
+            "spoken_language_evidence": "",
+            "spoken_language_evidence_url": invalid_raw_url,
+            "page_language_evidence_url": invalid_raw_url,
+            "case_evidence_url": invalid_raw_url,
+        }
+    )
+    client = _FakeClient(
+        (
+            _response([*first_valid, invalid_case_video]),
+            _response([case_video]),
+        )
+    )
+    card = {
+        "id": "learn_sleep_routine",
+        "topic": "幼儿夜醒和入睡困难",
+        "topic_label": "睡眠作息",
+        "title": "改善孩子的睡眠作息",
+        "summary": "建立固定睡前节奏。",
+        "recommendation_focus": "孩子反复夜醒",
+        "recommendation_intent": "learn_more",
+        "child_age_context": "11个月",
+    }
+    kwargs = {
+        "card": card,
+        "messages": [{"role": "user", "text": "RAW_PRIVATE_CONVERSATION"}],
+        "preferred_locale": "zh-CN",
+        "model": "test-model",
+        "safety_identifier": "private-user-id-must-not-be-logged",
+    }
+
+    try:
+        result = research_learning_resources(client, **kwargs)
+        cached = research_learning_resources(client, **kwargs)
+
+        assert result is not None
+        assert cached == result
+        assert len(client.responses.calls) == 2
+        final_urls = {resource["url"] for resource in result["resources"]}
+        assert {resource["url"] for resource in first_valid}.issubset(final_urls)
+        assert case_video["url"] in final_urls
+
+        repair_request = client.responses.calls[1]
+        repair_prompt = repair_request["input"]
+        assert '"content_category": "case", "kind": "video"' in repair_prompt
+        assert "这次只做一次有上限的缺口修复搜索" in repair_prompt
+        assert "医院、儿童医院和妇幼机构的内容只能归入 authority" in repair_prompt
+        assert "case 只能使用有同页证据证明为父母/家庭亲历过程" in repair_prompt
+        assert "中文视频必须直达具体可播放页面" in repair_prompt
+        assert "普通话/国语/华语" in repair_prompt
+        assert "https://youtube.com/watch?v=FirstAttemptInvalid" in repair_prompt
+        repair_resource_schema = repair_request["text"]["format"]["schema"][
+            "properties"
+        ]["resources"]
+        assert repair_resource_schema["minItems"] == 1
+        assert repair_resource_schema["maxItems"] == 1
+
+        diagnostics = capsys.readouterr().out
+        assert '"attempt": 1' in diagnostics
+        assert '"attempt": 2' in diagnostics
+        assert '"valid_resource_count": 5' in diagnostics
+        assert "private-user-id-must-not-be-logged" not in diagnostics
+        assert "RAW_PRIVATE_CONVERSATION" not in diagnostics
+    finally:
+        clear_research_cache()
+
+
+def test_child_age_context_changes_prompt_and_cache_identity():
+    clear_research_cache()
+    client = _FakeClient(_response(_raw_resources(include_optional_third=False)))
+    base_card = {
+        "id": "learn_sleep_routine",
+        "topic": "幼儿夜醒和入睡困难",
+        "topic_label": "睡眠作息",
+        "title": "改善孩子的睡眠作息",
+        "summary": "建立固定睡前节奏。",
+        "recommendation_focus": "孩子反复夜醒",
+        "recommendation_intent": "learn_more",
+        "child_age_context": "10个月",
+    }
+    kwargs = {
+        "messages": [],
+        "preferred_locale": "zh-CN",
+        "model": "test-model",
+        "safety_identifier": "nuri_age_context_parent",
+    }
+
+    try:
+        first = research_learning_resources(client, card=base_card, **kwargs)
+        cached = research_learning_resources(client, card=deepcopy(base_card), **kwargs)
+        changed_age = research_learning_resources(
+            client,
+            card={**base_card, "child_age_context": "11个月"},
+            **kwargs,
+        )
+
+        assert first is not None
+        assert cached == first
+        assert changed_age is not None
+        assert len(client.responses.calls) == 2
+        assert '"child_age_context": "10个月"' in client.responses.calls[0]["input"]
+        assert '"child_age_context": "11个月"' in client.responses.calls[1]["input"]
+    finally:
+        clear_research_cache()
+
+
+def test_development_topic_requires_visible_age_and_development_evidence():
+    topic_context = {
+        "topic": "孩子处于什么关键期，以及创业忙时怎样高质量陪伴",
+        "topic_label": "发展阶段与里程碑",
+        "child_age_context": "孩子当前年龄：10个月",
+    }
+    generic_myth = {
+        "title": "大脑袋宝宝更聪明？30条育儿谣言",
+        "description": "讨论儿童发育和常见育儿误区。",
+        "selection_reason": "回应家长对儿童发展问题的关注。",
+        "page_language_evidence": "页面是简体中文育儿科普。",
+    }
+    prenatal = {
+        "title": "胎宝宝十个月发育全过程",
+        "description": "介绍孕期胎儿发育。",
+        "selection_reason": "讨论十个月阶段。",
+        "page_language_evidence": "胎宝宝十个月发育全过程。",
+    }
+    stage_specific = {
+        "title": "10—12个月宝宝早教游戏",
+        "description": "介绍婴儿大运动和亲子互动。",
+        "selection_reason": "适合忙碌家长进行短时高质量陪伴。",
+        "page_language_evidence": "10—12个月宝宝爬行、扶站与亲子游戏。",
+    }
+    chinese_numeral_stage = {
+        "title": "十个月宝宝成长记：爬行、扶站和亲子互动",
+        "description": "记录婴儿发展。",
+        "selection_reason": "匹配当前月龄。",
+        "page_language_evidence": "十个月宝宝的动作发展记录。",
+    }
+    overly_broad_range = {
+        "title": "0—36个月儿童发展大全",
+        "description": "汇总儿童发展阶段。",
+        "selection_reason": "覆盖多个年龄。",
+        "page_language_evidence": "0—36个月儿童发展。",
+    }
+
+    assert not _resource_matches_topic(generic_myth, topic_context)
+    assert not _resource_matches_topic(prenatal, topic_context)
+    assert _resource_matches_topic(stage_specific, topic_context)
+    assert _resource_matches_topic(chinese_numeral_stage, topic_context)
+    assert not _resource_matches_topic(overly_broad_range, topic_context)
+
+
+def test_child_age_context_wins_over_other_month_counts_in_focus_text():
+    topic_context = {
+        "topic": "未来两个月怎样准备关键期",
+        "recommendation_focus": "未来2个月的陪伴计划",
+        "child_age_context": "孩子当前年龄：10个月",
+    }
+    two_month_resource = {
+        "title": "2个月宝宝发育里程碑",
+        "description": "介绍婴儿发育。",
+        "selection_reason": "按月龄整理。",
+        "page_language_evidence": "2个月宝宝发育。",
+    }
+    ten_month_resource = {
+        "title": "10个月宝宝发育里程碑",
+        "description": "介绍婴儿发育。",
+        "selection_reason": "按月龄整理。",
+        "page_language_evidence": "10个月宝宝发育。",
+    }
+
+    assert not _resource_matches_topic(two_month_resource, topic_context)
+    assert _resource_matches_topic(ten_month_resource, topic_context)
+
+
+def test_dynamic_topic_gate_parses_production_year_age_label():
+    topic_context = {
+        "child_age_context": "孩子当前年龄：2岁6个月",
+        "topic": "儿童发展里程碑",
+        "recommendation_focus": "想了解现在的关键期",
+    }
+    infant_stage = {
+        "title": "6个月孩子发育里程碑",
+        "description": "说明婴儿这个阶段的发展和互动。",
+        "selection_reason": "面向半岁婴儿。",
+        "page_language_evidence": "6个月孩子发育里程碑。",
+    }
+
+    for title in (
+        "30个月孩子发育里程碑",
+        "2岁6个月孩子发育里程碑",
+        "2岁半孩子发育里程碑",
+        "2—3岁孩子发育里程碑",
+        "2岁孩子发育里程碑",
+    ):
+        exact_stage = {
+            "title": title,
+            "description": "说明这个阶段的发展和互动。",
+            "selection_reason": "对应孩子当前年龄。",
+            "page_language_evidence": title,
+        }
+        assert _resource_matches_topic(exact_stage, topic_context)
+    assert not _resource_matches_topic(infant_stage, topic_context)
+
+
+def test_dynamic_case_cannot_be_an_institutional_explainer():
+    hospital_explainer = {
+        "content_category": "case",
+        "title": "7-12 月宝宝发育里程碑式变化",
+        "publisher": "丁香园医院汇",
+        "url": "https://y.dxy.cn/v2/hospital/257/823274.html",
+    }
+    parent_video = {
+        "content_category": "case",
+        "title": "10 月龄宝宝的一天",
+        "publisher": "一位宝妈的真实记录",
+        "url": "https://www.bilibili.com/video/BV1js421N7Uh/",
+    }
+
+    assert not _resource_source_category_allowed(hospital_explainer, "zh-CN")
+    assert _resource_source_category_allowed(parent_video, "zh-CN")
+
+
+def test_zh_cn_featured_source_must_match_reviewed_editorial_or_creator_seed():
+    unknown_aggregator = {
+        "content_category": "featured",
+        "title": "10个月宝宝的体格发育和智能发育",
+        "publisher": "宝宝知识",
+        "url": "https://www.baby53.com/month/10.html",
+    }
+    reviewed_editorial = {
+        "content_category": "featured",
+        "title": "10—12个月宝宝大运动发育指南",
+        "publisher": "妈妈网",
+        "url": "https://www.mama.cn/baby/yinger/article/793653.html",
+    }
+    preferred_creator = {
+        "content_category": "featured",
+        "title": "10个月宝宝早教游戏",
+        "publisher": "年糕妈妈",
+        "url": "https://www.bilibili.com/video/BV17r4y1x7Hu/",
+    }
+
+    assert not _resource_source_category_allowed(unknown_aggregator, "zh-CN")
+    assert _resource_source_category_allowed(reviewed_editorial, "zh-CN")
+    assert _resource_source_category_allowed(preferred_creator, "zh-CN")
+
+
+def test_creator_platform_collection_is_not_a_direct_video_page():
+    url = "https://www.bilibili.com/list/ml55723141"
+    resource = {
+        "url": url,
+        "video_page_evidence": "页面中有可播放的视频合集。",
+        "video_page_evidence_url": url,
+    }
+
+    assert not _is_evidenced_video_page(
+        resource, {"https://bilibili.com/list/ml55723141"}
+    )
+
+
+def test_reviewed_development_bundle_has_all_six_strict_zh_cn_slots():
+    resources = [
+        resource
+        for resource in LEARNING_CONTENT_BY_ID["learn_development_milestones"][
+            "resources"
+        ]
+        if "zh-CN" in (resource.get("locales") or [])
+        and _reviewed_resource_matches_policy(resource, "zh-CN")
+    ]
+
+    assert {
+        (resource["content_category"], resource["kind"])
+        for resource in resources
+    } == {
+        (category, kind)
+        for category in CONTENT_CATEGORIES
+        for kind in RESOURCE_KINDS
+    }
+    assert len(resources) == MIN_TOTAL_RESEARCH_RESOURCES
+    assert not any(
+        resource.get("source_region") == "TW"
+        or "zh-TW" in (resource.get("locales") or [])
+        or resource.get("script_language") == "zh-Hant"
+        for resource in resources
+    )
+
+
+def test_reviewed_development_bundle_matches_current_age_and_parent_focus():
+    resources = LEARNING_CONTENT_BY_ID["learn_development_milestones"]["resources"]
+    context = {
+        "child_age_context": "孩子当前年龄：10个月",
+        "recommendation_focus": "担心关键期，也因为创业工作忙、陪伴时间少",
+    }
+
+    matching_ids = {
+        resource["id"]
+        for resource in resources
+        if "zh-CN" in (resource.get("locales") or [])
+        and reviewed_resource_matches_context(resource, context)
+    }
+
+    assert matching_ids == {
+        "development-zh-cn-article",
+        "development-zh-cn-video",
+        "development-mama-cn-featured-article",
+        "development-guoma-featured-video",
+        "development-sina-parent-case-article",
+        "development-ahnian-parent-case-video",
+    }
+
+
+def test_reviewed_age_metadata_blocks_stale_ten_month_resources():
+    resources = LEARNING_CONTENT_BY_ID["learn_development_milestones"]["resources"]
+    by_id = {resource["id"]: resource for resource in resources}
+    context = {
+        "child_age_context": "孩子当前年龄：30个月",
+        "recommendation_focus": "想了解当前阶段的发展",
+    }
+
+    assert reviewed_resource_matches_context(
+        by_id["development-zh-cn-video"], context
+    )
+    for resource_id in (
+        "development-zh-cn-article",
+        "development-mama-cn-featured-article",
+        "development-guoma-featured-video",
+        "development-sina-parent-case-article",
+    ):
+        assert not reviewed_resource_matches_context(by_id[resource_id], context)
+
+
+def test_full_static_card_text_cannot_bypass_wrong_age_range():
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_development_milestones"])
+    card.update(
+        {
+            "child_age_context": "孩子当前年龄：2岁6个月",
+            "recommendation_focus": "创业工作太忙，陪伴孩子的时间少",
+        }
+    )
+    by_id = {resource["id"]: resource for resource in card["resources"]}
+
+    for resource_id in (
+        "development-zh-cn-article",
+        "development-mama-cn-featured-article",
+        "development-guoma-featured-video",
+        "development-sina-parent-case-article",
+    ):
+        assert not reviewed_resource_matches_context(by_id[resource_id], card)
+    assert reviewed_resource_matches_context(
+        by_id["development-ahnian-parent-case-video"], card
+    )
+
+
+@pytest.mark.parametrize(
+    ("age_context", "expected_months"),
+    [
+        ("孩子当前年龄：未满1个月", 0),
+        ("孩子当前年龄：11个月", 11),
+        ("孩子当前年龄：2岁", 24),
+        ("孩子当前年龄：2岁6个月", 30),
+        ("孩子当前年龄：4岁", 48),
+    ],
+)
+def test_context_child_age_months_parses_production_age_labels(
+    age_context, expected_months
+):
+    assert (
+        _context_child_age_months({"child_age_context": age_context})
+        == expected_months
+    )
+
+
+def test_reviewed_busy_parent_case_requires_matching_focus_at_other_age():
+    resources = LEARNING_CONTENT_BY_ID["learn_development_milestones"]["resources"]
+    case_video = next(
+        resource
+        for resource in resources
+        if resource["id"] == "development-ahnian-parent-case-video"
+    )
+
+    assert reviewed_resource_matches_context(
+        case_video,
+        {
+            "child_age_context": "孩子当前年龄：30个月",
+            "recommendation_focus": "创业工作太忙，陪伴孩子的时间少",
+        },
+    )
+    assert not reviewed_resource_matches_context(
+        case_video,
+        {
+            "child_age_context": "孩子当前年龄：30个月",
+            "recommendation_focus": "想了解大运动发育",
+        },
+    )
 
 
 def test_research_route_is_post_only_and_requires_login():
@@ -1466,6 +1930,9 @@ def test_invalid_dynamic_item_can_be_filled_by_a_diverse_reviewed_resource():
             "id": "reviewed-case-video",
             "locales": ["zh-CN"],
             "research_source": "reviewed_library",
+            "source_region": "CN",
+            "script_language": "zh-Hans",
+            "spoken_language_status": "verified",
         }
     )
     raw_resources[-1][
@@ -1504,6 +1971,54 @@ def test_invalid_dynamic_item_can_be_filled_by_a_diverse_reviewed_resource():
             item.get("research_source") == "reviewed_library"
             for item in result["resources"]
         )
+    finally:
+        clear_research_cache()
+
+
+def test_zh_cn_reviewed_merge_refuses_taiwan_or_traditional_fallback():
+    clear_research_cache()
+    dynamic_resources = _raw_resources(include_optional_third=False)
+    case_video = next(
+        resource
+        for resource in dynamic_resources
+        if (resource["content_category"], resource["kind"]) == ("case", "video")
+    )
+    dynamic_resources.remove(case_video)
+    reviewed_taiwan_video = deepcopy(case_video)
+    reviewed_taiwan_video.update(
+        {
+            "id": "reviewed-taiwan-case-video",
+            "url": "https://babyedu.sfaa.gov.tw/info/10000213",
+            "language": "繁體中文",
+            "publisher": "臺灣親子家庭",
+            "locales": ["zh-CN"],
+            "research_source": "reviewed_library",
+        }
+    )
+    client = _FakeClient(_response(dynamic_resources))
+    card = {
+        "id": "learn_sleep_routine",
+        "topic": "幼儿夜醒和入睡困难",
+        "topic_label": "睡眠作息",
+        "title": "改善孩子的睡眠作息",
+        "summary": "建立固定睡前节奏。",
+        "recommendation_focus": "孩子反复夜醒",
+        "recommendation_intent": "learn_more",
+        "resources": [reviewed_taiwan_video],
+    }
+
+    try:
+        result = research_learning_resources(
+            client,
+            card=card,
+            messages=[],
+            preferred_locale="zh-CN",
+            model="test-model",
+            safety_identifier="nuri_no_traditional_fallback_parent",
+        )
+
+        assert result is None
+        assert len(client.responses.calls) == 3
     finally:
         clear_research_cache()
 
@@ -1615,6 +2130,56 @@ def test_detail_returns_reviewed_pending_without_calling_provider(monkeypatch):
         category: ["article", "video", "article_or_video_optional"]
         for category in CONTENT_CATEGORIES
     }
+
+
+def test_detail_filters_reviewed_resources_with_real_card_context(monkeypatch):
+    async def ready_context(_uid, preferred_session_id=None, through_created_at=None):
+        return {
+            "state": "ready",
+            "session_id": "session-30-months",
+            "messages": [{"role": "user", "text": "创业很忙，陪伴时间少。"}],
+            "preferred_locale": "zh-CN",
+            "external_research_allowed": True,
+        }
+
+    async def attach_age(_uid, context):
+        context["child_age_context"] = "孩子当前年龄：2岁6个月"
+        context["child_profile_fingerprint"] = "profile-30-months"
+        return context
+
+    async def no_events(_uid):
+        return []
+
+    def ranked_development(*_args, **_kwargs):
+        card = deepcopy(LEARNING_CONTENT_BY_ID["learn_development_milestones"])
+        card.update(
+            {
+                "is_conversation_match": True,
+                "recommendation_focus": "创业工作太忙，陪伴孩子的时间少",
+            }
+        )
+        return [card], True
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_age)
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_development)
+    monkeypatch.setattr(main, "content_research_oai", object())
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_development_milestones",
+            uid="parent-private-id",
+        )
+    )
+    resource_ids = {resource["id"] for resource in detail["resources"]}
+
+    assert "development-zh-cn-video" in resource_ids
+    assert "development-ahnian-parent-case-video" in resource_ids
+    assert "development-zh-cn-article" not in resource_ids
+    assert "development-mama-cn-featured-article" not in resource_ids
+    assert "development-guoma-featured-video" not in resource_ids
+    assert "development-sina-parent-case-article" not in resource_ids
 
 
 @pytest.mark.parametrize("include_optional_third", [True, False])
@@ -1750,7 +2315,14 @@ def test_research_endpoint_returns_fallback_when_provider_fails(
     )
 
     assert len(calls) == 1
-    assert research == {"research_status": "reviewed_fallback"}
+    assert research["research_status"] == "reviewed_fallback"
+    assert research["resources"]
+    assert research["fallback_reason"] == "no_complete_verified_bundle"
+    assert all(
+        "zh-CN" in (resource.get("locales") or [])
+        and resource.get("source_region") != "TW"
+        for resource in research["resources"]
+    )
 
 
 def test_research_endpoint_does_not_search_when_card_did_not_match_chat(monkeypatch):

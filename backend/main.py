@@ -47,7 +47,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import AsyncOpenAI, OpenAI
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.background import BackgroundTask
 
 try:
@@ -63,6 +63,7 @@ try:
         MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
+        reviewed_resource_matches_context,
         summarize_resource_slots,
     )
     from backend.recommendation_snapshots import (
@@ -95,6 +96,7 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
+        reviewed_resource_matches_context,
         summarize_resource_slots,
     )
     from recommendation_snapshots import (  # type: ignore
@@ -1439,10 +1441,17 @@ class UserUpdate(BaseModel):
 
 class ChildCreate(BaseModel):
     nickname:   str
-    birth_date: str
+    birth_date: date
     gender: Literal["boy","girl","other"] = "other"
     allergies: List[str] = Field(default_factory=list)
     notes: str = ""
+
+    @field_validator("birth_date")
+    @classmethod
+    def validate_birth_date(cls, value: date) -> date:
+        if value > date.today():
+            raise ValueError("birth_date cannot be in the future")
+        return value
 
 class FavToggle(BaseModel):
     card_id: str
@@ -2333,7 +2342,13 @@ def _age_label(birth_date: str) -> str:
         return ""
     today = date.today()
     months = (today.year - born.year) * 12 + (today.month - born.month)
-    if today.day < born.day:
+    # Treat the last day of a shorter month as the completed monthly
+    # anniversary for birthdays on the 29th-31st. This keeps Jan 31 -> Feb 28
+    # and leap-day birthdays aligned with ordinary calendar-age expectations.
+    next_month = today.replace(day=28) + timedelta(days=4)
+    current_month_last_day = (next_month - timedelta(days=next_month.day)).day
+    anniversary_day = min(born.day, current_month_last_day)
+    if today.day < anniversary_day:
         months -= 1
     if months < 0:
         return ""
@@ -2341,6 +2356,51 @@ def _age_label(birth_date: str) -> str:
         return f"{months}个月" if months else "未满1个月"
     years, rest = divmod(months, 12)
     return f"{years}岁{rest}个月" if rest else f"{years}岁"
+
+
+def _safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
+    """Return age-only family context plus an opaque profile version.
+
+    Exact birthdays and child names stay inside NURI.  External content
+    research only needs the completed age label, while the fingerprint makes a
+    saved recommendation stale as soon as the underlying child profile (or a
+    monthly age boundary) changes.
+    """
+
+    ages: list[str] = []
+    fingerprint_rows: list[str] = []
+    for child in children:
+        birth_date = str(child.get("birth_date") or "")[:10]
+        age = _age_label(birth_date)
+        if age:
+            ages.append(age)
+        if birth_date:
+            fingerprint_rows.append(
+                "|".join(
+                    (
+                        birth_date,
+                        str(child.get("gender") or ""),
+                        age,
+                    )
+                )
+            )
+    fingerprint_material = "\n".join(sorted(fingerprint_rows)) or "no-children"
+    return {
+        "child_age_context": (
+            f"孩子当前年龄：{'、'.join(ages[:3])}" if ages else ""
+        ),
+        "child_profile_fingerprint": hashlib.sha256(
+            fingerprint_material.encode("utf-8")
+        ).hexdigest()[:24],
+    }
+
+
+async def _attach_child_recommendation_context(uid: str, context: dict) -> dict:
+    """Attach current, age-only child context to one recommendation request."""
+
+    _, children = await _load_profile(uid)
+    context.update(_safe_child_recommendation_context(children))
+    return context
 
 
 def _profile_ctx(row: dict, children: Optional[list] = None) -> str:
@@ -2988,6 +3048,25 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
     return _to_public(doc)
 
 # ── Children ──────────────────────────────────────────────────────────────────
+def _child_payload(body: ChildCreate) -> dict:
+    """Serialize a validated child model without losing the date-only value."""
+
+    return body.model_dump(mode="json")
+
+
+async def _invalidate_child_recommendations(uid: Optional[str]) -> None:
+    """Best-effort cleanup; profile fingerprints still reject stale snapshots."""
+
+    if not uid:
+        return
+    try:
+        await _db_delete_recommendation_snapshots(uid)
+    except Exception as exc:
+        # Child profile writes must not look failed after the database already
+        # accepted them.  The profile fingerprint is the correctness backstop.
+        print(f"[warn] child recommendation cleanup failed: {type(exc).__name__}")
+
+
 @api.get("/children")
 async def list_children(uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
@@ -3007,33 +3086,38 @@ async def list_children(uid: Optional[str] = Depends(_opt_uid)):
 
 @api.post("/children", status_code=201)
 async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
-    child = {"id": str(uuid.uuid4()), "created_at": _now(), **body.dict()}
+    child = {"id": str(uuid.uuid4()), "created_at": _now(), **_child_payload(body)}
     if uid:
         child["user_id"] = uid
     sb = _get_supabase()
     if sb and uid:
         await anyio.to_thread.run_sync(lambda: sb.table("children").insert(child).execute())
+        await _invalidate_child_recommendations(uid)
         return child
     _children.append(child)
+    await _invalidate_child_recommendations(uid)
     return child
 
 @api.put("/children/{child_id}")
 async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
+    updates = _child_payload(body)
     sb = _get_supabase()
     if sb and uid:
         res = await anyio.to_thread.run_sync(
             lambda: sb.table("children")
-            .update(body.dict())
+            .update(updates)
             .eq("id", child_id)
             .eq("user_id", uid)
             .execute()
         )
         if res.data:
+            await _invalidate_child_recommendations(uid)
             return res.data[0]
         raise HTTPException(404, "child not found")
     for i, c in enumerate(_children):
         if c["id"] == child_id and (not uid or c.get("user_id") == uid):
-            _children[i] = {**c, **body.dict()}
+            _children[i] = {**c, **updates}
+            await _invalidate_child_recommendations(uid)
             return _children[i]
     raise HTTPException(404, "child not found")
 
@@ -3045,9 +3129,11 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
         await anyio.to_thread.run_sync(
             lambda: sb.table("children").delete().eq("id", child_id).eq("user_id", uid).execute()
         )
+        await _invalidate_child_recommendations(uid)
         return {"ok": True}
     _children = [c for c in _children
                  if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
+    await _invalidate_child_recommendations(uid)
     return {"ok": True}
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
@@ -4692,6 +4778,49 @@ def _resource_blueprint() -> dict[str, list[str]]:
     }
 
 
+def _resource_matches_preferred_locale(resource: dict, locale: str) -> bool:
+    """Do not pass Traditional/Taiwan fallbacks off as Simplified Chinese."""
+
+    locales = resource.get("locales") or []
+    if locale not in locales:
+        return False
+    if locale != "zh-CN":
+        return True
+    if str(resource.get("source_region") or "").upper() == "TW":
+        return False
+    if str(resource.get("script_language") or "") == "zh-Hant":
+        return False
+    identity = " ".join(
+        str(resource.get(field) or "")
+        for field in ("language", "publisher", "trust_note", "recognition")
+    )
+    return not any(
+        marker in identity for marker in ("繁体", "繁體", "台湾", "台灣", "臺灣")
+    )
+
+
+def _reviewed_resources_for_context(
+    resources: list[dict],
+    locale: str,
+    topic_context: Optional[dict] = None,
+) -> list[dict]:
+    """Return reviewed items that are trusted, locale-correct and relevant."""
+
+    return order_learning_resources(
+        [
+            resource
+            for resource in resources
+            if is_trusted_resource_url(str(resource.get("url") or ""))
+            and _resource_matches_preferred_locale(resource, locale)
+            and (
+                topic_context is None
+                or reviewed_resource_matches_context(resource, topic_context)
+            )
+        ],
+        locale,
+    )
+
+
 def _research_safety_identifier(uid: str) -> str:
     """Create a stable, privacy-preserving API safety identifier."""
 
@@ -4715,7 +4844,7 @@ async def _research_card_detail_resources(
     context: dict,
     uid: Optional[str],
 ) -> Optional[dict]:
-    """Run one bounded web-research pass for a conversation-matched detail page."""
+    """Run bounded, validated web research for a conversation-matched detail."""
 
     # Safety is evaluated before consent/provider eligibility.  Emergency text
     # must never be used for external research, regardless of the user's saved
@@ -4807,6 +4936,7 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     """Return learning topics tied to this parent's real main conversation."""
 
     context = await _load_recent_main_chat(uid)
+    await _attach_child_recommendation_context(uid, context)
     behavior_events = (
         await _db_get_recommendation_events(uid)
         if context.get("state") == "ready"
@@ -4838,7 +4968,17 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     for item in items:
         if item.get("is_conversation_match"):
             item["context_created_at"] = context.get("context_created_at")
+            if context.get("child_age_context"):
+                item["child_age_context"] = context["child_age_context"]
         reviewed = LEARNING_CONTENT_BY_ID.get(item["id"], {}).get("resources", [])
+        reviewed = _reviewed_resources_for_context(
+            reviewed,
+            preferred_locale,
+            item
+            if context.get("state") == "ready"
+            and item.get("is_conversation_match")
+            else None,
+        )
         item["resource_summary"] = summarize_resource_slots(reviewed, preferred_locale)
         item["resource_blueprint"] = _resource_blueprint()
         if item.get("is_dynamic_research_card"):
@@ -4878,7 +5018,7 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     return {
         "items": items,
         "feed_request_id": feed_request_id,
-        "model_version": "conversation-quality-cn-sources-v3",
+        "model_version": "conversation-quality-child-age-cn-repair-v4",
         "personalization_mode": mode,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),
@@ -4991,6 +5131,7 @@ async def get_card_detail(
                 preferred_session_id=session_id,
                 through_created_at=context_created_at,
             )
+            await _attach_child_recommendation_context(uid, context)
         else:
             context = {
                 "state": "no_history",
@@ -5002,6 +5143,11 @@ async def get_card_detail(
         if snapshot and (
             context.get("state") != "ready"
             or context.get("session_id") != snapshot.get("session_id")
+            or (
+                snapshot.get("child_profile_fingerprint")
+                and snapshot.get("child_profile_fingerprint")
+                != context.get("child_profile_fingerprint")
+            )
         ):
             # A persisted recommendation must never resurrect conversation-
             # derived context after history personalization is disabled, wiped,
@@ -5028,6 +5174,8 @@ async def get_card_detail(
             )
         if not card:
             raise HTTPException(404, "card not found")
+        if context.get("child_age_context"):
+            card["child_age_context"] = context["child_age_context"]
         if snapshot and context.get("state") == "ready":
             for field in (
                 "personalization_reason",
@@ -5044,15 +5192,14 @@ async def get_card_detail(
             card["context_created_at"] = snapshot.get("context_created_at")
         elif recommendation_id:
             card["recommendation_context_status"] = "legacy_fallback"
-        trusted_resources = [
-            resource
-            for resource in card.get("resources", [])
-            if is_trusted_resource_url(str(resource.get("url") or ""))
-        ]
         preferred_locale = str(context.get("preferred_locale") or "zh-CN")
-        card["resources"] = order_learning_resources(
-            trusted_resources,
+        apply_recommendation_context = bool(
+            context.get("state") == "ready" and card.get("is_conversation_match")
+        )
+        card["resources"] = _reviewed_resources_for_context(
+            card.get("resources", []),
             preferred_locale,
+            card if apply_recommendation_context else None,
         )
         # Return the reviewed library immediately.  The client then calls the
         # research endpoint and can show these resources while web search runs.
@@ -5131,9 +5278,15 @@ async def get_card_research(
         preferred_session_id=session_id,
         through_created_at=context_created_at,
     )
+    await _attach_child_recommendation_context(uid, context)
     if snapshot and (
         context.get("state") != "ready"
         or context.get("session_id") != snapshot.get("session_id")
+        or (
+            snapshot.get("child_profile_fingerprint")
+            and snapshot.get("child_profile_fingerprint")
+            != context.get("child_profile_fingerprint")
+        )
     ):
         raise HTTPException(404, "recommendation not found")
     # This gate deliberately precedes the external-research consent branch.
@@ -5166,6 +5319,8 @@ async def get_card_research(
         )
     if not card:
         raise HTTPException(404, "card not found")
+    if context.get("child_age_context"):
+        card["child_age_context"] = context["child_age_context"]
     if snapshot and context.get("state") == "ready":
         for field in (
             "personalization_reason",
@@ -5186,16 +5341,37 @@ async def get_card_research(
         return {"research_status": "consent_required"}
     research = await _research_card_detail_resources(card=card, context=context, uid=uid)
     if not research:
+        preferred_locale = str(context.get("preferred_locale") or "zh-CN")
         if card.get("is_dynamic_research_card"):
             return {
                 "resources": [],
                 "research_status": "unavailable",
+                "fallback_reason": "no_complete_verified_bundle",
                 "resource_blueprint": _resource_blueprint(),
                 "resource_summary": summarize_resource_slots(
-                    [], str(context.get("preferred_locale") or "zh-CN")
+                    [], preferred_locale
                 ),
             }
-        return {"research_status": "reviewed_fallback"}
+        # Preserve only reviewed resources that pass the same locale, trust and
+        # conversation-context gates as the initial detail response. A failed
+        # live search must not blank a verified list, and it must not resurrect
+        # the old Taiwan/Traditional-Chinese fallbacks either.
+        reviewed_resources = _reviewed_resources_for_context(
+            card.get("resources", []),
+            preferred_locale,
+            card,
+        )
+        return {
+            "resources": reviewed_resources,
+            "research_status": (
+                "reviewed_fallback" if reviewed_resources else "unavailable"
+            ),
+            "fallback_reason": "no_complete_verified_bundle",
+            "resource_blueprint": _resource_blueprint(),
+            "resource_summary": summarize_resource_slots(
+                reviewed_resources, preferred_locale
+            ),
+        }
     preferred_locale = str(context.get("preferred_locale") or "zh-CN")
     resources = research["resources"]
     dynamic_count = int(research.get("dynamic_resource_count") or 0)

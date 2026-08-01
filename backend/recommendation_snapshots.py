@@ -18,8 +18,9 @@ from typing import Any, Mapping, Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 
-SNAPSHOT_VERSION = 1
-SNAPSHOT_CONTEXT_VERSION = "multi-session-intent-v1"
+SNAPSHOT_VERSION = 2
+SNAPSHOT_CONTEXT_VERSION = "multi-session-intent-child-age-v2"
+SUPPORTED_SNAPSHOT_VERSIONS = frozenset({1, SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90
 
 _RECOMMENDATION_ID = re.compile(r"^rec_[a-f0-9]{24}$")
@@ -36,6 +37,7 @@ def recommendation_id(
     card_id: str,
     session_id: Optional[str],
     context_created_at: Optional[str],
+    profile_fingerprint: Optional[str] = None,
     context_version: str = SNAPSHOT_CONTEXT_VERSION,
 ) -> str:
     """Return a stable opaque ID without putting account data in the URL."""
@@ -46,6 +48,7 @@ def recommendation_id(
             card_id,
             session_id or "no-session",
             context_created_at or "no-cutoff",
+            profile_fingerprint or "no-profile",
             context_version,
         )
     )
@@ -83,11 +86,15 @@ def build_snapshot(
         raise ValueError("card id is required")
     session_id = str(context.get("session_id") or "").strip() or None
     context_created_at = str(context.get("context_created_at") or "").strip() or None
+    profile_fingerprint = (
+        str(context.get("child_profile_fingerprint") or "").strip() or None
+    )
     rec_id = recommendation_id(
         uid,
         card_id=card_id,
         session_id=session_id,
         context_created_at=context_created_at,
+        profile_fingerprint=profile_fingerprint,
     )
     return {
         "version": SNAPSHOT_VERSION,
@@ -96,6 +103,8 @@ def build_snapshot(
         "card_id": card_id,
         "session_id": session_id,
         "context_created_at": context_created_at,
+        "child_profile_fingerprint": profile_fingerprint,
+        "child_age_context": str(context.get("child_age_context") or "")[:120],
         "personalization_reason": str(card.get("personalization_reason") or "")[:240],
         "recommendation_focus": str(card.get("recommendation_focus") or "")[:80],
         "recommendation_intent": str(card.get("recommendation_intent") or "")[:48],
@@ -144,7 +153,7 @@ def parse_snapshot(
             parsed = dict(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, json.JSONDecodeError, InvalidToken):
         return None
-    if parsed.get("version") != SNAPSHOT_VERSION:
+    if parsed.get("version") not in SUPPORTED_SNAPSHOT_VERSIONS:
         return None
     rec_id = str(parsed.get("recommendation_id") or "")
     if not _RECOMMENDATION_ID.fullmatch(rec_id):
@@ -159,4 +168,10 @@ def parse_snapshot(
         return None
     if expires_at <= (now or _utc_now()).astimezone(timezone.utc):
         return None
+    # Version 1 records remain readable during the deployment transition. They
+    # are still bound to the same account/session and expiration checks; the
+    # current child age is attached at request time before resources are gated.
+    if parsed.get("version") == 1:
+        parsed.setdefault("child_profile_fingerprint", None)
+        parsed.setdefault("child_age_context", "")
     return parsed

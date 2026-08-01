@@ -58,6 +58,20 @@ TRUSTED_RESOURCE_HOSTS = frozenset(
     }
 )
 
+# Broad user-generated and health-aggregator domains are deliberately not host
+# allowlisted. These exact pages were individually opened and reviewed for this
+# topic, so only the reviewed URL (not every page on the same host) is trusted.
+REVIEWED_EXACT_RESOURCE_URLS = frozenset(
+    {
+        "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047380",
+        "https://www.unicef.cn/videos/ecd-master-class-brain-development-ep02-first",
+        "https://www.mama.cn/baby/yinger/article/793653.html",
+        "https://www.bilibili.com/video/BV17r4y1x7Hu",
+        "https://blog.sina.com.cn/s/blog_5de106b10101m3y8.html",
+        "https://www.bilibili.com/video/BV1U84y1271F",
+    }
+)
+
 SUPPORTED_RESOURCE_LOCALES = frozenset({"zh-CN", "zh-TW", "en", "es"})
 CONTENT_CATEGORIES = ("authority", "featured", "case")
 
@@ -69,9 +83,10 @@ def is_trusted_resource_url(url: str) -> bool:
         parsed = urlparse(url)
     except (TypeError, ValueError):
         return False
-    return (
-        parsed.scheme == "https"
-        and (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+    normalized_url = parsed._replace(fragment="").geturl().rstrip("/")
+    return parsed.scheme == "https" and (
+        (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+        or normalized_url in REVIEWED_EXACT_RESOURCE_URLS
     )
 
 
@@ -752,27 +767,33 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
         {
             "id": "development-zh-cn-article",
             "kind": "article",
-            "title": "儿童发展5：八至十二个月大婴儿的发展",
-            "publisher": "香港特别行政区政府卫生署家庭健康服务",
+            "title": "婴儿发育：10 到 12 月龄的发育里程碑",
+            "publisher": "妙佑医疗国际（Mayo Clinic）",
             "language": "简体中文",
             "locales": ["zh-CN"],
-            "description": "涵盖坐、爬、扶站、精细动作、语言、认知和分离反应。",
-            "url": "https://www.fhs.gov.hk/sc_chi/health_info/child/15697.html",
+            "source_region": "US",
+            "script_language": "zh-Hans",
+            "age_range_months": [10, 12],
+            "focus_tags": ["关键期", "里程碑", "发育"],
+            "description": "直接对应 10 至 12 月龄，涵盖爬行、扶站、手眼协调、语言、认知、安全环境和需要咨询医生的信号。",
+            "url": "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047380",
         },
         {
             "id": "development-zh-cn-video",
             "kind": "video",
-            "title": "宝宝成长路，健检前先记录：四个月至十个月篇",
-            "publisher": "台湾卫生福利部国民健康署官方频道",
-            "language": "普通话视频 · 台湾繁体字幕",
+            "title": "大脑发育主题第二期：理解 0—3 岁能力发展的关键阶段",
+            "publisher": "联合国儿童基金会",
+            "language": "普通话视频 · 简体中文页面",
             "locales": ["zh-CN"],
-            "source_region": "TW",
+            "source_region": "INTL",
+            "script_language": "zh-Hans",
+            "age_range_months": [0, 36],
+            "focus_tags": ["关键期", "大脑发育", "回应式互动"],
             "spoken_language": "mandarin",
             "spoken_language_status": "verified",
-            "language_evidence": "台湾国民健康署官方华语卫教影片。",
-            "script_language": "zh-Hant",
-            "description": "通过日常画面帮助家长观察并记录宝宝的发展表现。",
-            "url": "https://www.youtube.com/watch?v=wG2wh9b3X8I",
+            "language_evidence": "联合国儿童基金会中文节目页面及普通话节目音轨已人工核验。",
+            "description": "专家结合家长代表说明 0 至 3 岁大脑发育、阶段性行为、回应宝宝信号与日常陪伴。",
+            "url": "https://www.unicef.cn/videos/ecd-master-class-brain-development-ep02-first",
         },
         {
             "id": "development-zh-tw-article",
@@ -1594,6 +1615,95 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     {
         "learn_development_milestones": [
             {
+                "id": "development-mama-cn-featured-article",
+                "kind": "article",
+                "content_category": "featured",
+                "source_tier": "curated",
+                "selection_basis": "expert_and_audience",
+                "title": "别卷了！0 到 12 月宝宝大运动发育指南",
+                "publisher": "妈妈网",
+                "language": "简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [10, 12],
+                "focus_tags": ["关键期", "大运动", "发育"],
+                "description": "按 0—4、5—9、10—12 月拆解动作发展，重点说明扶站、侧移、半蹲、安全边界与个体差异。",
+                "trust_note": "妈妈网编辑内容；适合转化为家庭活动，应与权威里程碑和孩子自身表现一起阅读。",
+                "recognition": "主流母婴内容平台 · 2026 年更新",
+                "selection_reason": "正好回应 10 月龄和『关键期』焦虑，把笼统阶段转成当天可做的低压力活动。",
+                "url": "https://www.mama.cn/baby/yinger/article/793653.html",
+            },
+            {
+                "id": "development-guoma-featured-video",
+                "kind": "video",
+                "content_category": "featured",
+                "source_tier": "curated",
+                "selection_basis": "expert_and_audience",
+                "title": "10 个月宝宝早教怎么做？带娃多玩这 8 个游戏",
+                "publisher": "果妈的双倍幸福 · 双胞胎妈妈",
+                "language": "普通话视频 · 简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [10, 10],
+                "focus_tags": ["亲子游戏", "高质量陪伴", "时间少"],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "已人工听检视频前 60 秒，确认是连续普通话口播。",
+                "description": "用 3 分 33 秒示范 8 个适合 10 月龄宝宝的低门槛亲子游戏，覆盖动作、互动和探索。",
+                "trust_note": "双胞胎母亲的实操分享；活动建议不替代发育评估，应以孩子兴趣和安全为先。",
+                "recognition": "约 2.8 万关注 · 约 6.2 万次观看（2026-08 核验）",
+                "selection_reason": "年龄精确、短而具体，适合工作忙的父母挑一个游戏马上陪孩子做。",
+                "url": "https://www.bilibili.com/video/BV17r4y1x7Hu/",
+            },
+            {
+                "id": "development-sina-parent-case-article",
+                "kind": "article",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "十个月成长记：动作、表达、陪玩和一拖二的真实一天",
+                "publisher": "波希米亚檬檬 · 新浪博客家长记录",
+                "language": "简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [10, 10],
+                "focus_tags": ["成长记录", "陪玩", "真实家庭"],
+                "description": "一位母亲记录孩子 10 月龄时爬、扶走、表达需求、独立玩与需要陪玩的真实变化。",
+                "trust_note": "公开第一人称家庭记录；只作为生活参照，不作为医学标准或训练要求。",
+                "recognition": "长期公开家庭成长记录",
+                "selection_reason": "让用户看到同月龄家庭的日常节奏，也明确个体经历不等于每个孩子都要达到的标准。",
+                "case_evidence": "作者以母亲第一人称描述自己独自照顾两个孩子以及 10 月龄孩子的具体日常表现。",
+                "case_evidence_url": "https://blog.sina.com.cn/s/blog_5de106b10101m3y8.html",
+                "url": "https://blog.sina.com.cn/s/blog_5de106b10101m3y8.html",
+            },
+            {
+                "id": "development-ahnian-parent-case-video",
+                "kind": "video",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "独自带娃也要工作：新手妈妈的时间管理实录",
+                "publisher": "找阿年 · 新手妈妈家庭 Vlog",
+                "language": "普通话视频 · 简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "focus_tags": ["工作忙", "创业", "时间管理", "陪伴少"],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "已人工听检 60—90 秒连续音轨，确认是普通话家庭口播。",
+                "description": "用 8 分 22 秒记录新手妈妈独自带娃、处理工作和安排日常时间的真实过程。",
+                "trust_note": "真实家长自制生活记录；孩子月龄不同，只借鉴忙碌家庭的时间安排，不用于比较发育。",
+                "recognition": "约 3 万关注 · 约 6,100 次观看（2026-08 核验）",
+                "selection_reason": "直接回应『工作忙、陪伴时间少』，让用户看到另一位家长怎样把工作和陪伴放进同一天。",
+                "case_evidence": "发布者以新手妈妈第一人称记录自己独自带娃、继续工作和安排时间的真实一天。",
+                "case_evidence_url": "https://www.bilibili.com/video/BV1U84y1271F/",
+                "url": "https://www.bilibili.com/video/BV1U84y1271F/",
+            },
+            {
                 "id": "development-parenting-featured-article",
                 "kind": "article",
                 "content_category": "featured",
@@ -1602,7 +1712,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
                 "title": "兒童發展篩檢怎麼做？掌握里程碑與需要求助的訊號",
                 "publisher": "親子天下",
                 "language": "繁體中文 · 台灣",
-                "locales": ["zh-CN", "zh-TW"],
+                "locales": ["zh-TW"],
                 "source_region": "TW",
                 "description": "由親子媒體整理兒童發展篩檢、觀察重點與何時尋求專業評估。",
                 "trust_note": "成熟親子媒體的專業編輯內容；應與官方里程碑一起閱讀，不替代個別評估。",
@@ -1619,7 +1729,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
                 "title": "未滿七歲兒童發展篩檢：兒科與早療醫師完整說明",
                 "publisher": "黃瑽寧醫師健康講堂 · 陳慧如醫師",
                 "language": "普通話視頻 · 台灣",
-                "locales": ["zh-CN", "zh-TW"],
+                "locales": ["zh-TW"],
                 "source_region": "TW",
                 "spoken_language": "mandarin",
                 "spoken_language_status": "verified",
@@ -1639,7 +1749,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
                 "title": "早療家庭故事：在孩子自己的步調裡看見進步",
                 "publisher": "兒童發展資源網 · 台灣家庭故事",
                 "language": "繁體中文 · 台灣",
-                "locales": ["zh-CN", "zh-TW"],
+                "locales": ["zh-TW"],
                 "source_region": "TW",
                 "description": "家長分享從發現發展疑問、尋求早療到陪孩子逐步練習的家庭歷程。",
                 "trust_note": "公開家庭親身經驗；不作診斷或療效保證，需搭配專業評估。",
@@ -1658,7 +1768,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
                 "title": "漫漫早療路，陪你慢慢走：一位母親的真實歷程",
                 "publisher": "瑪利亞社會福利基金會 · 早療家庭",
                 "language": "普通話視頻 · 台灣",
-                "locales": ["zh-CN", "zh-TW"],
+                "locales": ["zh-TW"],
                 "source_region": "TW",
                 "spoken_language": "mandarin",
                 "spoken_language_status": "verified",

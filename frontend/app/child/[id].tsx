@@ -14,6 +14,12 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { api } from "@/src/api";
+import {
+  compareDateOnly,
+  completedAgeMonths,
+  localDateOnly,
+  parseDateOnly,
+} from "@/src/child-age";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
@@ -28,7 +34,7 @@ export default function ChildEdit() {
   const isNew = id === "new";
 
   const [nickname, setNickname] = useState("");
-  const [months, setMonths] = useState("");
+  const [birthDate, setBirthDate] = useState("");
   const [gender, setGender] = useState<"boy" | "girl" | "other">("other");
   const [allergies, setAllergies] = useState("");
   const [notes, setNotes] = useState("");
@@ -40,12 +46,7 @@ export default function ChildEdit() {
       const c = list.find((x: any) => x.id === id);
       if (c) {
         setNickname(c.nickname);
-        const b = new Date(c.birth_date);
-        const n = new Date();
-        const m =
-          (n.getFullYear() - b.getFullYear()) * 12 +
-          (n.getMonth() - b.getMonth());
-        setMonths(String(Math.max(0, m)));
+        setBirthDate(c.birth_date || "");
         setGender(c.gender);
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
@@ -53,13 +54,22 @@ export default function ChildEdit() {
     })();
   }, [id, isNew]);
 
+  const parsedBirthDate = parseDateOnly(birthDate);
+  const birthDateError = !birthDate
+    ? "请输入孩子的出生日期"
+    : !parsedBirthDate
+      ? "请按 YYYY-MM-DD 填写有效日期"
+      : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
+        ? "出生日期不能晚于今天"
+        : "";
+  const ageMonths = completedAgeMonths(birthDate);
+  const canSave = !!nickname.trim() && !birthDateError;
+
   const save = async () => {
-    const monthsNum = parseInt(months, 10) || 0;
-    const birth = new Date();
-    birth.setMonth(birth.getMonth() - monthsNum);
+    if (!canSave) return;
     const body = {
       nickname: nickname.trim(),
-      birth_date: birth.toISOString().slice(0, 10),
+      birth_date: birthDate,
       gender,
       allergies: allergies
         .split(/[,，、]/)
@@ -92,7 +102,12 @@ export default function ChildEdit() {
         <Text style={styles.title}>
           {isNew ? "添加孩子" : "编辑信息"}
         </Text>
-        <Pressable onPress={save} style={styles.save} testID="child-save-btn">
+        <Pressable
+          onPress={save}
+          disabled={!canSave}
+          style={[styles.save, !canSave && styles.disabled]}
+          testID="child-save-btn"
+        >
           <Text style={styles.saveText}>保存</Text>
         </Pressable>
       </View>
@@ -111,15 +126,32 @@ export default function ChildEdit() {
               testID="child-nickname"
             />
           </Field>
-          <Field label="月龄">
+          <Field label="出生日期">
             <TextInput
-              value={months}
-              onChangeText={setMonths}
-              keyboardType="number-pad"
-              style={styles.input}
+              value={birthDate}
+              onChangeText={setBirthDate}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={10}
+              style={[styles.input, !!birthDateError && styles.inputError]}
+              placeholder="YYYY-MM-DD"
               placeholderTextColor={colors.muted}
-              testID="child-months"
+              testID="child-birth-date"
             />
+            <Text
+              style={[styles.fieldHint, !!birthDateError && styles.errorText]}
+              accessibilityLiveRegion="polite"
+            >
+              {birthDateError || "保存完整生日，用于准确计算月龄"}
+            </Text>
+          </Field>
+          <Field label="月龄（根据生日自动计算）">
+            <View style={[styles.input, styles.readOnlyInput]} testID="child-months">
+              <Text style={[styles.readOnlyText, ageMonths === null && styles.mutedText]}>
+                {ageMonths === null ? "请先填写有效的出生日期" : `${ageMonths} 个月`}
+              </Text>
+            </View>
+            <Text style={styles.fieldHint}>月龄会随日期自动更新，不能单独修改</Text>
           </Field>
           <Field label="性别">
             <View style={styles.row}>
@@ -230,6 +262,13 @@ const styles = StyleSheet.create({
     fontSize: type.lg,
     color: colors.onSurface,
   },
+  inputError: { borderColor: colors.error },
+  readOnlyInput: { justifyContent: "center", backgroundColor: colors.surface },
+  readOnlyText: { fontSize: type.lg, color: colors.onSurface },
+  mutedText: { color: colors.muted },
+  fieldHint: { marginTop: spacing.xs, fontSize: type.sm, color: colors.muted },
+  errorText: { color: colors.error },
+  disabled: { opacity: 0.45 },
   row: { flexDirection: "row", gap: spacing.sm },
   chip: {
     paddingVertical: spacing.sm,
