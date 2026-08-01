@@ -1685,6 +1685,85 @@ async def _get_follow_up_context(user_id: Optional[str], limit: int = 3) -> str:
     )
 
 
+async def _take_due_follow_up(user_id: str) -> Optional[dict]:
+    """The single oldest due item for this family, expiring anything stale.
+
+    One at a time, deliberately. A family can easily have five things due at
+    once — sleep, solids, daycare, a check-up — and a digest of all five is a
+    to-do list rather than someone remembering to ask after you.
+    """
+    sb = _get_supabase()
+    if not sb:
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=FOLLOW_UP_EXPIRE_DAYS)).isoformat()
+    try:
+        # Aged-out items are retired first, so a long-abandoned topic can't sit
+        # at the head of the queue blocking everything behind it.
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("follow_ups").update({"status": "expired", "updated_at": _now()})
+            .eq("user_id", user_id).eq("status", "pending").lt("due_at", cutoff).execute()
+        )
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("follow_ups").select("id,topic,note,due_at")
+            .eq("user_id", user_id).eq("status", "pending")
+            .lte("due_at", _now()).order("due_at").limit(1).execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        print(f"[warn] _take_due_follow_up {user_id}: {e}")
+        return None
+
+
+async def _compose_follow_up_message(nickname: str, item: dict) -> str:
+    """Write the check-in in NURI's voice, not from a template.
+
+    Uses the reply model and the accumulated style rules on purpose: a canned
+    "关于X，最近怎么样？" would undo the thing this feature exists to create.
+    """
+    if not oai:
+        return ""
+    style_ctx = await _get_style_rules_ctx()
+    system = (
+        NURI_PERSONA + _NURI_EXAMPLES
+        + ("\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n" + style_ctx if style_ctx else "")
+        + "\n\n现在不是在回复家长，而是你主动想起了之前聊过的一件事，写一则简短的问候。"
+        "\n- 只写 2-4 句，不要给建议、不要列点、不要引用来源"
+        "\n- 说清楚你记得的是什么，让他知道你不是群发"
+        "\n- 以一个好回答的问句结尾"
+        "\n- 直接输出正文，不要标题、不要署名"
+    )
+    user = f"家长称呼：{nickname}\n之前聊过的事：{item['topic']}\n具体情况：{item.get('note') or ''}"
+    try:
+        resp = await anyio.to_thread.run_sync(
+            lambda: oai.chat.completions.create(
+                model="gpt-5.5",
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+                **_reply_model_kwargs(),
+            )
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[warn] _compose_follow_up_message: {e}")
+        return ""
+
+
+async def _mark_follow_up_asked(follow_up_id: str) -> None:
+    sb = _get_supabase()
+    if not sb:
+        return
+    try:
+        now = _now()
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("follow_ups")
+            .update({"status": "asked", "asked_at": now, "updated_at": now})
+            .eq("id", follow_up_id).execute()
+        )
+    except Exception as e:
+        print(f"[warn] _mark_follow_up_asked {follow_up_id}: {e}")
+
+
 async def _extract_and_upsert_memories(
     history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
 ) -> None:
@@ -3839,6 +3918,25 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
     for user in users:
         uid = user["id"]
         try:
+            # 0. A due follow-up outranks a generic card. This is the whole
+            # point of the feature: being asked "9/1 托嬰適應得如何" beats any
+            # article, and one family gets at most one of these because the
+            # push runs once a day and takes the single oldest item.
+            follow_up = await _take_due_follow_up(uid)
+            if follow_up:
+                nickname = user.get("nickname") or "家长"
+                text = await _compose_follow_up_message(nickname, follow_up)
+                if text:
+                    await anyio.to_thread.run_sync(
+                        lambda _to=user["email"], _b=text:
+                        _send_email_smtp(_to, f"NURI 想问问你 | {follow_up['topic']}", _b)
+                    )
+                    await _mark_follow_up_asked(follow_up["id"])
+                    sent += 1
+                    continue
+                # Composing failed: leave it pending for tomorrow and fall
+                # through to the card rather than sending nothing at all.
+
             # 1. Collect recent user messages from the last 5 sessions
             sessions_res = await anyio.to_thread.run_sync(
                 lambda _uid=uid: sb.table("chat_sessions")
