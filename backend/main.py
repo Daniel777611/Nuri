@@ -32,11 +32,11 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, io, json, os, time, uuid, hashlib, random
+import asyncio, io, json, os, re, time, uuid, hashlib, random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from pathlib import Path
-from typing import List, Literal, NamedTuple, Optional
+from typing import List, Literal, NamedTuple, Optional, Sequence
 
 import anyio
 import bcrypt
@@ -1999,10 +1999,17 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
     except Exception:
         return []
 
-def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
-    """Generate 2-4 contextual tasks from conversation history via AI."""
+def _gen_tasks_ai_sync(msgs: list[dict], max_cards: int = 3) -> list[dict]:
+    """Generate up to `max_cards` contextual tasks from conversation history.
+
+    The ceiling is the day's remaining budget (see TASK_CARDS_BY_TOPIC), not a
+    constant: asking for the right number beats over-generating and truncating,
+    because the model picks its best two when told two, rather than having its
+    third and fourth silently dropped.
+    """
     if not oai:
         return []
+    max_cards = max(1, min(4, max_cards))
     history = "\n".join(
         f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
         for m in msgs[-14:]
@@ -2015,7 +2022,8 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
         # every turn the router asks for cards.
         **_reply_model_kwargs(),
         messages=[{"role": "user", "content":
-            f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
+            f"根据以下育儿对话，生成 1-{max_cards} 个具体可执行的小任务"
+            f"（最多 {max_cards} 个，宁可少而准）。\n\n{history}\n\n"
             '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
             '"task_type": "interaction|observation|care|selfcare", "description": "一句话任务说明", '
             '"steps": ["具体做法1", "具体做法2"]}]}\n'
@@ -2060,7 +2068,7 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
         timeout=OPENAI_TASKS_TIMEOUT_S,
     )
     try:
-        return json.loads(resp.choices[0].message.content).get("tasks", [])[:4]
+        return json.loads(resp.choices[0].message.content).get("tasks", [])[:max_cards]
     except Exception:
         return []
 
@@ -2518,6 +2526,9 @@ class _Turn(NamedTuple):
     context_hints: dict
     fix_text: Optional[str]
     already_generated: bool
+    #: Topics that have already spent task-card budget today, oldest first.
+    #: Drives _plan_task_cards; see TASK_CARDS_BY_TOPIC.
+    topics_today: tuple = ()
 
 
 async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
@@ -2567,7 +2578,9 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
             await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(user_msg).execute())
             mr = await anyio.to_thread.run_sync(
                 lambda: sb.table("chat_messages")
-                .select("role,text,transition")
+                # created_at is needed to tell today's task cards from
+                # yesterday's — the budget in _plan_task_cards is per day.
+                .select("role,text,transition,created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -2594,7 +2607,10 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
     )
 
     await _maybe_set_title(session, session_id, body, fix_text, user_turns)
-    return _Turn(session, owner_uid, user_msg, msgs, context_hints, fix_text, already_generated)
+    return _Turn(
+        session, owner_uid, user_msg, msgs, context_hints, fix_text,
+        already_generated, _topics_generated_today(msgs),
+    )
 
 
 async def _maybe_set_title(
@@ -2702,6 +2718,7 @@ class _ReplyContext(NamedTuple):
     sources: str                       # rendered allow-list, "" when not searching
     route: "TurnRoute"
     search_results: list               # SearchResult objects behind `sources`
+    plan: "_TaskPlan"                  # whether/how many task cards this turn draws
 
 
 async def _route_and_search(
@@ -2717,10 +2734,7 @@ async def _route_and_search(
     error handling of its own.
     """
     started = time.perf_counter()
-    route = await route_turn(
-        turn.msgs, client=aoai, child_context=profile_ctx,
-        already_generated=turn.already_generated,
-    )
+    route = await route_turn(turn.msgs, client=aoai, child_context=profile_ctx)
     if metrics:
         metrics.mark("route_ms", started)
         metrics.set(**route_metrics(route))
@@ -2755,8 +2769,13 @@ async def _reply_context(
         _route_and_search(turn, profile_ctx, metrics),
     )
     route, results = routed
+    # After routing, because the topic it names is what the day's budget is
+    # spent against. Only reaches the database when the budget is already gone
+    # and a swap target is needed, so the common turn adds no round trip.
+    plan = await _plan_task_cards(route, turn.topics_today, turn.owner_uid)
     if metrics:
         metrics.mark("context_ms", started)
+        metrics.set(task_plan=plan.reason)
     return _ReplyContext(
         card=_card_ctx(turn.session.get("source_card_id") or "", gen_cards),
         # Appended to the memory block rather than given its own: both answer
@@ -2769,41 +2788,200 @@ async def _reply_context(
         sources=sources_prompt_block(results),
         route=route,
         search_results=results,
+        plan=plan,
+    )
+
+
+#: What each successive topic of the day is worth, in cards. The limit that
+#: matters is not how much NURI can draft but how much a parent can actually do:
+#: someone who raised three separate worries before lunch cannot act on twelve
+#: tasks, and a list that outruns them stops being read at all. Past the end of
+#: this tuple the day is out of budget, and a further topic offers to swap out
+#: an open task instead of piling another one on.
+TASK_CARDS_BY_TOPIC = (3, 2, 1)
+
+#: Dropped before comparing two topic labels. The router is asked to keep labels
+#: stable, but it drifts by a particle or a qualifier more often than it changes
+#: subject, and "睡眠倒退" / "宝宝的睡眠倒退" must not each cost a day's budget.
+_TOPIC_NOISE = re.compile(r"[\s，。、,.!！?？:：;；\"'“”‘’的了个宝宝孩子]+")
+
+
+def _norm_topic(s: str) -> str:
+    return _TOPIC_NOISE.sub("", (s or "").strip().lower())
+
+
+def _same_topic(a: str, b: str) -> bool:
+    """Whether two labels name the same concern.
+
+    Containment rather than equality, because the drift is nearly always a
+    qualifier ("睡眠" vs "夜醒睡眠"). Guarded by a minimum length so a stray
+    one-character label can't swallow every topic of the day.
+    """
+    na, nb = _norm_topic(a), _norm_topic(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    return min(len(na), len(nb)) >= 2 and (na in nb or nb in na)
+
+
+def _msg_date(m: dict):
+    try:
+        return datetime.fromisoformat(
+            str(m.get("created_at") or "").replace("Z", "+00:00")
+        ).date()
+    except Exception:
+        return None
+
+
+def _topics_generated_today(msgs: Sequence[dict]) -> tuple:
+    """Topics that already produced task cards today, oldest first.
+
+    Read back off the persisted transitions rather than tracked in a counter of
+    its own: the message row is already the durable record of what NURI offered,
+    and a parallel tally would drift from it the first time a turn failed
+    halfway. Cards written before topics existed carry none, and count as their
+    own topic — that spends budget, which is the safe direction to err in.
+
+    Scope is one session, because `msgs` is one session. In practice that is
+    the parent's whole day: the home tab reuses a single NURI session forever.
+    A parent who also opens card-sourced chats gets a separate budget in each,
+    since chat_messages carries no user_id and counting across sessions would
+    put a join on every turn's critical path. Worth revisiting if card chats
+    ever become a common way in.
+    """
+    today = datetime.now(timezone.utc).date()
+    seen: list = []
+    for m in msgs:
+        if m.get("role") != "ai":
+            continue
+        tr = m.get("transition") or {}
+        if tr.get("kind") != "task_suggestion" or _msg_date(m) != today:
+            continue
+        topic = (tr.get("topic") or "").strip()
+        if not any(_same_topic(topic, prior) for prior in seen):
+            seen.append(topic)
+    return tuple(seen)
+
+
+class _TaskPlan(NamedTuple):
+    """Whether this turn drafts cards, how many, and what they'd displace."""
+    generate: bool = False
+    max_cards: int = 0
+    #: {"id", "title"} of an open task the new card offers to replace. Only ever
+    #: a proposal: the swap happens when the parent taps it in the chat, never on
+    #: its own. A task the parent chose to accept is not ours to delete silently.
+    replaces: Optional[dict] = None
+    #: Logged, so "why did I not get cards" is answerable from the turn log.
+    reason: str = ""
+
+
+async def _pick_replaceable_task(uid: Optional[str]) -> Optional[dict]:
+    """The open task a new one should offer to displace: the oldest one the
+    parent never started. Untouched-and-oldest is the best available proxy for
+    "this was never going to happen"; anything with progress recorded against it
+    represents effort already spent and is left alone.
+    """
+    if not uid:
+        return None
+    sb = _get_supabase()
+    rows: list
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("tasks")
+                .select("id,title,progress_done,completed_at,created_at")
+                .eq("user_id", uid)
+                .order("created_at", desc=False)
+                .limit(50).execute()
+            )
+            rows = res.data or []
+        except Exception as e:
+            print(f"[warn] _pick_replaceable_task: {type(e).__name__}: {e}")
+            return None
+    else:
+        rows = [t for t in _tasks if t.get("user_id") == uid]
+    open_tasks = [t for t in rows if not t.get("completed_at")]
+    if not open_tasks:
+        return None
+    open_tasks.sort(key=lambda t: (t.get("progress_done") or 0, str(t.get("created_at") or "")))
+    pick = open_tasks[0]
+    return {"id": pick.get("id"), "title": pick.get("title") or ""}
+
+
+async def _plan_task_cards(
+    route: "TurnRoute", topics_today: Sequence[str], uid: Optional[str],
+) -> _TaskPlan:
+    """Decide whether this turn drafts task cards, and how many.
+
+    One set per new topic, on a budget that tapers across the day. This replaced
+    a one-set-per-conversation gate, which in practice meant "once, ever": the
+    home tab reuses a single NURI session forever, so a parent who came back a
+    week later with a new worry could never get cards again.
+    """
+    if not route.suggest_tasks:
+        return _TaskPlan(reason="router: not this turn")
+
+    if route.topic and any(_same_topic(route.topic, prior) for prior in topics_today):
+        return _TaskPlan(reason=f"already covered today: {route.topic}")
+
+    spent = len(topics_today)
+    if spent < len(TASK_CARDS_BY_TOPIC):
+        return _TaskPlan(
+            True, TASK_CARDS_BY_TOPIC[spent],
+            reason=f"topic {spent + 1}/{len(TASK_CARDS_BY_TOPIC)}: {route.topic or '—'}",
+        )
+
+    swap = await _pick_replaceable_task(uid)
+    # Nothing open to swap against: the cap exists to stop the list bloating,
+    # and an empty list cannot bloat. One card is fine.
+    return _TaskPlan(
+        True, 1, replaces=swap,
+        reason=("over budget, offers swap" if swap else "over budget, nothing open"),
     )
 
 
 async def _task_suggestion(
-    route: "TurnRoute", msgs: list,
+    plan: _TaskPlan, route: "TurnRoute", msgs: list,
     metrics: Optional["_TurnMetrics"] = None,
 ) -> Optional[dict]:
-    """Draft task cards, when the router asked for them. These are only drafts —
+    """Draft task cards, when the plan asked for them. These are only drafts —
     nothing is persisted to the tasks table until the parent taps "添加计划" on a
     specific card (POST /tasks).
 
     The gate used to be a boolean the reply model set while writing its answer,
     judged against four subjective sentences, which is why testers said the
-    cards appeared with no discernible rule. It is now a dedicated router
-    decision with a logged reason (see backend/router.py).
+    cards appeared with no discernible rule. It is now a router decision about
+    the moment (backend/router.py) plus a budget decision about the day
+    (_plan_task_cards), both with a logged reason.
 
     Generation reads only the conversation, never the reply being written
     alongside it, which is what lets this run concurrently with the reply
     instead of after it. A failure here must never take the reply down — the
     turn just arrives without task cards.
     """
-    if not route.suggest_tasks:
+    if not plan.generate:
         return None
     started = time.perf_counter()
     try:
-        task_list = await anyio.to_thread.run_sync(lambda: _gen_tasks_ai_sync(msgs))
+        task_list = await anyio.to_thread.run_sync(
+            lambda: _gen_tasks_ai_sync(msgs, plan.max_cards)
+        )
     except Exception as e:
         print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
         if metrics:
             metrics.mark("tasks_ms", started)
         return None
+    task_list = task_list[:plan.max_cards]
     if metrics:
         metrics.mark("tasks_ms", started)
         metrics.set(suggested_tasks=bool(task_list))
-    return {"kind": "task_suggestion", "tasks": task_list} if task_list else None
+    if not task_list:
+        return None
+    payload = {"kind": "task_suggestion", "tasks": task_list, "topic": route.topic}
+    if plan.replaces:
+        payload["replaces"] = plan.replaces
+    return payload
 
 
 def _cited_sources(
@@ -2889,10 +3067,10 @@ async def post_message(
             anyio.to_thread.run_sync(
                 lambda: _nuri_reply_sync(
                     turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                    rc.internal, rc.sources, rc.route.suggest_tasks, metrics,
+                    rc.internal, rc.sources, rc.plan.generate, metrics,
                 )
             ),
-            _task_suggestion(rc.route, turn.msgs, metrics),
+            _task_suggestion(rc.plan, rc.route, turn.msgs, metrics),
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
@@ -2954,13 +3132,13 @@ async def post_message_stream(
                 # already drafted. Task drafting reads only the conversation, so
                 # it doesn't need the reply it's running alongside.
                 tasks_job = asyncio.create_task(
-                    _task_suggestion(rc.route, turn.msgs, metrics)
+                    _task_suggestion(rc.plan, rc.route, turn.msgs, metrics)
                 )
                 reply = None
                 try:
                     async for kind, value in _nuri_reply_stream(
                         turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                        rc.internal, rc.sources, rc.route.suggest_tasks, metrics,
+                        rc.internal, rc.sources, rc.plan.generate, metrics,
                     ):
                         if kind == "delta":
                             yield _sse({"type": "delta", "text": value})

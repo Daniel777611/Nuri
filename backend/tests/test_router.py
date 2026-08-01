@@ -30,6 +30,7 @@ FULL = {
     "search_scope": "both",
     "is_medical": False,
     "suggest_tasks": True,
+    "topic": "辅食添加",
     "reason": "具体喂养困扰，背景够清楚",
 }
 
@@ -101,13 +102,33 @@ def test_unknown_scope_falls_back_to_both(bad):
     assert parse_route(_raw(search_scope=bad)).search_scope == "both"
 
 
-def test_already_generated_blocks_a_second_set_of_task_cards():
-    """One conversation gets one set of cards, whatever the model thinks."""
-    assert not parse_route(_raw(), already_generated=True).suggest_tasks
+def test_suggest_tasks_is_passed_through_untouched():
+    """The router only judges whether the *moment* is right. Whether cards are
+    actually drawn is a budget decision main.py's _plan_task_cards makes, and
+    the router must not pre-empt it — that split is what let a new topic get
+    cards again after the old one-set-per-conversation gate."""
+    assert parse_route(_raw(suggest_tasks=True)).suggest_tasks
+    assert not parse_route(_raw(suggest_tasks=False)).suggest_tasks
 
 
-def test_already_generated_does_not_block_search():
-    assert parse_route(_raw(), already_generated=True).needs_search
+def test_topic_is_captured():
+    assert parse_route(_raw(topic=" 睡眠倒退 ")).topic == "睡眠倒退"
+
+
+def test_topic_survives_a_turn_that_suggests_nothing():
+    """Budget is spent per topic per day, so a turn that draws no cards still
+    has to say what it was about — otherwise the next turn on the same concern
+    reads as a new topic."""
+    assert parse_route(_raw(suggest_tasks=False, needs_search=False)).topic == "辅食添加"
+
+
+def test_topic_is_length_capped():
+    assert len(parse_route(_raw(topic="睡眠" * 60)).topic) <= 40
+
+
+def test_missing_topic_is_empty_not_none():
+    r = parse_route(json.dumps({**FULL, "topic": None}, ensure_ascii=False))
+    assert r.topic == ""
 
 
 def test_reason_is_length_capped():
@@ -212,6 +233,7 @@ def test_route_metrics_carry_the_reason():
     assert row["route_ok"] is True
     assert row["suggested_tasks"] is True
     assert row["route_reason"] == "具体喂养困扰，背景够清楚"
+    assert row["route_topic"] == "辅食添加"
     assert row["search_scope"] == "both"
 
 

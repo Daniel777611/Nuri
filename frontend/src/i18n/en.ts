@@ -156,6 +156,11 @@ export const en: Record<string, string> = {
   "添加计划": "Add to plan",
   "已添加至任务": "Added",
   "成功添加至“我的任务”": "Added to My tasks",
+  "替换": "Swap in",
+  "已替换": "Swapped in",
+  "已替换「{title}」": "Replaced “{title}”",
+  "今天的任务已经不少了。加入这条会替换掉「{title}」。":
+    "You already have a full day. Adding this one replaces “{title}”.",
   "已添加至“我的任务”": "Added to My tasks",
   "免费": "Free",
 

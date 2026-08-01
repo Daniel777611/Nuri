@@ -74,6 +74,12 @@ class TurnRoute:
     search_scope: Scope = "both"
     is_medical: bool = False
     suggest_tasks: bool = False
+    #: Short noun phrase naming what this turn is about ("睡眠倒退", "辅食添加").
+    #: The task budget is spent per topic per day, so this is what decides
+    #: whether a turn is a new concern or more of the one already handled —
+    #: see _plan_task_cards in main.py. Filled on every turn, not only the ones
+    #: that suggest tasks, so the log shows what a day actually covered.
+    topic: str = ""
     #: Short rationale, logged so the task-card criteria can be tuned against
     #: real turns instead of guessed at.
     reason: str = ""
@@ -122,6 +128,13 @@ en：只跟北美体系有关时，例如美国疫苗时程、保险、托育制
 - 自然到了"我来帮你整理几件可以做的事"的时机
 纯情绪倾诉、寒暄、还在追问了解情况的阶段，一律 false
 
+【topic】这一轮在谈的核心话题，4-10 个字的名词短语
+例：「睡眠倒退」「辅食添加」「入园分离焦虑」「兄弟争抢玩具」
+- **每轮都要填**，包括 suggest_tasks 为 false 的时候
+- **标签要稳定**：同一个困扰在后续几轮里必须给出同样的词。一天里同一个话题
+  只会生成一次任务，标签飘移会让同一件事重复占用额度
+- 填这一轮真正在谈的事，不要填「育儿」「带娃」这种没有区分度的大词
+
 【reason】30字以内，中文，**必须同时说明 needs_search 和 suggest_tasks 两个判断**
 例：「要讲副食品准备信号，需依据；已有具体目标，给任务」"""
 
@@ -153,11 +166,12 @@ _ROUTER_RESPONSE_FORMAT = {
                 "search_scope": {"type": "string", "enum": list(_VALID_SCOPES)},
                 "is_medical": {"type": "boolean"},
                 "suggest_tasks": {"type": "boolean"},
+                "topic": {"type": "string"},
                 "reason": {"type": "string"},
             },
             "required": [
                 "needs_search", "search_query", "search_query_zh",
-                "search_scope", "is_medical", "suggest_tasks", "reason",
+                "search_scope", "is_medical", "suggest_tasks", "topic", "reason",
             ],
             "additionalProperties": False,
         },
@@ -165,13 +179,17 @@ _ROUTER_RESPONSE_FORMAT = {
 }
 
 
-def parse_route(raw: str, *, already_generated: bool = False) -> TurnRoute:
+def parse_route(raw: str) -> TurnRoute:
     """Parse and sanitise the model's JSON.
 
     Separated from the network call so the invariants below are testable without
-    a model: a route that says "search" but supplies no query, or that suggests
-    tasks for a conversation that already has some, is corrected here rather
-    than surfacing as a confusing no-op further down.
+    a model: a route that says "search" but supplies no query is corrected here
+    rather than surfacing as a confusing no-op further down.
+
+    `suggest_tasks` here is only the model's opinion that the *moment* is right.
+    Whether cards are actually drafted — and how many — is a budget decision
+    that needs the day's history and the parent's open tasks, so it lives in
+    main.py's `_plan_task_cards`.
     """
     data = json.loads(raw)
 
@@ -184,17 +202,14 @@ def parse_route(raw: str, *, already_generated: bool = False) -> TurnRoute:
     # A search with nothing to search for is a wasted round trip.
     needs_search = bool(data.get("needs_search")) and bool(query or query_zh)
 
-    # Whatever the model thinks, one conversation gets one set of task cards.
-    # This mirrors the `already_generated` gate the old suggest_tasks path had.
-    suggest_tasks = bool(data.get("suggest_tasks")) and not already_generated
-
     return TurnRoute(
         needs_search=needs_search,
         search_query=query if needs_search else "",
         search_query_zh=query_zh if needs_search else "",
         search_scope=scope,
         is_medical=bool(data.get("is_medical")),
-        suggest_tasks=suggest_tasks,
+        suggest_tasks=bool(data.get("suggest_tasks")),
+        topic=(data.get("topic") or "").strip()[:40],
         reason=(data.get("reason") or "").strip()[:120],
     )
 
@@ -204,7 +219,6 @@ async def route_turn(
     *,
     client,
     child_context: str = "",
-    already_generated: bool = False,
     model: str = ROUTER_MODEL,
     timeout_s: float = ROUTER_TIMEOUT_S,
 ) -> TurnRoute:
@@ -262,7 +276,7 @@ async def route_turn(
         return _failed(f"{type(e).__name__}: {e}")
 
     try:
-        return parse_route(raw, already_generated=already_generated)
+        return parse_route(raw)
     except Exception as e:
         print(f"[warn] router returned unparsable JSON: {type(e).__name__}: {e}")
         return _failed(f"parse: {type(e).__name__}")
@@ -280,4 +294,5 @@ def route_metrics(route: TurnRoute) -> dict:
         "is_medical": route.is_medical,
         "suggested_tasks": route.suggest_tasks,
         "route_reason": route.reason,
+        "route_topic": route.topic,
     }

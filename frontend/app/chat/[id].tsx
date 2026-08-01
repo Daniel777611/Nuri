@@ -194,8 +194,21 @@ export default function ChatDetail() {
     const approvalId = `${msg.id}-${index}`;
     if (approvedTaskIds.includes(approvalId)) return;
     await api.createTask(task);
+    // Past the day's card budget the backend offers this one as a swap rather
+    // than an addition (see _plan_task_cards). The old task is removed only
+    // here, on the parent's tap — a task they chose to accept is never dropped
+    // on the backend's own initiative. Creating first means a failed delete
+    // leaves them with both, which is the harmless direction.
+    const replaced = msg.transition?.replaces;
+    if (replaced?.id) {
+      await api.deleteTask(replaced.id).catch(() => {});
+    }
     setApprovedTaskIds((ids) => [...ids, approvalId]);
-    showToast(t("已添加至“我的任务”"));
+    showToast(
+      replaced?.title
+        ? t("已替换「{title}」", { title: replaced.title })
+        : t("已添加至“我的任务”"),
+    );
   };
 
   return (
@@ -303,10 +316,19 @@ function MessageBubble({
 
   if (msg.transition?.kind === "task_suggestion") {
     const suggestedTasks = msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []);
+    // Set when the day's card budget is spent: this card swaps for an open task
+    // rather than adding to the pile. Named up front, because "替换" on the
+    // button is only honest if the parent can see what it costs them.
+    const replaced = msg.transition.replaces;
     return (
       <View style={[styles.row, { justifyContent: "flex-start" }]}>
         <View style={styles.transitionCard} testID="chat-transition-tasks">
           <Text style={styles.transitionPrompt}>{msg.text}</Text>
+          {replaced?.title ? (
+            <Text style={styles.swapNote} testID="chat-task-swap-note">
+              {t("今天的任务已经不少了。加入这条会替换掉「{title}」。", { title: replaced.title })}
+            </Text>
+          ) : null}
           <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={276} decelerationRate="fast" contentContainerStyle={styles.taskCarousel}>
             {suggestedTasks.map((task: any, taskIndex: number) => {
               const added = isTaskAdded(taskIndex);
@@ -319,11 +341,21 @@ function MessageBubble({
                     <Text style={styles.generatedSection}>{t("做法：")}</Text>
                     {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
                     <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>
-                      <Text style={styles.addTaskText}>{added ? t("已添加至任务") : t("添加计划")}</Text>
+                      <Text style={styles.addTaskText}>
+                        {replaced
+                          ? (added ? t("已替换") : t("替换"))
+                          : (added ? t("已添加至任务") : t("添加计划"))}
+                      </Text>
                     </Pressable>
                   </View>
                 </LinearGradient>
-                {added ? <Text style={styles.addedHint}>{t("成功添加至“我的任务”")}</Text> : null}
+                {added ? (
+                  <Text style={styles.addedHint}>
+                    {replaced?.title
+                      ? t("已替换「{title}」", { title: replaced.title })
+                      : t("成功添加至“我的任务”")}
+                  </Text>
+                ) : null}
               </View>;
             })}
           </ScrollView>
@@ -654,6 +686,9 @@ const styles = StyleSheet.create({
   generatedBody: { color: "#3A2F5A", fontSize: 12, lineHeight: 17 },
   addTaskBtn: { alignSelf: "flex-start", backgroundColor: "#3A2F5A", borderRadius: 10, marginTop: 8, paddingHorizontal: 14, paddingVertical: 8 },
   addTaskDone: { opacity: 0.5 }, addTaskText: { color: "#fff", fontSize: 12, fontWeight: "900" }, addedHint: { color: "#3A2F5A", fontSize: 12, textAlign: "center" },
+  // Sits between the reply and the card it qualifies, so it has to read as a
+  // caveat rather than as more of NURI's message.
+  swapNote: { color: "#5A4A7A", fontSize: 12, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 },
   transitionTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   transitionTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface },
   transitionSub: {
