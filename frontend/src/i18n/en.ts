@@ -98,7 +98,10 @@ export const en: Record<string, string> = {
   "欢迎，{nickname}！": "Welcome, {nickname}!",
   "今日任务": "Today's tasks",
   "您已坚持打卡{days}天！加油！": "{days} days in a row. Keep going!",
+  "完成一件任务，就开始打卡啦！": "Finish one task to start your streak!",
   "{count} 件任务正在进行": "{count} tasks in progress",
+  "还没有进行中的任务": "No tasks yet",
+  "去聊聊": "Chat with Nuri",
   "开启提醒": "Turn on reminders",
   "提醒功能即将上线": "Reminders are coming soon",
   "Nuri的家": "Nuri's place",
@@ -137,9 +140,6 @@ export const en: Record<string, string> = {
   "照顾孩子前，先照顾好自己": "look after yourself first",
   "让每天的小事更有掌控感": "make the daily small stuff feel manageable",
   "浏览详情": "Read more",
-
-  "自我：今天给自己留30分钟独处": "Self: take 30 minutes alone today",
-  "亲子：每日户外活动20分钟": "Connection: 20 minutes outdoors together",
 
   "参考来源": "Sources",
 

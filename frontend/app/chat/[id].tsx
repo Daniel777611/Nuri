@@ -381,13 +381,57 @@ function MessageBubble({
         ) : null}
         {msg.text ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
-            {msg.text}
+            {isAI && msg.sources?.length ? (
+              <CitedText text={msg.text} sources={msg.sources} />
+            ) : (
+              msg.text
+            )}
           </Text>
         ) : null}
         {isAI && msg.sources?.length ? <SourceChips sources={msg.sources} /> : null}
       </View>
     </View>
   );
+}
+
+// ── Sub-component: inline citation markers ──────────────────────────────────
+// The [1] markers the model writes are plain characters, so a parent otherwise
+// has to read one, scan down to the matching chip, and tap that. These make the
+// marker itself the tap target.
+//
+// Rendered as nested <Text> rather than <Pressable> so the markers stay inside
+// the paragraph's text flow — a Pressable here would break wrapping mid-sentence.
+const CITATION_RE = /\[(\d{1,2})\]/g;
+
+function CitedText({ text, sources }: { text: string; sources: Source[] }) {
+  const byIndex = new Map(sources.map((s) => [s.n, s]));
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  CITATION_RE.lastIndex = 0;
+  while ((match = CITATION_RE.exec(text)) !== null) {
+    const source = byIndex.get(Number(match[1]));
+    // A number with no matching source stays literal text — the model
+    // occasionally writes [1] in a list, and turning that into a dead tap
+    // target would be worse than leaving it alone.
+    if (!source) continue;
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    parts.push(
+      <Text
+        key={`${match.index}-${source.n}`}
+        style={styles.citationMark}
+        onPress={() => WebBrowser.openBrowserAsync(source.url).catch(() => {})}
+        suppressHighlighting={false}
+      >
+        {` ${source.n} `}
+      </Text>,
+    );
+    cursor = match.index + match[0].length;
+  }
+  if (!parts.length) return <>{text}</>;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
 }
 
 // ── Sub-component: cited sources ────────────────────────────────────────────
@@ -550,6 +594,15 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(58,47,90,0.10)",
   },
   sourcesLabel: { fontSize: 11, color: colors.muted, marginBottom: 6 },
+  // Sits inline in a sentence, so it has to read as a marker rather than as a
+  // word: small, tinted, and padded enough to be tappable without pushing the
+  // surrounding line height around.
+  citationMark: {
+    color: colors.brand,
+    fontSize: 11,
+    fontWeight: "700",
+    backgroundColor: "#EFEBFD",
+  },
   sourceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   sourceChip: {
     flexDirection: "row",

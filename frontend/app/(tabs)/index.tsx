@@ -39,14 +39,8 @@ const C = {
 
 const FIGMA_FRAME_WIDTH = 402;
 
-// 坚持打卡天数（mock 默认 17）
-const STREAK_DAYS = 17;
-
-// 任务预览默认 mock（任务数据为空时展示）
-const DEFAULT_TASKS = ["自我：今天给自己留30分钟独处", "亲子：每日户外活动20分钟"];
-// Prefix and title are translated separately: the prefix is one of a fixed set
-// of task types, the title is free text the model wrote in the parent's own
-// language and must pass through untouched.
+// How many pending tasks the home preview lists before collapsing into "……".
+const PREVIEW_LIMIT = 2;
 
 // 待开发占位 bottom sheet（统一规范）
 function DevSheet({
@@ -89,6 +83,10 @@ export default function Home() {
   const [nickname, setNickname] = useState(t("Momo妈妈"));
   const [pendingTasks, setPendingTasks] = useState<string[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
+  // Distinguishes "still loading" from "genuinely no tasks yet" — without it the
+  // empty state flashes on every focus before /tasks answers.
+  const [tasksLoaded, setTasksLoaded] = useState(false);
+  const [streakDays, setStreakDays] = useState(0);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,6 +108,10 @@ export default function Home() {
         .me()
         .then((me: any) => me?.nickname && setNickname(me.nickname))
         .catch(() => {});
+      // Tasks land here after the parent taps 添加计划 on a card NURI drafted in
+      // chat (router.py decides the turn suggests tasks; POST /tasks persists
+      // the one the parent accepted). Refetched on focus so returning from that
+      // conversation shows them immediately.
       api
         .listTasks()
         .then((ts: any[]) => {
@@ -117,7 +119,11 @@ export default function Home() {
           setPendingCount(pending.length);
           setPendingTasks(
             pending
-              .slice(0, 2)
+              .slice(0, PREVIEW_LIMIT)
+              // Prefix and title are translated separately: the prefix is one of
+              // a fixed set of task types, the title is free text the model
+              // wrote in the parent's own language and must pass through
+              // untouched.
               .map((item) =>
                 t("{prefix}：{title}", {
                   prefix: t(taskTypeMeta(item.task_type).prefix),
@@ -126,12 +132,16 @@ export default function Home() {
               )
           );
         })
+        .catch(() => {})
+        .finally(() => setTasksLoaded(true));
+      api
+        .taskInsights()
+        .then((s: any) => setStreakDays(s?.streak_days ?? 0))
         .catch(() => {});
     }, [t])
   );
 
-  const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS.map((d) => t(d));
-  const previewCount = pendingTasks.length ? pendingCount : 3;
+  const hasTasks = pendingCount > 0;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -180,27 +190,53 @@ export default function Home() {
           >
             <Text style={styles.moduleTitle}>{t("今日任务")}</Text>
             <Text style={styles.moduleSub}>
-              {t("您已坚持打卡{days}天！加油！", { days: STREAK_DAYS })}
+              {streakDays > 0
+                ? t("您已坚持打卡{days}天！加油！", { days: streakDays })
+                : t("完成一件任务，就开始打卡啦！")}
             </Text>
             <View style={[styles.innerCard, { flex: 1 }]}>
-              <Text style={styles.taskCount}>{t("{count} 件任务正在进行", { count: previewCount })}</Text>
-              {previewTasks.map((t, i) => (
-                <View key={i} style={styles.taskRow}>
-                  <View style={styles.checkbox} />
-                  <Text style={styles.taskName} numberOfLines={1}>
-                    {t}
+              {hasTasks ? (
+                <>
+                  <Text style={styles.taskCount}>
+                    {t("{count} 件任务正在进行", { count: pendingCount })}
                   </Text>
-                </View>
-              ))}
-              <Text style={styles.taskEllipsis}>……</Text>
+                  {pendingTasks.map((label, i) => (
+                    <View key={i} style={styles.taskRow}>
+                      <View style={styles.checkbox} />
+                      <Text style={styles.taskName} numberOfLines={1}>
+                        {label}
+                      </Text>
+                    </View>
+                  ))}
+                  {pendingCount > PREVIEW_LIMIT && (
+                    <Text style={styles.taskEllipsis}>……</Text>
+                  )}
+                </>
+              ) : (
+                <Text style={styles.taskCount}>
+                  {tasksLoaded ? t("还没有进行中的任务") : " "}
+                </Text>
+              )}
               <View style={{ flex: 1, minHeight: 8 }} />
-              <Pressable
-                onPress={() => showToast(t("提醒功能即将上线"))}
-                style={styles.primaryBtn}
-                testID="home-remind-btn"
-              >
-                <Text style={styles.primaryBtnText}>{t("开启提醒")}</Text>
-              </Pressable>
+              {hasTasks || !tasksLoaded ? (
+                <Pressable
+                  onPress={() => showToast(t("提醒功能即将上线"))}
+                  style={styles.primaryBtn}
+                  testID="home-remind-btn"
+                >
+                  <Text style={styles.primaryBtnText}>{t("开启提醒")}</Text>
+                </Pressable>
+              ) : (
+                // With nothing to remind about, point at the one thing that
+                // creates tasks: a conversation with NURI.
+                <Pressable
+                  onPress={openNuriChat}
+                  style={styles.primaryBtn}
+                  testID="home-tasks-empty-cta"
+                >
+                  <Text style={styles.primaryBtnText}>{t("去聊聊")}</Text>
+                </Pressable>
+              )}
             </View>
           </Pressable>
 

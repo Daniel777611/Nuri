@@ -76,6 +76,9 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   }
   if (path.startsWith("/children/") && method === "DELETE") { children = children.filter((c) => c.id !== path.split("/").pop()); return {}; }
 
+  // Must precede the catch-all /tasks GET below, which would otherwise answer
+  // this with the task array.
+  if (path === "/tasks/insights") return { streak_days: 17 };
   if (path.startsWith("/tasks") && method === "GET") return tasks;
   if (path === "/tasks" && method === "POST") {
     const next = { id: id("task"), title: body.title || "NURI 建议任务", task_type: body.task_type || "observation", scope: body.scope || "today", progress_done: 0, progress_total: body.progress_total || 1, completed_at: null, due_date: body.due_date || new Date().toISOString().slice(0, 10), description: body.description || "", steps: body.steps || [], source: "NURI 对话", created_at: new Date().toISOString(), is_favorited: false };
@@ -93,7 +96,6 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   }
   if (path.startsWith("/tasks/") && method === "DELETE") { tasks = tasks.filter((t) => t.id !== path.split("/").pop()); return {}; }
   if (path === "/tasks/clear-completed") { tasks = tasks.filter((t) => !t.completed_at); return {}; }
-  if (path === "/tasks/insights") return { streak_days: 17 };
 
   if (path.startsWith("/feed/") && path.endsWith("/detail")) return { ...card, id: path.split("/")[2] };
   if (path === "/feed" || path.startsWith("/feed?")) return [card];
