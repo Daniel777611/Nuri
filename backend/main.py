@@ -34,7 +34,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 
 import asyncio, io, json, os, time, uuid, hashlib, random
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta, date
+from datetime import datetime, timezone, timedelta, date, time as dt_time
 from pathlib import Path
 from typing import List, Literal, NamedTuple, Optional
 
@@ -1438,20 +1438,35 @@ async def _save_normalized_input(
     except Exception as e:
         print(f"[warn] _save_normalized_input: {e}")
 
-def _extract_memories_sync(history: list[dict]) -> list[dict]:
-    """Ask a small model whether this conversation contains stable, reusable facts."""
+def _extract_memories_sync(history: list[dict]) -> dict:
+    """Ask a small model what to remember, and what to come back to.
+
+    Two outputs from one call because they are read off the same exchange and a
+    second round trip would buy nothing: memories are what stays true about this
+    family, follow-ups are what to ask about later.
+    """
     if not oai:
-        return []
+        return {"memories": [], "follow_ups": []}
     convo = "\n".join(
         f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
         for m in history[-8:] if m.get("text")
     )
     if not convo.strip():
-        return []
+        return {"memories": [], "follow_ups": []}
     system = (
-        "从下面这段育儿助手对话里，提取值得长期记住的、稳定的事实。"
-        "只提取明确、稳定、以后有用的信息（长期偏好、过敏史、育儿理念上的坚持、孩子的持续性状态等），"
-        "不要提取一次性的、当下情绪化的、或还不确定的内容。没有就返回空数组，不要勉强凑数。"
+        "从下面这段育儿助手对话里提取两种东西。两者都没有就都返回空数组，不要勉强凑数。\n\n"
+        "memories：值得长期记住的、稳定的事实——长期偏好、过敏史、育儿理念上的坚持、"
+        "孩子的持续性状态。不要提取一次性的、当下情绪化的、或还不确定的内容。\n\n"
+        "follow_ups：过一段时间值得回头关心一次的事。包括家长提到的有日期的安排"
+        "（几号开始托婴、哪天回诊、下周满两岁），也包括正在进行、需要一段时间才看得出结果的事"
+        "（在戒尿布、刚换睡眠作息、在试新食材），以及 NURI 自己刚承诺过要之后再看的事。\n"
+        "- topic：4-8 字的短标题，同一件事每次都要用同样的写法，这是去重的依据"
+        "（例如固定写「托婴适应」，不要一次写「托婴」一次写「上托婴中心的适应」）\n"
+        "- note：一句话说清楚要问什么，要带上具体背景，让之后问起来不像罐头问候\n"
+        "- due_date：家长明确讲了日期就填 YYYY-MM-DD，没讲就填空字符串。"
+        "一段话里出现好几个日期时，填最值得回头关心的那个未来日期"
+        "（例如同时提到「7/30 签约」和「9/1 开始托婴」，要问的是入托适应，就填 9/1）\n"
+        "- 纯粹的情绪倾诉、已经解决完的事、不需要再追问的闲聊，不要放进来"
     )
     try:
         resp = oai.chat.completions.create(
@@ -1482,18 +1497,37 @@ def _extract_memories_sync(history: list[dict]) -> list[dict]:
                                     "additionalProperties": False,
                                 },
                             },
+                            "follow_ups": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        # Short handle, reused as the dedupe key.
+                                        "topic": {"type": "string"},
+                                        "note": {"type": "string"},
+                                        # "" when the parent named no date; the
+                                        # topic then decides the interval.
+                                        "due_date": {"type": "string"},
+                                    },
+                                    "required": ["topic", "note", "due_date"],
+                                    "additionalProperties": False,
+                                },
+                            },
                         },
-                        "required": ["memories"],
+                        "required": ["memories", "follow_ups"],
                         "additionalProperties": False,
                     },
                 },
             },
         )
         data = json.loads(resp.choices[0].message.content)
-        return data.get("memories", [])[:5]
+        return {
+            "memories": data.get("memories", [])[:5],
+            "follow_ups": data.get("follow_ups", [])[:3],
+        }
     except Exception as e:
         print(f"[error] _extract_memories_sync failed: {type(e).__name__}: {e}")
-        return []
+        return {"memories": [], "follow_ups": []}
 
 async def _upsert_memories(
     memories: list[dict], *, user_id: str, child_id: Optional[str],
@@ -1536,14 +1570,138 @@ async def _upsert_memories(
         except Exception as e:
             print(f"[warn] _upsert_memories key={key}: {e}")
 
+# Default gap before checking back, when the parent didn't give a date. Without
+# these most follow-ups would never come due: "最近在戒尿布" is worth revisiting
+# but carries no deadline of its own. Keyed by the topic words the extractor is
+# told to use; anything unmatched falls back to the default.
+FOLLOW_UP_INTERVALS = {
+    "睡眠": 4, "喂养": 5, "餵養": 5, "副食品": 5, "辅食": 5,
+    "就医": 3, "就醫": 3, "生病": 3, "发烧": 2, "發燒": 2, "疫苗": 3,
+    "情绪": 7, "情緒": 7, "行为": 7, "行為": 7,
+    "发展": 21, "發展": 21, "里程碑": 21,
+    "托婴": 14, "托嬰": 14, "入园": 14, "幼儿园": 14, "幼兒園": 14,
+    "戒奶": 14, "戒尿布": 14, "断奶": 14, "斷奶": 14,
+}
+FOLLOW_UP_DEFAULT_DAYS = int(os.getenv("FOLLOW_UP_DEFAULT_DAYS", "7"))
+#: Anything not asked within this window of falling due is stale — a parenting
+#: situation a month old has usually resolved itself, and asking about it reads
+#: as not having been paying attention.
+FOLLOW_UP_EXPIRE_DAYS = int(os.getenv("FOLLOW_UP_EXPIRE_DAYS", "30"))
+
+
+def _follow_up_due_at(item: dict) -> tuple[str, str]:
+    """Resolve when to come back to something, and record where the date came
+    from. A parent-stated date is used as given; otherwise the topic decides."""
+    stated = (item.get("due_date") or "").strip()
+    if stated:
+        try:
+            d = date.fromisoformat(stated[:10])
+            # A date already in the past was probably mentioned as history
+            # rather than as a plan; check in tomorrow instead of never.
+            if d < date.today():
+                d = date.today() + timedelta(days=1)
+            return datetime.combine(d, dt_time(9, 0), tzinfo=timezone.utc).isoformat(), "stated"
+        except (ValueError, TypeError):
+            pass
+    topic = (item.get("topic") or "") + (item.get("note") or "")
+    days = next((v for k, v in FOLLOW_UP_INTERVALS.items() if k in topic), FOLLOW_UP_DEFAULT_DAYS)
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(), "inferred"
+
+
+async def _upsert_follow_ups(
+    items: list[dict], *, user_id: str, source_id: Optional[str],
+) -> None:
+    """One open follow-up per topic. A parent who mentions 托嬰 across four turns
+    should be asked once, not four times — the partial unique index enforces it,
+    and this refreshes the existing row rather than failing on the conflict."""
+    sb = _get_supabase()
+    if not sb or not items:
+        return
+    now = _now()
+    for item in items[:3]:
+        topic = (item.get("topic") or "").strip()
+        if not topic:
+            continue
+        due_at, due_source = _follow_up_due_at(item)
+        try:
+            existing = await anyio.to_thread.run_sync(
+                lambda: sb.table("follow_ups").select("id,due_source")
+                .eq("user_id", user_id).eq("topic", topic).eq("status", "pending").execute()
+            )
+            if existing.data:
+                row_id = existing.data[0]["id"]
+                # Never let an inferred date overwrite one the parent gave.
+                patch = {"note": (item.get("note") or "").strip(), "updated_at": now}
+                if not (existing.data[0].get("due_source") == "stated" and due_source == "inferred"):
+                    patch.update({"due_at": due_at, "due_source": due_source})
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("follow_ups").update(patch).eq("id", row_id).execute()
+                )
+            else:
+                row = {
+                    "id": str(uuid.uuid4()), "user_id": user_id, "child_id": None,
+                    "topic": topic, "note": (item.get("note") or "").strip(),
+                    "due_at": due_at, "due_source": due_source,
+                    "source_message_id": source_id, "status": "pending",
+                    "created_at": now, "updated_at": now,
+                }
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("follow_ups").insert(row).execute()
+                )
+        except Exception as e:
+            print(f"[warn] _upsert_follow_ups topic={topic}: {e}")
+
+
+async def _get_follow_up_context(user_id: Optional[str], limit: int = 3) -> str:
+    """Open follow-ups that have come due, for the reply prompt.
+
+    This is the quieter of the two channels. The scheduled check-in is what
+    makes a parent feel remembered; this one just stops NURI from asking about
+    副食品 while the parent is already talking about it, and lets it close the
+    loop naturally when they happen to be here anyway.
+    """
+    if not user_id:
+        return ""
+    sb = _get_supabase()
+    if not sb:
+        return ""
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("follow_ups").select("topic,note,due_at")
+            .eq("user_id", user_id).eq("status", "pending")
+            .lte("due_at", _now()).order("due_at").limit(limit).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        print(f"[warn] _get_follow_up_context: {e}")
+        return ""
+    if not rows:
+        return ""
+    lines = "\n".join(f"- {r['topic']}：{r.get('note') or ''}" for r in rows)
+    return (
+        "之前聊过、现在到了可以回头关心一下的事：\n" + lines +
+        "\n如果和家长这一轮说的自然接得上，就顺势关心一句；接不上就不要硬提，"
+        "更不要一次问完好几件。"
+    )
+
+
 async def _extract_and_upsert_memories(
     history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
 ) -> None:
     """Runs as a fire-and-forget background task so memory extraction never adds
-    latency to the chat reply (or task update) the user is waiting on."""
+    latency to the chat reply (or task update) the user is waiting on.
+
+    Follow-ups are extracted by the same call rather than by the router: the
+    router runs before the reply exists, and many things worth coming back to
+    are ones NURI itself just promised ("等他準備好了再開始也不遲"). Here the
+    whole exchange is available, and it costs no extra round trip.
+    """
     try:
-        memories = await anyio.to_thread.run_sync(lambda: _extract_memories_sync(history))
+        extracted = await anyio.to_thread.run_sync(lambda: _extract_memories_sync(history))
+        memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
         await _upsert_memories(memories, user_id=user_id, child_id=None, source_type=source_type, source_id=source_id)
+        if isinstance(extracted, dict):
+            await _upsert_follow_ups(extracted.get("follow_ups", []), user_id=user_id, source_id=source_id)
     except Exception as e:
         print(f"[warn] _extract_and_upsert_memories: {e}")
 
@@ -2478,9 +2636,10 @@ async def _reply_context(
     rather than as serial round trips before the reply starts."""
     started = time.perf_counter()
     profile_ctx = _profile_ctx(turn.context_hints, turn.context_hints.get("children"))
-    gen_cards, memory_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
+    gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
         _db_get_gen_cards(),
         _get_memory_context(turn.owner_uid),
+        _get_follow_up_context(turn.owner_uid),
         _get_style_rules_ctx(),
         anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
         _route_and_search(turn, profile_ctx, metrics),
@@ -2490,7 +2649,10 @@ async def _reply_context(
         metrics.mark("context_ms", started)
     return _ReplyContext(
         card=_card_ctx(turn.session.get("source_card_id") or "", gen_cards),
-        memory=memory_ctx,
+        # Appended to the memory block rather than given its own: both answer
+        # "what does NURI already know about this family", and a separate
+        # heading would just invite the model to work through it as a checklist.
+        memory=(memory_ctx + ("\n\n" + follow_ctx if follow_ctx else "")),
         profile=profile_ctx,
         style=style_ctx,
         internal=internal_ctx,
