@@ -60,7 +60,11 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
 
   const check = async (res: Response) => {
     if (!res.ok) throw new ApiError(res.status, path, await res.text());
-    return res.json();
+    // The DELETE routes answer 204 with no body, and res.json() rejects on an
+    // empty one — which made a successful delete look like a failed request and
+    // left the row sitting in the UI until a reload.
+    const body = await res.text();
+    return body ? JSON.parse(body) : undefined;
   };
 
   // timeoutMs=0 means no timeout (used for long-running generation calls)
