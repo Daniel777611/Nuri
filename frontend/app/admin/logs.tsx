@@ -33,7 +33,14 @@ type Summary = {
   streamed: number;
   failed: number;
   suggested_tasks: number;
-  latency_ms: Record<"total" | "model" | "context" | "first_token" | "tasks", Stat>;
+  route_failed: number;
+  searched: number;
+  medical: number;
+  cited: number;
+  latency_ms: Record<
+    "total" | "model" | "context" | "first_token" | "tasks" | "route" | "search",
+    Stat
+  >;
   length: Record<"reply_chars" | "history_msgs" | "history_chars" | "system_chars", Stat>;
   tokens: Record<"prompt" | "completion", Stat>;
 };
@@ -58,6 +65,17 @@ type TurnLog = {
   completion_tokens: number | null;
   finish_reason: string | null;
   error: string | null;
+  route_ok: boolean | null;
+  route_error: string | null;
+  route_reason: string | null;
+  needs_search: boolean | null;
+  is_medical: boolean | null;
+  search_scope: string | null;
+  search_hits: number | null;
+  cited_sources: number | null;
+  search_provider: string | null;
+  route_ms: number | null;
+  search_ms: number | null;
 };
 type Account = { id: string; email: string; nickname: string; turns?: number };
 
@@ -73,6 +91,13 @@ const COLUMNS: { key: keyof TurnLog | "when"; label: string; width: number }[] =
   { key: "model_ms", label: "模型", width: 68 },
   { key: "context_ms", label: "上下文", width: 72 },
   { key: "tasks_ms", label: "任务", width: 62 },
+  { key: "route_ms", label: "分流", width: 62 },
+  { key: "search_ms", label: "检索", width: 62 },
+  { key: "route_ok", label: "分流OK", width: 68 },
+  { key: "needs_search", label: "要检索", width: 68 },
+  { key: "is_medical", label: "医疗", width: 56 },
+  { key: "search_hits", label: "来源", width: 56 },
+  { key: "cited_sources", label: "引用", width: 56 },
   { key: "reply_chars", label: "回复字数", width: 80 },
   { key: "prompt_tokens", label: "prompt", width: 74 },
   { key: "completion_tokens", label: "完成", width: 64 },
@@ -342,6 +367,33 @@ export default function AdminLogs() {
                     value={`${Math.round((summary.failed / summary.turns) * 100)}%`}
                   />
                 </View>
+                {/* External sources. These three only mean something together:
+                    分流失败 high says the router is broken, while 触发检索 high
+                    with 产生引用 near zero says search runs and returns nothing
+                    worth citing — the same symptom, a different fix. */}
+                <View style={styles.tileRow}>
+                  <Tile label="分流 P50" value={fmtMs(summary.latency_ms.route?.p50)} />
+                  <Tile
+                    label="检索 P50"
+                    value={fmtMs(summary.latency_ms.search?.p50)}
+                    hint={`${summary.latency_ms.search?.count ?? 0} 轮检索`}
+                  />
+                  <Tile
+                    label="分流失败"
+                    value={String(summary.route_failed ?? 0)}
+                    hint="应接近 0"
+                  />
+                  <Tile
+                    label="触发检索"
+                    value={`${summary.searched ?? 0} / ${summary.turns}`}
+                    hint={`其中医疗 ${summary.medical ?? 0}`}
+                  />
+                  <Tile
+                    label="产生引用"
+                    value={`${summary.cited ?? 0} / ${summary.searched ?? 0}`}
+                    hint="检索过的轮次里"
+                  />
+                </View>
                 <View style={styles.tileRow}>
                   <Tile
                     label="回复平均字数"
@@ -396,9 +448,18 @@ export default function AdminLogs() {
                         text = fmtMs(row[c.key as keyof TurnLog] as number | null);
                       } else {
                         const v = row[c.key as keyof TurnLog];
-                        text = v === null || v === undefined ? "–" : String(v);
+                        text =
+                          v === null || v === undefined
+                            ? "–"
+                            : typeof v === "boolean"
+                              ? (v ? "✓" : "✗")
+                              : String(v);
                       }
-                      const bad = c.key === "status" && row.status !== "ok";
+                      // null route_ok just means the turn predates the router;
+                      // only an explicit false is a fault worth flagging.
+                      const bad =
+                        (c.key === "status" && row.status !== "ok") ||
+                        (c.key === "route_ok" && row.route_ok === false);
                       const slow = c.key === "total_ms" && (row.total_ms ?? 0) > 10000;
                       return (
                         <Text

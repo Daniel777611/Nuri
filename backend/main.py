@@ -2010,6 +2010,10 @@ def _gen_tasks_ai_sync(msgs: list[dict]) -> list[dict]:
     )
     resp = oai.chat.completions.create(
         model="gpt-5.5",
+        # Same deliberation budget as the reply. Drafting task cards from a
+        # transcript is closer to extraction than to reasoning, and this runs on
+        # every turn the router asks for cards.
+        **_reply_model_kwargs(),
         messages=[{"role": "user", "content":
             f"根据以下育儿对话，生成2-4个具体可执行的小任务。\n\n{history}\n\n"
             '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
@@ -3706,7 +3710,9 @@ async def admin_turn_logs_summary(
         q = sb.table("chat_turn_logs").select(
             "total_ms,model_ms,context_ms,first_token_ms,tasks_ms,reply_chars,"
             "prompt_tokens,completion_tokens,history_msgs,history_chars,system_chars,"
-            "status,streamed,suggested_tasks,created_at"
+            "status,streamed,suggested_tasks,created_at,"
+            "route_ok,needs_search,is_medical,search_hits,cited_sources,"
+            "route_ms,search_ms"
         ).gte("created_at", since)
         if user_id:
             q = q.eq("user_id", user_id)
@@ -3738,12 +3744,23 @@ async def admin_turn_logs_summary(
         "streamed": sum(1 for r in rows if r.get("streamed")),
         "failed": sum(1 for r in rows if r.get("status") != "ok"),
         "suggested_tasks": sum(1 for r in rows if r.get("suggested_tasks")),
+        # The three numbers that say whether external sources are working, and
+        # they have to be read together. route_failed high means the router is
+        # broken; searched high with cited near zero means search runs but
+        # nothing it returns is worth citing — a different problem entirely,
+        # and invisible if you only track one of them.
+        "route_failed": sum(1 for r in rows if r.get("route_ok") is False),
+        "searched": sum(1 for r in rows if r.get("needs_search")),
+        "medical": sum(1 for r in rows if r.get("is_medical")),
+        "cited": sum(1 for r in rows if (r.get("cited_sources") or 0) > 0),
         "latency_ms": {
             "total": stats("total_ms"),
             "model": stats("model_ms"),
             "context": stats("context_ms"),
             "first_token": stats("first_token_ms"),
             "tasks": stats("tasks_ms"),
+            "route": stats("route_ms"),
+            "search": stats("search_ms"),
         },
         "length": {
             "reply_chars": stats("reply_chars"),
