@@ -381,8 +381,8 @@ function MessageBubble({
         ) : null}
         {msg.text ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
-            {isAI && msg.sources?.length ? (
-              <CitedText text={msg.text} sources={msg.sources} />
+            {isAI ? (
+              <RichText text={msg.text} sources={msg.sources ?? []} />
             ) : (
               msg.text
             )}
@@ -394,40 +394,49 @@ function MessageBubble({
   );
 }
 
-// ── Sub-component: inline citation markers ──────────────────────────────────
-// The [1] markers the model writes are plain characters, so a parent otherwise
-// has to read one, scan down to the matching chip, and tap that. These make the
-// marker itself the tap target.
+// ── Sub-component: inline markup ────────────────────────────────────────────
+// The model writes two things a plain <Text> renders as literal characters:
+// **bold** headings, which is how the three alternative approaches get their
+// titles, and [1] citation markers. Both are handled in one pass so a heading
+// containing a citation doesn't need either rule to know about the other.
 //
-// Rendered as nested <Text> rather than <Pressable> so the markers stay inside
-// the paragraph's text flow — a Pressable here would break wrapping mid-sentence.
-const CITATION_RE = /\[(\d{1,2})\]/g;
+// Segments are nested <Text>, not <Pressable> or <View>: anything else breaks
+// wrapping mid-paragraph.
+const MARKUP_RE = /(\*\*[^*\n]+\*\*)|(\[\d{1,2}\])/g;
 
-function CitedText({ text, sources }: { text: string; sources: Source[] }) {
+function RichText({ text, sources }: { text: string; sources: Source[] }) {
   const byIndex = new Map(sources.map((s) => [s.n, s]));
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
 
-  CITATION_RE.lastIndex = 0;
-  while ((match = CITATION_RE.exec(text)) !== null) {
-    const source = byIndex.get(Number(match[1]));
-    // A number with no matching source stays literal text — the model
-    // occasionally writes [1] in a list, and turning that into a dead tap
-    // target would be worse than leaving it alone.
-    if (!source) continue;
+  MARKUP_RE.lastIndex = 0;
+  while ((match = MARKUP_RE.exec(text)) !== null) {
+    const token = match[0];
+    const isBold = token.startsWith("**");
+    // A citation number with no matching source stays literal: the model
+    // occasionally writes [1] as list punctuation, and a dead tap target
+    // would be worse than leaving it alone.
+    const source = isBold ? undefined : byIndex.get(Number(token.slice(1, -1)));
+    if (!isBold && !source) continue;
+
     if (match.index > cursor) parts.push(text.slice(cursor, match.index));
     parts.push(
-      <Text
-        key={`${match.index}-${source.n}`}
-        style={styles.citationMark}
-        onPress={() => WebBrowser.openBrowserAsync(source.url).catch(() => {})}
-        suppressHighlighting={false}
-      >
-        {` ${source.n} `}
-      </Text>,
+      isBold ? (
+        <Text key={`b${match.index}`} style={styles.bold}>
+          {token.slice(2, -2)}
+        </Text>
+      ) : (
+        <Text
+          key={`c${match.index}`}
+          style={styles.citationMark}
+          onPress={() => WebBrowser.openBrowserAsync(source!.url).catch(() => {})}
+        >
+          {` ${source!.n} `}
+        </Text>
+      ),
     );
-    cursor = match.index + match[0].length;
+    cursor = match.index + token.length;
   }
   if (!parts.length) return <>{text}</>;
   if (cursor < text.length) parts.push(text.slice(cursor));
@@ -597,6 +606,7 @@ const styles = StyleSheet.create({
   // Sits inline in a sentence, so it has to read as a marker rather than as a
   // word: small, tinted, and padded enough to be tappable without pushing the
   // surrounding line height around.
+  bold: { fontWeight: "700" },
   citationMark: {
     color: colors.brand,
     fontSize: 11,
