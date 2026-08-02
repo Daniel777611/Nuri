@@ -68,6 +68,8 @@ type TurnLog = {
   route_ok: boolean | null;
   route_error: string | null;
   route_reason: string | null;
+  route_topic: string | null;
+  task_plan: string | null;
   needs_search: boolean | null;
   is_medical: boolean | null;
   search_scope: string | null;
@@ -103,6 +105,14 @@ const COLUMNS: { key: keyof TurnLog | "when"; label: string; width: number }[] =
   { key: "completion_tokens", label: "完成", width: 64 },
   { key: "history_msgs", label: "历史轮", width: 68 },
   { key: "system_chars", label: "system", width: 74 },
+  // The free-text columns go last because they're the widest, and they're the
+  // ones the task-card rules actually get tuned against: the booleans above say
+  // what happened, these three say why. 话题 is also how you check the router is
+  // labelling one concern consistently — the per-day budget silently leaks if it
+  // calls the same worry three different things.
+  { key: "route_topic", label: "话题", width: 120 },
+  { key: "route_reason", label: "分流原因", width: 240 },
+  { key: "task_plan", label: "任务判定", width: 210 },
 ];
 
 function fmtMs(v: number | null): string {
