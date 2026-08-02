@@ -15,6 +15,8 @@ export type PersonalizedResourceStatus =
   | "urgent_suppressed"
   | string;
 
+export type PersonalizedContentCategory = "authority" | "featured" | "case";
+
 export type PersonalizedFeedItem = {
   id: string;
   title: string;
@@ -22,6 +24,9 @@ export type PersonalizedFeedItem = {
   publisher?: string;
   topic?: string;
   topic_label?: string;
+  content_category?: PersonalizedContentCategory;
+  content_category_label?: string;
+  content_category_eyebrow?: string;
   personalization_reason?: string;
   is_conversation_match?: boolean;
   related_session_id?: string | null;
@@ -328,14 +333,16 @@ export const api = {
 
   // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
-  getPersonalizedFeed: (count = 4) =>
-    req<PersonalizedFeedResponse>(`/feed/personalized?count=${count}`),
+  getPersonalizedFeed: (count = 3) =>
+    req<PersonalizedFeedResponse>(
+      `/feed/personalized?count=${count}&presentation=category_cards`,
+    ),
   getCardDetail: (
     id: string,
     sessionId?: string,
     contextCreatedAt?: string,
     recommendationId?: string,
-    preferredLocale?: "zh-CN" | "zh-TW" | "en",
+    contentCategory?: PersonalizedContentCategory,
   ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
@@ -345,20 +352,20 @@ export const api = {
       recommendationId
         ? `recommendation_id=${encodeURIComponent(recommendationId)}`
         : "",
-      preferredLocale
-        ? `preferred_locale=${encodeURIComponent(preferredLocale)}`
+      contentCategory
+        ? `content_category=${encodeURIComponent(contentCategory)}`
         : "",
     ].filter(Boolean).join("&");
     return req(`/feed/${id}/detail${query ? `?${query}` : ""}`);
   },
   // The detail first paints its reviewed fallback, then this longer request
-  // replaces it with a citation-backed 3 categories x article/video bundle.
+  // replaces it with a citation-backed article/video pair for this category.
   getCardResearch: (
     id: string,
     sessionId?: string,
     contextCreatedAt?: string,
     recommendationId?: string,
-    preferredLocale?: "zh-CN" | "zh-TW" | "en",
+    contentCategory?: PersonalizedContentCategory,
   ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
@@ -368,8 +375,8 @@ export const api = {
       recommendationId
         ? `recommendation_id=${encodeURIComponent(recommendationId)}`
         : "",
-      preferredLocale
-        ? `preferred_locale=${encodeURIComponent(preferredLocale)}`
+      contentCategory
+        ? `content_category=${encodeURIComponent(contentCategory)}`
         : "",
     ].filter(Boolean).join("&");
     return req(

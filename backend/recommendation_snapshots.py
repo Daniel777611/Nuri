@@ -84,6 +84,7 @@ def build_snapshot(
     card_id = str(card.get("id") or "").strip()
     if not card_id:
         raise ValueError("card id is required")
+    content_category = str(card.get("content_category") or "").strip() or None
     session_id = str(context.get("session_id") or "").strip() or None
     context_created_at = str(context.get("context_created_at") or "").strip() or None
     profile_fingerprint = (
@@ -91,7 +92,13 @@ def build_snapshot(
     )
     rec_id = recommendation_id(
         uid,
-        card_id=card_id,
+        # Category-card recommendations intentionally share the same base
+        # learning topic.  Bind the opaque ID to the presentation lane so the
+        # authority, featured and case snapshots can never overwrite or open
+        # one another while downstream favorites/chat keep the base card ID.
+        card_id=(
+            f"{card_id}::{content_category}" if content_category else card_id
+        ),
         session_id=session_id,
         context_created_at=context_created_at,
         profile_fingerprint=profile_fingerprint,
@@ -101,6 +108,8 @@ def build_snapshot(
         "context_version": SNAPSHOT_CONTEXT_VERSION,
         "recommendation_id": rec_id,
         "card_id": card_id,
+        "content_category": content_category,
+        "preferred_locale": str(context.get("preferred_locale") or "")[:16],
         "session_id": session_id,
         "context_created_at": context_created_at,
         "child_profile_fingerprint": profile_fingerprint,
@@ -174,4 +183,6 @@ def parse_snapshot(
     if parsed.get("version") == 1:
         parsed.setdefault("child_profile_fingerprint", None)
         parsed.setdefault("child_age_context", "")
+    parsed.setdefault("content_category", None)
+    parsed.setdefault("preferred_locale", "")
     return parsed

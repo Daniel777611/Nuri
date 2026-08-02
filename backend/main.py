@@ -4783,13 +4783,136 @@ def _rank_learning_content(
     return selected, has_conversation_match
 
 
-def _resource_blueprint() -> dict[str, list[str]]:
+_CATEGORY_CARD_META = {
+    "authority": {
+        "label": "权威来源",
+        "eyebrow": "事实与安全底线",
+        "description": "来自政府、大学、医院、医学组织或专业期刊。",
+    },
+    "featured": {
+        "label": "精选内容",
+        "eyebrow": "清楚、实用、值得看",
+        "description": "专业可靠、讲解精彩，也适合家庭直接使用。",
+    },
+    "case": {
+        "label": "真实案例",
+        "eyebrow": "其他家庭的真实实践",
+        "description": "用具体家庭经历呈现过程、调整与可借鉴做法。",
+    },
+}
+
+
+def _resource_blueprint(
+    content_category: Optional[str] = None,
+) -> dict[str, list[str]]:
+    if content_category in CONTENT_CATEGORIES:
+        return {str(content_category): ["article", "video"]}
     # Each editorial lane offers a real choice while preserving format
     # diversity. The third slot is quality-gated rather than quota-filled.
     return {
         category: ["article", "video", "article_or_video_optional"]
         for category in CONTENT_CATEGORIES
     }
+
+
+def _select_category_resource_pair(
+    resources: list[dict],
+    content_category: Optional[str],
+) -> list[dict]:
+    """Return at most one article and one video for one editorial lane."""
+
+    if content_category not in CONTENT_CATEGORIES:
+        return list(resources)
+    matching = [
+        resource
+        for resource in resources
+        if str(resource.get("content_category") or "") == content_category
+    ]
+    pair: list[dict] = []
+    for kind in ("article", "video"):
+        selected = next(
+            (resource for resource in matching if resource.get("kind") == kind),
+            None,
+        )
+        if selected:
+            pair.append(selected)
+    return pair
+
+
+def _reviewed_category_resource_pair(
+    resources: list[dict],
+    locale: str,
+    content_category: Optional[str],
+    topic_context: Optional[dict] = None,
+) -> list[dict]:
+    """Select a stable same-language article/video pair for a category card.
+
+    The conversation-aware filter is preferred.  If it removes one format, the
+    manually reviewed resources on the same base topic are allowed to fill that
+    format; this never crosses topic, category or language boundaries.
+    """
+
+    reviewed = _reviewed_resources_for_context(resources, locale, topic_context)
+    pair = _select_category_resource_pair(reviewed, content_category)
+    if content_category not in CONTENT_CATEGORIES or len(pair) == 2 or topic_context is None:
+        return pair
+    fallback = _select_category_resource_pair(
+        _reviewed_resources_for_context(resources, locale, None),
+        content_category,
+    )
+    by_kind = {str(resource.get("kind") or ""): resource for resource in pair}
+    for resource in fallback:
+        by_kind.setdefault(str(resource.get("kind") or ""), resource)
+    return [by_kind[kind] for kind in ("article", "video") if kind in by_kind]
+
+
+def _category_feed_card(
+    base_card: dict,
+    content_category: str,
+    locale: str,
+    *,
+    context_state: str,
+) -> dict:
+    """Present one ranked topic as a clearly labelled editorial-lane card."""
+
+    card = dict(base_card)
+    meta = _CATEGORY_CARD_META[content_category]
+    library_resources = LEARNING_CONTENT_BY_ID.get(
+        str(base_card.get("id") or ""), {}
+    ).get("resources", [])
+    topic_context = (
+        base_card
+        if context_state == "ready" and base_card.get("is_conversation_match")
+        else None
+    )
+    pair = _reviewed_category_resource_pair(
+        library_resources,
+        locale,
+        content_category,
+        topic_context,
+    )
+    article = next(
+        (resource for resource in pair if resource.get("kind") == "article"),
+        None,
+    )
+    card.update(
+        {
+            "content_category": content_category,
+            "content_category_label": meta["label"],
+            "content_category_eyebrow": meta["eyebrow"],
+            "content_category_description": meta["description"],
+            "type_label": meta["label"],
+            "resource_pair_complete": len(pair) == 2,
+            "resource_summary": summarize_resource_slots(pair, locale),
+        }
+    )
+    # The card is about the concrete content the user will open, while the
+    # topic and NURI guide remain available on the detail page.
+    if article:
+        card["title"] = article.get("title") or card.get("title")
+        card["summary"] = article.get("description") or card.get("summary")
+        card["publisher"] = article.get("publisher") or card.get("publisher")
+    return card
 
 
 def _resource_matches_preferred_locale(resource: dict, locale: str) -> bool:
@@ -4946,7 +5069,11 @@ def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) 
 
 
 @api.get("/feed/personalized")
-async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
+async def get_personalized_feed(
+    count: int = 4,
+    presentation: Literal["topic_cards", "category_cards"] = "topic_cards",
+    uid: str = Depends(_req_uid),
+):
     """Return learning topics tied to this parent's real main conversation."""
 
     context = await _load_recent_main_chat(uid)
@@ -4956,9 +5083,10 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
         if context.get("state") == "ready"
         else []
     )
+    requested_count = max(1, min(count, 3 if presentation == "category_cards" else 6))
     items, used_conversation = _rank_learning_content(
         context.get("messages") or [],
-        count=max(1, min(count, 6)),
+        count=1 if presentation == "category_cards" else requested_count,
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
@@ -4968,6 +5096,18 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
         (item for item in items if item.get("is_conversation_match")),
         None,
     )
+    preferred_locale = str(context.get("preferred_locale") or "zh-CN")
+    if presentation == "category_cards" and items:
+        primary = first_match or items[0]
+        items = [
+            _category_feed_card(
+                primary,
+                content_category,
+                preferred_locale,
+                context_state=str(context.get("state") or "no_history"),
+            )
+            for content_category in CONTENT_CATEGORIES[:requested_count]
+        ]
     if context.get("state") == "privacy_off":
         mode = "default_privacy"
     elif used_conversation:
@@ -4977,24 +5117,35 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     else:
         mode = "default"
     _log_personalized_feed_decision(uid, context, items)
-    preferred_locale = str(context.get("preferred_locale") or "zh-CN")
     urgent_suppressed = _context_requires_urgent_handoff(context)
     for item in items:
         if item.get("is_conversation_match"):
             item["context_created_at"] = context.get("context_created_at")
             if context.get("child_age_context"):
                 item["child_age_context"] = context["child_age_context"]
-        reviewed = LEARNING_CONTENT_BY_ID.get(item["id"], {}).get("resources", [])
-        reviewed = _reviewed_resources_for_context(
-            reviewed,
-            preferred_locale,
+        reviewed_source = LEARNING_CONTENT_BY_ID.get(item["id"], {}).get("resources", [])
+        topic_context = (
             item
             if context.get("state") == "ready"
             and item.get("is_conversation_match")
-            else None,
+            else None
         )
+        if item.get("content_category") in CONTENT_CATEGORIES:
+            reviewed = _reviewed_category_resource_pair(
+                reviewed_source,
+                preferred_locale,
+                str(item["content_category"]),
+                topic_context,
+            )
+            item["resource_pair_complete"] = len(reviewed) == 2
+        else:
+            reviewed = _reviewed_resources_for_context(
+                reviewed_source,
+                preferred_locale,
+                topic_context,
+            )
         item["resource_summary"] = summarize_resource_slots(reviewed, preferred_locale)
-        item["resource_blueprint"] = _resource_blueprint()
+        item["resource_blueprint"] = _resource_blueprint(item.get("content_category"))
         if item.get("is_dynamic_research_card"):
             if urgent_suppressed:
                 item["curation_mode"] = "dynamic_research_suppressed"
@@ -5032,7 +5183,11 @@ async def get_personalized_feed(count: int = 4, uid: str = Depends(_req_uid)):
     return {
         "items": items,
         "feed_request_id": feed_request_id,
-        "model_version": "conversation-quality-child-age-cn-repair-v4",
+        "model_version": (
+            "conversation-category-pairs-v1"
+            if presentation == "category_cards"
+            else "conversation-quality-child-age-cn-repair-v4"
+        ),
         "personalization_mode": mode,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),
@@ -5123,6 +5278,7 @@ async def get_card_detail(
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
     recommendation_id: Optional[str] = None,
+    content_category: Optional[Literal["authority", "featured", "case"]] = None,
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: Optional[str] = Depends(_opt_uid),
 ):
@@ -5137,6 +5293,12 @@ async def get_card_detail(
             raise HTTPException(404, "recommendation not found")
         if snapshot and snapshot.get("card_id") != card_id:
             raise HTTPException(404, "recommendation not found")
+        snapshot_category = (
+            str(snapshot.get("content_category") or "") if snapshot else ""
+        )
+        if snapshot_category and content_category and snapshot_category != content_category:
+            raise HTTPException(404, "recommendation not found")
+        selected_content_category = snapshot_category or content_category
         if snapshot:
             session_id = snapshot.get("session_id")
             context_created_at = snapshot.get("context_created_at")
@@ -5155,9 +5317,16 @@ async def get_card_detail(
                 "preferred_locale": "zh-CN",
                 "external_research_allowed": False,
             }
-        # A detail-page language choice is request-scoped. It must not silently
-        # rewrite the account's saved privacy/language setting.
-        context = _with_requested_preferred_locale(context, preferred_locale)
+        # New category-card snapshots freeze the account language used when the
+        # recommendation was generated. Legacy links keep the old request-
+        # scoped override for backward compatibility, but the current client no
+        # longer exposes a manual language switch.
+        selected_locale = (
+            str(snapshot.get("preferred_locale") or "")
+            if snapshot
+            else ""
+        ) or preferred_locale
+        context = _with_requested_preferred_locale(context, selected_locale)
         if snapshot and (
             context.get("state") != "ready"
             or context.get("session_id") != snapshot.get("session_id")
@@ -5194,6 +5363,13 @@ async def get_card_detail(
             raise HTTPException(404, "card not found")
         if context.get("child_age_context"):
             card["child_age_context"] = context["child_age_context"]
+        if selected_content_category in CONTENT_CATEGORIES:
+            meta = _CATEGORY_CARD_META[str(selected_content_category)]
+            card["content_category"] = selected_content_category
+            card["content_category_label"] = meta["label"]
+            card["content_category_eyebrow"] = meta["eyebrow"]
+            card["content_category_description"] = meta["description"]
+            card["type_label"] = meta["label"]
         if snapshot and context.get("state") == "ready":
             for field in (
                 "personalization_reason",
@@ -5214,11 +5390,20 @@ async def get_card_detail(
         apply_recommendation_context = bool(
             context.get("state") == "ready" and card.get("is_conversation_match")
         )
-        card["resources"] = _reviewed_resources_for_context(
-            card.get("resources", []),
-            preferred_locale,
-            card if apply_recommendation_context else None,
-        )
+        if selected_content_category in CONTENT_CATEGORIES:
+            card["resources"] = _reviewed_category_resource_pair(
+                card.get("resources", []),
+                preferred_locale,
+                str(selected_content_category),
+                card if apply_recommendation_context else None,
+            )
+            card["resource_pair_complete"] = len(card["resources"]) == 2
+        else:
+            card["resources"] = _reviewed_resources_for_context(
+                card.get("resources", []),
+                preferred_locale,
+                card if apply_recommendation_context else None,
+            )
         # Return the reviewed library immediately.  The client then calls the
         # research endpoint and can show these resources while web search runs.
         urgent_suppressed = _context_requires_urgent_handoff(context)
@@ -5247,7 +5432,7 @@ async def get_card_detail(
         else:
             card["research_status"] = "reviewed_fallback"
         card["preferred_locale"] = preferred_locale
-        card["resource_blueprint"] = _resource_blueprint()
+        card["resource_blueprint"] = _resource_blueprint(selected_content_category)
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale
         )
@@ -5274,6 +5459,7 @@ async def get_card_research(
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
     recommendation_id: Optional[str] = None,
+    content_category: Optional[Literal["authority", "featured", "case"]] = None,
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: str = Depends(_req_uid),
 ):
@@ -5289,6 +5475,10 @@ async def get_card_research(
         raise HTTPException(404, "recommendation not found")
     if snapshot and snapshot.get("card_id") != card_id:
         raise HTTPException(404, "recommendation not found")
+    snapshot_category = str(snapshot.get("content_category") or "") if snapshot else ""
+    if snapshot_category and content_category and snapshot_category != content_category:
+        raise HTTPException(404, "recommendation not found")
+    selected_content_category = snapshot_category or content_category
     if snapshot:
         session_id = snapshot.get("session_id")
         context_created_at = snapshot.get("context_created_at")
@@ -5298,10 +5488,12 @@ async def get_card_research(
         through_created_at=context_created_at,
     )
     await _attach_child_recommendation_context(uid, context)
-    # Keep the selected resource language consistent across the reviewed first
-    # paint, live research, cache key and response summary without mutating the
-    # account's saved privacy/language setting.
-    context = _with_requested_preferred_locale(context, preferred_locale)
+    # Category-card snapshots keep the language selected by the account at feed
+    # generation time.  Legacy clients may still use the old request override.
+    selected_locale = (
+        str(snapshot.get("preferred_locale") or "") if snapshot else ""
+    ) or preferred_locale
+    context = _with_requested_preferred_locale(context, selected_locale)
     if snapshot and (
         context.get("state") != "ready"
         or context.get("session_id") != snapshot.get("session_id")
@@ -5344,6 +5536,13 @@ async def get_card_research(
         raise HTTPException(404, "card not found")
     if context.get("child_age_context"):
         card["child_age_context"] = context["child_age_context"]
+    if selected_content_category in CONTENT_CATEGORIES:
+        meta = _CATEGORY_CARD_META[str(selected_content_category)]
+        card["content_category"] = selected_content_category
+        card["content_category_label"] = meta["label"]
+        card["content_category_eyebrow"] = meta["eyebrow"]
+        card["content_category_description"] = meta["description"]
+        card["type_label"] = meta["label"]
     if snapshot and context.get("state") == "ready":
         for field in (
             "personalization_reason",
@@ -5370,7 +5569,7 @@ async def get_card_research(
                 "resources": [],
                 "research_status": "unavailable",
                 "fallback_reason": "no_complete_verified_bundle",
-                "resource_blueprint": _resource_blueprint(),
+                "resource_blueprint": _resource_blueprint(selected_content_category),
                 "resource_summary": summarize_resource_slots(
                     [], preferred_locale
                 ),
@@ -5379,31 +5578,39 @@ async def get_card_research(
         # conversation-context gates as the initial detail response. A failed
         # live search must not blank a verified list, and it must not resurrect
         # the old Taiwan/Traditional-Chinese fallbacks either.
-        reviewed_resources = _reviewed_resources_for_context(
-            card.get("resources", []),
-            preferred_locale,
-            card,
-        )
+        if selected_content_category in CONTENT_CATEGORIES:
+            reviewed_resources = _reviewed_category_resource_pair(
+                card.get("resources", []),
+                preferred_locale,
+                str(selected_content_category),
+                card,
+            )
+        else:
+            reviewed_resources = _reviewed_resources_for_context(
+                card.get("resources", []),
+                preferred_locale,
+                card,
+            )
         return {
             "resources": reviewed_resources,
             "research_status": (
                 "reviewed_fallback" if reviewed_resources else "unavailable"
             ),
             "fallback_reason": "no_complete_verified_bundle",
-            "resource_blueprint": _resource_blueprint(),
+            "resource_blueprint": _resource_blueprint(selected_content_category),
             "resource_summary": summarize_resource_slots(
                 reviewed_resources, preferred_locale
             ),
         }
     preferred_locale = str(context.get("preferred_locale") or "zh-CN")
-    resources = research["resources"]
-    dynamic_count = int(research.get("dynamic_resource_count") or 0)
-    resource_count = len(resources)
+    full_resources = research["resources"]
+    full_dynamic_count = int(research.get("dynamic_resource_count") or 0)
+    resource_count = len(full_resources)
     complete_dynamic_bundle = bool(
         MIN_TOTAL_RESEARCH_RESOURCES
         <= resource_count
         <= MAX_TOTAL_RESEARCH_RESOURCES
-        and dynamic_count == resource_count
+        and full_dynamic_count == resource_count
     )
     if (
         card.get("is_dynamic_research_card")
@@ -5414,16 +5621,63 @@ async def get_card_research(
         return {
             "resources": [],
             "research_status": "unavailable",
-            "resource_blueprint": _resource_blueprint(),
+            "resource_blueprint": _resource_blueprint(selected_content_category),
             "resource_summary": summarize_resource_slots([], preferred_locale),
         }
-    research_status = (
-        "fresh"
-        if complete_dynamic_bundle
-        else "hybrid"
-        if dynamic_count
-        else "reviewed_fallback"
-    )
+    if selected_content_category in CONTENT_CATEGORIES:
+        live_pair = _select_category_resource_pair(
+            full_resources,
+            str(selected_content_category),
+        )
+        live_by_kind = {
+            str(resource.get("kind") or ""): resource for resource in live_pair
+        }
+        if len(live_by_kind) < 2 and not card.get("is_dynamic_research_card"):
+            reviewed_pair = _reviewed_category_resource_pair(
+                card.get("resources", []),
+                preferred_locale,
+                str(selected_content_category),
+                card,
+            )
+            for resource in reviewed_pair:
+                live_by_kind.setdefault(str(resource.get("kind") or ""), resource)
+        resources = [
+            live_by_kind[kind]
+            for kind in ("article", "video")
+            if kind in live_by_kind
+        ]
+        if len(resources) != 2:
+            return {
+                "resources": [],
+                "research_status": "unavailable",
+                "fallback_reason": "no_complete_verified_pair",
+                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_summary": summarize_resource_slots([], preferred_locale),
+            }
+        dynamic_count = sum(
+            resource.get("research_source") == "openai_web_search"
+            for resource in resources
+        )
+        if complete_dynamic_bundle and not any(
+            resource.get("research_source") == "reviewed_library"
+            for resource in resources
+        ):
+            dynamic_count = len(resources)
+        reviewed_count = len(resources) - dynamic_count
+        research_status = (
+            "fresh" if dynamic_count == len(resources) else "hybrid" if dynamic_count else "reviewed_fallback"
+        )
+    else:
+        resources = full_resources
+        dynamic_count = full_dynamic_count
+        reviewed_count = int(research.get("reviewed_resource_count") or 0)
+        research_status = (
+            "fresh"
+            if complete_dynamic_bundle
+            else "hybrid"
+            if dynamic_count
+            else "reviewed_fallback"
+        )
     content_set_id = str(uuid.uuid4())
     resource_events = [
         _new_recommendation_event(
@@ -5451,8 +5705,8 @@ async def get_card_research(
         "research_editor_note": research.get("editor_note"),
         "research_source_count": research.get("cited_source_count", 0),
         "dynamic_resource_count": dynamic_count,
-        "reviewed_resource_count": int(research.get("reviewed_resource_count") or 0),
-        "resource_blueprint": _resource_blueprint(),
+        "reviewed_resource_count": reviewed_count,
+        "resource_blueprint": _resource_blueprint(selected_content_category),
         "resource_summary": summarize_resource_slots(resources, preferred_locale),
     }
 

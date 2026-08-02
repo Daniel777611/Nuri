@@ -163,21 +163,32 @@ export default function Home() {
     setHeroFeedState("loading");
     setHeroFeedMeta({});
     try {
-      const response = await api.getPersonalizedFeed(4);
+      const response = await api.getPersonalizedFeed(3);
       if (requestId !== heroRequest.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
+      const categoryOrder = { authority: 0, featured: 1, case: 2 } as const;
       const validItems = items
         .filter(
           (item): item is PersonalizedFeedItem =>
-            typeof item?.id === "string" && typeof item?.title === "string",
+            typeof item?.id === "string" &&
+            typeof item?.title === "string" &&
+            item.content_category !== undefined &&
+            item.content_category in categoryOrder,
+        )
+        .sort(
+          (left, right) =>
+            categoryOrder[left.content_category!] - categoryOrder[right.content_category!],
         );
-      setHeroCards(validItems);
+      const uniqueCategories = new Set(validItems.map((item) => item.content_category));
+      const categoryCards =
+        validItems.length === 3 && uniqueCategories.size === 3 ? validItems : [];
+      setHeroCards(categoryCards);
       setHeroFeedMeta({
         feedRequestId: response.feed_request_id || undefined,
         generatedAt: response.generated_at || undefined,
       });
       setHeroFeedState(
-        validItems.length > 0 && response.personalization_mode === "conversation"
+        categoryCards.length > 0 && response.personalization_mode === "conversation"
           ? "personalized"
           : "curated",
       );
@@ -289,6 +300,7 @@ export default function Home() {
           recommendation_id: card.recommendation_id || undefined,
           feed_request_id: heroFeedMeta.feedRequestId,
           locale: card.resource_summary?.preferred_locale,
+          content_category: card.content_category,
           position: card.rank || position,
         })
         .catch(() => {});
@@ -298,7 +310,16 @@ export default function Home() {
 
   const openHeroCard = useCallback(
     (card: HeroCard) => {
-      const position = card.rank || Math.max(1, heroCards.findIndex((item) => item.id === card.id) + 1);
+      const position =
+        card.rank ||
+        Math.max(
+          1,
+          heroCards.findIndex(
+            (item) =>
+              (item.recommendation_id || `${item.id}:${item.content_category}`) ===
+              (card.recommendation_id || `${card.id}:${card.content_category}`),
+          ) + 1,
+        );
       api
         .trackRecommendationEvent({
           event: "card_open",
@@ -306,6 +327,7 @@ export default function Home() {
           recommendation_id: card.recommendation_id || undefined,
           feed_request_id: heroFeedMeta.feedRequestId,
           locale: card.resource_summary?.preferred_locale,
+          content_category: card.content_category,
           position,
         })
         .catch(() => {});
@@ -313,6 +335,9 @@ export default function Home() {
         pathname: "/detail/[id]",
         params: {
           id: card.id,
+          ...(card.content_category
+            ? { content_category: card.content_category }
+            : {}),
           ...(card.related_session_id ? { session_id: card.related_session_id } : {}),
           ...(card.context_created_at
             ? { context_created_at: card.context_created_at }

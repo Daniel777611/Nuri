@@ -239,6 +239,16 @@ function previewResourceLocale(path: string) {
   }
   return privacy.language === "zh" ? "zh-CN" : privacy.language;
 }
+
+function previewContentCategory(path: string): "authority" | "featured" | "case" {
+  const query = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
+  const requested = new URLSearchParams(query).get("content_category");
+  return requested === "featured" || requested === "case" ? requested : "authority";
+}
+
+function previewResourceCategory(resource: any): "authority" | "featured" | "case" {
+  return resource.content_category || (resource.source_tier === "curated" ? "featured" : "authority");
+}
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
@@ -377,16 +387,54 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
 
   if (path.startsWith("/feed/personalized") && method === "GET") {
     const useConversation = privacy.allow_history_training;
-    const items = learningCards.map((item, index) => ({
-      ...item,
-      personalization_reason: useConversation && index === 0
-        ? "因为你最近和 NURI 聊到了“睡眠与作息”"
-        : useConversation
-          ? "NURI 从可信育儿来源中为你补充精选"
+    const preferredLocale = previewResourceLocale(path);
+    const baseCard = learningCards[0];
+    const categoryMeta = {
+      authority: "权威来源",
+      featured: "精选内容",
+      case: "真实案例",
+    } as const;
+    const items = (["authority", "featured", "case"] as const).map((category, index) => {
+      const pair = orderPreviewResources(baseCard.resources || [], preferredLocale)
+        .filter(
+          (resource) =>
+            resource.locales?.includes(preferredLocale) &&
+            previewResourceCategory(resource) === category,
+        )
+        .filter(
+          (resource, resourceIndex, resources) =>
+            resources.findIndex((candidate) => candidate.kind === resource.kind) === resourceIndex,
+        )
+        .slice(0, 2);
+      const article = pair.find((resource) => resource.kind === "article");
+      return {
+        ...baseCard,
+        title: article?.title || baseCard.title,
+        summary: article?.description || baseCard.summary,
+        publisher: article?.publisher || baseCard.publisher,
+        content_category: category,
+        content_category_label: categoryMeta[category],
+        personalization_reason: useConversation
+          ? "因为你最近和 NURI 聊到了“睡眠与作息”"
           : "你已关闭对话个性化，这是 NURI 的可信来源精选",
-      is_conversation_match: useConversation && index === 0,
-      related_session_id: useConversation && index === 0 ? "chat-1" : null,
-    }));
+        is_conversation_match: useConversation,
+        related_session_id: useConversation ? "chat-1" : null,
+        rank: index + 1,
+        resource_status: "reviewed",
+        resource_summary: {
+          preferred_locale: preferredLocale,
+          categories: {
+            authority: { article: 0, video: 0 },
+            featured: { article: 0, video: 0 },
+            case: { article: 0, video: 0 },
+            [category]: {
+              article: pair.some((resource) => resource.kind === "article") ? 1 : 0,
+              video: pair.some((resource) => resource.kind === "video") ? 1 : 0,
+            },
+          },
+        },
+      };
+    });
     return {
       items,
       personalization_mode: useConversation ? "conversation" : "default_privacy",
@@ -401,13 +449,30 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     if (learningCard) {
       const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
       const preferredLocale = previewResourceLocale(path);
+      const contentCategory = previewContentCategory(path);
       const resources = orderPreviewResources(
         learningCard.resources || [],
         preferredLocale,
-      ).filter((resource) => resource.locales?.includes(preferredLocale));
+      )
+        .filter(
+          (resource) =>
+            resource.locales?.includes(preferredLocale) &&
+            previewResourceCategory(resource) === contentCategory,
+        )
+        .filter(
+          (resource, resourceIndex, allResources) =>
+            allResources.findIndex((candidate) => candidate.kind === resource.kind) === resourceIndex,
+        )
+        .slice(0, 2);
       return {
         ...learningCard,
         resources,
+        content_category: contentCategory,
+        content_category_label: {
+          authority: "权威来源",
+          featured: "精选内容",
+          case: "真实案例",
+        }[contentCategory],
         preferred_locale: preferredLocale,
         personalization_reason: isSleepMatch
           ? "因为你最近和 NURI 聊到了“睡眠与作息”"

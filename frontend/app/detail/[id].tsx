@@ -29,12 +29,11 @@ import { colors, radius, spacing, type } from "@/src/theme";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DETAIL_FRAME_WIDTH = 402;
-const RESOURCE_LOCALE_OPTIONS = [
-  { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
-  { value: "en", label: "English" },
-] as const;
-type ResourceLocale = (typeof RESOURCE_LOCALE_OPTIONS)[number]["value"];
+const RESOURCE_LOCALE_LABELS: Record<string, string> = {
+  "zh-CN": "简体中文",
+  "zh-TW": "繁體中文",
+  en: "English",
+};
 
 const FEEDBACK_REASONS: {
   value: RecommendationFeedbackReason;
@@ -88,35 +87,27 @@ type LearningResource = {
 type ResourceSourceTier = NonNullable<LearningResource["source_tier"]>;
 type ResourceContentCategory = NonNullable<LearningResource["content_category"]>;
 
-const RESOURCE_CATEGORIES: {
-  key: string;
-  category: ResourceContentCategory;
+const CONTENT_CATEGORY_META: Record<ResourceContentCategory, {
   eyebrow: string;
   title: string;
   description: string;
-}[] = [
-  {
-    key: "authority",
-    category: "authority",
+}> = {
+  authority: {
     eyebrow: "事实与安全底线",
     title: "权威来源",
     description: "政府、大学、医院、医学组织与专业期刊发布的文章和视频。",
   },
-  {
-    key: "featured",
-    category: "featured",
+  featured: {
     eyebrow: "专家与读者精选",
-    title: "优秀精彩",
+    title: "精选内容",
     description: "专业可信、讲解清楚，并适合家庭直接使用的文章和视频。",
   },
-  {
-    key: "case",
-    category: "case",
+  case: {
     eyebrow: "真实经验与实践参考",
-    title: "典型案例",
+    title: "真实案例",
     description: "用具体家庭情境说明问题、过程和可借鉴做法的文章和视频。",
   },
-];
+};
 
 function resourceSourceTier(resource: LearningResource): ResourceSourceTier {
   return resource.source_tier === "authority" ? "authority" : "curated";
@@ -135,8 +126,8 @@ function resourceContentCategory(resource: LearningResource): ResourceContentCat
 
 function resourceCategoryLabel(resource: LearningResource): string {
   const category = resourceContentCategory(resource);
-  if (category === "featured") return "优秀精彩";
-  if (category === "case") return "典型案例";
+  if (category === "featured") return "精选内容";
+  if (category === "case") return "真实案例";
   return "权威来源";
 }
 
@@ -151,16 +142,6 @@ function resourceBadgeLabel(resource: LearningResource): string {
   return "权威发布";
 }
 
-function resourceLocales(resource: LearningResource): ResourceLocale[] {
-  const explicit = (resource.locales || []).filter((locale): locale is ResourceLocale =>
-    RESOURCE_LOCALE_OPTIONS.some((option) => option.value === locale)
-  );
-  if (explicit.length) return explicit;
-  if (resource.language?.includes("繁") || resource.language?.includes("粵")) return ["zh-TW"];
-  if (resource.language?.includes("简") || resource.language?.includes("中文")) return ["zh-CN"];
-  return ["en"];
-}
-
 export default function Detail() {
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
@@ -170,6 +151,7 @@ export default function Detail() {
     context_created_at: contextCreatedAt,
     recommendation_id: recommendationId,
     feed_request_id: feedRequestId,
+    content_category: contentCategory,
     rank: recommendationRank,
   } = useLocalSearchParams<{
     id: string;
@@ -177,6 +159,7 @@ export default function Detail() {
     context_created_at?: string;
     recommendation_id?: string;
     feed_request_id?: string;
+    content_category?: ResourceContentCategory;
     rank?: string;
   }>();
   const [card, setCard] = useState<any>(null);
@@ -184,9 +167,6 @@ export default function Detail() {
   const [reloadSequence, setReloadSequence] = useState(0);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [resourceLocale, setResourceLocale] = useState<ResourceLocale | null>(null);
-  const [resourceLocaleLoading, setResourceLocaleLoading] =
-    useState<ResourceLocale | null>(null);
   const [askBarHeight, setAskBarHeight] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [contentFeedback, setContentFeedback] = useState<"helpful" | "not_relevant" | null>(null);
@@ -274,7 +254,6 @@ export default function Detail() {
     const requestId = ++contentRequestId.current;
     setCard(null);
     setLoadError(null);
-    setResourceLocaleLoading(null);
     setContentFeedback(null);
     setFeedbackReasonOpen(false);
     setFeedbackReason(null);
@@ -283,7 +262,13 @@ export default function Detail() {
     dwellSent.current = false;
 
     api
-      .getCardDetail(id as string, sessionId, contextCreatedAt, recommendationId)
+      .getCardDetail(
+        id as string,
+        sessionId,
+        contextCreatedAt,
+        recommendationId,
+        contentCategory,
+      )
       .then((detail: any) => {
         if (!active || contentRequestId.current !== requestId) return;
         setCard(detail);
@@ -297,7 +282,13 @@ export default function Detail() {
         trackRecommendation("detail_view").catch(() => {});
         if (detail.research_status === "pending") {
           api
-            .getCardResearch(id as string, sessionId, contextCreatedAt, recommendationId)
+            .getCardResearch(
+              id as string,
+              sessionId,
+              contextCreatedAt,
+              recommendationId,
+              contentCategory,
+            )
             .then((research: any) => {
               if (!active || contentRequestId.current !== requestId) return;
               setCard((current: any) =>
@@ -336,13 +327,13 @@ export default function Detail() {
 
     return () => {
       active = false;
-      // Invalidate whichever detail/research request is current, including a
-      // locale switch that may have started after this initial request.
+      // Invalidate whichever detail/research request is current.
       contentRequestId.current += 1;
       flushDwell();
     };
   }, [
     contextCreatedAt,
+    contentCategory,
     feedRequestId,
     flushDwell,
     id,
@@ -352,81 +343,6 @@ export default function Detail() {
     sessionId,
     trackRecommendation,
   ]);
-
-  useEffect(() => {
-    const resources: LearningResource[] = Array.isArray(card?.resources) ? card.resources : [];
-    const preferredLocale = RESOURCE_LOCALE_OPTIONS.find(
-      (option) => option.value === card?.preferred_locale,
-    )?.value;
-    const firstLocale = resources.flatMap(resourceLocales)[0] || null;
-    setResourceLocale(preferredLocale || firstLocale);
-  }, [card]);
-
-  const switchResourceLocale = async (nextLocale: ResourceLocale) => {
-    if (!id || nextLocale === resourceLocale || resourceLocaleLoading) return;
-    const requestId = ++contentRequestId.current;
-    setResourceLocaleLoading(nextLocale);
-    try {
-      const detail: any = await api.getCardDetail(
-        id as string,
-        sessionId,
-        contextCreatedAt,
-        recommendationId,
-        nextLocale,
-      );
-      if (contentRequestId.current !== requestId) return;
-      setCard(detail);
-      setResourceLocale(nextLocale);
-      setLoadError(null);
-      setResourceLocaleLoading(null);
-
-      if (detail.research_status === "pending") {
-        try {
-          const research: any = await api.getCardResearch(
-            id as string,
-            sessionId,
-            contextCreatedAt,
-            recommendationId,
-            nextLocale,
-          );
-          if (contentRequestId.current !== requestId) return;
-          setCard((current: any) =>
-            current ? { ...current, ...research, preferred_locale: nextLocale } : current,
-          );
-        } catch {
-          if (contentRequestId.current !== requestId) return;
-          setCard((current: any) =>
-            current
-              ? {
-                  ...current,
-                  research_status: current.is_dynamic_research_card
-                    ? "unavailable"
-                    : "reviewed_fallback",
-                }
-              : current,
-          );
-        }
-      }
-    } catch {
-      if (contentRequestId.current !== requestId) return;
-      setCard((current: any) =>
-        current?.research_status === "pending"
-          ? {
-              ...current,
-              research_status:
-                Array.isArray(current.resources) && current.resources.length
-                  ? "reviewed_fallback"
-                  : "unavailable",
-            }
-          : current,
-      );
-      showToast("这个语言的资源暂时没有加载出来，请稍后再试");
-    } finally {
-      if (contentRequestId.current === requestId) {
-        setResourceLocaleLoading(null);
-      }
-    }
-  };
 
   const toggleFavorite = async () => {
     if (!id) return;
@@ -464,8 +380,9 @@ export default function Detail() {
     trackRecommendation("external_resource_click", {
         resource_id: resource.id,
         resource_kind: resource.kind,
-        locale: resourceLocale || resourceLocales(resource)[0],
-        content_category: resourceContentCategory(resource),
+        locale: card?.preferred_locale || resource.locales?.[0],
+        content_category:
+          card?.content_category || contentCategory || resourceContentCategory(resource),
         position,
       })
       .catch(() => {});
@@ -494,7 +411,8 @@ export default function Detail() {
       const result = await trackRecommendation(value, {
         value: value === "helpful" ? 1 : 0,
         reason,
-        locale: resourceLocale || undefined,
+        locale: card?.preferred_locale || undefined,
+        content_category: card?.content_category || contentCategory,
       });
       if (result?.accepted === false) {
         setFeedbackReasonOpen(false);
@@ -532,7 +450,13 @@ export default function Detail() {
           <Pressable
             onPress={() => {
               if (recommendationExpired) {
-                router.replace({ pathname: "/detail/[id]", params: { id: id as string } });
+                router.replace({
+                  pathname: "/detail/[id]",
+                  params: {
+                    id: id as string,
+                    ...(contentCategory ? { content_category: contentCategory } : {}),
+                  },
+                });
                 return;
               }
               setReloadSequence((value) => value + 1);
@@ -557,30 +481,22 @@ export default function Detail() {
     }
 
     const resources: LearningResource[] = Array.isArray(card.resources) ? card.resources : [];
-    const responseResourceLocale =
-      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === card.preferred_locale)?.value ||
-      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === resourceLocale)?.value ||
-      resources.flatMap(resourceLocales)[0] ||
-      "zh-CN";
-    const activeResourceLocale = responseResourceLocale;
+    const activeCategory: ResourceContentCategory =
+      card.content_category === "featured" ||
+      card.content_category === "case" ||
+      card.content_category === "authority"
+        ? card.content_category
+        : contentCategory || "authority";
+    const categoryMeta = CONTENT_CATEGORY_META[activeCategory];
+    const categoryResources = resources.filter(
+      (resource) => resourceContentCategory(resource) === activeCategory,
+    );
+    const visibleResources = (["article", "video"] as const)
+      .map((kind) => categoryResources.find((resource) => resource.kind === kind))
+      .filter((resource): resource is LearningResource => Boolean(resource));
+    const resourcePairComplete = visibleResources.length === 2;
     const activeResourceLocaleLabel =
-      RESOURCE_LOCALE_OPTIONS.find((option) => option.value === activeResourceLocale)?.label ||
-      "简体中文";
-    const loadingResourceLocaleLabel = RESOURCE_LOCALE_OPTIONS.find(
-      (option) => option.value === resourceLocaleLoading,
-    )?.label;
-    const visibleResources = responseResourceLocale
-      ? resources.filter((resource) => resourceLocales(resource).includes(responseResourceLocale))
-      : resources;
-    const visibleResourceGroups = RESOURCE_CATEGORIES.map((group) => ({
-      ...group,
-      resources: visibleResources
-        .filter((resource) => resourceContentCategory(resource) === group.category)
-        .sort((left, right) => {
-          if (left.kind === right.kind) return 0;
-          return left.kind === "article" ? -1 : 1;
-        }),
-    }));
+      RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言";
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -634,67 +550,29 @@ export default function Detail() {
 
         {resources.length || card.research_status ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
-            <Text style={styles.sectionTitle}>来源与内容目录</Text>
-            <View style={styles.resourceLocaleBlock}>
-              <View style={styles.resourceLocaleHeader}>
-                <Text style={styles.resourceLocaleLabel}>资源语言</Text>
-                {resourceLocaleLoading ? (
-                  <View style={styles.resourceLocaleLoading}>
-                    <ActivityIndicator size="small" color="#4F4B9C" />
-                    <Text
-                      style={styles.resourceLocaleLoadingText}
-                      accessibilityLiveRegion="polite"
-                    >
-                      正在切换为{loadingResourceLocaleLabel}…
-                    </Text>
-                  </View>
-                ) : null}
+            <Text style={styles.sectionTitle}>推荐给你的文章与视频</Text>
+            <View
+              style={styles.resourceGroup}
+              testID={`detail-resource-category-${activeCategory}`}
+            >
+              <View style={styles.resourceGroupHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.resourceGroupEyebrow}>{categoryMeta.eyebrow}</Text>
+                  <Text style={styles.resourceGroupTitle}>{categoryMeta.title}</Text>
+                  <Text style={styles.resourceGroupDescription}>{categoryMeta.description}</Text>
+                </View>
+                <View style={styles.preferenceBadge}>
+                  <Ionicons name="sparkles-outline" size={14} color="#4F4B9C" />
+                  <Text style={styles.preferenceBadgeText}>{activeResourceLocaleLabel}</Text>
+                </View>
               </View>
-              <View
-                style={styles.resourceLocaleTabs}
-                accessibilityRole="tablist"
-                testID="detail-resource-locale-tabs"
-              >
-                {RESOURCE_LOCALE_OPTIONS.map((option) => {
-                  const selected = option.value === activeResourceLocale;
-                  return (
-                    <Pressable
-                      key={option.value}
-                      onPress={() => switchResourceLocale(option.value)}
-                      disabled={Boolean(resourceLocaleLoading)}
-                      hitSlop={6}
-                      style={({ pressed }) => [
-                        styles.resourceLocaleTab,
-                        selected && styles.resourceLocaleTabSelected,
-                        pressed && !resourceLocaleLoading && styles.resourceLocaleTabPressed,
-                      ]}
-                      accessibilityRole="tab"
-                      accessibilityLabel={`切换为${option.label}资源`}
-                      accessibilityState={{ selected, disabled: Boolean(resourceLocaleLoading) }}
-                      testID={`detail-resource-locale-${option.value}`}
-                    >
-                      <Text
-                        style={[
-                          styles.resourceLocaleTabText,
-                          selected && styles.resourceLocaleTabTextSelected,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
             {card.research_status === "pending" ? (
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <ActivityIndicator size="small" color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.researchStatusLabel}>正在根据最近对话全网检索</Text>
+                  <Text style={styles.researchStatusLabel}>正在为这张卡核验最佳内容</Text>
                   <Text style={styles.researchStatusText}>
-                    {resources.length
-                      ? `你可以先阅读当前 ${resources.length} 项审核资料；个性化内容核验完成后会更新为每类 2–3 个选择。`
-                      : "NURI 正在核验与你们刚才话题直接相关的来源；将按三类整理，每类提供 2–3 个文章或视频选择。"}
+                    NURI 正在核验与你刚聊到的内容最匹配的一篇文章和一个视频。
                   </Text>
                 </View>
               </View>
@@ -703,15 +581,13 @@ export default function Detail() {
                 <Ionicons name="search" size={16} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
-                    {card.research_status === "fresh"
-                      ? "根据最近对话为你检索"
-                      : "实时检索与审核资料组合"}
+                    已按你的语言偏好选好文章和视频
                   </Text>
                   <Text style={styles.researchStatusText}>
                     {card.research_status === "hybrid"
-                      ? `本次采用 ${card.dynamic_resource_count || 0} 项实时核验结果，其余由人工审核资料补齐；不合格链接没有展示。`
+                      ? "实时检索与人工审核资料共同组成这次推荐；不合格链接没有展示。"
                       : card.research_editor_note ||
-                        "NURI 已结合你们刚聊到的情境，从公开网络中核验并整理这组内容。"}
+                        "NURI 已结合你们刚聊到的情境，从公开网络中核验这一篇文章和一个视频。"}
                   </Text>
                 </View>
               </View>
@@ -721,12 +597,12 @@ export default function Detail() {
                 <Ionicons name="shield-checkmark-outline" size={17} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
-                    {resources.length ? "当前展示审核资料库" : "暂未找到完整且可核验的内容"}
+                    {resourcePairComplete ? "当前使用人工审核资料" : "暂未找到完整且可核验的组合"}
                   </Text>
                   <Text style={styles.researchStatusText}>
-                    {resources.length
-                      ? `实时检索暂未为每类找到至少 2 个全部通过核验的结果，当前展示 ${resources.length} 项审核内容；不确定链接没有展示。`
-                      : "本次检索没有为三类内容各找到足够的可靠选择，因此暂不展示空目录或不确定链接；稍后重新打开即可再试。"}
+                    {resourcePairComplete
+                      ? "这一篇文章和一个视频均来自审核资料库，并与当前卡片类别和语言一致。"
+                      : "NURI 不会用错误类别或错误语言补位；稍后重新打开即可再试。"}
                   </Text>
                 </View>
               </View>
@@ -736,8 +612,8 @@ export default function Detail() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>外部个性化检索尚未开启</Text>
                   <Text style={styles.researchStatusText}>
-                    {resources.length
-                      ? `当前 ${resources.length} 项均来自人工审核资料库。只有你在“我的”隐私设置中明确开启后，NURI 才会使用脱敏后的对话主题检索公开网页。`
+                    {resourcePairComplete
+                      ? "当前文章和视频均来自人工审核资料库，并已使用你的账户语言偏好。"
                       : "这个新话题尚未对外检索。只有你在“我的”隐私设置中明确开启后，NURI 才会使用结构化、脱敏后的主题信息检索公开网页。"}
                   </Text>
                 </View>
@@ -755,34 +631,12 @@ export default function Detail() {
                 </View>
               </View>
             ) : null}
-            {resources.length ? (
+            {resourcePairComplete ? (
               <Text style={styles.resourcesIntro}>
-                {activeResourceLocaleLabel}共 {visibleResources.length} 项。NURI 按权威来源、优秀精彩与典型案例整理，每类提供 2–3 个选择，并明确标注文章或视频；点击具体条目后才会打开外部内容。
+                已自动使用最适合你的{activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。点击具体条目后才会打开外部内容。
               </Text>
             ) : null}
-            {resources.length ? visibleResourceGroups.map((group) => (
-              <View
-                key={group.key}
-                style={styles.resourceGroup}
-                testID={`detail-resource-group-${group.key}`}
-              >
-                <View style={styles.resourceGroupHeader}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.resourceGroupEyebrow}>{group.eyebrow}</Text>
-                    <Text style={styles.resourceGroupTitle}>{group.title}</Text>
-                    <Text style={styles.resourceGroupDescription}>{group.description}</Text>
-                  </View>
-                  <View style={styles.resourceGroupCount}>
-                    <Text
-                      style={styles.resourceGroupCountText}
-                      accessibilityLabel={`${group.resources.length} 项内容`}
-                    >
-                      {group.resources.length}
-                    </Text>
-                  </View>
-                </View>
-
-                {group.resources.length ? group.resources.map((resource, resourceIndex) => (
+                {resourcePairComplete ? visibleResources.map((resource, resourceIndex) => (
                   <Pressable
                     key={resource.id}
                     onPress={() => openResource(resource, resourceIndex + 1)}
@@ -897,20 +751,19 @@ export default function Detail() {
                     </View>
                   </Pressable>
                 )) : (
-                  <View style={styles.emptyResourceGroup}>
-                    <Text style={styles.emptyResourceGroupText}>
-                      当前审核库在这个语言下暂无完整的文章和视频组合。
-                    </Text>
-                  </View>
-                )}
-              </View>
-            )) : null}
+                <View style={styles.emptyResourceGroup}>
+                  <Text style={styles.emptyResourceGroupText}>
+                    暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
         ) : null}
 
-        {resources.length ? (
+        {resourcePairComplete ? (
           <View style={styles.feedbackCard} testID="detail-content-feedback">
-            <Text style={styles.feedbackTitle}>这组内容贴合吗？</Text>
+            <Text style={styles.feedbackTitle}>这次推荐贴合吗？</Text>
             <Text style={styles.feedbackSubtitle}>你的选择只会帮助 NURI 调整后续推荐。</Text>
             <View style={styles.feedbackActions}>
               <Pressable
@@ -1355,6 +1208,22 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.muted,
     marginTop: 2,
+  },
+  preferenceBadge: {
+    maxWidth: 104,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandTertiary,
+  },
+  preferenceBadgeText: {
+    flexShrink: 1,
+    fontSize: 11,
+    color: colors.onBrandTertiary,
+    fontWeight: "700",
   },
   resourceGroupCount: {
     minWidth: 28,

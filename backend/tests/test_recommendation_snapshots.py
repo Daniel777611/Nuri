@@ -64,6 +64,34 @@ def test_recommendation_id_changes_with_child_profile_version():
     assert first != second
 
 
+def test_category_snapshots_are_unique_and_freeze_category_and_locale():
+    context = {
+        "session_id": "main-session",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+        "preferred_locale": "zh-TW",
+    }
+    snapshots = [
+        build_snapshot(
+            "parent-1",
+            {
+                "id": "learn_sleep_routine",
+                "content_category": category,
+            },
+            context,
+        )
+        for category in ("authority", "featured", "case")
+    ]
+
+    assert len({snapshot["recommendation_id"] for snapshot in snapshots}) == 3
+    assert [snapshot["content_category"] for snapshot in snapshots] == [
+        "authority",
+        "featured",
+        "case",
+    ]
+    assert all(snapshot["preferred_locale"] == "zh-TW" for snapshot in snapshots)
+    assert all(snapshot["card_id"] == "learn_sleep_routine" for snapshot in snapshots)
+
+
 def test_snapshot_round_trip_is_bounded_and_user_namespaced():
     now = datetime(2026, 8, 1, tzinfo=timezone.utc)
     snapshot = build_snapshot(
@@ -239,6 +267,136 @@ class _SettingsSupabase:
             raise exc
         assert name == "app_settings"
         return _SettingsTable(self.store, fail_delete=self.fail_delete)
+
+
+def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
+    monkeypatch,
+):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(main, "content_research_oai", None)
+    context = {
+        "state": "ready",
+        "session_id": "main-session",
+        "context_created_at": "2026-08-01T10:00:00+00:00",
+        "preferred_locale": "zh-TW",
+        "external_research_allowed": False,
+        "messages": [
+            {
+                "id": "message-1",
+                "session_id": "main-session",
+                "role": "user",
+                "text": "My baby wakes several times every night and needs a bedtime routine.",
+                "created_at": "2026-08-01T10:00:00+00:00",
+                "context_scope": "current_session",
+            }
+        ],
+    }
+
+    async def load_context(*_args, **_kwargs):
+        return context
+
+    async def leave_child_context_unchanged(_uid, loaded_context):
+        return loaded_context
+
+    async def no_events(_uid):
+        return []
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+
+    payload = asyncio.run(
+        main.get_personalized_feed(
+            count=3,
+            presentation="category_cards",
+            uid="parent-1",
+        )
+    )
+    items = payload["items"]
+
+    assert payload["model_version"] == "conversation-category-pairs-v1"
+    assert [item["content_category"] for item in items] == [
+        "authority",
+        "featured",
+        "case",
+    ]
+    assert [item["rank"] for item in items] == [1, 2, 3]
+    assert len({item["recommendation_id"] for item in items}) == 3
+    assert {item["id"] for item in items} == {"learn_sleep_routine"}
+
+    for item in items:
+        category = item["content_category"]
+        assert item["resource_pair_complete"] is True
+        assert item["resource_blueprint"] == {category: ["article", "video"]}
+        assert item["resource_summary"]["preferred_locale"] == "zh-TW"
+        assert item["resource_summary"]["categories"][category] == {
+            "article": 1,
+            "video": 1,
+        }
+        assert sum(
+            count
+            for formats in item["resource_summary"]["categories"].values()
+            for count in formats.values()
+        ) == 2
+
+        snapshot = asyncio.run(
+            main._db_get_recommendation_snapshot(
+                "parent-1", item["recommendation_id"]
+            )
+        )
+        assert snapshot["card_id"] == item["id"]
+        assert snapshot["content_category"] == category
+        assert snapshot["preferred_locale"] == "zh-TW"
+
+        detail = asyncio.run(
+            main.get_card_detail(
+                item["id"],
+                recommendation_id=item["recommendation_id"],
+                content_category=category,
+                uid="parent-1",
+            )
+        )
+        assert detail["content_category"] == category
+        assert detail["preferred_locale"] == "zh-TW"
+        assert detail["resource_pair_complete"] is True
+        assert detail["resource_blueprint"] == {category: ["article", "video"]}
+        assert len(detail["resources"]) == 2
+        assert [resource["kind"] for resource in detail["resources"]] == [
+            "article",
+            "video",
+        ]
+        assert all(
+            resource["content_category"] == category
+            and "zh-TW" in (resource.get("locales") or [])
+            for resource in detail["resources"]
+        )
+        assert detail["resource_summary"]["categories"][category] == {
+            "article": 1,
+            "video": 1,
+        }
+        assert sum(
+            count
+            for formats in detail["resource_summary"]["categories"].values()
+            for count in formats.values()
+        ) == 2
+
+    authority = items[0]
+    with pytest.raises(Exception) as error:
+        asyncio.run(
+            main.get_card_detail(
+                authority["id"],
+                recommendation_id=authority["recommendation_id"],
+                content_category="featured",
+                uid="parent-1",
+            )
+        )
+    assert getattr(error.value, "status_code", None) == 404
 
 
 def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch):

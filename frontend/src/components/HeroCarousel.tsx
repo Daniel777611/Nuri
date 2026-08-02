@@ -10,6 +10,9 @@ export type HeroCard = {
   publisher?: string;
   topic?: string;
   topic_label?: string;
+  content_category?: "authority" | "featured" | "case";
+  content_category_label?: string;
+  content_category_eyebrow?: string;
   personalization_reason?: string;
   is_conversation_match?: boolean;
   related_session_id?: string | null;
@@ -33,38 +36,35 @@ const EMPTY_CARDS: HeroCard[] = [];
 // parent never sees an unrelated recommendation flash before the real result.
 const FALLBACK_CARDS: HeroCard[] = [
   {
-    id: "learn_big_feelings",
-    title: "孩子有“大情绪”时，先共调节，再教他表达",
-    publisher: "AAP 与 UNICEF",
-    topic: "emotion",
-    topic_label: "情绪调节",
+    id: "learn_development_milestones",
+    title: "婴儿发育：10 到 12 月龄的发展里程碑",
+    publisher: "妙佑医疗国际（Mayo Clinic）",
+    topic: "development",
+    topic_label: "发展阶段与里程碑",
+    content_category: "authority",
+    content_category_label: "权威来源",
     personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
     resource_status: "reviewed",
   },
   {
-    id: "learn_sleep_routine",
-    title: "孩子夜醒或入睡困难，可以先从固定睡前节奏开始",
-    publisher: "AAP 美国儿科学会",
-    topic: "sleep",
-    topic_label: "睡眠与作息",
+    id: "learn_development_milestones",
+    title: "用简单观察理解孩子当前的发展节奏",
+    publisher: "NURI 编辑精选",
+    topic: "development",
+    topic_label: "发展阶段与里程碑",
+    content_category: "featured",
+    content_category_label: "精选内容",
     personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
     resource_status: "reviewed",
   },
   {
-    id: "learn_picky_eating",
-    title: "面对挑食，先减少餐桌压力，再增加接触机会",
-    publisher: "AAP 与 UNICEF",
-    topic: "food",
-    topic_label: "挑食与营养",
-    personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
-    resource_status: "reviewed",
-  },
-  {
-    id: "learn_serve_and_return",
-    title: "不知道怎么高质量陪伴？试试“发球与回应”",
-    publisher: "哈佛大学儿童发展中心",
-    topic: "connection",
-    topic_label: "亲子互动",
+    id: "learn_development_milestones",
+    title: "其他家庭怎样在孩子自己的步调里看见进步",
+    publisher: "NURI 真实家庭案例",
+    topic: "development",
+    topic_label: "发展阶段与里程碑",
+    content_category: "case",
+    content_category_label: "真实案例",
     personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
     resource_status: "reviewed",
   },
@@ -78,6 +78,12 @@ const TOPIC_COLORS: Record<string, readonly [string, string]> = {
   behavior: ["#52685E", "#B7D6AF"],
   connection: ["#385E87", "#9FC5DD"],
   safety: ["#7B526A", "#E7A8A8"],
+};
+
+const CATEGORY_COLORS: Record<string, readonly [string, string]> = {
+  authority: ["#426FA8", "#8AC9E2"],
+  featured: ["#6256A8", "#A5BCEF"],
+  case: ["#A55D74", "#F0A58F"],
 };
 
 const FALLBACK_COLORS: readonly [readonly [string, string], ...readonly [string, string][]] = [
@@ -98,6 +104,15 @@ function reviewedResourceCount(card: HeroCard): number {
 }
 
 function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
+  if (card.content_category) {
+    const formats = card.resource_summary?.categories?.[card.content_category];
+    if ((formats?.article || 0) > 0 && (formats?.video || 0) > 0) {
+      return "1 篇文章 · 1 个视频";
+    }
+    return card.resource_status === "research_on_open"
+      ? "打开后为你核验文章与视频"
+      : "正在补齐文章与视频";
+  }
   if (feedState === "curated") return "已审校 · 可信精选";
   if (card.resource_status === "research_on_open") return "打开后为你实时精选";
   if (card.resource_status === "consent_required") return "已审校资源 · 可直接阅读";
@@ -105,6 +120,10 @@ function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
   if (card.resource_status === "unavailable") return "已审校资源 · 可直接阅读";
   const reviewedCount = reviewedResourceCount(card);
   return reviewedCount > 0 ? `已审校 ${reviewedCount} 项资源` : "可信文章与视频";
+}
+
+function cardIdentity(card: HeroCard): string {
+  return card.recommendation_id || `${card.id}:${card.content_category || "topic"}`;
 }
 
 export default function HeroCarousel({
@@ -125,7 +144,7 @@ export default function HeroCarousel({
   const visibleCards =
     feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
   const cardSignature = useMemo(
-    () => visibleCards.map((card) => card.id).join("|"),
+    () => visibleCards.map(cardIdentity).join("|"),
     [visibleCards]
   );
   const [pageState, setPageState] = useState({ signature: cardSignature, index: 0 });
@@ -231,16 +250,17 @@ export default function HeroCarousel({
         {visibleCards.map((card, index) => {
           const colors =
             card.colors ||
+            CATEGORY_COLORS[card.content_category || ""] ||
             TOPIC_COLORS[card.topic || ""] ||
             FALLBACK_COLORS[index % FALLBACK_COLORS.length];
           return (
             <Pressable
-              key={card.id}
+              key={cardIdentity(card)}
               onPress={() => onCardPress(card)}
               style={{ width }}
               accessibilityRole="button"
               accessibilityLabel={`浏览内容：${card.title}`}
-              testID={`home-hero-card-${card.id}`}
+              testID={`home-hero-card-${card.id}-${card.content_category || "topic"}`}
             >
               <LinearGradient
                 colors={colors}
@@ -252,9 +272,10 @@ export default function HeroCarousel({
                 <View style={styles.decoCloudTwo} />
                 <View style={styles.decoCloudThree} />
                 <Text style={styles.eyebrow}>
-                  {feedState === "personalized" && card.is_conversation_match
-                    ? "为你推荐"
-                    : "NURI 可信来源精选"}
+                  {card.content_category_label ||
+                    (feedState === "personalized" && card.is_conversation_match
+                      ? "为你推荐"
+                      : "NURI 可信来源精选")}
                   {card.topic_label ? ` · ${card.topic_label}` : ""}
                 </Text>
                 <Text style={styles.heroTitle} numberOfLines={3}>
@@ -271,7 +292,7 @@ export default function HeroCarousel({
                     </Text>
                   </View>
                   <View style={styles.heroBtn}>
-                    <Text style={styles.heroBtnText}>浏览详情</Text>
+                    <Text style={styles.heroBtnText}>查看文章与视频</Text>
                   </View>
                 </View>
               </LinearGradient>
@@ -312,7 +333,7 @@ export default function HeroCarousel({
       ) : null}
       <View style={styles.dots}>
         {visibleCards.map((card, index) => (
-          <View key={card.id} style={[styles.dot, page === index && styles.dotActive]} />
+          <View key={cardIdentity(card)} style={[styles.dot, page === index && styles.dotActive]} />
         ))}
       </View>
     </View>
