@@ -186,8 +186,16 @@ SMTP_FROM        = os.getenv("SMTP_FROM", "")
 OPENAI_TIMEOUT_S       = float(os.getenv("OPENAI_TIMEOUT_S", "45"))   # main chat reply
 OPENAI_FAST_TIMEOUT_S  = float(os.getenv("OPENAI_FAST_TIMEOUT_S", "15"))  # titles, embeddings, #fix
 OPENAI_TASKS_TIMEOUT_S = float(os.getenv("OPENAI_TASKS_TIMEOUT_S", "25"))  # task suggestions
-OPENAI_CONTENT_RESEARCH_TIMEOUT_S = float(
-    os.getenv("OPENAI_CONTENT_RESEARCH_TIMEOUT_S", "100")
+# One preparation request performs at most three sequential Responses calls
+# (the initial bundle plus two bounded repair passes).  The browser waits 110s
+# for the whole request, so an individual 100s SDK timeout could leave the UI
+# waiting on work that may legally run for almost five minutes.  Keep the
+# provider-call ceiling at 30s even when an older Vercel environment still has
+# the former 100s value; three calls plus persistence remain inside the client
+# budget and well below the function maxDuration.
+OPENAI_CONTENT_RESEARCH_TIMEOUT_S = max(
+    5.0,
+    min(float(os.getenv("OPENAI_CONTENT_RESEARCH_TIMEOUT_S", "30")), 30.0),
 )
 OPENAI_CONTENT_RESEARCH_MODEL = os.getenv(
     "OPENAI_CONTENT_RESEARCH_MODEL", "gpt-5.4-mini"
@@ -5769,6 +5777,14 @@ async def prepare_feed_research(
         card=card,
         context=context,
         uid=uid,
+        # Non-ready snapshots are durably kept as ``preparing`` so a stale
+        # failed invocation can never overwrite a concurrently completed pair.
+        # Consequently a later user retry cannot distinguish itself from the
+        # first attempt via persisted readiness.  Always bypass the short-lived
+        # negative research cache here.  The research layer's per-key inflight
+        # event still collapses concurrent calls, and a durable ready set has
+        # already returned above without reaching this provider boundary.
+        force=True,
     )
     resources = list((research or {}).get("resources") or [])
     pairs_by_category = {
@@ -5787,6 +5803,35 @@ async def prepare_feed_research(
         )
     )
     if not complete_bundle:
+        print(
+            json.dumps(
+                {
+                    "event": "content_research.prepare_incomplete",
+                    "card_id": card_id,
+                    "locale": str(first.get("preferred_locale") or ""),
+                    "cache_bypassed": True,
+                    "provider_failure": bool(
+                        research
+                        and research.get("_provider_failure") == "retryable"
+                    ),
+                    "resource_count": len(resources),
+                    "slot_counts": {
+                        category: {
+                            kind: sum(
+                                1
+                                for resource in pairs_by_category[category]
+                                if str(resource.get("kind") or "") == kind
+                            )
+                            for kind in ("article", "video")
+                        }
+                        for category in CONTENT_CATEGORIES
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         retryable = await _mark_prepare_retryable(uid, snapshots)
         return {
             "resource_readiness": "retryable",

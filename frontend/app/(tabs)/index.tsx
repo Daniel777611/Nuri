@@ -13,6 +13,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 
 import {
   api,
@@ -46,6 +47,9 @@ const C = {
 };
 
 const FIGMA_FRAME_WIDTH = 402;
+const PREPARATION_RETRY_BASE_DELAY_MS = 30000;
+const PREPARATION_RETRY_MAX_DELAY_MS = 300000;
+const PREPARATION_RETRY_MAX_EXPONENT = 7;
 
 // 坚持打卡天数（mock 默认 17）
 const STREAK_DAYS = 17;
@@ -155,9 +159,7 @@ function mergePreparedCard(card: HeroCard, prepared: PreparedFeedItem | undefine
     return {
       ...card,
       resource_readiness:
-        prepared.resource_readiness === "ready"
-          ? "retryable"
-          : prepared.resource_readiness,
+        prepared.resource_readiness === "unavailable" ? "unavailable" : "retryable",
       resource_pair_complete: false,
       prepared_content_set_id: null,
       research_status: prepared.research_status,
@@ -229,6 +231,7 @@ function DevSheet({
 
 export default function Home() {
   const router = useRouter();
+  const isHomeFocused = useIsFocused();
   const { feed_refresh: feedRefreshParam } = useLocalSearchParams<{
     feed_refresh?: string;
   }>();
@@ -399,6 +402,16 @@ export default function Home() {
             ) &&
             preparedSetIds.size === 1;
           if (!completePreparedSet) {
+            console.warn("[home-feed] preparation response incomplete", {
+              requestedCount: cardsToPrepare.length,
+              receivedCount: preparedItems.length,
+              readyCount: preparedItems.filter(
+                (item) =>
+                  item.resource_readiness === "ready" &&
+                  item.resource_pair_complete === true,
+              ).length,
+              contentSetCount: preparedSetIds.size,
+            });
             throw new Error("prepared recommendation set was incomplete");
           }
           const preparedByRecommendation = new Map(
@@ -415,8 +428,18 @@ export default function Home() {
                   preparedByRecommendation.get(card.recommendation_id),
                 ),
           );
-        } catch {
+        } catch (error) {
           if (requestId !== heroRequest.current) return;
+          const status =
+            error && typeof error === "object" && "status" in error
+              ? Number((error as { status?: unknown }).status) || undefined
+              : undefined;
+          console.warn("[home-feed] preparation attempt failed", {
+            errorName: error instanceof Error ? error.name : typeof error,
+            status,
+            requestedCount: cardsToPrepare.length,
+            preserveExisting,
+          });
           if (preserveExisting) {
             throw new Error("replacement recommendations were not fully prepared");
           }
@@ -449,7 +472,17 @@ export default function Home() {
         activeFeedRefresh.current = null;
       }
       setHeroFeedRefreshing(false);
-    } catch {
+    } catch (error) {
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? Number((error as { status?: unknown }).status) || undefined
+          : undefined;
+      console.warn("[home-feed] load attempt failed", {
+        errorName: error instanceof Error ? error.name : typeof error,
+        status,
+        preserveExisting,
+        hasClientRefresh: Boolean(clientRefresh),
+      });
       // A nonce is a single successful refresh, not a single network attempt.
       // Releasing it here lets the next focus recover from a transient failure
       // without requiring another chat turn or a document reload.
@@ -489,15 +522,26 @@ export default function Home() {
       }
       return;
     }
-    if (heroFeedRefreshing || preparationRetryAttempt.current >= 3) return;
+    // A transient provider or network failure must never strand the carousel in
+    // a terminal-looking state. Keep recovering while Home is visible, but
+    // start at 30 seconds and back off to five minutes so rate limits or a
+    // scarce high-quality result do not create an expensive request loop.
+    if (!isHomeFocused || heroFeedRefreshing) return;
 
-    const delayMs = 3000 * 2 ** preparationRetryAttempt.current;
+    const delayMs = Math.min(
+      PREPARATION_RETRY_MAX_DELAY_MS,
+      PREPARATION_RETRY_BASE_DELAY_MS *
+        2 ** Math.min(preparationRetryAttempt.current, PREPARATION_RETRY_MAX_EXPONENT),
+    );
     const timer = setTimeout(() => {
-      preparationRetryAttempt.current += 1;
+      preparationRetryAttempt.current = Math.min(
+        preparationRetryAttempt.current + 1,
+        PREPARATION_RETRY_MAX_EXPONENT + 1,
+      );
       void loadPersonalizedFeed({ preserveExisting: true });
     }, delayMs);
     return () => clearTimeout(timer);
-  }, [heroCards, heroFeedRefreshing, loadPersonalizedFeed]);
+  }, [heroCards, heroFeedRefreshing, isHomeFocused, loadPersonalizedFeed]);
 
   const openNuriChat = async () => {
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;

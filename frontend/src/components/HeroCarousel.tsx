@@ -125,7 +125,7 @@ function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
     return "正在为你准备文章与视频";
   }
   if (card.resource_readiness === "retryable") {
-    return "准备暂时中断，可点击重试";
+    return "准备稍有延迟，正在自动重试";
   }
   if (card.resource_readiness === "unavailable") {
     return "暂未找到完整的文章与视频";
@@ -368,7 +368,7 @@ export default function HeroCarousel({
                       {cardPreparing
                         ? "正在准备…"
                         : card.resource_readiness === "retryable"
-                          ? "重新准备"
+                          ? "立即重试"
                           : card.resource_readiness === "unavailable"
                             ? "暂不可用"
                             : "查看文章与视频"}

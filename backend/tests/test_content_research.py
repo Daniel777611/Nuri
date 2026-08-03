@@ -2974,8 +2974,22 @@ def test_research_gate_never_calls_provider_when_preconditions_fail(
     assert calls == []
 
 
+def test_content_research_provider_budget_fits_prepare_client_timeout():
+    # research_learning_resources performs at most one initial call and two
+    # repair calls.  Keep their worst-case SDK budget below the web client's
+    # 110-second prepare timeout so the browser never abandons live work.
+    assert 3 * main.OPENAI_CONTENT_RESEARCH_TIMEOUT_S <= 90
+    assert 3 * main.OPENAI_CONTENT_RESEARCH_TIMEOUT_S < 110
+
+
+@pytest.mark.parametrize(
+    ("initial_readiness", "expected_force"),
+    [(None, True), ("retryable", True)],
+)
 def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_detail(
     monkeypatch,
+    initial_readiness,
+    expected_force,
 ):
     uid = "parent-prepared"
     context = {
@@ -2998,6 +3012,11 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
             "recommendation_focus": "睡前安静与作息",
         }
         snapshot = main.build_snapshot(uid, card, context)
+        if initial_readiness:
+            snapshot = main.snapshot_with_resource_readiness(
+                snapshot,
+                initial_readiness,
+            )
         snapshots[snapshot["recommendation_id"]] = snapshot
         requested.append(
             main.ResearchPrepareItem(
@@ -3042,8 +3061,8 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
 
     provider_calls = []
 
-    async def research_once(**_kwargs):
-        provider_calls.append(1)
+    async def research_once(**kwargs):
+        provider_calls.append(kwargs)
         return _parsed_bundle(include_optional_third=False)
 
     delivered = []
@@ -3068,6 +3087,7 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
 
     assert result["resource_readiness"] == "ready"
     assert len(provider_calls) == 1
+    assert provider_calls[0]["force"] is expected_force
     assert delivered == []
     assert {item["content_category"] for item in result["items"]} == set(
         CONTENT_CATEGORIES
