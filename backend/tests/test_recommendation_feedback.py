@@ -8,10 +8,12 @@ from backend import main
 from backend.recommendation_feedback import (
     canonical_resource_url,
     card_behavior_signal,
+    category_preference_mix,
     normalize_event,
     prune_events,
     recent_resource_urls,
     resource_url_hash,
+    weighted_category_for_window,
 )
 
 
@@ -236,6 +238,67 @@ def test_behavior_feedback_cannot_create_conversation_relevance():
     assert used is True
     assert cards[0]["id"] == "learn_sleep_routine"
     assert cards[0]["is_conversation_match"] is True
+
+
+def test_questionnaire_seeds_explainable_category_mix_with_authority_floor():
+    research_mix = category_preference_mix("research", "expert", [], now=NOW)
+    parent_mix = category_preference_mix("experience", "parents", [], now=NOW)
+
+    assert sum(research_mix.values()) == 100
+    assert sum(parent_mix.values()) == 100
+    assert research_mix["authority"] == max(research_mix.values())
+    assert parent_mix["case"] == max(parent_mix.values())
+    assert research_mix["authority"] >= 25
+    assert parent_mix["authority"] >= 25
+    assert min(parent_mix.values()) >= 12
+
+
+def test_recent_category_clicks_adjust_mix_without_using_legacy_or_expired_events():
+    baseline = category_preference_mix("analysis", "all", [], now=NOW)
+    recent_featured = [
+        _event(
+            "external_resource_click",
+            "learn_sleep_routine",
+            content_category="featured",
+            days_ago=index,
+        )
+        for index in range(3)
+    ]
+    legacy_without_category = _event(
+        "helpful",
+        "learn_sleep_routine",
+        days_ago=0,
+    )
+    expired_case = _event(
+        "external_resource_click",
+        "learn_sleep_routine",
+        content_category="case",
+        days_ago=31,
+    )
+    adjusted = category_preference_mix(
+        "analysis",
+        "all",
+        [*recent_featured, legacy_without_category, expired_case],
+        now=NOW,
+    )
+
+    assert adjusted["featured"] > baseline["featured"]
+    assert adjusted["case"] <= baseline["case"]
+    assert adjusted["authority"] >= 25
+    assert sum(adjusted.values()) == 100
+
+
+def test_weighted_first_exposure_is_stable_within_window():
+    mix = {"authority": 50, "featured": 30, "case": 20}
+    first = weighted_category_for_window("parent-one", mix, now=NOW)
+    second = weighted_category_for_window(
+        "parent-one",
+        mix,
+        now=NOW + timedelta(hours=5),
+    )
+
+    assert first == second
+    assert first in mix
 
 
 def test_not_relevant_suppresses_exact_static_card():

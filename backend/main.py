@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import List, Literal, NamedTuple, Optional
+from urllib.parse import urlparse
 
 import anyio
 import bcrypt
@@ -78,10 +79,12 @@ try:
         LEARNING_EVENT_NAMES,
         MAX_EVENTS_PER_USER,
         card_behavior_signal,
+        category_preference_mix,
         event_storage_key,
         normalize_event,
         prune_events,
         recent_resource_urls,
+        weighted_category_for_window,
     )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
@@ -111,10 +114,12 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         LEARNING_EVENT_NAMES,
         MAX_EVENTS_PER_USER,
         card_behavior_signal,
+        category_preference_mix,
         event_storage_key,
         normalize_event,
         prune_events,
         recent_resource_urls,
+        weighted_category_for_window,
     )
 
 load_dotenv()
@@ -1502,6 +1507,7 @@ class RecommendationEventIn(BaseModel):
         "helpful",
         "not_relevant",
         "resource_impression",
+        "content_refresh",
     ]
     card_id: str = Field(..., min_length=1, max_length=128)
     recommendation_id: Optional[str] = Field(None, max_length=128)
@@ -2410,10 +2416,17 @@ def _safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
 
 
 async def _attach_child_recommendation_context(uid: str, context: dict) -> dict:
-    """Attach current, age-only child context to one recommendation request."""
+    """Attach safe child-stage and questionnaire recommendation context.
 
-    _, children = await _load_profile(uid)
+    Exact birthdays, names and free-form profile fields never enter this
+    structure.  The two questionnaire values are fixed enum-like codes used
+    only to calculate an explainable content-category prior.
+    """
+
+    profile, children = await _load_profile(uid)
     context.update(_safe_child_recommendation_context(children))
+    context["help_preference"] = str(profile.get("help_preference") or "")
+    context["info_source"] = str(profile.get("info_source") or "")
     return context
 
 
@@ -4828,6 +4841,12 @@ def _select_category_resource_pair(
         for resource in resources
         if str(resource.get("content_category") or "") == content_category
     ]
+    if content_category == "authority":
+        # Same-language and age gates run before this function.  Among equally
+        # eligible authority items, prefer original U.S. public-health,
+        # pediatric and university sources without trusting model-authored
+        # country labels alone.
+        matching.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
     pair: list[dict] = []
     for kind in ("article", "video"):
         selected = next(
@@ -4837,6 +4856,91 @@ def _select_category_resource_pair(
         if selected:
             pair.append(selected)
     return pair
+
+
+_US_AUTHORITY_DOMAIN_ROOTS = frozenset(
+    {
+        "cdc.gov",
+        "nih.gov",
+        "aap.org",
+        "aappublications.org",
+        "pediatrics.org",
+        "healthychildren.org",
+        "mayoclinic.org",
+    }
+)
+_YOUTUBE_HOSTS = frozenset(
+    {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+)
+_REVIEWED_US_AUTHORITY_VIDEO_IDS = frozenset(
+    {
+        "sleep-aap-video",
+        "food-aap-video",
+        "development-cdc-video",
+        "language-cdc-video",
+        "safety-aap-video",
+    }
+)
+
+
+def _safe_https_hostname(url: object) -> str:
+    """Return a normalized host only for an ordinary, safe HTTPS URL."""
+
+    try:
+        parsed = urlparse(str(url or ""))
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+    ):
+        return ""
+    return parsed.hostname.rstrip(".").lower()
+
+
+def _is_direct_us_authority_url(url: object) -> bool:
+    host = _safe_https_hostname(url)
+    if not host or host in _YOUTUBE_HOSTS:
+        return False
+    return bool(
+        host.endswith(".gov")
+        or host.endswith(".edu")
+        or any(host == root or host.endswith(f".{root}") for root in _US_AUTHORITY_DOMAIN_ROOTS)
+    )
+
+
+def _is_us_authority_resource(resource: dict) -> bool:
+    """Recognize real U.S. institutions without trusting model country labels."""
+
+    url = str(resource.get("url") or "")
+    if _is_direct_us_authority_url(url):
+        return True
+
+    host = _safe_https_hostname(url)
+    if host not in _YOUTUBE_HOSTS:
+        return False
+
+    # A hosted video needs evidence beyond a mutable publisher/country string.
+    # Reviewed AAP/CDC IDs are tied to manually checked URLs.  Dynamic results
+    # can qualify only when they cite the corresponding institution page.
+    if (
+        str(resource.get("id") or "") in _REVIEWED_US_AUTHORITY_VIDEO_IDS
+        and is_trusted_resource_url(url)
+    ):
+        return True
+    return any(
+        _is_direct_us_authority_url(resource.get(field))
+        for field in (
+            "evidence_url",
+            "authority_evidence_url",
+            "publisher_evidence_url",
+            "source_evidence_url",
+        )
+    )
 
 
 def _reviewed_category_resource_pair(
@@ -4854,16 +4958,11 @@ def _reviewed_category_resource_pair(
 
     reviewed = _reviewed_resources_for_context(resources, locale, topic_context)
     pair = _select_category_resource_pair(reviewed, content_category)
-    if content_category not in CONTENT_CATEGORIES or len(pair) == 2 or topic_context is None:
-        return pair
-    fallback = _select_category_resource_pair(
-        _reviewed_resources_for_context(resources, locale, None),
-        content_category,
-    )
-    by_kind = {str(resource.get("kind") or ""): resource for resource in pair}
-    for resource in fallback:
-        by_kind.setdefault(str(resource.get("kind") or ""), resource)
-    return [by_kind[kind] for kind in ("article", "video") if kind in by_kind]
+    # Never refill a missing format from an unfiltered pool.  That old fallback
+    # could put a 10–12 month article back beside a 30 month recommendation.
+    # A stage-correct single format is safer than a visually complete wrong-age
+    # pair; live research may later supply the missing format.
+    return pair
 
 
 def _category_feed_card(
@@ -4882,7 +4981,8 @@ def _category_feed_card(
     ).get("resources", [])
     topic_context = (
         base_card
-        if context_state == "ready" and base_card.get("is_conversation_match")
+        if base_card.get("child_age_context")
+        or (context_state == "ready" and base_card.get("is_conversation_match"))
         else None
     )
     pair = _reviewed_category_resource_pair(
@@ -4980,6 +5080,8 @@ async def _research_card_detail_resources(
     card: dict,
     context: dict,
     uid: Optional[str],
+    force: bool = False,
+    extra_excluded_urls: Optional[list[str]] = None,
 ) -> Optional[dict]:
     """Run bounded, validated web research for a conversation-matched detail."""
 
@@ -4998,7 +5100,14 @@ async def _research_card_detail_resources(
     ):
         return None
     behavior_events = await _db_get_recommendation_events(uid)
-    excluded_urls = recent_resource_urls(behavior_events)
+    excluded_urls = list(
+        dict.fromkeys(
+            [
+                *recent_resource_urls(behavior_events),
+                *(extra_excluded_urls or []),
+            ]
+        )
+    )[:120]
     feedback_preferences = card_behavior_signal(
         str(card.get("id") or ""), behavior_events
     ).get("content_refresh_reasons") or []
@@ -5011,6 +5120,7 @@ async def _research_card_detail_resources(
                 preferred_locale=str(context.get("preferred_locale") or "zh-CN"),
                 model=OPENAI_CONTENT_RESEARCH_MODEL,
                 safety_identifier=_research_safety_identifier(uid),
+                force=force,
                 excluded_urls=excluded_urls,
                 feedback_preferences=feedback_preferences,
             ),
@@ -5020,7 +5130,7 @@ async def _research_card_detail_resources(
         # Dynamic research is an enhancement.  A provider outage, timeout, bad
         # result or incomplete quality bundle must never break the reviewed detail.
         print(f"[warn] conversation content research fell back: {type(exc).__name__}")
-        return None
+        return {"_provider_failure": "retryable"}
 
 
 def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) -> None:
@@ -5078,11 +5188,24 @@ async def get_personalized_feed(
 
     context = await _load_recent_main_chat(uid)
     await _attach_child_recommendation_context(uid, context)
+    has_profile_category_context = bool(
+        context.get("help_preference") or context.get("info_source")
+    )
     behavior_events = (
         await _db_get_recommendation_events(uid)
         if context.get("state") == "ready"
+        or (
+            context.get("state") == "no_history"
+            and has_profile_category_context
+        )
         else []
     )
+    category_mix = category_preference_mix(
+        context.get("help_preference"),
+        context.get("info_source"),
+        behavior_events,
+    )
+    initial_content_category = weighted_category_for_window(uid, category_mix)
     requested_count = max(1, min(count, 3 if presentation == "category_cards" else 6))
     items, used_conversation = _rank_learning_content(
         context.get("messages") or [],
@@ -5098,7 +5221,11 @@ async def get_personalized_feed(
     )
     preferred_locale = str(context.get("preferred_locale") or "zh-CN")
     if presentation == "category_cards" and items:
-        primary = first_match or items[0]
+        primary = dict(first_match or items[0])
+        if context.get("child_age_context"):
+            # The card title/summary and reviewed pair are constructed below,
+            # so derived age context must be present before that work happens.
+            primary["child_age_context"] = context["child_age_context"]
         items = [
             _category_feed_card(
                 primary,
@@ -5108,10 +5235,20 @@ async def get_personalized_feed(
             )
             for content_category in CONTENT_CATEGORIES[:requested_count]
         ]
+        for item in items:
+            item_category = str(item.get("content_category") or "")
+            item["category_preference_weight"] = int(
+                category_mix.get(item_category, 0)
+            )
+            item["is_primary_exposure_category"] = (
+                item_category == initial_content_category
+            )
     if context.get("state") == "privacy_off":
         mode = "default_privacy"
     elif used_conversation:
         mode = "conversation"
+    elif context.get("help_preference") or context.get("info_source"):
+        mode = "profile"
     elif context.get("state") == "unavailable":
         mode = "default_unavailable"
     else:
@@ -5119,15 +5256,18 @@ async def get_personalized_feed(
     _log_personalized_feed_decision(uid, context, items)
     urgent_suppressed = _context_requires_urgent_handoff(context)
     for item in items:
+        if context.get("child_age_context"):
+            item["child_age_context"] = context["child_age_context"]
         if item.get("is_conversation_match"):
             item["context_created_at"] = context.get("context_created_at")
-            if context.get("child_age_context"):
-                item["child_age_context"] = context["child_age_context"]
         reviewed_source = LEARNING_CONTENT_BY_ID.get(item["id"], {}).get("resources", [])
         topic_context = (
             item
-            if context.get("state") == "ready"
-            and item.get("is_conversation_match")
+            if context.get("child_age_context")
+            or (
+                context.get("state") == "ready"
+                and item.get("is_conversation_match")
+            )
             else None
         )
         if item.get("content_category") in CONTENT_CATEGORIES:
@@ -5184,11 +5324,13 @@ async def get_personalized_feed(
         "items": items,
         "feed_request_id": feed_request_id,
         "model_version": (
-            "conversation-category-pairs-v1"
+            "questionnaire-behavior-category-pairs-v2"
             if presentation == "category_cards"
             else "conversation-quality-child-age-cn-repair-v4"
         ),
         "personalization_mode": mode,
+        "category_mix": category_mix,
+        "initial_content_category": initial_content_category,
         "matched_topic": (first_match or {}).get("topic"),
         "related_session_id": (first_match or {}).get("related_session_id"),
         "context_status": context.get("state", "no_history"),
@@ -5388,7 +5530,11 @@ async def get_card_detail(
             card["recommendation_context_status"] = "legacy_fallback"
         preferred_locale = str(context.get("preferred_locale") or "zh-CN")
         apply_recommendation_context = bool(
-            context.get("state") == "ready" and card.get("is_conversation_match")
+            context.get("child_age_context")
+            or (
+                context.get("state") == "ready"
+                and card.get("is_conversation_match")
+            )
         )
         if selected_content_category in CONTENT_CATEGORIES:
             card["resources"] = _reviewed_category_resource_pair(
@@ -5432,6 +5578,7 @@ async def get_card_detail(
         else:
             card["research_status"] = "reviewed_fallback"
         card["preferred_locale"] = preferred_locale
+        card["refresh_available"] = research_eligible
         card["resource_blueprint"] = _resource_blueprint(selected_content_category)
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale
@@ -5461,6 +5608,8 @@ async def get_card_research(
     recommendation_id: Optional[str] = None,
     content_category: Optional[Literal["authority", "featured", "case"]] = None,
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
+    refresh: bool = False,
+    exclude_resource_ids: Optional[str] = None,
     uid: str = Depends(_req_uid),
 ):
     """Return a complete conversation-aware 6–9 item bundle or a safe fallback."""
@@ -5558,12 +5707,86 @@ async def get_card_research(
         card["related_session_id"] = snapshot.get("session_id")
         card["context_created_at"] = snapshot.get("context_created_at")
     if not card.get("is_conversation_match"):
-        return {"research_status": "reviewed_fallback"}
+        return {
+            "research_status": "reviewed_fallback",
+            **(
+                {"refresh_status": "not_available", "has_more": False}
+                if refresh
+                else {}
+            ),
+        }
     if not context.get("external_research_allowed"):
-        return {"research_status": "consent_required"}
-    research = await _research_card_detail_resources(card=card, context=context, uid=uid)
+        return {
+            "research_status": "consent_required",
+            **(
+                {"refresh_status": "not_available", "has_more": False}
+                if refresh
+                else {}
+            ),
+        }
+    excluded_ids = {
+        resource_id
+        for resource_id in (exclude_resource_ids or "").split(",")[:20]
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", resource_id)
+    }
+    extra_excluded_urls = [
+        str(resource.get("url") or "")
+        for resource in (card.get("resources") or [])
+        if str(resource.get("id") or "") in excluded_ids
+        and resource.get("url")
+    ]
+    if refresh:
+        await _db_append_recommendation_events(
+            uid,
+            [
+                _new_recommendation_event(
+                    event="content_refresh",
+                    card_id=card_id,
+                    recommendation_id=recommendation_id,
+                    content_category=str(selected_content_category or ""),
+                    locale=str(context.get("preferred_locale") or "zh-CN"),
+                )
+            ],
+        )
+    research_kwargs: dict[str, object] = {
+        "card": card,
+        "context": context,
+        "uid": uid,
+    }
+    # Preserve the original internal call contract for ordinary detail loads;
+    # refresh-only controls are supplied only when the caller requests them.
+    # This also keeps older instrumentation and test doubles compatible.
+    if refresh or extra_excluded_urls:
+        research_kwargs.update(
+            force=refresh,
+            extra_excluded_urls=extra_excluded_urls,
+        )
+    research = await _research_card_detail_resources(**research_kwargs)
+    retryable_provider_failure = bool(
+        research and research.get("_provider_failure") == "retryable"
+    )
+    if retryable_provider_failure:
+        if refresh:
+            # The client deliberately receives no resources here, so it keeps
+            # the currently visible pair and may offer another retry.
+            return {
+                "research_status": "temporarily_unavailable",
+                "refresh_status": "temporarily_unavailable",
+                "has_more": True,
+                "resource_blueprint": _resource_blueprint(
+                    selected_content_category
+                ),
+            }
+        research = None
     if not research:
         preferred_locale = str(context.get("preferred_locale") or "zh-CN")
+        if refresh:
+            return {
+                "research_status": "refresh_unavailable",
+                "refresh_status": "no_alternative",
+                "has_more": False,
+                "resource_blueprint": _resource_blueprint(selected_content_category),
+            }
         if card.get("is_dynamic_research_card"):
             return {
                 "resources": [],
@@ -5621,6 +5844,11 @@ async def get_card_research(
         return {
             "resources": [],
             "research_status": "unavailable",
+            **(
+                {"refresh_status": "no_alternative", "has_more": False}
+                if refresh
+                else {}
+            ),
             "resource_blueprint": _resource_blueprint(selected_content_category),
             "resource_summary": summarize_resource_slots([], preferred_locale),
         }
@@ -5632,7 +5860,11 @@ async def get_card_research(
         live_by_kind = {
             str(resource.get("kind") or ""): resource for resource in live_pair
         }
-        if len(live_by_kind) < 2 and not card.get("is_dynamic_research_card"):
+        if (
+            len(live_by_kind) < 2
+            and not card.get("is_dynamic_research_card")
+            and not refresh
+        ):
             reviewed_pair = _reviewed_category_resource_pair(
                 card.get("resources", []),
                 preferred_locale,
@@ -5649,7 +5881,14 @@ async def get_card_research(
         if len(resources) != 2:
             return {
                 "resources": [],
-                "research_status": "unavailable",
+                "research_status": (
+                    "refresh_unavailable" if refresh else "unavailable"
+                ),
+                **(
+                    {"refresh_status": "no_alternative", "has_more": False}
+                    if refresh
+                    else {}
+                ),
                 "fallback_reason": "no_complete_verified_pair",
                 "resource_blueprint": _resource_blueprint(selected_content_category),
                 "resource_summary": summarize_resource_slots([], preferred_locale),
@@ -5701,6 +5940,8 @@ async def get_card_research(
         "resources": resources,
         "content_set_id": content_set_id,
         "research_status": research_status,
+        "refresh_status": "refreshed" if refresh else "ready",
+        "has_more": True,
         "research_query": research.get("query"),
         "research_editor_note": research.get("editor_note"),
         "research_source_count": research.get("cited_source_count", 0),

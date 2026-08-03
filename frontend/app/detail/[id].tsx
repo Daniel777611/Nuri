@@ -86,6 +86,7 @@ type LearningResource = {
 
 type ResourceSourceTier = NonNullable<LearningResource["source_tier"]>;
 type ResourceContentCategory = NonNullable<LearningResource["content_category"]>;
+type ResourceRefreshState = "idle" | "loading" | "exhausted";
 
 const CONTENT_CATEGORY_META: Record<ResourceContentCategory, {
   eyebrow: string;
@@ -173,6 +174,8 @@ export default function Detail() {
   const [feedbackReasonOpen, setFeedbackReasonOpen] = useState(false);
   const [feedbackReason, setFeedbackReason] = useState<RecommendationFeedbackReason | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [resourceRefreshState, setResourceRefreshState] =
+    useState<ResourceRefreshState>("idle");
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const dwellStartedAt = useRef<number | null>(null);
   const dwellSent = useRef(false);
@@ -196,9 +199,10 @@ export default function Detail() {
         recommendation_id: recommendationId || undefined,
         feed_request_id: feedRequestId || undefined,
         position: recommendationPosition,
+        content_category: contentCategory || undefined,
         ...payload,
       }),
-    [feedRequestId, id, recommendationId, recommendationPosition],
+    [contentCategory, feedRequestId, id, recommendationId, recommendationPosition],
   );
 
   const flushDwell = useCallback(() => {
@@ -258,6 +262,7 @@ export default function Detail() {
     setFeedbackReasonOpen(false);
     setFeedbackReason(null);
     setFeedbackSubmitting(false);
+    setResourceRefreshState("idle");
     dwellStartedAt.current = null;
     dwellSent.current = false;
 
@@ -277,6 +282,8 @@ export default function Detail() {
           recommendation_id: recommendationId || undefined,
           feed_request_id: feedRequestId || undefined,
           position: recommendationPosition,
+          content_category: detail.content_category || contentCategory || undefined,
+          locale: detail.preferred_locale || undefined,
         };
         dwellStartedAt.current = Date.now();
         trackRecommendation("detail_view").catch(() => {});
@@ -429,6 +436,93 @@ export default function Detail() {
     }
   };
 
+  const refreshResourcePair = async () => {
+    if (
+      !card ||
+      !id ||
+      resourceRefreshState !== "idle" ||
+      !card.refresh_available
+    ) {
+      return;
+    }
+    const activeCategory: ResourceContentCategory =
+      card.content_category === "featured" ||
+      card.content_category === "case" ||
+      card.content_category === "authority"
+        ? card.content_category
+        : contentCategory || "authority";
+    const currentResources: LearningResource[] = Array.isArray(card.resources)
+      ? card.resources.filter(
+          (resource: LearningResource) =>
+            resourceContentCategory(resource) === activeCategory,
+        )
+      : [];
+    if (currentResources.length < 2) return;
+
+    // Invalidates an initial live-research response that may still be in
+    // flight, so an older pair can never overwrite the user's explicit refresh.
+    const requestId = ++contentRequestId.current;
+    setResourceRefreshState("loading");
+    try {
+      const result: any = await api.getNextResourcePair(
+        id as string,
+        sessionId,
+        contextCreatedAt,
+        recommendationId,
+        activeCategory,
+        currentResources.map((resource) => resource.id),
+      );
+      if (contentRequestId.current !== requestId) return;
+      const nextResources: LearningResource[] = Array.isArray(result?.resources)
+        ? result.resources
+        : [];
+      const nextArticle = nextResources.find(
+        (resource) =>
+          resource.kind === "article" &&
+          resourceContentCategory(resource) === activeCategory,
+      );
+      const nextVideo = nextResources.find(
+        (resource) =>
+          resource.kind === "video" &&
+          resourceContentCategory(resource) === activeCategory,
+      );
+      if (
+        result?.refresh_status === "refreshed" &&
+        nextArticle &&
+        nextVideo
+      ) {
+        setCard((current: any) =>
+          current
+            ? {
+                ...current,
+                ...result,
+                resources: [nextArticle, nextVideo],
+                refresh_available: result.has_more !== false,
+              }
+            : current,
+        );
+        setContentFeedback(null);
+        setFeedbackReason(null);
+        setFeedbackReasonOpen(false);
+        setResourceRefreshState("idle");
+        showToast("已为你换了一组");
+        return;
+      }
+      if (result?.refresh_status === "no_alternative") {
+        setResourceRefreshState("exhausted");
+        return;
+      }
+      // A timeout, provider outage, incomplete response, or any other
+      // retryable status must leave the currently reviewed pair untouched.
+      setResourceRefreshState("idle");
+      showToast("暂时没能换新内容，请稍后再试");
+    } catch {
+      if (contentRequestId.current !== requestId) return;
+      setResourceRefreshState("idle");
+      showToast("暂时没能换新内容，请稍后再试");
+    }
+  };
+
   const renderBody = () => {
     if (loadError) {
       const recommendationExpired = loadError === "expired";
@@ -550,7 +644,78 @@ export default function Detail() {
 
         {resources.length || card.research_status ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
-            <Text style={styles.sectionTitle}>推荐给你的文章与视频</Text>
+            <View style={styles.resourcesTitleRow}>
+              <Text style={[styles.sectionTitle, styles.resourcesTitle]}>
+                推荐给你的文章与视频
+              </Text>
+              {(card.refresh_available || resourceRefreshState === "exhausted") &&
+              resourcePairComplete ? (
+                <Pressable
+                  onPress={refreshResourcePair}
+                  disabled={
+                    resourceRefreshState !== "idle" ||
+                    card.research_status === "pending"
+                  }
+                  style={({ pressed }) => [
+                    styles.refreshResourcesButton,
+                    (resourceRefreshState !== "idle" ||
+                      card.research_status === "pending") &&
+                      styles.refreshResourcesButtonDisabled,
+                    pressed &&
+                      resourceRefreshState === "idle" &&
+                      card.research_status !== "pending" &&
+                      styles.refreshResourcesButtonPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="更换下面的一篇文章和一个视频"
+                  accessibilityState={{
+                    disabled:
+                      resourceRefreshState !== "idle" ||
+                      card.research_status === "pending",
+                    busy: resourceRefreshState === "loading",
+                  }}
+                  testID="detail-refresh-resources"
+                >
+                  {resourceRefreshState === "loading" ? (
+                    <ActivityIndicator size="small" color="#4F4B9C" />
+                  ) : (
+                    <Ionicons
+                      name="refresh-outline"
+                      size={16}
+                      color={
+                        resourceRefreshState === "exhausted"
+                          ? colors.muted
+                          : "#4F4B9C"
+                      }
+                    />
+                  )}
+                  <Text
+                    style={[
+                      styles.refreshResourcesButtonText,
+                      resourceRefreshState === "exhausted" &&
+                        styles.refreshResourcesButtonTextDisabled,
+                    ]}
+                  >
+                    {resourceRefreshState === "loading"
+                      ? "正在换一组…"
+                      : resourceRefreshState === "exhausted"
+                        ? "暂无更多"
+                        : card.research_status === "pending"
+                          ? "正在核验…"
+                          : "换一组内容"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {resourceRefreshState === "exhausted" ? (
+              <Text
+                style={styles.refreshExhaustedText}
+                accessibilityLiveRegion="polite"
+                testID="detail-refresh-exhausted"
+              >
+                目前没有更多同时符合孩子阶段、当前话题、类别和语言的组合。
+              </Text>
+            ) : null}
             <View
               style={styles.resourceGroup}
               testID={`detail-resource-category-${activeCategory}`}
@@ -1086,6 +1251,46 @@ const styles = StyleSheet.create({
   },
   body: { fontSize: type.lg, color: colors.onSurfaceSecondary, lineHeight: 27 },
   resourcesSection: { marginTop: spacing.xl },
+  resourcesTitleRow: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  resourcesTitle: { flex: 1, marginBottom: 0 },
+  refreshResourcesButton: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    flexShrink: 0,
+    paddingHorizontal: spacing.sm + 2,
+    borderWidth: 1,
+    borderColor: "#D8D2F2",
+    borderRadius: radius.pill,
+    backgroundColor: "#F7F5FF",
+  },
+  refreshResourcesButtonPressed: { opacity: 0.72 },
+  refreshResourcesButtonDisabled: {
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  refreshResourcesButtonText: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: "#4F4B9C",
+    fontWeight: "700",
+  },
+  refreshResourcesButtonTextDisabled: { color: colors.muted },
+  refreshExhaustedText: {
+    marginTop: -spacing.xs,
+    marginBottom: spacing.md,
+    fontSize: type.sm,
+    lineHeight: 19,
+    color: colors.muted,
+  },
   resourceLocaleBlock: {
     borderWidth: 1,
     borderColor: "#D8D2F2",

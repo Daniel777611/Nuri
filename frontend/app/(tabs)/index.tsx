@@ -58,6 +58,7 @@ type NuriPreviewStatus = "loading" | "ready" | "empty" | "error";
 type HeroFeedMeta = {
   feedRequestId?: string;
   generatedAt?: string;
+  initialContentCategory?: "authority" | "featured" | "case";
 };
 
 const conversationExcerpt = (text: string, maxLength = 26) => {
@@ -186,9 +187,11 @@ export default function Home() {
       setHeroFeedMeta({
         feedRequestId: response.feed_request_id || undefined,
         generatedAt: response.generated_at || undefined,
+        initialContentCategory: response.initial_content_category,
       });
       setHeroFeedState(
-        categoryCards.length > 0 && response.personalization_mode === "conversation"
+        categoryCards.length > 0 &&
+          ["conversation", "profile"].includes(response.personalization_mode)
           ? "personalized"
           : "curated",
       );
@@ -395,6 +398,7 @@ export default function Home() {
           onCardPress={openHeroCard}
           onCardVisible={trackHeroImpression}
           visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}
+          initialContentCategory={heroFeedMeta.initialContentCategory}
         />
 
         {/* 第一行：今日任务 + Nuri的家 */}

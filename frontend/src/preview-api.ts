@@ -438,6 +438,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     return {
       items,
       personalization_mode: useConversation ? "conversation" : "default_privacy",
+      category_mix: { authority: 55, featured: 30, case: 15 },
+      initial_content_category: "authority",
       matched_topic: useConversation ? "sleep" : null,
       related_session_id: useConversation ? "chat-1" : null,
       generated_at: new Date().toISOString(),
@@ -464,6 +466,9 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
             allResources.findIndex((candidate) => candidate.kind === resource.kind) === resourceIndex,
         )
         .slice(0, 2);
+      const hasCompleteResourcePair = (["article", "video"] as const).every(
+        (kind) => resources.some((resource) => resource.kind === kind),
+      );
       return {
         ...learningCard,
         resources,
@@ -487,6 +492,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
             : isSleepMatch
               ? "consent_required"
               : "reviewed_fallback",
+        refresh_available:
+          hasCompleteResourcePair && privacy.allow_external_content_research,
       };
     }
     return { ...card, id: contentId };
@@ -496,6 +503,24 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     routePath.endsWith("/research") &&
     method === "POST"
   ) {
+    if (path.includes("refresh=true")) {
+      const query = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
+      const refreshScenario = new URLSearchParams(query).get("preview_refresh");
+      if (refreshScenario === "temporarily_unavailable") {
+        return {
+          research_status: "refresh_unavailable",
+          refresh_status: "temporarily_unavailable",
+          has_more: true,
+          preferred_locale: previewResourceLocale(path),
+        };
+      }
+      return {
+        research_status: "refresh_unavailable",
+        refresh_status: "no_alternative",
+        has_more: false,
+        preferred_locale: previewResourceLocale(path),
+      };
+    }
     return {
       research_status: "reviewed_fallback",
       preferred_locale: previewResourceLocale(path),

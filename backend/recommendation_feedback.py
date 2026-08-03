@@ -32,11 +32,33 @@ LEARNING_EVENT_NAMES = frozenset(
         "helpful",
         "not_relevant",
         "resource_impression",
+        "content_refresh",
         # Internal delivery event.  It is intentionally absent from the
         # public Pydantic request contract in main.py.
         "resource_delivered",
     }
 )
+
+CONTENT_CATEGORY_NAMES = ("authority", "featured", "case")
+
+# The onboarding questionnaire is a cold-start prior, not a permanent label.
+# Values are intentionally soft enough that later reading behaviour can move
+# the mix, while authority retains a safety floor below.
+_HELP_PREFERENCE_PRIORS = {
+    "research": {"authority": 55.0, "featured": 30.0, "case": 15.0},
+    "experience": {"authority": 15.0, "featured": 30.0, "case": 55.0},
+    "analysis": {"authority": 40.0, "featured": 40.0, "case": 20.0},
+    "actionable": {"authority": 20.0, "featured": 55.0, "case": 25.0},
+}
+_INFO_SOURCE_PRIORS = {
+    "research": {"authority": 60.0, "featured": 25.0, "case": 15.0},
+    "expert": {"authority": 50.0, "featured": 35.0, "case": 15.0},
+    "parents": {"authority": 15.0, "featured": 25.0, "case": 60.0},
+    "all": {"authority": 33.0, "featured": 34.0, "case": 33.0},
+}
+_NEUTRAL_CATEGORY_PRIOR = {"authority": 34.0, "featured": 33.0, "case": 33.0}
+_AUTHORITY_EXPOSURE_FLOOR = 25.0
+_CATEGORY_EXPLORATION_FLOOR = 12.0
 
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -392,3 +414,127 @@ def card_behavior_signal(
         "content_refresh_reasons": sorted(content_refresh_reasons),
         "impression_count_14d": impressions,
     }
+
+
+def _normalize_category_weights(raw: dict[str, float]) -> dict[str, int]:
+    """Normalize three positive weights to stable integer percentages."""
+
+    floors = {
+        "authority": _AUTHORITY_EXPOSURE_FLOOR,
+        "featured": _CATEGORY_EXPLORATION_FLOOR,
+        "case": _CATEGORY_EXPLORATION_FLOOR,
+    }
+    remaining = 100.0 - sum(floors.values())
+    preference_excess = {
+        category: max(0.0, float(raw.get(category) or 0.0) - floors[category])
+        for category in CONTENT_CATEGORY_NAMES
+    }
+    excess_total = sum(preference_excess.values())
+    if excess_total <= 0:
+        preference_excess = {category: 1.0 for category in CONTENT_CATEGORY_NAMES}
+        excess_total = float(len(CONTENT_CATEGORY_NAMES))
+    exact = {
+        category: floors[category]
+        + remaining * preference_excess[category] / excess_total
+        for category in CONTENT_CATEGORY_NAMES
+    }
+    whole = {category: int(exact[category]) for category in CONTENT_CATEGORY_NAMES}
+    remainder = 100 - sum(whole.values())
+    order = sorted(
+        CONTENT_CATEGORY_NAMES,
+        key=lambda category: (exact[category] - whole[category], -CONTENT_CATEGORY_NAMES.index(category)),
+        reverse=True,
+    )
+    for category in order[:remainder]:
+        whole[category] += 1
+    return whole
+
+
+def category_preference_mix(
+    help_preference: object,
+    info_source: object,
+    events: Iterable[dict],
+    *,
+    now: Optional[datetime] = None,
+) -> dict[str, int]:
+    """Blend questionnaire priors with recent category-specific behaviour.
+
+    Only events that already contain a bounded ``content_category`` take part.
+    Legacy events therefore keep improving topic ranking without being guessed
+    into one editorial lane.  Behaviour adjustments are capped so an accidental
+    click cannot erase the authority or exploration floors.
+    """
+
+    help_prior = _HELP_PREFERENCE_PRIORS.get(str(help_preference or ""))
+    source_prior = _INFO_SOURCE_PRIORS.get(str(info_source or ""))
+    if help_prior and source_prior:
+        # Source trust is the more direct signal for editorial-lane choice.
+        weights = {
+            category: help_prior[category] * 0.4 + source_prior[category] * 0.6
+            for category in CONTENT_CATEGORY_NAMES
+        }
+    elif help_prior:
+        weights = dict(help_prior)
+    elif source_prior:
+        weights = dict(source_prior)
+    else:
+        weights = dict(_NEUTRAL_CATEGORY_PRIOR)
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cutoff = current - timedelta(days=30)
+    adjustments = {category: 0.0 for category in CONTENT_CATEGORY_NAMES}
+    for item in events:
+        category = str(item.get("content_category") or "")
+        if category not in adjustments:
+            continue
+        timestamp = _parse_timestamp(item.get("occurred_at"))
+        if not timestamp or timestamp < cutoff:
+            continue
+        event = str(item.get("event") or "")
+        delta = 0.0
+        if event == "card_open":
+            delta = 2.0
+        elif event == "external_resource_click":
+            delta = 4.0
+        elif event == "helpful":
+            delta = 7.0
+        elif event == "favorite":
+            delta = 5.0 if item.get("value", 1) == 1 else -2.0
+        elif event == "continue_chat":
+            delta = 3.0
+        elif event == "detail_dwell" and int(item.get("duration_ms") or 0) >= 45_000:
+            delta = 3.0
+        elif event == "not_relevant" and item.get("reason") == "source_not_useful":
+            delta = -4.0
+        adjustments[category] = max(-15.0, min(15.0, adjustments[category] + delta))
+
+    for category in CONTENT_CATEGORY_NAMES:
+        weights[category] += adjustments[category]
+    return _normalize_category_weights(weights)
+
+
+def weighted_category_for_window(
+    user_key: str,
+    category_mix: dict[str, int],
+    *,
+    now: Optional[datetime] = None,
+    window_hours: int = 6,
+) -> str:
+    """Choose one stable first-exposure category according to the current mix.
+
+    All three cards remain available.  The deterministic time window prevents
+    the carousel from jumping on every render while repeated windows converge
+    to the questionnaire-and-click proportions.
+    """
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bucket_seconds = max(1, window_hours) * 60 * 60
+    bucket = int(current.timestamp()) // bucket_seconds
+    digest = hashlib.sha256(f"{user_key}:{bucket}".encode("utf-8")).digest()
+    sample = int.from_bytes(digest[:8], "big") / float(2**64) * 100.0
+    cumulative = 0.0
+    for category in CONTENT_CATEGORY_NAMES:
+        cumulative += max(0, int(category_mix.get(category) or 0))
+        if sample < cumulative:
+            return category
+    return "authority"

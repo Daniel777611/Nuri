@@ -1055,6 +1055,201 @@ def _topic_lexical_terms(value: object) -> set[str]:
     return {term for term in terms if term not in _GENERIC_TOPIC_WORDS}
 
 
+_AGE_NUMBER_TOKEN = r"(?:\d{1,3}|[零〇一二两三四五六七八九十]{1,4})"
+_AGE_RANGE_SEPARATOR = r"(?:-|—|–|~|～|到|至)"
+_MONTH_AGE_UNIT = r"(?:个?月|個?月|月龄|月齡|months?|mos?\.?)"
+_YEAR_AGE_UNIT = r"(?:岁|歲|years?|yrs?\.?)"
+
+
+def _parse_age_number(value: object) -> Optional[int]:
+    """Parse the small Arabic or Chinese numbers used in child-age labels."""
+
+    raw = _safe_text(value, 12).strip().casefold()
+    if not raw:
+        return None
+    if raw.isdigit():
+        parsed = int(raw)
+        return parsed if 0 <= parsed <= 240 else None
+
+    normalized = raw.replace("〇", "零").replace("两", "二")
+    digits = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if normalized in digits:
+        return digits[normalized]
+    if normalized.count("十") != 1:
+        return None
+    tens_text, ones_text = normalized.split("十", 1)
+    if len(tens_text) > 1 or len(ones_text) > 1:
+        return None
+    tens = 1 if not tens_text else digits.get(tens_text)
+    ones = 0 if not ones_text else digits.get(ones_text)
+    if tens is None or ones is None or tens == 0:
+        return None
+    parsed = tens * 10 + ones
+    return parsed if parsed <= 99 else None
+
+
+def _explicit_age_intervals(text: object) -> list[tuple[int, int, str]]:
+    """Extract non-overlapping, explicit child-age intervals from visible text.
+
+    More specific labels are consumed first.  In particular, ``2岁6个月`` is
+    one exact 30-month stage and is never re-read as independent 2-year and
+    6-month stages.
+    """
+
+    value = _safe_text(text, 1800)
+    if not value:
+        return []
+    flags = re.IGNORECASE
+    occupied: list[tuple[int, int]] = []
+    intervals: list[tuple[int, int, str]] = []
+
+    def overlaps(span: tuple[int, int]) -> bool:
+        return any(span[0] < end and start < span[1] for start, end in occupied)
+
+    def append(
+        match: re.Match[str],
+        minimum: Optional[int],
+        maximum: Optional[int],
+        kind: str,
+    ) -> None:
+        occupied.append(match.span())
+        if minimum is None or maximum is None or minimum > maximum:
+            return
+        intervals.append((max(0, minimum), min(240, maximum), kind))
+
+    combined_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_YEAR_AGE_UNIT}\s*"
+        rf"({_AGE_NUMBER_TOKEN})\s*{_MONTH_AGE_UNIT}",
+        flags,
+    )
+    for match in combined_pattern.finditer(value):
+        years = _parse_age_number(match.group(1))
+        months = _parse_age_number(match.group(2))
+        exact = years * 12 + months if years is not None and months is not None else None
+        append(
+            match,
+            exact - 2 if exact is not None else None,
+            exact + 2 if exact is not None else None,
+            "exact",
+        )
+
+    half_year_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*(?:岁|歲)\s*半", flags
+    )
+    for match in half_year_pattern.finditer(value):
+        if overlaps(match.span()):
+            continue
+        years = _parse_age_number(match.group(1))
+        exact = years * 12 + 6 if years is not None else None
+        append(
+            match,
+            exact - 2 if exact is not None else None,
+            exact + 2 if exact is not None else None,
+            "exact",
+        )
+
+    month_range_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_AGE_RANGE_SEPARATOR}\s*"
+        rf"({_AGE_NUMBER_TOKEN})\s*{_MONTH_AGE_UNIT}",
+        flags,
+    )
+    for match in month_range_pattern.finditer(value):
+        if overlaps(match.span()):
+            continue
+        append(
+            match,
+            _parse_age_number(match.group(1)),
+            _parse_age_number(match.group(2)),
+            "month_range",
+        )
+
+    year_range_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_AGE_RANGE_SEPARATOR}\s*"
+        rf"({_AGE_NUMBER_TOKEN})\s*{_YEAR_AGE_UNIT}",
+        flags,
+    )
+    for match in year_range_pattern.finditer(value):
+        if overlaps(match.span()):
+            continue
+        start_year = _parse_age_number(match.group(1))
+        end_year = _parse_age_number(match.group(2))
+        append(
+            match,
+            start_year * 12 if start_year is not None else None,
+            end_year * 12 + 11 if end_year is not None else None,
+            "year_range",
+        )
+
+    month_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_MONTH_AGE_UNIT}", flags
+    )
+    for match in month_pattern.finditer(value):
+        if overlaps(match.span()):
+            continue
+        months = _parse_age_number(match.group(1))
+        append(
+            match,
+            months - 2 if months is not None else None,
+            months + 2 if months is not None else None,
+            "exact",
+        )
+
+    year_pattern = re.compile(
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_YEAR_AGE_UNIT}", flags
+    )
+    for match in year_pattern.finditer(value):
+        if overlaps(match.span()):
+            continue
+        years = _parse_age_number(match.group(1))
+        append(
+            match,
+            years * 12 if years is not None else None,
+            years * 12 + 11 if years is not None else None,
+            "year",
+        )
+
+    return intervals
+
+
+def _explicit_age_status(
+    text: object,
+    age_months: int,
+    *,
+    narrow: bool = False,
+) -> tuple[bool, bool]:
+    """Return whether explicit ages exist and whether one fits the child."""
+
+    intervals = _explicit_age_intervals(text)
+    if not intervals:
+        return False, False
+
+    def eligible(interval: tuple[int, int, str]) -> bool:
+        minimum, maximum, kind = interval
+        if not narrow:
+            return True
+        if kind == "month_range":
+            return maximum - minimum <= 6
+        if kind == "year_range":
+            return maximum - minimum <= 35
+        return True
+
+    return True, any(
+        interval[0] <= age_months <= interval[1] and eligible(interval)
+        for interval in intervals
+    )
+
+
 def _resource_matches_topic(resource: dict, topic_context: Optional[dict]) -> bool:
     """Require a concrete semantic or lexical bridge to the selected card topic."""
 
@@ -1078,6 +1273,21 @@ def _resource_matches_topic(resource: dict, topic_context: Optional[dict]) -> bo
             topic_text,
         )
         age_months = int(fallback_age_match.group(1)) if fallback_age_match else None
+    if age_months is not None:
+        # Across every parenting topic, reject a destination that explicitly
+        # advertises a clearly different stage. Generic pages may still pass
+        # for non-development topics; development content has the stricter
+        # positive age-evidence gate below.
+        explicit_stage_text = " ".join(
+            _safe_text(resource.get(field), 500)
+            for field in ("title", "page_language_evidence", "video_page_evidence")
+        )
+        has_explicit_stage, explicit_stage_match = _explicit_age_status(
+            explicit_stage_text,
+            age_months,
+        )
+        if has_explicit_stage and not explicit_stage_match:
+            return False
     development_group = 1
     if age_months is not None and development_group in context_groups:
         title_text = _safe_text(resource.get("title"), 500)
@@ -1091,89 +1301,14 @@ def _resource_matches_topic(resource: dict, topic_context: Optional[dict]) -> bo
         )
         if any(marker in visible_text for marker in ("胎儿", "胎寶寶", "胎宝宝", "孕期", "妊娠")):
             return False
-        nearby_months = range(max(0, age_months - 2), age_months + 3)
-
-        def matches_age_stage(text: str) -> bool:
-            has_direct_age = any(
-                re.search(rf"(?<!\d){month}\s*(?:个?月|月龄)", text)
-                for month in nearby_months
-            )
-            chinese_months = {
-                0: "零",
-                1: "一",
-                2: "二",
-                3: "三",
-                4: "四",
-                5: "五",
-                6: "六",
-                7: "七",
-                8: "八",
-                9: "九",
-                10: "十",
-                11: "十一",
-                12: "十二",
-            }
-            has_direct_age = has_direct_age or any(
-                re.search(
-                    rf"{chinese_months[month]}\s*(?:个?月|月龄)", text
-                )
-                for month in nearby_months
-                if month in chinese_months
-            )
-            age_ranges = re.findall(
-                r"(?<!\d)(\d{1,2})\s*[-—–到至]\s*(\d{1,2})\s*(?:个?月|月龄)",
-                text,
-            )
-            has_age_range = any(
-                int(start) <= age_months <= int(end) and int(end) - int(start) <= 6
-                for start, end in age_ranges
-                if int(start) <= int(end)
-            )
-            year_month_ages = [
-                int(years) * 12 + int(months)
-                for years, months in re.findall(
-                    r"(?<!\d)(\d{1,2})\s*岁\s*(\d{1,2})\s*(?:个?月|月龄)",
-                    text,
-                )
-            ]
-            half_year_ages = [
-                int(years) * 12 + 6
-                for years in re.findall(r"(?<!\d)(\d{1,2})\s*岁半", text)
-            ]
-            has_year_month_age = any(
-                abs(months - age_months) <= 2
-                for months in (*year_month_ages, *half_year_ages)
-            )
-            year_ranges = re.findall(
-                r"(?<!\d)(\d{1,2})\s*[-—–到至]\s*(\d{1,2})\s*岁",
-                text,
-            )
-            has_year_range = any(
-                int(start) <= int(end)
-                and int(start) * 12 <= age_months <= int(end) * 12 + 11
-                and int(end) - int(start) <= 2
-                for start, end in year_ranges
-            )
-            standalone_years = re.findall(
-                r"(?<![\d\-—–到至])(\d{1,2})\s*岁(?!\s*(?:\d|半|[-—–到至]))",
-                text,
-            )
-            has_year_stage = any(
-                int(years) * 12 <= age_months <= int(years) * 12 + 11
-                for years in standalone_years
-            )
-            return bool(
-                has_direct_age
-                or has_age_range
-                or has_year_month_age
-                or has_year_range
-                or has_year_stage
-            )
-
         # The destination title itself must advertise the matching stage. This
         # prevents model-authored evidence from making an unrelated jaundice,
         # feeding or generic parenting page look age-specific.
-        has_age_stage = matches_age_stage(title_text)
+        _, has_age_stage = _explicit_age_status(
+            title_text,
+            age_months,
+            narrow=True,
+        )
         has_development_signal = any(
             marker in visible_text
             for marker in (
@@ -2076,37 +2211,24 @@ def _context_child_age_months(topic_context: Optional[dict]) -> Optional[int]:
     if "未满1个月" in child_age_text:
         return 0
     years_match = re.search(
-        r"(?<!\d)(\d{1,2})\s*岁(?:\s*(\d{1,2})\s*(?:个?月|月龄))?",
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*(?:岁|歲)"
+        rf"(?:\s*({_AGE_NUMBER_TOKEN})\s*{_MONTH_AGE_UNIT})?",
         child_age_text,
+        re.IGNORECASE,
     )
     if years_match:
-        return int(years_match.group(1)) * 12 + int(years_match.group(2) or 0)
+        years = _parse_age_number(years_match.group(1))
+        months = _parse_age_number(years_match.group(2) or "0")
+        if years is not None and months is not None:
+            return years * 12 + months
     numeric_match = re.search(
-        r"(?<!\d)(\d{1,2})\s*(?:个?月|月龄)",
+        rf"(?<!\d)({_AGE_NUMBER_TOKEN})\s*{_MONTH_AGE_UNIT}",
         child_age_text,
+        re.IGNORECASE,
     )
     if numeric_match:
-        return int(numeric_match.group(1))
-    chinese_months = {
-        "零": 0,
-        "一": 1,
-        "二": 2,
-        "三": 3,
-        "四": 4,
-        "五": 5,
-        "六": 6,
-        "七": 7,
-        "八": 8,
-        "九": 9,
-        "十": 10,
-        "十一": 11,
-        "十二": 12,
-    }
-    chinese_match = re.search(
-        r"(十二|十一|十|[零一二三四五六七八九])\s*(?:个?月|月龄)",
-        child_age_text,
-    )
-    return chinese_months.get(chinese_match.group(1)) if chinese_match else None
+        return _parse_age_number(numeric_match.group(1))
+    return None
 
 
 def reviewed_resource_matches_context(
@@ -2121,16 +2243,29 @@ def reviewed_resource_matches_context(
     must match either the derived child age or a concrete conversation focus.
     """
 
+    if not topic_context:
+        return True
+
+    child_age_months = _context_child_age_months(topic_context)
+    if child_age_months is not None:
+        # Reviewed metadata is intentionally optional for legacy resources, but
+        # an explicit destination title is stronger than missing metadata.  A
+        # page labelled for another month/year must never be backfilled merely
+        # because it came from the reviewed library.
+        title_has_age, title_age_match = _explicit_age_status(
+            resource.get("title"),
+            child_age_months,
+        )
+        if title_has_age and not title_age_match:
+            return False
+
     age_range = resource.get("age_range_months")
     focus_tags = resource.get("focus_tags")
     has_age_metadata = isinstance(age_range, (list, tuple)) and len(age_range) == 2
     has_focus_metadata = isinstance(focus_tags, (list, tuple)) and bool(focus_tags)
     if not (has_age_metadata or has_focus_metadata):
         return True
-    if not topic_context:
-        return True
 
-    child_age_months = _context_child_age_months(topic_context)
     age_match = False
     if has_age_metadata and child_age_months is not None:
         try:
@@ -2185,14 +2320,30 @@ def _language_policy(locale: str) -> str:
 
 
 def _source_priority_policy(locale: str) -> str:
-    if locale != "zh-CN":
-        return "按权威性、主题相关度、语言和可访问性选择，不使用简体中文创作者先验。"
+    us_authority = (
+        "authority 必须优先检索美国 CDC、NIH、AAP/HealthyChildren、美国大学及大学医院、"
+        "Mayo Clinic 与同行评议期刊的原始页面和官方视频。若存在同时通过语言、月龄、"
+        "主题、引用与可访问性门槛的美国权威候选，authority 的文章或视频至少一项必须来自该候选；"
+        "不得为了美国来源标签放宽任何门槛，也不得翻译标题或正文冒充用户偏好语言。"
+    )
+    if locale == "en":
+        return (
+            f"{us_authority}\n"
+            "其余候选按主题精确度、证据质量、可访问性、格式与来源多样性排序。"
+        )
+    if locale == "zh-TW":
+        return (
+            f"{us_authority}\n"
+            "繁體中文 authority 仍以臺灣政府、臺灣大學與大學醫院、兒科或心理專業組織為主要來源；"
+            "美國機構只有在落地頁本身提供繁體中文或可核驗華語影片時才可入選。"
+        )
     featured = "、".join(_ZH_CN_FEATURED_PUBLISHER_SEEDS)
     cases = "、".join(_ZH_CN_CASE_PUBLISHER_SEEDS)
     accounts = "、".join(_ZH_CN_HOSPITAL_PUBLIC_ACCOUNT_DOMAINS)
     return (
         "简体中文优先来源只作为召回与同质量候选的排序先验，绝不能绕过主题、引用、语言和安全门槛。\n"
-        f"- authority 优先北上广深杭医院官网及经医院官网反向确认的公众号：{accounts}。"
+        f"- {us_authority}若美国权威页面没有合格简体中文版本，再优先国际机构，以及北上广深杭医院官网"
+        f"及经医院官网反向确认的公众号：{accounts}。"
         "共享域 mp.weixin.qq.com 不能单独证明权威；公众号名称必须精确匹配，evidence_url 必须是本次引用的对应医院官网认证页。\n"
         f"- featured 优先检索这些创作者，但一律不把自述资历当医学权威：{featured}。"
         "也优先妈妈网、亲贝网、育儿网、宝宝树、中国孕婴童网中与当前问题直接相关、署名和来源清楚的优质内容。\n"
@@ -2273,6 +2424,7 @@ def build_research_prompt(
 语言规则：{_language_policy(locale)}
 
 选择原则：
+- child_age_context 非空时，先判断内容明确面向的年龄/发展阶段，再判断主题；每个结果都必须适合这个阶段。对婴幼儿发展、睡眠、喂养、语言、行为与安全内容，页面标题、正文或同页证据必须能支持其年龄适配性；找不到合龄内容时宁可缺项，不得用面向胎儿、明显更小或更大年龄段、或只有泛泛“育儿”描述的页面补位。
 - 内容要直接回应结构化主题中的具体困扰，不能只与大主题泛泛相关。
 - 每项的 title、description 与 selection_reason 都要体现它回应的具体问题；不能用“儿童发展”“育儿建议”等宽泛内容凑数。
 - 所有 URL 与原始标题必须互不重复；同一发布者最多出现两项，因此六至九项至少覆盖三至五个独立发布者。

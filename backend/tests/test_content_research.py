@@ -1512,6 +1512,54 @@ def test_dynamic_topic_gate_parses_production_year_age_label():
     assert not _resource_matches_topic(infant_stage, topic_context)
 
 
+def test_explicit_compound_age_is_one_stage_not_independent_year_and_month():
+    resource = {
+        "title": "2岁6个月孩子发育里程碑",
+        "description": "说明这个阶段的发展和互动。",
+        "selection_reason": "按月龄整理。",
+        "page_language_evidence": "2岁6个月孩子发育里程碑。",
+    }
+
+    assert _resource_matches_topic(
+        resource,
+        {
+            "topic": "儿童发展里程碑",
+            "child_age_context": "孩子当前年龄：30个月",
+        },
+    )
+    assert not _resource_matches_topic(
+        resource,
+        {
+            "topic": "儿童发展里程碑",
+            "child_age_context": "孩子当前年龄：24个月",
+        },
+    )
+
+
+def test_chinese_numeral_month_title_is_an_explicit_age_gate():
+    resource = {
+        "title": "十个月宝宝成长与亲子互动",
+        "description": "记录动作发展和陪伴游戏。",
+        "selection_reason": "按月龄整理。",
+        "page_language_evidence": "十个月宝宝成长与亲子互动。",
+    }
+
+    assert _resource_matches_topic(
+        resource,
+        {
+            "topic": "儿童发展里程碑",
+            "child_age_context": "孩子当前年龄：十个月",
+        },
+    )
+    assert not _resource_matches_topic(
+        resource,
+        {
+            "topic": "儿童发展里程碑",
+            "child_age_context": "孩子当前年龄：30个月",
+        },
+    )
+
+
 def test_dynamic_case_cannot_be_an_institutional_explainer():
     hospital_explainer = {
         "content_category": "case",
@@ -1639,6 +1687,122 @@ def test_reviewed_age_metadata_blocks_stale_ten_month_resources():
         assert not reviewed_resource_matches_context(by_id[resource_id], context)
 
 
+def test_category_pair_never_backfills_a_wrong_age_format():
+    resources = LEARNING_CONTENT_BY_ID["learn_development_milestones"]["resources"]
+    context = {
+        "child_age_context": "孩子当前年龄：30个月",
+        "recommendation_focus": "创业工作很忙、陪伴少，也想了解当前阶段的发展",
+    }
+
+    pair = main._reviewed_category_resource_pair(
+        resources,
+        "zh-CN",
+        "case",
+        context,
+    )
+
+    assert {resource["id"] for resource in pair} == {
+        "development-ahnian-parent-case-video"
+    }
+    assert not any(
+        resource.get("age_range_months") == [10, 10]
+        for resource in pair
+    )
+
+
+def test_authority_pair_prefers_verified_us_source_not_untrusted_country_claim():
+    non_us_article = {
+        "id": "intl-article",
+        "kind": "article",
+        "content_category": "authority",
+        "url": "https://www.unicef.org/parenting/guide",
+    }
+    us_article = {
+        "id": "cdc-article",
+        "kind": "article",
+        "content_category": "authority",
+        "url": "https://www.cdc.gov/act-early/milestones/index.html",
+    }
+    forged_video = {
+        "id": "forged-us-video",
+        "kind": "video",
+        "content_category": "authority",
+        "source_region": "US",
+        "url": "https://example.com/video",
+    }
+    real_us_video = {
+        "id": "university-video",
+        "kind": "video",
+        "content_category": "authority",
+        "url": "https://med.stanford.edu/video",
+    }
+
+    pair = main._select_category_resource_pair(
+        [non_us_article, forged_video, us_article, real_us_video],
+        "authority",
+    )
+
+    assert [resource["id"] for resource in pair] == [
+        "cdc-article",
+        "university-video",
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.cdc.gov/act-early/milestones/index.html",
+        "https://childrenshealth.nih.gov/research",
+        "https://publications.aap.org/pediatrics/article",
+        "https://med.stanford.edu/video",
+        "https://health.ny.gov/children",
+    ],
+)
+def test_us_authority_recognition_uses_institution_host_evidence(url):
+    assert main._is_us_authority_resource({"url": url})
+
+
+def test_us_authority_recognition_rejects_country_claim_and_arbitrary_youtube():
+    assert not main._is_us_authority_resource(
+        {
+            "source_region": "US",
+            "url": "https://example.com/parenting",
+        }
+    )
+    assert not main._is_us_authority_resource(
+        {
+            "source_region": "US",
+            "publisher": "CDC official",
+            "url": "https://www.youtube.com/watch?v=unverified",
+        }
+    )
+    assert main._is_us_authority_resource(
+        {
+            "url": "https://www.youtube.com/watch?v=verified",
+            "evidence_url": "https://www.cdc.gov/parents/video.html",
+        }
+    )
+    assert main._is_us_authority_resource(
+        {
+            "id": "development-cdc-video",
+            "url": "https://www.youtube.com/watch?v=S-OQXmjY53o",
+        }
+    )
+
+
+def test_reviewed_wrong_age_title_is_rejected_without_optional_metadata():
+    resource = {
+        "id": "legacy-two-month-guide",
+        "title": "2个月宝宝发育指南",
+        "url": "https://www.cdc.gov/parents/guide.html",
+    }
+
+    assert not reviewed_resource_matches_context(
+        resource,
+        {"child_age_context": "孩子当前年龄：30个月"},
+    )
+
+
 def test_full_static_card_text_cannot_bypass_wrong_age_range():
     card = deepcopy(LEARNING_CONTENT_BY_ID["learn_development_milestones"])
     card.update(
@@ -1668,6 +1832,7 @@ def test_full_static_card_text_cannot_bypass_wrong_age_range():
         ("孩子当前年龄：11个月", 11),
         ("孩子当前年龄：2岁", 24),
         ("孩子当前年龄：2岁6个月", 30),
+        ("孩子当前年龄：十个月", 10),
         ("孩子当前年龄：4岁", 48),
     ],
 )
@@ -1850,6 +2015,180 @@ def test_research_request_locale_override_uses_english_provider_and_summary(
     )
     assert research["resource_summary"]["preferred_locale"] == "en"
     assert original_context["preferred_locale"] == "zh-CN"
+
+
+def test_refresh_forces_new_search_and_excludes_current_reviewed_pair(monkeypatch):
+    context = {
+        "state": "ready",
+        "session_id": "session-refresh",
+        "messages": [{"role": "user", "text": "孩子最近晚上总醒"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": True,
+    }
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+    card["is_conversation_match"] = True
+    current_pair = main._reviewed_category_resource_pair(
+        card["resources"],
+        "zh-CN",
+        "authority",
+        card,
+    )
+    assert len(current_pair) == 2
+    calls = []
+
+    async def ready_context(*_args, **_kwargs):
+        return context
+
+    async def leave_child_context_unchanged(_uid, loaded_context):
+        return loaded_context
+
+    async def no_events(_uid):
+        return []
+
+    def ranked_sleep_card(*_args, **_kwargs):
+        return [deepcopy(card)], True
+
+    def fake_research(_client, **kwargs):
+        calls.append(kwargs)
+        return deepcopy(_parsed_bundle("zh-CN", include_optional_third=False))
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(main, "research_learning_resources", fake_research)
+
+    result = asyncio.run(
+        main.get_card_research(
+            "learn_sleep_routine",
+            content_category="authority",
+            refresh=True,
+            exclude_resource_ids=",".join(
+                resource["id"] for resource in current_pair
+            ),
+            uid="parent-refresh",
+        )
+    )
+
+    assert calls[0]["force"] is True
+    assert set(calls[0]["excluded_urls"]) >= {
+        resource["url"] for resource in current_pair
+    }
+    assert result["refresh_status"] == "refreshed"
+    assert result["has_more"] is True
+    assert [resource["kind"] for resource in result["resources"]] == [
+        "article",
+        "video",
+    ]
+    assert {
+        resource["content_category"] for resource in result["resources"]
+    } == {"authority"}
+
+
+def test_refresh_failure_keeps_existing_pair_on_client_instead_of_backfilling(monkeypatch):
+    context = {
+        "state": "ready",
+        "session_id": "session-refresh-failure",
+        "messages": [{"role": "user", "text": "想换一组同阶段的内容"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": True,
+    }
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+    card["is_conversation_match"] = True
+
+    async def ready_context(*_args, **_kwargs):
+        return context
+
+    async def leave_child_context_unchanged(_uid, loaded_context):
+        return loaded_context
+
+    async def no_events(_uid):
+        return []
+
+    def ranked_sleep_card(*_args, **_kwargs):
+        return [deepcopy(card)], True
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(main, "research_learning_resources", lambda *_args, **_kwargs: None)
+
+    result = asyncio.run(
+        main.get_card_research(
+            "learn_sleep_routine",
+            content_category="authority",
+            refresh=True,
+            uid="parent-refresh-failure",
+        )
+    )
+
+    assert result["research_status"] == "refresh_unavailable"
+    assert result["refresh_status"] == "no_alternative"
+    assert result["has_more"] is False
+    assert "resources" not in result
+
+
+def test_refresh_provider_timeout_is_retryable_and_keeps_existing_pair(monkeypatch):
+    context = {
+        "state": "ready",
+        "session_id": "session-refresh-timeout",
+        "messages": [{"role": "user", "text": "想换一组同阶段的内容"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": True,
+    }
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+    card["is_conversation_match"] = True
+
+    async def ready_context(*_args, **_kwargs):
+        return context
+
+    async def leave_child_context_unchanged(_uid, loaded_context):
+        return loaded_context
+
+    async def no_events(_uid):
+        return []
+
+    def ranked_sleep_card(*_args, **_kwargs):
+        return [deepcopy(card)], True
+
+    def provider_timeout(*_args, **_kwargs):
+        raise TimeoutError("provider timed out")
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_child_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(main, "research_learning_resources", provider_timeout)
+
+    result = asyncio.run(
+        main.get_card_research(
+            "learn_sleep_routine",
+            content_category="authority",
+            refresh=True,
+            uid="parent-refresh-timeout",
+        )
+    )
+
+    assert result["research_status"] == "temporarily_unavailable"
+    assert result["refresh_status"] == "temporarily_unavailable"
+    assert result["has_more"] is True
+    assert "resources" not in result
 
 
 def test_detail_request_rejects_unsupported_preferred_locale():

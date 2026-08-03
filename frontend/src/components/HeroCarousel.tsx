@@ -30,42 +30,44 @@ export type HeroCard = {
 export type HeroFeedState = "loading" | "personalized" | "curated";
 
 const EMPTY_CARDS: HeroCard[] = [];
+const FALLBACK_REASON =
+  "个性化推荐暂时不可用，以下是不限定孩子月龄的通用育儿资料";
 
 // These IDs all exist in the backend's reviewed content library. They are only
 // shown after personalization fails; loading has its own neutral skeleton so a
 // parent never sees an unrelated recommendation flash before the real result.
 const FALLBACK_CARDS: HeroCard[] = [
   {
-    id: "learn_development_milestones",
-    title: "婴儿发育：10 到 12 月龄的发展里程碑",
-    publisher: "妙佑医疗国际（Mayo Clinic）",
-    topic: "development",
-    topic_label: "发展阶段与里程碑",
+    id: "learn_serve_and_return",
+    title: "从观察和回应开始，建立日常亲子互动",
+    publisher: "哈佛大学儿童发展中心",
+    topic: "connection",
+    topic_label: "亲子互动",
     content_category: "authority",
     content_category_label: "权威来源",
-    personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
+    personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
   },
   {
-    id: "learn_development_milestones",
-    title: "用简单观察理解孩子当前的发展节奏",
+    id: "learn_serve_and_return",
+    title: "把高质量陪伴放进每天的小片段",
     publisher: "NURI 编辑精选",
-    topic: "development",
-    topic_label: "发展阶段与里程碑",
+    topic: "connection",
+    topic_label: "亲子互动",
     content_category: "featured",
     content_category_label: "精选内容",
-    personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
+    personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
   },
   {
-    id: "learn_development_milestones",
-    title: "其他家庭怎样在孩子自己的步调里看见进步",
+    id: "learn_serve_and_return",
+    title: "看看其他家庭怎样在日常里回应孩子",
     publisher: "NURI 真实家庭案例",
-    topic: "development",
-    topic_label: "发展阶段与里程碑",
+    topic: "connection",
+    topic_label: "亲子互动",
     content_category: "case",
     content_category_label: "真实案例",
-    personalization_reason: "个性化推荐暂时未完成，这是 NURI 的可信来源精选",
+    personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
   },
 ];
@@ -133,6 +135,7 @@ export default function HeroCarousel({
   onCardPress,
   onCardVisible,
   visibilityScope = "",
+  initialContentCategory,
 }: {
   width: number;
   cards?: HeroCard[];
@@ -140,6 +143,7 @@ export default function HeroCarousel({
   onCardPress: (card: HeroCard) => void;
   onCardVisible?: (card: HeroCard, position: number) => void;
   visibilityScope?: string;
+  initialContentCategory?: "authority" | "featured" | "case";
 }) {
   const visibleCards =
     feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
@@ -147,9 +151,19 @@ export default function HeroCarousel({
     () => visibleCards.map(cardIdentity).join("|"),
     [visibleCards]
   );
-  const [pageState, setPageState] = useState({ signature: cardSignature, index: 0 });
-  const page = pageState.signature === cardSignature ? pageState.index : 0;
-  const setPage = (index: number) => setPageState({ signature: cardSignature, index });
+  const initialIndex = Math.max(
+    0,
+    visibleCards.findIndex((card) => card.content_category === initialContentCategory),
+  );
+  const exposureSignature = `${cardSignature}:${initialContentCategory || "authority"}`;
+  const [pageState, setPageState] = useState({
+    signature: exposureSignature,
+    index: initialIndex,
+  });
+  const page =
+    pageState.signature === exposureSignature ? pageState.index : initialIndex;
+  const setPage = (index: number) =>
+    setPageState({ signature: exposureSignature, index });
   const scrollRef = useRef<ScrollView>(null);
   const onCardVisibleRef = useRef(onCardVisible);
   const lastVisibilityKeyRef = useRef("");
@@ -161,9 +175,9 @@ export default function HeroCarousel({
   }, [onCardVisible]);
 
   useEffect(() => {
-    setPageState({ signature: cardSignature, index: 0 });
-    scrollRef.current?.scrollTo({ x: 0, animated: false });
-  }, [cardSignature]);
+    setPageState({ signature: exposureSignature, index: initialIndex });
+    scrollRef.current?.scrollTo({ x: initialIndex * pageWidth, animated: false });
+  }, [exposureSignature, initialIndex, pageWidth]);
 
   useEffect(() => {
     if (visibilityTimerRef.current) {

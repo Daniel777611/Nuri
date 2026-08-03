@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -282,6 +283,8 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
         "context_created_at": "2026-08-01T10:00:00+00:00",
         "preferred_locale": "zh-TW",
         "external_research_allowed": False,
+        "help_preference": "experience",
+        "info_source": "parents",
         "messages": [
             {
                 "id": "message-1",
@@ -320,7 +323,17 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
     )
     items = payload["items"]
 
-    assert payload["model_version"] == "conversation-category-pairs-v1"
+    assert payload["model_version"] == "questionnaire-behavior-category-pairs-v2"
+    assert sum(payload["category_mix"].values()) == 100
+    assert payload["category_mix"]["case"] == max(
+        payload["category_mix"].values()
+    )
+    assert payload["category_mix"]["authority"] >= 25
+    assert payload["initial_content_category"] in {
+        "authority",
+        "featured",
+        "case",
+    }
     assert [item["content_category"] for item in items] == [
         "authority",
         "featured",
@@ -329,6 +342,11 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
     assert [item["rank"] for item in items] == [1, 2, 3]
     assert len({item["recommendation_id"] for item in items}) == 3
     assert {item["id"] for item in items} == {"learn_sleep_routine"}
+    assert {
+        item["content_category"]: item["category_preference_weight"]
+        for item in items
+    } == payload["category_mix"]
+    assert sum(item["is_primary_exposure_category"] for item in items) == 1
 
     for item in items:
         category = item["content_category"]
@@ -397,6 +415,81 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
             )
         )
     assert getattr(error.value, "status_code", None) == 404
+
+
+def test_profile_only_category_feed_loads_events_and_attaches_age_before_cards(
+    monkeypatch,
+):
+    context = {
+        "state": "no_history",
+        "session_id": None,
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": False,
+        "help_preference": "experience",
+        "info_source": "parents",
+        "child_age_context": "孩子当前年龄：30个月",
+        "messages": [],
+    }
+    behavior_events = [
+        {
+            "event": "helpful",
+            "card_id": "learn_development_milestones",
+            "content_category": "case",
+        }
+    ]
+    captured: dict[str, object] = {}
+
+    async def load_context(*_args, **_kwargs):
+        return dict(context)
+
+    async def leave_context_unchanged(_uid, loaded_context):
+        return loaded_context
+
+    async def load_events(uid):
+        captured["events_uid"] = uid
+        return behavior_events
+
+    def rank_default(*_args, **kwargs):
+        captured["rank_events"] = kwargs.get("behavior_events")
+        card = deepcopy(main.LEARNING_CONTENT_BY_ID["learn_development_milestones"])
+        card["is_conversation_match"] = False
+        return [card], False
+
+    original_category_card = main._category_feed_card
+
+    def inspect_category_card(base_card, *args, **kwargs):
+        assert base_card["child_age_context"] == "孩子当前年龄：30个月"
+        return original_category_card(base_card, *args, **kwargs)
+
+    async def skip_snapshots(_uid, cards, _context):
+        return cards
+
+    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    monkeypatch.setattr(
+        main,
+        "_attach_child_recommendation_context",
+        leave_context_unchanged,
+    )
+    monkeypatch.setattr(main, "_db_get_recommendation_events", load_events)
+    monkeypatch.setattr(main, "_rank_learning_content", rank_default)
+    monkeypatch.setattr(main, "_category_feed_card", inspect_category_card)
+    monkeypatch.setattr(main, "_attach_recommendation_snapshots", skip_snapshots)
+
+    payload = asyncio.run(
+        main.get_personalized_feed(
+            count=3,
+            presentation="category_cards",
+            uid="profile-only-parent",
+        )
+    )
+
+    assert captured["events_uid"] == "profile-only-parent"
+    assert captured["rank_events"] == behavior_events
+    assert payload["personalization_mode"] == "profile"
+    assert all(
+        item["child_age_context"] == "孩子当前年龄：30个月"
+        for item in payload["items"]
+    )
 
 
 def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch):

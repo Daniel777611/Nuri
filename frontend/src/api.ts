@@ -33,6 +33,8 @@ export type PersonalizedFeedItem = {
   context_created_at?: string | null;
   recommendation_id?: string | null;
   rank?: number;
+  category_preference_weight?: number;
+  is_primary_exposure_category?: boolean;
   resource_status?: PersonalizedResourceStatus;
   curation_mode?: string;
   resource_summary?: {
@@ -49,6 +51,8 @@ export type PersonalizedFeedResponse = {
   matched_topic?: string | null;
   related_session_id?: string | null;
   generated_at?: string;
+  category_mix?: Record<PersonalizedContentCategory, number>;
+  initial_content_category?: PersonalizedContentCategory;
 };
 
 export type RecommendationEventName =
@@ -60,7 +64,8 @@ export type RecommendationEventName =
   | "continue_chat"
   | "detail_dwell"
   | "helpful"
-  | "not_relevant";
+  | "not_relevant"
+  | "content_refresh";
 
 export type RecommendationFeedbackReason =
   | "topic_mismatch"
@@ -383,6 +388,36 @@ export const api = {
       `/feed/${id}/research${query ? `?${query}` : ""}`,
       { method: "POST" },
       110000
+    );
+  },
+  getNextResourcePair: (
+    id: string,
+    sessionId?: string,
+    contextCreatedAt?: string,
+    recommendationId?: string,
+    contentCategory?: PersonalizedContentCategory,
+    excludeResourceIds: string[] = [],
+  ) => {
+    const query = [
+      "refresh=true",
+      sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
+      contextCreatedAt
+        ? `context_created_at=${encodeURIComponent(contextCreatedAt)}`
+        : "",
+      recommendationId
+        ? `recommendation_id=${encodeURIComponent(recommendationId)}`
+        : "",
+      contentCategory
+        ? `content_category=${encodeURIComponent(contentCategory)}`
+        : "",
+      excludeResourceIds.length
+        ? `exclude_resource_ids=${encodeURIComponent(excludeResourceIds.slice(0, 20).join(","))}`
+        : "",
+    ].filter(Boolean).join("&");
+    return req(
+      `/feed/${id}/research?${query}`,
+      { method: "POST" },
+      110000,
     );
   },
   getAltCard: (exclude: string) =>
