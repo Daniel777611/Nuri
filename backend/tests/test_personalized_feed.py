@@ -969,6 +969,64 @@ def test_action_request_keeps_user_language_goal_ahead_of_ai_fine_motor_aside(
     assert "轮流发声" in card["personalization_reason"]
 
 
+@pytest.mark.parametrize(
+    "language_signal",
+    [
+        "宝宝最近会重复音节，也会模仿音节。",
+        "我学他发音时，他也跟着学。",
+        "叫她时会回应，听到名字会回应。",
+    ],
+)
+def test_early_sound_and_name_response_signals_rank_language_not_emotion(
+    monkeypatch,
+    language_signal,
+):
+    sessions = [_session("parent-main", "parent-1")]
+    messages = {
+        "parent-main": [
+            _message(
+                "language-signal",
+                "user",
+                f"宝宝九个月，{language_signal}",
+                "2026-08-02T10:00:00+00:00",
+            )
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["items"][0]["id"] == "learn_language_milestones"
+    assert payload["items"][0]["topic"] == "language"
+
+
+def test_language_observations_beat_an_incidental_emotion_word(monkeypatch):
+    sessions = [_session("parent-main", "parent-1")]
+    messages = {
+        "parent-main": [
+            _message(
+                "names",
+                "user",
+                "我叫他时，他会回应；叫名字也会回应，而且带有交流的情绪表情。",
+                "2026-08-02T10:00:00+00:00",
+            ),
+            _message(
+                "syllables",
+                "user",
+                "我回应他时会学习他发出的音节，重复他的音节，也会轮流互动。",
+                "2026-08-02T10:01:00+00:00",
+            ),
+        ]
+    }
+
+    payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
+
+    assert payload["personalization_mode"] == "conversation"
+    assert payload["items"][0]["id"] == "learn_language_milestones"
+    assert payload["items"][0]["topic"] == "language"
+    assert "情绪调节" not in payload["items"][0]["title"]
+
+
 def test_generic_task_can_continue_recent_same_account_user_goal(monkeypatch):
     sessions = [
         _session("current-main", "parent-1", created_at="2026-07-31T10:00:00+00:00"),

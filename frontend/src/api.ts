@@ -151,6 +151,15 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
     ...((init?.headers as Record<string, string>) || {}),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+  const method = (init?.method || "GET").toUpperCase();
+  const requestInit: RequestInit = {
+    ...init,
+    headers,
+    // Personalized data must be re-read when a screen regains focus. Making
+    // every GET explicit here also protects native-web builds and intermediary
+    // browser caches that do not consistently honor response-only directives.
+    ...(method === "GET" ? { cache: "no-store" as RequestCache } : {}),
+  };
 
   const check = async (res: Response) => {
     if (!res.ok) throw new ApiError(res.status, path, await res.text());
@@ -158,13 +167,13 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
   };
 
   // timeoutMs=0 means no timeout (used for long-running generation calls)
-  if (!timeoutMs) return check(await fetch(API + path, { ...init, headers }));
+  if (!timeoutMs) return check(await fetch(API + path, requestInit));
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await check(
-      await fetch(API + path, { ...init, headers, signal: controller.signal }),
+      await fetch(API + path, { ...requestInit, signal: controller.signal }),
     );
   } finally {
     clearTimeout(timer);
@@ -338,9 +347,13 @@ export const api = {
 
   // ── Feed ──────────────────────────────────────────────────────────────────
   getFeed: (shuffle = false) => req(`/feed${shuffle ? "?shuffle=true" : ""}`),
-  getPersonalizedFeed: (count = 3) =>
+  getPersonalizedFeed: (count = 3, clientRefresh?: string) =>
     req<PersonalizedFeedResponse>(
-      `/feed/personalized?count=${count}&presentation=category_cards`,
+      `/feed/personalized?count=${count}&presentation=category_cards${
+        clientRefresh
+          ? `&client_refresh=${encodeURIComponent(clientRefresh.slice(0, 128))}`
+          : ""
+      }`,
     ),
   getCardDetail: (
     id: string,

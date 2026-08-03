@@ -3743,10 +3743,21 @@ _TOPIC_SIGNAL_ALIASES: dict[str, tuple[str, ...]] = {
     "learn_language_milestones": (
         "发声",
         "轮流发声",
+        "音节",
+        "重复音节",
+        "模仿音节",
+        "学他发音",
+        "学她发音",
         "咿呀",
         "语音理解",
         "模仿声音",
         "声音回应",
+        "回应名字",
+        "名字反应",
+        "叫他或她时会回应",
+        "叫他时会回应",
+        "叫她时会回应",
+        "听到名字会回应",
         "短句回应",
     ),
     "learn_serve_and_return": (
@@ -4801,16 +4812,22 @@ _CATEGORY_CARD_META = {
         "label": "权威来源",
         "eyebrow": "事实与安全底线",
         "description": "来自政府、大学、医院、医学组织或专业期刊。",
+        "fallback_title": "权威机构如何看“{topic_label}”",
+        "fallback_publisher": "NURI 权威来源筛选",
     },
     "featured": {
         "label": "精选内容",
         "eyebrow": "清楚、实用、值得看",
         "description": "专业可靠、讲解精彩，也适合家庭直接使用。",
+        "fallback_title": "围绕“{topic_label}”的实用方法精选",
+        "fallback_publisher": "NURI 编辑精选",
     },
     "case": {
         "label": "真实案例",
         "eyebrow": "其他家庭的真实实践",
         "description": "用具体家庭经历呈现过程、调整与可借鉴做法。",
+        "fallback_title": "其他家庭如何面对“{topic_label}”",
+        "fallback_publisher": "NURI 真实家庭案例",
     },
 }
 
@@ -4995,6 +5012,9 @@ def _category_feed_card(
         (resource for resource in pair if resource.get("kind") == "article"),
         None,
     )
+    topic_label = str(
+        card.get("topic_label") or card.get("topic") or "这个育儿问题"
+    ).strip()
     card.update(
         {
             "content_category": content_category,
@@ -5004,14 +5024,23 @@ def _category_feed_card(
             "type_label": meta["label"],
             "resource_pair_complete": len(pair) == 2,
             "resource_summary": summarize_resource_slots(pair, locale),
+            # When no reviewed article survives the language, age and topic
+            # gates, do not repeat the base topic headline across all three
+            # editorial lanes or imply that its publisher supplied every lane.
+            # These labels describe the pending lane honestly until research
+            # produces a concrete article title on the detail page.
+            "title": meta["fallback_title"].format(topic_label=topic_label),
+            "publisher": meta["fallback_publisher"],
+            "headline_source": "category_fallback",
         }
     )
     # The card is about the concrete content the user will open, while the
     # topic and NURI guide remain available on the detail page.
-    if article:
-        card["title"] = article.get("title") or card.get("title")
+    if article and str(article.get("title") or "").strip():
+        card["title"] = article["title"]
         card["summary"] = article.get("description") or card.get("summary")
         card["publisher"] = article.get("publisher") or card.get("publisher")
+        card["headline_source"] = "reviewed_article"
     return card
 
 

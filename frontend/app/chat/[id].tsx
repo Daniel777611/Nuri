@@ -85,6 +85,11 @@ export default function ChatDetail() {
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
   // rapid taps would otherwise all read the stale `false`.
   const sendingRef = useRef(false);
+  // A parent may tap Back while the SSE turn is still being persisted.  Keep
+  // that intent and navigate only after the server returns the durable turn;
+  // otherwise the home feed can race the chat insert and rank stale context.
+  const pendingHomeReturnRef = useRef(false);
+  const completedTurnNonceRef = useRef<string | null>(null);
   const [typing, setTyping] = useState(false);
   // Reply text accumulated from the SSE stream, rendered as a live bubble until
   // the persisted message arrives and replaces it.
@@ -137,6 +142,29 @@ export default function ChatDetail() {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages, typing, streamingText]);
 
+  const returnHome = () => {
+    const feedRefresh = completedTurnNonceRef.current;
+    router.dismissTo(
+      feedRefresh
+        ? {
+            pathname: "/(tabs)",
+            params: { feed_refresh: feedRefresh },
+          }
+        : "/(tabs)",
+    );
+  };
+
+  const requestHomeReturn = () => {
+    if (sendingRef.current) {
+      if (!pendingHomeReturnRef.current) {
+        pendingHomeReturnRef.current = true;
+        showToast("正在保存这轮对话，完成后会自动返回首页");
+      }
+      return;
+    }
+    returnHome();
+  };
+
   const send = async (textOverride?: string, imageBase64?: string | null) => {
     if (!id || sendingRef.current) return;
     const text = (textOverride ?? input).trim();
@@ -175,10 +203,18 @@ export default function ChatDetail() {
         res.user_message,
         ...res.ai_messages,
       ]);
+      completedTurnNonceRef.current = String(
+        res.user_message?.id || res.user_message?.created_at || Date.now(),
+      );
+      if (pendingHomeReturnRef.current) {
+        pendingHomeReturnRef.current = false;
+        returnHome();
+      }
     } catch {
       // Mid-stream failures may have already persisted the user message, so
       // resending would duplicate it — reload the thread instead of guessing.
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
+      pendingHomeReturnRef.current = false;
       showToast("发送失败，请重试");
       await load().catch(() => {});
     } finally {
@@ -228,7 +264,14 @@ export default function ChatDetail() {
         <Stack.Screen options={{ headerShown: false }} />
 
         <View style={styles.header}>
-          <Pressable onPress={() => router.replace("/(tabs)")} style={styles.backBtn} testID="chat-back-btn">
+          <Pressable
+            onPress={requestHomeReturn}
+            style={styles.backBtn}
+            accessibilityRole="button"
+            accessibilityLabel="返回首页并更新推荐"
+            accessibilityState={{ busy: sending }}
+            testID="chat-back-btn"
+          >
             <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
           </Pressable>
           <Text style={styles.headerName}>我的对话</Text>

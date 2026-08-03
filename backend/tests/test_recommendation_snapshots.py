@@ -351,6 +351,7 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
     for item in items:
         category = item["content_category"]
         assert item["resource_pair_complete"] is True
+        assert item["headline_source"] == "reviewed_article"
         assert item["resource_blueprint"] == {category: ["article", "video"]}
         assert item["resource_summary"]["preferred_locale"] == "zh-TW"
         assert item["resource_summary"]["categories"][category] == {
@@ -415,6 +416,47 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
             )
         )
     assert getattr(error.value, "status_code", None) == 404
+
+
+def test_category_cards_use_distinct_honest_fallback_headlines_without_articles(
+    monkeypatch,
+):
+    base_card = deepcopy(main.LEARNING_CONTENT_BY_ID["learn_language_milestones"])
+    base_card.update(
+        {
+            "is_conversation_match": True,
+            "recommendation_focus": "宝宝会重复音节，也会回应名字",
+            "child_age_context": "孩子当前年龄：9个月",
+        }
+    )
+    monkeypatch.setattr(
+        main,
+        "_reviewed_category_resource_pair",
+        lambda *_args, **_kwargs: [],
+    )
+
+    cards = [
+        main._category_feed_card(
+            base_card,
+            category,
+            "zh-CN",
+            context_state="ready",
+        )
+        for category in main.CONTENT_CATEGORIES
+    ]
+
+    assert len({card["title"] for card in cards}) == 3
+    assert [card["headline_source"] for card in cards] == [
+        "category_fallback",
+        "category_fallback",
+        "category_fallback",
+    ]
+    assert [card["publisher"] for card in cards] == [
+        "NURI 权威来源筛选",
+        "NURI 编辑精选",
+        "NURI 真实家庭案例",
+    ]
+    assert all(card["title"] != base_card["title"] for card in cards)
 
 
 def test_profile_only_category_feed_loads_events_and_attaches_age_before_cards(

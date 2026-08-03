@@ -12,7 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { api, type PersonalizedFeedItem } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
@@ -106,6 +106,10 @@ function DevSheet({
 
 export default function Home() {
   const router = useRouter();
+  const { feed_refresh: feedRefreshParam } = useLocalSearchParams<{
+    feed_refresh?: string;
+  }>();
+  const feedRefresh = typeof feedRefreshParam === "string" ? feedRefreshParam : "";
   const { width: viewportWidth } = useWindowDimensions();
   // Keep the same content geometry as the 402px Figma phone frame. On a real
   // phone the frame shrinks with the viewport; on desktop it remains centered.
@@ -121,10 +125,17 @@ export default function Home() {
     useState<NuriPreviewStatus>("loading");
   const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
   const [heroFeedState, setHeroFeedState] = useState<HeroFeedState>("loading");
+  const [heroFeedRefreshing, setHeroFeedRefreshing] = useState(false);
   const [heroFeedMeta, setHeroFeedMeta] = useState<HeroFeedMeta>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
   const heroRequest = useRef(0);
+  // Distinguish a warm return from chat from a cold URL load that happens to
+  // carry a refresh nonce. Only the warm path has real cards/fallback content
+  // worth preserving while the replacement request is in flight.
+  const heroCardsPresent = useRef(false);
+  const consumedFeedRefreshes = useRef(new Set<string>());
+  const activeFeedRefresh = useRef<string | null>(null);
   const heroImpressionKeys = useRef(new Set<string>());
   const openingNuriChat = useRef(false);
 
@@ -158,14 +169,35 @@ export default function Home() {
     }
   }, []);
 
-  const loadPersonalizedFeed = useCallback(async () => {
+  const loadPersonalizedFeed = useCallback(async ({
+    preserveExisting = false,
+    clientRefresh,
+  }: {
+    preserveExisting?: boolean;
+    clientRefresh?: string;
+  } = {}) => {
     const requestId = ++heroRequest.current;
-    setHeroCards([]);
-    setHeroFeedState("loading");
-    setHeroFeedMeta({});
+    if (clientRefresh) activeFeedRefresh.current = clientRefresh;
+    if (preserveExisting) {
+      setHeroFeedRefreshing(true);
+    } else {
+      setHeroFeedRefreshing(false);
+      heroCardsPresent.current = false;
+      setHeroCards([]);
+      setHeroFeedState("loading");
+      setHeroFeedMeta({});
+    }
     try {
-      const response = await api.getPersonalizedFeed(3);
-      if (requestId !== heroRequest.current) return;
+      const response = await api.getPersonalizedFeed(3, clientRefresh);
+      if (requestId !== heroRequest.current) {
+        if (clientRefresh) {
+          consumedFeedRefreshes.current.delete(clientRefresh);
+          if (activeFeedRefresh.current === clientRefresh) {
+            activeFeedRefresh.current = null;
+          }
+        }
+        return;
+      }
       const items = Array.isArray(response?.items) ? response.items : [];
       const categoryOrder = { authority: 0, featured: 1, case: 2 } as const;
       const validItems = items
@@ -183,6 +215,9 @@ export default function Home() {
       const uniqueCategories = new Set(validItems.map((item) => item.content_category));
       const categoryCards =
         validItems.length === 3 && uniqueCategories.size === 3 ? validItems : [];
+      if (preserveExisting && categoryCards.length === 0) {
+        throw new Error("personalized refresh returned no complete category set");
+      }
       setHeroCards(categoryCards);
       setHeroFeedMeta({
         feedRequestId: response.feed_request_id || undefined,
@@ -195,11 +230,29 @@ export default function Home() {
           ? "personalized"
           : "curated",
       );
+      heroCardsPresent.current = categoryCards.length > 0;
+      if (activeFeedRefresh.current === clientRefresh) {
+        activeFeedRefresh.current = null;
+      }
+      setHeroFeedRefreshing(false);
     } catch {
+      // A nonce is a single successful refresh, not a single network attempt.
+      // Releasing it here lets the next focus recover from a transient failure
+      // without requiring another chat turn or a document reload.
+      if (clientRefresh) {
+        consumedFeedRefreshes.current.delete(clientRefresh);
+        if (activeFeedRefresh.current === clientRefresh) {
+          activeFeedRefresh.current = null;
+        }
+      }
       if (requestId === heroRequest.current) {
-        setHeroCards([]);
-        setHeroFeedState("curated");
-        setHeroFeedMeta({});
+        setHeroFeedRefreshing(false);
+        if (!preserveExisting) {
+          setHeroCards([]);
+          setHeroFeedState("curated");
+          setHeroFeedMeta({});
+          heroCardsPresent.current = false;
+        }
       }
     }
   }, []);
@@ -260,11 +313,30 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
-      void loadPersonalizedFeed();
+      const isNewChatRefresh =
+        !!feedRefresh && !consumedFeedRefreshes.current.has(feedRefresh);
+      if (isNewChatRefresh) {
+        consumedFeedRefreshes.current.add(feedRefresh);
+      }
+      void loadPersonalizedFeed({
+        // Keep the last good cards visible while every warm-focus refresh is
+        // resolved. This preserves profile/age edits as ranking inputs without
+        // flashing an empty carousel, and the chat nonce still guarantees that
+        // a just-completed turn bypasses intermediary caches.
+        preserveExisting: heroCardsPresent.current,
+        clientRefresh: isNewChatRefresh ? feedRefresh : undefined,
+      });
       return () => {
         heroRequest.current += 1;
+        if (
+          isNewChatRefresh &&
+          activeFeedRefresh.current === feedRefresh
+        ) {
+          activeFeedRefresh.current = null;
+          consumedFeedRefreshes.current.delete(feedRefresh);
+        }
       };
-    }, [loadPersonalizedFeed])
+    }, [feedRefresh, loadPersonalizedFeed])
   );
 
   const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
@@ -394,7 +466,7 @@ export default function Home() {
         <HeroCarousel
           width={carouselWidth}
           cards={heroCards}
-          feedState={heroFeedState}
+          feedState={heroFeedRefreshing ? "refreshing" : heroFeedState}
           onCardPress={openHeroCard}
           onCardVisible={trackHeroImpression}
           visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}

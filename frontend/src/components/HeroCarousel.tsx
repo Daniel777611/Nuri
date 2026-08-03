@@ -27,7 +27,7 @@ export type HeroCard = {
   colors?: readonly [string, string, ...string[]];
 };
 
-export type HeroFeedState = "loading" | "personalized" | "curated";
+export type HeroFeedState = "loading" | "refreshing" | "personalized" | "curated";
 
 const EMPTY_CARDS: HeroCard[] = [];
 const FALLBACK_REASON =
@@ -145,6 +145,7 @@ export default function HeroCarousel({
   visibilityScope?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 }) {
+  const isRefreshing = feedState === "refreshing";
   const visibleCards =
     feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
   const cardSignature = useMemo(
@@ -184,7 +185,7 @@ export default function HeroCarousel({
       clearTimeout(visibilityTimerRef.current);
       visibilityTimerRef.current = null;
     }
-    if (feedState === "loading") return;
+    if (feedState === "loading" || isRefreshing) return;
     const visibleCard = visibleCards[page];
     if (!visibleCard) return;
     const visibilityKey = `${visibilityScope}:${cardSignature}:${page}:${visibleCard.recommendation_id || visibleCard.id}`;
@@ -200,7 +201,7 @@ export default function HeroCarousel({
         visibilityTimerRef.current = null;
       }
     };
-  }, [cardSignature, feedState, page, visibilityScope, visibleCards]);
+  }, [cardSignature, feedState, isRefreshing, page, visibilityScope, visibleCards]);
 
   const goToPage = (index: number) => {
     const clamped = Math.max(0, Math.min(visibleCards.length - 1, index));
@@ -242,6 +243,7 @@ export default function HeroCarousel({
         snapToInterval={pageWidth}
         decelerationRate="fast"
         disableIntervalMomentum
+        scrollEnabled={!isRefreshing}
         contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
         onScroll={(event) =>
           setPage(
@@ -271,9 +273,13 @@ export default function HeroCarousel({
             <Pressable
               key={cardIdentity(card)}
               onPress={() => onCardPress(card)}
+              disabled={isRefreshing}
               style={{ width }}
               accessibilityRole="button"
-              accessibilityLabel={`浏览内容：${card.title}`}
+              accessibilityLabel={
+                isRefreshing ? "正在根据刚刚的对话更新推荐" : `浏览内容：${card.title}`
+              }
+              accessibilityState={{ disabled: isRefreshing, busy: isRefreshing }}
               testID={`home-hero-card-${card.id}-${card.content_category || "topic"}`}
             >
               <LinearGradient
@@ -309,6 +315,17 @@ export default function HeroCarousel({
                     <Text style={styles.heroBtnText}>查看文章与视频</Text>
                   </View>
                 </View>
+                {isRefreshing ? (
+                  <View
+                    style={styles.refreshingOverlay}
+                    accessibilityLiveRegion={index === page ? "polite" : "none"}
+                    testID={index === page ? "home-hero-refreshing" : undefined}
+                  >
+                    <Ionicons name="refresh-outline" size={22} color="#403873" />
+                    <Text style={styles.refreshingTitle}>正在更新推荐</Text>
+                    <Text style={styles.refreshingText}>根据刚刚的对话重新挑选内容…</Text>
+                  </View>
+                ) : null}
               </LinearGradient>
             </Pressable>
           );
@@ -318,27 +335,33 @@ export default function HeroCarousel({
         <View pointerEvents="box-none" style={styles.arrowLayer}>
           <Pressable
             onPress={() => goToPage(page - 1)}
-            disabled={page === 0}
+            disabled={isRefreshing || page === 0}
             hitSlop={8}
-            style={[styles.arrowButton, page === 0 && styles.arrowButtonDisabled]}
+            style={[
+              styles.arrowButton,
+              (isRefreshing || page === 0) && styles.arrowButtonDisabled,
+            ]}
             accessibilityRole="button"
             accessibilityLabel="上一条推荐"
-            accessibilityState={{ disabled: page === 0 }}
+            accessibilityState={{ disabled: isRefreshing || page === 0 }}
             testID="hero-carousel-prev"
           >
             <Ionicons name="chevron-back" size={18} color="#302A56" />
           </Pressable>
           <Pressable
             onPress={() => goToPage(page + 1)}
-            disabled={page === visibleCards.length - 1}
+            disabled={isRefreshing || page === visibleCards.length - 1}
             hitSlop={8}
             style={[
               styles.arrowButton,
-              page === visibleCards.length - 1 && styles.arrowButtonDisabled,
+              (isRefreshing || page === visibleCards.length - 1) &&
+                styles.arrowButtonDisabled,
             ]}
             accessibilityRole="button"
             accessibilityLabel="下一条推荐"
-            accessibilityState={{ disabled: page === visibleCards.length - 1 }}
+            accessibilityState={{
+              disabled: isRefreshing || page === visibleCards.length - 1,
+            }}
             testID="hero-carousel-next"
           >
             <Ionicons name="chevron-forward" size={18} color="#302A56" />
@@ -389,6 +412,25 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 12,
     elevation: 2,
+  },
+  refreshingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 28,
+    backgroundColor: "rgba(246,247,252,0.9)",
+  },
+  refreshingTitle: {
+    color: "#302A56",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  refreshingText: {
+    color: "#555A78",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
   },
   arrowLayer: {
     position: "absolute",
