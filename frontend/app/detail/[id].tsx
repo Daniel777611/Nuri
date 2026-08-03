@@ -143,6 +143,41 @@ function resourceBadgeLabel(resource: LearningResource): string {
   return "权威发布";
 }
 
+function isReadyDetail(
+  detail: any,
+  requestedCategory?: ResourceContentCategory,
+): boolean {
+  const category: ResourceContentCategory | undefined =
+    detail?.content_category === "authority" ||
+    detail?.content_category === "featured" ||
+    detail?.content_category === "case"
+      ? detail.content_category
+      : requestedCategory;
+  const resources: LearningResource[] = Array.isArray(detail?.resources)
+    ? detail.resources
+    : [];
+  if (
+    !category ||
+    detail?.resource_readiness !== "ready" ||
+    detail?.resource_pair_complete !== true ||
+    resources.length !== 2
+  ) {
+    return false;
+  }
+  return (
+    resources.some(
+      (resource) =>
+        resource.kind === "article" &&
+        resourceContentCategory(resource) === category,
+    ) &&
+    resources.some(
+      (resource) =>
+        resource.kind === "video" &&
+        resourceContentCategory(resource) === category,
+    )
+  );
+}
+
 export default function Detail() {
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
@@ -151,6 +186,7 @@ export default function Detail() {
     session_id: sessionId,
     context_created_at: contextCreatedAt,
     recommendation_id: recommendationId,
+    prepared_content_set_id: preparedContentSetId,
     feed_request_id: feedRequestId,
     content_category: contentCategory,
     rank: recommendationRank,
@@ -159,12 +195,14 @@ export default function Detail() {
     session_id?: string;
     context_created_at?: string;
     recommendation_id?: string;
+    prepared_content_set_id?: string;
     feed_request_id?: string;
     content_category?: ResourceContentCategory;
     rank?: string;
   }>();
   const [card, setCard] = useState<any>(null);
-  const [loadError, setLoadError] = useState<"expired" | "generic" | null>(null);
+  const [loadError, setLoadError] =
+    useState<"expired" | "preparing" | "generic" | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -273,9 +311,14 @@ export default function Detail() {
         contextCreatedAt,
         recommendationId,
         contentCategory,
+        preparedContentSetId,
       )
       .then((detail: any) => {
         if (!active || contentRequestId.current !== requestId) return;
+        if (!isReadyDetail(detail, contentCategory)) {
+          setLoadError("preparing");
+          return;
+        }
         setCard(detail);
         dwellContext.current = {
           card_id: id as string,
@@ -287,41 +330,18 @@ export default function Detail() {
         };
         dwellStartedAt.current = Date.now();
         trackRecommendation("detail_view").catch(() => {});
-        if (detail.research_status === "pending") {
-          api
-            .getCardResearch(
-              id as string,
-              sessionId,
-              contextCreatedAt,
-              recommendationId,
-              contentCategory,
-            )
-            .then((research: any) => {
-              if (!active || contentRequestId.current !== requestId) return;
-              setCard((current: any) =>
-                current ? { ...current, ...research } : current
-              );
-            })
-            .catch(() => {
-              if (!active || contentRequestId.current !== requestId) return;
-              setCard((current: any) =>
-                current
-                  ? {
-                      ...current,
-                      research_status: current.is_dynamic_research_card
-                        ? "unavailable"
-                        : "reviewed_fallback",
-                    }
-                  : current
-              );
-            });
-        }
       })
       .catch((error: unknown) => {
         if (!active || contentRequestId.current !== requestId) return;
         const status =
           error && typeof error === "object" ? (error as any).status : null;
-        setLoadError(status === 404 && recommendationId ? "expired" : "generic");
+        setLoadError(
+          status === 409
+            ? "preparing"
+            : status === 404 && recommendationId
+              ? "expired"
+              : "generic",
+        );
       });
 
     // A favorites outage must not prevent the article itself from rendering.
@@ -334,7 +354,7 @@ export default function Detail() {
 
     return () => {
       active = false;
-      // Invalidate whichever detail/research request is current.
+      // Invalidate whichever detail or explicit-refresh request is current.
       contentRequestId.current += 1;
       flushDwell();
     };
@@ -344,6 +364,7 @@ export default function Detail() {
     feedRequestId,
     flushDwell,
     id,
+    preparedContentSetId,
     recommendationId,
     recommendationPosition,
     reloadSequence,
@@ -459,8 +480,8 @@ export default function Detail() {
       : [];
     if (currentResources.length < 2) return;
 
-    // Invalidates an initial live-research response that may still be in
-    // flight, so an older pair can never overwrite the user's explicit refresh.
+    // Invalidates an older explicit refresh so it can never overwrite the
+    // user's latest requested resource pair.
     const requestId = ++contentRequestId.current;
     setResourceRefreshState("loading");
     try {
@@ -526,23 +547,40 @@ export default function Detail() {
   const renderBody = () => {
     if (loadError) {
       const recommendationExpired = loadError === "expired";
+      const recommendationPreparing = loadError === "preparing";
       return (
         <View style={styles.stateBox} testID="detail-error-state">
           <Ionicons
-            name={recommendationExpired ? "time-outline" : "cloud-offline-outline"}
+            name={
+              recommendationPreparing
+                ? "hourglass-outline"
+                : recommendationExpired
+                  ? "time-outline"
+                  : "cloud-offline-outline"
+            }
             size={28}
             color={colors.muted}
           />
           <Text style={styles.stateTitle}>
-            {recommendationExpired ? "这条个性化推荐已更新" : "内容暂时没有加载出来"}
+            {recommendationPreparing
+              ? "内容仍在准备"
+              : recommendationExpired
+                ? "这条个性化推荐已更新"
+                : "内容暂时没有加载出来"}
           </Text>
           <Text style={styles.stateText}>
-            {recommendationExpired
-              ? "可以根据你现在的对话，重新查看这个学习主题。"
-              : "可以返回首页，或在网络恢复后重试。"}
+            {recommendationPreparing
+              ? "请返回首页稍后再试。NURI 会在文章和视频都准备好后再开放这张卡片。"
+              : recommendationExpired
+                ? "可以根据你现在的对话，重新查看这个学习主题。"
+                : "可以返回首页，或在网络恢复后重试。"}
           </Text>
           <Pressable
             onPress={() => {
+              if (recommendationPreparing) {
+                router.replace("/(tabs)");
+                return;
+              }
               if (recommendationExpired) {
                 router.replace({
                   pathname: "/detail/[id]",
@@ -559,7 +597,11 @@ export default function Detail() {
             testID="detail-retry-btn"
           >
             <Text style={styles.retryBtnText}>
-              {recommendationExpired ? "查看当前主题" : "重新加载"}
+              {recommendationPreparing
+                ? "返回首页"
+                : recommendationExpired
+                  ? "查看当前主题"
+                  : "重新加载"}
             </Text>
           </Pressable>
         </View>
@@ -569,7 +611,7 @@ export default function Detail() {
       return (
         <View style={styles.stateBox}>
           <ActivityIndicator color={colors.brand} />
-          <Text style={styles.stateText}>正在整理内容与可信学习资源…</Text>
+          <Text style={styles.stateText}>正在打开已准备好的内容…</Text>
         </View>
       );
     }
@@ -652,26 +694,19 @@ export default function Detail() {
               resourcePairComplete ? (
                 <Pressable
                   onPress={refreshResourcePair}
-                  disabled={
-                    resourceRefreshState !== "idle" ||
-                    card.research_status === "pending"
-                  }
+                  disabled={resourceRefreshState !== "idle"}
                   style={({ pressed }) => [
                     styles.refreshResourcesButton,
-                    (resourceRefreshState !== "idle" ||
-                      card.research_status === "pending") &&
+                    resourceRefreshState !== "idle" &&
                       styles.refreshResourcesButtonDisabled,
                     pressed &&
                       resourceRefreshState === "idle" &&
-                      card.research_status !== "pending" &&
                       styles.refreshResourcesButtonPressed,
                   ]}
                   accessibilityRole="button"
                   accessibilityLabel="更换下面的一篇文章和一个视频"
                   accessibilityState={{
-                    disabled:
-                      resourceRefreshState !== "idle" ||
-                      card.research_status === "pending",
+                    disabled: resourceRefreshState !== "idle",
                     busy: resourceRefreshState === "loading",
                   }}
                   testID="detail-refresh-resources"
@@ -700,9 +735,7 @@ export default function Detail() {
                       ? "正在换一组…"
                       : resourceRefreshState === "exhausted"
                         ? "暂无更多"
-                        : card.research_status === "pending"
-                          ? "正在核验…"
-                          : "换一组内容"}
+                        : "换一组内容"}
                   </Text>
                 </Pressable>
               ) : null}
@@ -731,17 +764,7 @@ export default function Detail() {
                   <Text style={styles.preferenceBadgeText}>{activeResourceLocaleLabel}</Text>
                 </View>
               </View>
-            {card.research_status === "pending" ? (
-              <View style={styles.researchStatusCard} testID="detail-research-status">
-                <ActivityIndicator size="small" color="#4F4B9C" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.researchStatusLabel}>正在为这张卡核验最佳内容</Text>
-                  <Text style={styles.researchStatusText}>
-                    NURI 正在核验与你刚聊到的内容最匹配的一篇文章和一个视频。
-                  </Text>
-                </View>
-              </View>
-            ) : card.research_status === "fresh" || card.research_status === "hybrid" ? (
+            {card.research_status === "fresh" || card.research_status === "hybrid" ? (
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <Ionicons name="search" size={16} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>

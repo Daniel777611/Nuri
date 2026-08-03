@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -2569,7 +2570,7 @@ def test_unmatched_virtual_card_is_not_exposed(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
-def test_detail_returns_reviewed_pending_without_calling_provider(monkeypatch):
+def test_detail_returns_409_when_prepared_pair_is_not_ready(monkeypatch):
     messages = [
         {
             "id": "message-1",
@@ -2600,21 +2601,13 @@ def test_detail_returns_reviewed_pending_without_calling_provider(monkeypatch):
     monkeypatch.setattr(main, "content_research_oai", object())
     monkeypatch.setattr(main, "research_learning_resources", should_not_search)
 
-    detail = asyncio.run(
-        main.get_card_detail("learn_sleep_routine", uid="parent-private-id")
-    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            main.get_card_detail("learn_sleep_routine", uid="parent-private-id")
+        )
 
+    assert error.value.status_code == 409
     assert calls == []
-    assert detail["research_status"] == "pending"
-    assert detail["resources"]
-    assert all(
-        resource.get("research_source") != "openai_web_search"
-        for resource in detail["resources"]
-    )
-    assert detail["resource_blueprint"] == {
-        category: ["article", "video", "article_or_video_optional"]
-        for category in CONTENT_CATEGORIES
-    }
 
 
 def test_detail_filters_reviewed_resources_with_real_card_context(monkeypatch):
@@ -2649,7 +2642,7 @@ def test_detail_filters_reviewed_resources_with_real_card_context(monkeypatch):
     monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_age)
     monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
     monkeypatch.setattr(main, "_rank_learning_content", ranked_development)
-    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(main, "content_research_oai", None)
 
     detail = asyncio.run(
         main.get_card_detail(
@@ -2979,3 +2972,176 @@ def test_research_gate_never_calls_provider_when_preconditions_fail(
 
     assert result is None
     assert calls == []
+
+
+def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_detail(
+    monkeypatch,
+):
+    uid = "parent-prepared"
+    context = {
+        "state": "ready",
+        "session_id": "session-prepared",
+        "context_created_at": "2026-08-03T10:00:00+00:00",
+        "messages": [{"role": "user", "text": "孩子最近睡前很难安静下来。"}],
+        "preferred_locale": "zh-CN",
+        "external_research_allowed": True,
+        "child_profile_fingerprint": "profile-prepared",
+        "child_age_context": "孩子当前年龄：11个月",
+    }
+    snapshots = {}
+    requested = []
+    for category in CONTENT_CATEGORIES:
+        card = {
+            "id": "learn_sleep_routine",
+            "content_category": category,
+            "is_conversation_match": True,
+            "recommendation_focus": "睡前安静与作息",
+        }
+        snapshot = main.build_snapshot(uid, card, context)
+        snapshots[snapshot["recommendation_id"]] = snapshot
+        requested.append(
+            main.ResearchPrepareItem(
+                card_id="learn_sleep_routine",
+                recommendation_id=snapshot["recommendation_id"],
+            )
+        )
+
+    async def load_snapshot(_uid, recommendation_id):
+        assert _uid == uid
+        return deepcopy(snapshots.get(recommendation_id))
+
+    async def persist(_uid, values):
+        assert _uid == uid
+        for value in values:
+            snapshots[value["recommendation_id"]] = deepcopy(value)
+        return True
+
+    async def ready_context(_uid, preferred_session_id=None, through_created_at=None):
+        assert _uid == uid
+        assert preferred_session_id == context["session_id"]
+        assert through_created_at == context["context_created_at"]
+        return deepcopy(context)
+
+    async def attach_child(_uid, loaded):
+        loaded["child_profile_fingerprint"] = context["child_profile_fingerprint"]
+        loaded["child_age_context"] = context["child_age_context"]
+        return loaded
+
+    async def no_events(_uid):
+        return []
+
+    def ranked(*_args, **_kwargs):
+        card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
+        card.update(
+            {
+                "is_conversation_match": True,
+                "recommendation_focus": "睡前安静与作息",
+            }
+        )
+        return [card], True
+
+    provider_calls = []
+
+    async def research_once(**_kwargs):
+        provider_calls.append(1)
+        return _parsed_bundle(include_optional_third=False)
+
+    delivered = []
+
+    async def capture_delivery(_uid, events):
+        delivered.extend(events)
+        return events, True
+
+    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", load_snapshot)
+    monkeypatch.setattr(main, "_db_persist_recommendation_snapshots", persist)
+    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
+    monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_child)
+    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(main, "_rank_learning_content", ranked)
+    monkeypatch.setattr(main, "_research_card_detail_resources", research_once)
+    monkeypatch.setattr(main, "_db_append_recommendation_events", capture_delivery)
+    monkeypatch.setattr(main, "content_research_oai", object())
+
+    result = asyncio.run(
+        main.prepare_feed_research(main.ResearchPrepareRequest(items=requested), uid=uid)
+    )
+
+    assert result["resource_readiness"] == "ready"
+    assert len(provider_calls) == 1
+    assert delivered == []
+    assert {item["content_category"] for item in result["items"]} == set(
+        CONTENT_CATEGORIES
+    )
+    assert all(item["resource_pair_complete"] for item in result["items"])
+    assert all(item["research_status"] == "ready" for item in result["items"])
+    assert all(len(item["resources"]) == 2 for item in result["items"])
+    assert all(item["title"] and item["publisher"] for item in result["items"])
+    assert len({item["prepared_content_set_id"] for item in result["items"]}) == 1
+
+    authority = next(
+        snapshot
+        for snapshot in snapshots.values()
+        if snapshot["content_category"] == "authority"
+    )
+    pair = main.prepared_resource_pair(authority)
+    assert pair is not None
+    assert {resource["kind"] for resource in pair} == {"article", "video"}
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_sleep_routine",
+            recommendation_id=authority["recommendation_id"],
+            prepared_content_set_id=result["prepared_content_set_id"],
+            content_category="authority",
+            uid=uid,
+        )
+    )
+    assert detail["resource_readiness"] == "ready"
+    assert detail["prepared_content_set_id"] == result["prepared_content_set_id"]
+    assert len(delivered) == 2
+    assert all(event["event"] == "resource_delivered" for event in delivered)
+
+    for mismatched_content_set_id in (None, f"pcs_{'f' * 24}"):
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                main.get_card_detail(
+                    "learn_sleep_routine",
+                    recommendation_id=authority["recommendation_id"],
+                    prepared_content_set_id=mismatched_content_set_id,
+                    content_category="authority",
+                    uid=uid,
+                )
+            )
+        assert error.value.status_code == 404
+
+
+def test_prepared_content_set_id_converges_for_same_frozen_group():
+    context = {
+        "session_id": "session-convergent",
+        "context_created_at": "2026-08-03T10:00:00+00:00",
+        "preferred_locale": "zh-CN",
+        "child_profile_fingerprint": "profile-convergent",
+    }
+    snapshots = [
+        main.build_snapshot(
+            "parent-convergent",
+            {
+                "id": "learn_language_milestones",
+                "content_category": category,
+            },
+            context,
+        )
+        for category in CONTENT_CATEGORIES
+    ]
+
+    first = main._prepared_content_set_id(
+        snapshots,
+        [{"id": "first", "url": "https://example.org/first"}],
+    )
+    concurrent = main._prepared_content_set_id(
+        snapshots,
+        [{"id": "second", "url": "https://example.org/second"}],
+    )
+
+    assert first == concurrent
+    assert first.startswith("pcs_")

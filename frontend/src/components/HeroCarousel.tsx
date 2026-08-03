@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import type {
+  PreparedLearningResource,
+  ResourceReadiness,
+} from "@/src/api";
 
 export type HeroCard = {
   id: string;
@@ -20,6 +24,11 @@ export type HeroCard = {
   recommendation_id?: string | null;
   rank?: number;
   resource_status?: string;
+  resource_readiness?: ResourceReadiness;
+  resource_pair_complete?: boolean;
+  prepared_content_set_id?: string | null;
+  resources?: PreparedLearningResource[];
+  research_status?: string;
   resource_summary?: {
     preferred_locale?: string;
     categories?: Record<string, Record<string, number>>;
@@ -47,6 +56,8 @@ const FALLBACK_CARDS: HeroCard[] = [
     content_category_label: "权威来源",
     personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
+    resource_readiness: "unavailable",
+    resource_pair_complete: false,
   },
   {
     id: "learn_serve_and_return",
@@ -58,6 +69,8 @@ const FALLBACK_CARDS: HeroCard[] = [
     content_category_label: "精选内容",
     personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
+    resource_readiness: "unavailable",
+    resource_pair_complete: false,
   },
   {
     id: "learn_serve_and_return",
@@ -69,6 +82,8 @@ const FALLBACK_CARDS: HeroCard[] = [
     content_category_label: "真实案例",
     personalization_reason: FALLBACK_REASON,
     resource_status: "reviewed",
+    resource_readiness: "unavailable",
+    resource_pair_complete: false,
   },
 ];
 
@@ -106,6 +121,21 @@ function reviewedResourceCount(card: HeroCard): number {
 }
 
 function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
+  if (card.resource_readiness === "preparing") {
+    return "正在为你准备文章与视频";
+  }
+  if (card.resource_readiness === "retryable") {
+    return "准备暂时中断，可点击重试";
+  }
+  if (card.resource_readiness === "unavailable") {
+    return "暂未找到完整的文章与视频";
+  }
+  if (
+    card.resource_readiness === "ready" &&
+    card.resource_pair_complete === true
+  ) {
+    return "已准备 · 1 篇文章 · 1 个视频";
+  }
   if (card.content_category) {
     const formats = card.resource_summary?.categories?.[card.content_category];
     if ((formats?.article || 0) > 0 && (formats?.video || 0) > 0) {
@@ -122,6 +152,13 @@ function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
   if (card.resource_status === "unavailable") return "已审校资源 · 可直接阅读";
   const reviewedCount = reviewedResourceCount(card);
   return reviewedCount > 0 ? `已审校 ${reviewedCount} 项资源` : "可信文章与视频";
+}
+
+function isCardReady(card: HeroCard): boolean {
+  return (
+    card.resource_readiness === "ready" &&
+    card.resource_pair_complete === true
+  );
 }
 
 function cardIdentity(card: HeroCard): string {
@@ -264,6 +301,10 @@ export default function HeroCarousel({
         scrollEventThrottle={16}
       >
         {visibleCards.map((card, index) => {
+          const cardReady = isCardReady(card);
+          const cardPreparing = card.resource_readiness === "preparing";
+          const cardRetryable = card.resource_readiness === "retryable";
+          const cardDisabled = isRefreshing || (!cardReady && !cardRetryable);
           const colors =
             card.colors ||
             CATEGORY_COLORS[card.content_category || ""] ||
@@ -273,13 +314,24 @@ export default function HeroCarousel({
             <Pressable
               key={cardIdentity(card)}
               onPress={() => onCardPress(card)}
-              disabled={isRefreshing}
+              disabled={cardDisabled}
               style={{ width }}
               accessibilityRole="button"
               accessibilityLabel={
-                isRefreshing ? "正在根据刚刚的对话更新推荐" : `浏览内容：${card.title}`
+                isRefreshing
+                  ? "正在根据刚刚的对话更新推荐"
+                  : cardPreparing
+                    ? `正在准备内容：${card.title}`
+                    : cardRetryable
+                      ? `重试准备内容：${card.title}`
+                    : cardReady
+                      ? `浏览内容：${card.title}`
+                      : `内容暂不可用：${card.title}`
               }
-              accessibilityState={{ disabled: isRefreshing, busy: isRefreshing }}
+              accessibilityState={{
+                disabled: cardDisabled,
+                busy: isRefreshing || cardPreparing,
+              }}
               testID={`home-hero-card-${card.id}-${card.content_category || "topic"}`}
             >
               <LinearGradient
@@ -311,8 +363,16 @@ export default function HeroCarousel({
                       {resourceStatusText(card, feedState)}
                     </Text>
                   </View>
-                  <View style={styles.heroBtn}>
-                    <Text style={styles.heroBtnText}>查看文章与视频</Text>
+                  <View style={[styles.heroBtn, !cardReady && styles.heroBtnDisabled]}>
+                    <Text style={[styles.heroBtnText, !cardReady && styles.heroBtnTextDisabled]}>
+                      {cardPreparing
+                        ? "正在准备…"
+                        : card.resource_readiness === "retryable"
+                          ? "重新准备"
+                          : card.resource_readiness === "unavailable"
+                            ? "暂不可用"
+                            : "查看文章与视频"}
+                    </Text>
                   </View>
                 </View>
                 {isRefreshing ? (
@@ -508,7 +568,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
+  heroBtnDisabled: {
+    backgroundColor: "rgba(255,255,255,0.66)",
+  },
   heroBtnText: { color: "#1A1A2E", fontSize: 12, fontWeight: "700" },
+  heroBtnTextDisabled: { color: "#555A78" },
   cardFooter: {
     marginTop: 8,
     flexDirection: "row",

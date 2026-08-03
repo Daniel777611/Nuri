@@ -69,8 +69,12 @@ try:
     )
     from backend.recommendation_snapshots import (
         build_snapshot,
+        carry_prepared_resource_state,
         parse_snapshot,
+        prepared_resource_pair,
         serialize_snapshot,
+        snapshot_with_prepared_resource_pair,
+        snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
     )
@@ -104,8 +108,12 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
     )
     from recommendation_snapshots import (  # type: ignore
         build_snapshot,
+        carry_prepared_resource_state,
         parse_snapshot,
+        prepared_resource_pair,
         serialize_snapshot,
+        snapshot_with_prepared_resource_pair,
+        snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
     )
@@ -581,6 +589,111 @@ async def _db_delete_privacy(uid: str) -> None:
         ) from exc
 
 
+async def _db_persist_recommendation_snapshots(
+    uid: str,
+    snapshots: list[dict],
+) -> bool:
+    """Atomically persist encrypted recommendation snapshots when storage exists."""
+
+    if not snapshots:
+        return True
+    sb = _get_supabase()
+    if not sb or not RECOMMENDATION_SNAPSHOT_SECRET:
+        return False
+    ready_snapshots = [
+        snapshot for snapshot in snapshots if prepared_resource_pair(snapshot)
+    ]
+    nonready_snapshots = [
+        snapshot for snapshot in snapshots if not prepared_resource_pair(snapshot)
+    ]
+
+    def rows_for(values: list[dict]) -> list[dict]:
+        return [
+            {
+                "key": snapshot_storage_key(uid, snapshot["recommendation_id"]),
+                "value": serialize_snapshot(
+                    snapshot,
+                    secret=RECOMMENDATION_SNAPSHOT_SECRET,
+                ),
+                "updated_at": _now(),
+            }
+            for snapshot in values
+        ]
+
+    try:
+        if nonready_snapshots:
+            nonready_rows = rows_for(nonready_snapshots)
+            # DO NOTHING on conflict is the monotonicity boundary. An old
+            # preparing/retryable/feed write can create a snapshot, but can
+            # never replace a complete pair published by a newer invocation.
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings")
+                .upsert(
+                    nonready_rows,
+                    on_conflict="key",
+                    ignore_duplicates=True,
+                )
+                .execute()
+            )
+        if ready_snapshots:
+            ready_rows = rows_for(ready_snapshots)
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("app_settings")
+                .upsert(ready_rows, on_conflict="key")
+                .execute()
+            )
+    except Exception as exc:
+        print(f"[warn] recommendation snapshot persistence failed: {exc}")
+        return False
+
+    for snapshot in ready_snapshots:
+        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
+    # Resolve insert-vs-conflict from durable storage before caching or exposing
+    # a non-ready snapshot. Only a complete durable pair is allowed to replace
+    # the caller's state. If storage still says ``preparing``, a provider
+    # failure in this invocation must remain ``retryable`` in the response so
+    # the client can schedule another attempt.
+    for snapshot in nonready_snapshots:
+        current = await _db_get_recommendation_snapshot_persistent(
+            uid,
+            snapshot["recommendation_id"],
+        )
+        if current and prepared_resource_pair(current):
+            snapshot.clear()
+            snapshot.update(current)
+        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
+    return True
+
+
+def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
+    """Expose a prepared, binding-validated pair on its matching home card."""
+
+    pair = prepared_resource_pair(snapshot)
+    readiness = str(snapshot.get("resource_readiness") or "")
+    if pair:
+        article = next(resource for resource in pair if resource.get("kind") == "article")
+        card["resource_readiness"] = "ready"
+        card["resource_pair_complete"] = True
+        card["prepared_content_set_id"] = snapshot.get("prepared_content_set_id")
+        card["resource_summary"] = summarize_resource_slots(
+            pair,
+            str(snapshot.get("preferred_locale") or "zh-CN"),
+        )
+        card["resources"] = pair
+        card["title"] = article.get("title") or card.get("title")
+        card["summary"] = article.get("description") or card.get("summary")
+        card["publisher"] = article.get("publisher") or card.get("publisher")
+        card["headline_source"] = "prepared_article"
+        return
+    if card.get("resource_readiness") == "ready" and card.get("resource_pair_complete"):
+        card["prepared_content_set_id"] = None
+        return
+    card["resource_readiness"] = (
+        readiness if readiness in {"preparing", "retryable"} else "preparing"
+    )
+    card["prepared_content_set_id"] = None
+
+
 async def _attach_recommendation_snapshots(
     uid: str,
     cards: list[dict],
@@ -599,40 +712,33 @@ async def _attach_recommendation_snapshots(
         if not card.get("is_conversation_match"):
             continue
         snapshot = build_snapshot(uid, card, context)
+        requested_readiness = str(card.get("resource_readiness") or "")
+        if requested_readiness in {"preparing", "retryable"}:
+            snapshot["resource_readiness"] = requested_readiness
+        try:
+            previous = await _db_get_recommendation_snapshot(
+                uid,
+                snapshot["recommendation_id"],
+            )
+        except HTTPException:
+            previous = None
+        if previous:
+            snapshot = carry_prepared_resource_state(previous, snapshot)
         pairs.append((card, snapshot))
-        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
 
     if not pairs:
         return cards
 
-    persisted = False
-    sb = _get_supabase()
-    if sb and RECOMMENDATION_SNAPSHOT_SECRET:
-        rows = [
-            {
-                "key": snapshot_storage_key(uid, snapshot["recommendation_id"]),
-                "value": serialize_snapshot(
-                    snapshot,
-                    secret=RECOMMENDATION_SNAPSHOT_SECRET,
-                ),
-                "updated_at": _now(),
-            }
-            for _, snapshot in pairs
-        ]
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings")
-                .upsert(rows, on_conflict="key")
-                .execute()
-            )
-            persisted = True
-        except Exception as exc:
-            print(f"[warn] recommendation snapshot persistence failed: {exc}")
+    persisted = await _db_persist_recommendation_snapshots(
+        uid,
+        [snapshot for _, snapshot in pairs],
+    )
 
     for card, snapshot in pairs:
         if persisted:
             card["recommendation_id"] = snapshot["recommendation_id"]
             card["recommendation_context_status"] = "persisted"
+            _apply_prepared_snapshot_to_feed_card(card, snapshot)
         else:
             card.pop("recommendation_id", None)
             card["recommendation_context_status"] = "legacy_fallback"
@@ -646,14 +752,38 @@ async def _db_get_recommendation_snapshot(
     if not recommendation_id:
         return None
     try:
-        key = snapshot_storage_key(uid, recommendation_id)
+        snapshot_storage_key(uid, recommendation_id)
     except ValueError:
         return None
 
     cached = parse_snapshot(_recommendation_snapshots.get((uid, recommendation_id)))
-    if cached:
-        return cached
+    try:
+        snapshot = await _db_get_recommendation_snapshot_persistent(
+            uid,
+            recommendation_id,
+        )
+    except HTTPException:
+        if cached:
+            return cached
+        raise
+    if snapshot:
+        _recommendation_snapshots[(uid, recommendation_id)] = snapshot
+        return snapshot
+    return cached
 
+
+async def _db_get_recommendation_snapshot_persistent(
+    uid: str,
+    recommendation_id: Optional[str],
+) -> Optional[dict]:
+    """Read storage directly so stale process state cannot downgrade ready data."""
+
+    if not recommendation_id:
+        return None
+    try:
+        key = snapshot_storage_key(uid, recommendation_id)
+    except ValueError:
+        return None
     sb = _get_supabase()
     if not sb:
         return None
@@ -674,8 +804,6 @@ async def _db_get_recommendation_snapshot(
             if rows and RECOMMENDATION_SNAPSHOT_SECRET
             else None
         )
-        if snapshot:
-            _recommendation_snapshots[(uid, recommendation_id)] = snapshot
         return snapshot
     except Exception as exc:
         print(f"[warn] recommendation snapshot lookup failed: {exc}")
@@ -1563,6 +1691,15 @@ class PrivacySettings(BaseModel):
     daily_push:               bool = True
     anonymous_community_share: bool = False
     language: Literal["zh", "zh-CN", "zh-TW", "en"] = "zh-CN"
+
+
+class ResearchPrepareItem(BaseModel):
+    card_id: str = Field(min_length=1, max_length=128)
+    recommendation_id: str = Field(min_length=1, max_length=80)
+
+
+class ResearchPrepareRequest(BaseModel):
+    items: List[ResearchPrepareItem] = Field(min_length=1, max_length=3)
 
 class AskRequest(BaseModel):
     question:  str
@@ -5162,6 +5299,115 @@ async def _research_card_detail_resources(
         return {"_provider_failure": "retryable"}
 
 
+def _prepared_content_set_id(snapshots: list[dict], _resources: list[dict]) -> str:
+    first = snapshots[0]
+    # Bind the public set ID to the frozen recommendation group, not to one
+    # provider response. Two Vercel instances may finish equivalent research
+    # concurrently; a stable ID lets either completed response open whichever
+    # valid winner is durably stored, instead of turning the first link stale.
+    material = {
+        "card_id": first.get("card_id"),
+        "session_id": first.get("session_id"),
+        "context_created_at": first.get("context_created_at"),
+        "child_profile_fingerprint": first.get("child_profile_fingerprint"),
+        "preferred_locale": first.get("preferred_locale"),
+        "recommendations": sorted(
+            (
+                str(snapshot.get("recommendation_id") or ""),
+                str(snapshot.get("content_category") or ""),
+            )
+            for snapshot in snapshots
+        ),
+    }
+    digest = hashlib.sha256(
+        json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"pcs_{digest[:24]}"
+
+
+def _prepare_response_items(snapshots: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    for snapshot in snapshots:
+        pair = prepared_resource_pair(snapshot)
+        readiness = "ready" if pair else str(
+            snapshot.get("resource_readiness") or "retryable"
+        )
+        if readiness not in {"preparing", "ready", "retryable"}:
+            readiness = "retryable"
+        item = {
+            "card_id": snapshot.get("card_id"),
+            "recommendation_id": snapshot.get("recommendation_id"),
+            "content_category": snapshot.get("content_category"),
+            "resource_readiness": readiness,
+            "resource_pair_complete": bool(pair),
+            "prepared_content_set_id": (
+                snapshot.get("prepared_content_set_id") if pair else None
+            ),
+            "resources": pair or [],
+            "research_status": "ready" if pair else readiness,
+        }
+        if pair:
+            article = next(
+                resource for resource in pair if resource.get("kind") == "article"
+            )
+            item["title"] = article.get("title")
+            item["publisher"] = article.get("publisher")
+        items.append(item)
+    return items
+
+
+async def _mark_prepare_retryable(uid: str, snapshots: list[dict]) -> list[dict]:
+    retryable: list[dict] = []
+    for snapshot in snapshots:
+        current = await _db_get_recommendation_snapshot_persistent(
+            uid,
+            snapshot.get("recommendation_id"),
+        )
+        if current and prepared_resource_pair(current):
+            retryable.append(current)
+        elif prepared_resource_pair(snapshot):
+            retryable.append(snapshot)
+        else:
+            # Failure is returned to this caller, but is intentionally not an
+            # app_settings write: a stale failed request must never downgrade a
+            # pair concurrently published by another Vercel invocation.
+            retryable.append(
+                snapshot_with_resource_readiness(snapshot, "retryable")
+            )
+    return retryable
+
+
+async def _record_resource_delivery(
+    *,
+    uid: str,
+    card_id: str,
+    recommendation_id: Optional[str],
+    content_category: Optional[str],
+    preferred_locale: str,
+    resources: list[dict],
+) -> None:
+    events = [
+        _new_recommendation_event(
+            event="resource_delivered",
+            card_id=card_id,
+            trusted_resource_url=True,
+            recommendation_id=recommendation_id,
+            resource_id=str(resource.get("id") or ""),
+            resource_url=str(resource.get("url") or ""),
+            resource_kind=str(resource.get("kind") or ""),
+            content_category=str(
+                resource.get("content_category") or content_category or ""
+            ),
+            locale=(resource.get("locales") or [preferred_locale])[0],
+            position=index,
+        )
+        for index, resource in enumerate(resources)
+        if resource.get("id") and resource.get("url")
+    ]
+    if events:
+        await _db_append_recommendation_events(uid, events)
+
+
 def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) -> None:
     """Emit ranking diagnostics without storing conversation text or user IDs."""
 
@@ -5345,6 +5591,18 @@ async def get_personalized_feed(
                     if item["curation_mode"] == "conversation_web_research"
                     else "reviewed"
                 )
+        if item.get("resource_status") == "research_on_open":
+            item["resource_readiness"] = "preparing"
+        elif item.get("resource_pair_complete"):
+            item["resource_readiness"] = "ready"
+            # Reviewed resources are already policy-, locale- and age-gated.
+            # Returning the strict pair lets consent-off/provider-off accounts
+            # open useful details without ever entering external preparation.
+            item["resources"] = reviewed
+            item["research_status"] = "ready"
+        else:
+            item["resource_readiness"] = "retryable"
+        item["prepared_content_set_id"] = None
     await _attach_recommendation_snapshots(uid, items, context)
     feed_request_id = str(uuid.uuid4())
     for rank, item in enumerate(items, start=1):
@@ -5368,6 +5626,193 @@ async def get_personalized_feed(
             context.get("history_user_message_count") or 0
         ),
         "generated_at": _now(),
+    }
+
+
+@api.post("/feed/research/prepare")
+async def prepare_feed_research(
+    body: ResearchPrepareRequest,
+    uid: str = Depends(_req_uid),
+):
+    """Prepare at most three editorial lanes with one complete research bundle."""
+
+    snapshots: list[dict] = []
+    seen_categories: set[str] = set()
+    for requested in body.items:
+        snapshot = await _db_get_recommendation_snapshot(
+            uid,
+            requested.recommendation_id,
+        )
+        if not snapshot or snapshot.get("card_id") != requested.card_id:
+            raise HTTPException(404, "recommendation not found")
+        category = str(snapshot.get("content_category") or "")
+        if category not in CONTENT_CATEGORIES or category in seen_categories:
+            raise HTTPException(422, "recommendation categories must be unique")
+        seen_categories.add(category)
+        snapshots.append(snapshot)
+
+    group_fields = (
+        "card_id",
+        "session_id",
+        "context_created_at",
+        "child_profile_fingerprint",
+        "preferred_locale",
+        "context_version",
+    )
+    expected_group = tuple(snapshots[0].get(field) for field in group_fields)
+    if any(
+        tuple(snapshot.get(field) for field in group_fields) != expected_group
+        for snapshot in snapshots[1:]
+    ):
+        raise HTTPException(422, "recommendations do not share one frozen context")
+
+    ready_pairs = [prepared_resource_pair(snapshot) for snapshot in snapshots]
+    ready_set_ids = {
+        str(snapshot.get("prepared_content_set_id") or "")
+        for snapshot, pair in zip(snapshots, ready_pairs)
+        if pair
+    }
+    if all(ready_pairs) and len(ready_set_ids) == 1:
+        return {
+            "resource_readiness": "ready",
+            "prepared_content_set_id": next(iter(ready_set_ids)),
+            "items": _prepare_response_items(snapshots),
+        }
+
+    preparing = [
+        snapshot
+        if prepared_resource_pair(snapshot)
+        else snapshot_with_resource_readiness(snapshot, "preparing")
+        for snapshot in snapshots
+    ]
+    if not await _db_persist_recommendation_snapshots(uid, preparing):
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Prepared resources could not be persisted",
+        )
+    snapshots = preparing
+    persisted_ready_pairs = [prepared_resource_pair(snapshot) for snapshot in snapshots]
+    persisted_ready_ids = {
+        str(snapshot.get("prepared_content_set_id") or "")
+        for snapshot, pair in zip(snapshots, persisted_ready_pairs)
+        if pair
+    }
+    if all(persisted_ready_pairs) and len(persisted_ready_ids) == 1:
+        return {
+            "resource_readiness": "ready",
+            "prepared_content_set_id": next(iter(persisted_ready_ids)),
+            "items": _prepare_response_items(snapshots),
+        }
+    first = snapshots[0]
+    context = await _load_recent_main_chat(
+        uid,
+        preferred_session_id=first.get("session_id"),
+        through_created_at=first.get("context_created_at"),
+    )
+    await _attach_child_recommendation_context(uid, context)
+    context = _with_requested_preferred_locale(
+        context,
+        str(first.get("preferred_locale") or "") or None,
+    )
+    if (
+        context.get("state") != "ready"
+        or context.get("session_id") != first.get("session_id")
+        or (
+            first.get("child_profile_fingerprint")
+            and first.get("child_profile_fingerprint")
+            != context.get("child_profile_fingerprint")
+        )
+        or _context_requires_urgent_handoff(context)
+        or not context.get("external_research_allowed")
+        or not content_research_oai
+    ):
+        retryable = await _mark_prepare_retryable(uid, snapshots)
+        return {
+            "resource_readiness": "retryable",
+            "prepared_content_set_id": None,
+            "items": _prepare_response_items(retryable),
+        }
+
+    behavior_events = await _db_get_recommendation_events(uid)
+    ranked, _ = _rank_learning_content(
+        context.get("messages") or [],
+        count=len(LEARNING_CONTENT_CARDS),
+        session_id=context.get("session_id"),
+        context_created_at=context.get("context_created_at"),
+        context_state=context.get("state", "no_history"),
+        include_detail=True,
+        behavior_events=behavior_events,
+    )
+    card_id = str(first.get("card_id") or "")
+    card = next((item for item in ranked if item["id"] == card_id), None)
+    if not card and card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX):
+        card = _restore_dynamic_research_card_from_snapshot(first, include_detail=True)
+    if not card:
+        retryable = await _mark_prepare_retryable(uid, snapshots)
+        return {
+            "resource_readiness": "retryable",
+            "prepared_content_set_id": None,
+            "items": _prepare_response_items(retryable),
+        }
+    if context.get("child_age_context"):
+        card["child_age_context"] = context["child_age_context"]
+    for field in (
+        "personalization_reason",
+        "recommendation_focus",
+        "recommendation_intent",
+        "recommendation_score",
+    ):
+        if first.get(field) not in (None, ""):
+            card[field] = first[field]
+    card["is_conversation_match"] = True
+    research = await _research_card_detail_resources(
+        card=card,
+        context=context,
+        uid=uid,
+    )
+    resources = list((research or {}).get("resources") or [])
+    pairs_by_category = {
+        category: _select_category_resource_pair(resources, category)
+        for category in CONTENT_CATEGORIES
+    }
+    complete_bundle = bool(
+        research
+        and research.get("_provider_failure") != "retryable"
+        and MIN_TOTAL_RESEARCH_RESOURCES <= len(resources) <= MAX_TOTAL_RESEARCH_RESOURCES
+        and all(
+            len(pair) == 2
+            and {str(resource.get("kind") or "") for resource in pair}
+            == {"article", "video"}
+            for pair in pairs_by_category.values()
+        )
+    )
+    if not complete_bundle:
+        retryable = await _mark_prepare_retryable(uid, snapshots)
+        return {
+            "resource_readiness": "retryable",
+            "prepared_content_set_id": None,
+            "items": _prepare_response_items(retryable),
+        }
+
+    content_set_id = _prepared_content_set_id(snapshots, resources)
+    prepared = [
+        snapshot_with_prepared_resource_pair(
+            snapshot,
+            pairs_by_category[str(snapshot["content_category"])],
+            content_set_id=content_set_id,
+        )
+        for snapshot in snapshots
+    ]
+    if not await _db_persist_recommendation_snapshots(uid, prepared):
+        await _mark_prepare_retryable(uid, snapshots)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Prepared resources could not be persisted",
+        )
+    return {
+        "resource_readiness": "ready",
+        "prepared_content_set_id": content_set_id,
+        "items": _prepare_response_items(prepared),
     }
 
 
@@ -5449,6 +5894,7 @@ async def get_card_detail(
     session_id: Optional[str] = None,
     context_created_at: Optional[str] = None,
     recommendation_id: Optional[str] = None,
+    prepared_content_set_id: Optional[str] = None,
     content_category: Optional[Literal["authority", "featured", "case"]] = None,
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: Optional[str] = Depends(_opt_uid),
@@ -5464,6 +5910,14 @@ async def get_card_detail(
             raise HTTPException(404, "recommendation not found")
         if snapshot and snapshot.get("card_id") != card_id:
             raise HTTPException(404, "recommendation not found")
+        snapshot_prepared_pair = prepared_resource_pair(snapshot) if snapshot else None
+        expected_content_set_id = (
+            str(snapshot.get("prepared_content_set_id") or "") if snapshot else ""
+        )
+        if snapshot_prepared_pair and prepared_content_set_id != expected_content_set_id:
+            raise HTTPException(404, "prepared content set not found")
+        if prepared_content_set_id and not snapshot_prepared_pair:
+            raise HTTPException(409, "Prepared resources are not ready")
         snapshot_category = (
             str(snapshot.get("content_category") or "") if snapshot else ""
         )
@@ -5579,8 +6033,6 @@ async def get_card_detail(
                 preferred_locale,
                 card if apply_recommendation_context else None,
             )
-        # Return the reviewed library immediately.  The client then calls the
-        # research endpoint and can show these resources while web search runs.
         urgent_suppressed = _context_requires_urgent_handoff(context)
         research_eligible = bool(
             uid
@@ -5591,10 +6043,44 @@ async def get_card_detail(
             and context.get("messages")
             and card.get("is_conversation_match")
         )
-        if urgent_suppressed:
-            card["research_status"] = "urgent_suppressed"
+        prepared_pair = snapshot_prepared_pair
+        if prepared_pair:
+            card["resources"] = prepared_pair
+            card["resource_pair_complete"] = True
+            card["resource_readiness"] = "ready"
+            card["research_status"] = "ready"
+            card["prepared_content_set_id"] = snapshot.get(
+                "prepared_content_set_id"
+            )
+            article = next(
+                resource
+                for resource in prepared_pair
+                if resource.get("kind") == "article"
+            )
+            card["title"] = article.get("title") or card.get("title")
+            card["summary"] = article.get("description") or card.get("summary")
+            card["publisher"] = article.get("publisher") or card.get("publisher")
+            card["headline_source"] = "prepared_article"
+            if uid:
+                await _record_resource_delivery(
+                    uid=uid,
+                    card_id=card_id,
+                    recommendation_id=recommendation_id,
+                    content_category=selected_content_category,
+                    preferred_locale=preferred_locale,
+                    resources=prepared_pair,
+                )
         elif research_eligible:
-            card["research_status"] = "pending"
+            # Web research is deliberately performed by the authenticated
+            # batch-prepare endpoint, never by a detail-page navigation.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Prepared resources are not ready",
+            )
+        elif urgent_suppressed:
+            card["research_status"] = "urgent_suppressed"
+            card["resource_readiness"] = "retryable"
+            card["prepared_content_set_id"] = None
         elif (
             uid
             and card.get("is_conversation_match")
@@ -5602,12 +6088,36 @@ async def get_card_detail(
             and not context.get("external_research_allowed")
         ):
             card["research_status"] = "consent_required"
+            card["resource_readiness"] = (
+                "ready" if card.get("resource_pair_complete") else "retryable"
+            )
+            card["prepared_content_set_id"] = None
         elif card.get("is_dynamic_research_card"):
             card["research_status"] = "unavailable"
+            card["resource_readiness"] = "retryable"
+            card["prepared_content_set_id"] = None
         else:
             card["research_status"] = "reviewed_fallback"
+            card["resource_readiness"] = (
+                "ready" if card.get("resource_pair_complete") else "retryable"
+            )
+            card["prepared_content_set_id"] = None
+        if (
+            uid
+            and not prepared_pair
+            and card.get("resource_readiness") == "ready"
+            and card.get("resources")
+        ):
+            await _record_resource_delivery(
+                uid=uid,
+                card_id=card_id,
+                recommendation_id=recommendation_id,
+                content_category=selected_content_category,
+                preferred_locale=preferred_locale,
+                resources=card["resources"],
+            )
         card["preferred_locale"] = preferred_locale
-        card["refresh_available"] = research_eligible
+        card["refresh_available"] = bool(research_eligible and prepared_pair)
         card["resource_blueprint"] = _resource_blueprint(selected_content_category)
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale

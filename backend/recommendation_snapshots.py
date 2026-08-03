@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import base64
+import copy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
@@ -22,8 +23,11 @@ SNAPSHOT_VERSION = 2
 SNAPSHOT_CONTEXT_VERSION = "multi-session-intent-child-age-v2"
 SUPPORTED_SNAPSHOT_VERSIONS = frozenset({1, SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90
+PREPARED_CONTENT_TTL_HOURS = 6
+RESOURCE_READINESS_VALUES = frozenset({"preparing", "ready", "retryable"})
 
 _RECOMMENDATION_ID = re.compile(r"^rec_[a-f0-9]{24}$")
+_PREPARED_CONTENT_SET_ID = re.compile(r"^pcs_[a-f0-9]{24}$")
 _SERIALIZED_PREFIX = "fernet:v1:"
 
 
@@ -123,6 +127,157 @@ def build_snapshot(
     }
 
 
+def _prepared_binding(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the immutable recommendation fields a prepared pair is bound to."""
+
+    return {
+        "recommendation_id": snapshot.get("recommendation_id"),
+        "content_category": snapshot.get("content_category"),
+        "preferred_locale": snapshot.get("preferred_locale") or "",
+        "child_profile_fingerprint": snapshot.get("child_profile_fingerprint"),
+        "context_created_at": snapshot.get("context_created_at"),
+    }
+
+
+def _clear_prepared_content(snapshot: dict[str, Any]) -> None:
+    for field in (
+        "prepared_binding",
+        "prepared_resources",
+        "prepared_content_set_id",
+        "prepared_at",
+        "prepared_expires_at",
+    ):
+        snapshot.pop(field, None)
+
+
+def prepared_resource_pair(
+    snapshot: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Return a still-valid article/video pair bound to this exact snapshot."""
+
+    if snapshot.get("resource_readiness") != "ready":
+        return None
+    if snapshot.get("prepared_binding") != _prepared_binding(snapshot):
+        return None
+    if not _PREPARED_CONTENT_SET_ID.fullmatch(
+        str(snapshot.get("prepared_content_set_id") or "")
+    ):
+        return None
+    try:
+        expires_at = datetime.fromisoformat(
+            str(snapshot.get("prepared_expires_at") or "")
+        )
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if expires_at <= (now or _utc_now()).astimezone(timezone.utc):
+        return None
+    resources = snapshot.get("prepared_resources")
+    if not isinstance(resources, list) or len(resources) != 2:
+        return None
+    pair: list[dict[str, Any]] = []
+    kinds: set[str] = set()
+    expected_category = str(snapshot.get("content_category") or "")
+    expected_locale = str(snapshot.get("preferred_locale") or "")
+    for raw in resources:
+        if not isinstance(raw, dict):
+            return None
+        resource = copy.deepcopy(raw)
+        kind = str(resource.get("kind") or "")
+        if kind not in {"article", "video"} or kind in kinds:
+            return None
+        category = str(resource.get("content_category") or "")
+        if category and category != expected_category:
+            return None
+        locales = resource.get("locales")
+        if expected_locale and isinstance(locales, list) and expected_locale not in locales:
+            return None
+        if not str(resource.get("url") or "").startswith("https://"):
+            return None
+        kinds.add(kind)
+        pair.append(resource)
+    return pair if kinds == {"article", "video"} else None
+
+
+def snapshot_with_resource_readiness(
+    snapshot: Mapping[str, Any],
+    readiness: str,
+) -> dict[str, Any]:
+    """Set a non-ready preparation state without retaining stale content."""
+
+    if readiness not in RESOURCE_READINESS_VALUES - {"ready"}:
+        raise ValueError("invalid non-ready resource readiness")
+    updated = copy.deepcopy(dict(snapshot))
+    _clear_prepared_content(updated)
+    updated["resource_readiness"] = readiness
+    updated["resource_readiness_updated_at"] = _utc_now().isoformat()
+    return updated
+
+
+def snapshot_with_prepared_resource_pair(
+    snapshot: Mapping[str, Any],
+    resources: list[dict[str, Any]],
+    *,
+    content_set_id: str,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Attach one encrypted-at-rest pair to its immutable recommendation."""
+
+    prepared_at = (now or _utc_now()).astimezone(timezone.utc)
+    updated = copy.deepcopy(dict(snapshot))
+    updated.update(
+        {
+            "resource_readiness": "ready",
+            "resource_readiness_updated_at": prepared_at.isoformat(),
+            "prepared_binding": _prepared_binding(updated),
+            "prepared_resources": copy.deepcopy(resources),
+            "prepared_content_set_id": str(content_set_id),
+            "prepared_at": prepared_at.isoformat(),
+            "prepared_expires_at": (
+                prepared_at + timedelta(hours=PREPARED_CONTENT_TTL_HOURS)
+            ).isoformat(),
+        }
+    )
+    if not content_set_id or prepared_resource_pair(updated, now=prepared_at) is None:
+        raise ValueError("invalid prepared resource pair")
+    return updated
+
+
+def carry_prepared_resource_state(
+    previous: Mapping[str, Any],
+    fresh: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Preserve preparation state when an identical feed snapshot is rebuilt."""
+
+    updated = copy.deepcopy(dict(fresh))
+    if _prepared_binding(previous) != _prepared_binding(updated):
+        return updated
+    readiness = str(previous.get("resource_readiness") or "")
+    if readiness == "ready" and prepared_resource_pair(previous, now=now) is None:
+        readiness = "retryable"
+    if readiness not in RESOURCE_READINESS_VALUES:
+        return updated
+    updated["resource_readiness"] = readiness
+    for field in (
+        "resource_readiness_updated_at",
+        "prepared_binding",
+        "prepared_resources",
+        "prepared_content_set_id",
+        "prepared_at",
+        "prepared_expires_at",
+    ):
+        if field in previous:
+            updated[field] = copy.deepcopy(previous[field])
+    if readiness != "ready":
+        _clear_prepared_content(updated)
+    return updated
+
+
 def _snapshot_cipher(secret: str) -> Fernet:
     if not secret:
         raise ValueError("snapshot encryption secret is required")
@@ -185,4 +340,12 @@ def parse_snapshot(
         parsed.setdefault("child_age_context", "")
     parsed.setdefault("content_category", None)
     parsed.setdefault("preferred_locale", "")
+    readiness = str(parsed.get("resource_readiness") or "")
+    if readiness == "ready" and prepared_resource_pair(parsed, now=now) is None:
+        _clear_prepared_content(parsed)
+        parsed["resource_readiness"] = "retryable"
+    elif readiness in RESOURCE_READINESS_VALUES - {"ready"}:
+        _clear_prepared_content(parsed)
+    elif readiness not in RESOURCE_READINESS_VALUES:
+        parsed.pop("resource_readiness", None)
     return parsed

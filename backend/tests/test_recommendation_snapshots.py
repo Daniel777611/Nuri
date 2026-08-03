@@ -10,9 +10,11 @@ import pytest
 from backend import main
 from backend.recommendation_snapshots import (
     build_snapshot,
+    prepared_resource_pair,
     parse_snapshot,
     recommendation_id,
     serialize_snapshot,
+    snapshot_with_prepared_resource_pair,
     snapshot_storage_key,
     snapshot_storage_prefix,
 )
@@ -206,10 +208,12 @@ class _SettingsTable:
         self.rows = None
         self.key = None
         self.key_prefix = None
+        self.ignore_duplicates = False
 
-    def upsert(self, rows, **_kwargs):
+    def upsert(self, rows, **kwargs):
         self.action = "upsert"
         self.rows = rows
+        self.ignore_duplicates = bool(kwargs.get("ignore_duplicates"))
         return self
 
     def select(self, *_args):
@@ -239,6 +243,8 @@ class _SettingsTable:
         if self.action == "upsert":
             rows = self.rows if isinstance(self.rows, list) else [self.rows]
             for row in rows:
+                if self.ignore_duplicates and row["key"] in self.store:
+                    continue
                 self.store[row["key"]] = row["value"]
             return _Result(rows)
         if self.action == "delete":
@@ -351,6 +357,13 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
     for item in items:
         category = item["content_category"]
         assert item["resource_pair_complete"] is True
+        assert item["resource_readiness"] == "ready"
+        assert item["research_status"] == "ready"
+        assert len(item["resources"]) == 2
+        assert {resource["kind"] for resource in item["resources"]} == {
+            "article",
+            "video",
+        }
         assert item["headline_source"] == "reviewed_article"
         assert item["resource_blueprint"] == {category: ["article", "video"]}
         assert item["resource_summary"]["preferred_locale"] == "zh-TW"
@@ -595,6 +608,197 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
     assert detail["personalization_reason"] == "冻结后的具体推荐理由"
     assert detail["is_conversation_match"] is True
     assert detail["related_session_id"] == "main-session"
+
+
+def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    context = {
+        "state": "ready",
+        "session_id": "session-prepared",
+        "context_created_at": "2026-08-03T10:00:00+00:00",
+        "preferred_locale": "zh-CN",
+        "child_profile_fingerprint": "profile-prepared",
+        "child_age_context": "孩子当前年龄：11个月",
+    }
+    card = {
+        "id": "learn_sleep_routine",
+        "content_category": "authority",
+        "is_conversation_match": True,
+        "resource_readiness": "preparing",
+    }
+    snapshot = build_snapshot("parent-prepared", card, context)
+    pair = [
+        {
+            "id": "prepared-article",
+            "kind": "article",
+            "content_category": "authority",
+            "locales": ["zh-CN"],
+            "title": "真实准备文章",
+            "publisher": "权威机构",
+            "description": "准备好的文章摘要",
+            "url": "https://example.org/prepared-article",
+        },
+        {
+            "id": "prepared-video",
+            "kind": "video",
+            "content_category": "authority",
+            "locales": ["zh-CN"],
+            "title": "真实准备视频",
+            "publisher": "权威机构",
+            "url": "https://example.org/prepared-video",
+        },
+    ]
+    prepared = snapshot_with_prepared_resource_pair(
+        snapshot,
+        pair,
+        content_set_id=f"pcs_{'a' * 24}",
+    )
+
+    assert asyncio.run(
+        main._db_persist_recommendation_snapshots("parent-prepared", [prepared])
+    )
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    restored = asyncio.run(
+        main._db_get_recommendation_snapshot(
+            "parent-prepared",
+            snapshot["recommendation_id"],
+        )
+    )
+    assert prepared_resource_pair(restored) == pair
+
+    rebuilt_card = deepcopy(card)
+    asyncio.run(
+        main._attach_recommendation_snapshots(
+            "parent-prepared",
+            [rebuilt_card],
+            context,
+        )
+    )
+    assert rebuilt_card["resource_readiness"] == "ready"
+    assert rebuilt_card["prepared_content_set_id"] == f"pcs_{'a' * 24}"
+    assert rebuilt_card["resources"] == pair
+    assert rebuilt_card["title"] == "真实准备文章"
+
+    stale_retryable = deepcopy(snapshot)
+    stale_retryable["resource_readiness"] = "retryable"
+    assert asyncio.run(
+        main._db_persist_recommendation_snapshots(
+            "parent-prepared",
+            [stale_retryable],
+        )
+    )
+    assert prepared_resource_pair(stale_retryable) == pair
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    still_ready = asyncio.run(
+        main._db_get_recommendation_snapshot(
+            "parent-prepared",
+            snapshot["recommendation_id"],
+        )
+    )
+    assert prepared_resource_pair(still_ready) == pair
+
+
+def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic(
+    monkeypatch,
+):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    snapshot = build_snapshot(
+        "parent-retryable",
+        {
+            "id": "learn_language_milestones",
+            "content_category": "authority",
+            "resource_readiness": "preparing",
+        },
+        {
+            "session_id": "session-retryable",
+            "context_created_at": "2026-08-03T10:00:00+00:00",
+            "preferred_locale": "zh-CN",
+        },
+    )
+
+    preparing = main.snapshot_with_resource_readiness(snapshot, "preparing")
+    assert asyncio.run(
+        main._db_persist_recommendation_snapshots(
+            "parent-retryable",
+            [preparing],
+        )
+    )
+
+    retryable = asyncio.run(
+        main._mark_prepare_retryable("parent-retryable", [preparing])
+    )
+
+    assert retryable[0]["resource_readiness"] == "retryable"
+    assert prepared_resource_pair(retryable[0]) is None
+
+    # A cold process still sees the durable in-flight marker. The retryable
+    # response is invocation-local and cannot downgrade a concurrently ready
+    # row in another Vercel instance.
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    durable = asyncio.run(
+        main._db_get_recommendation_snapshot(
+            "parent-retryable",
+            snapshot["recommendation_id"],
+        )
+    )
+    assert durable["resource_readiness"] == "preparing"
+
+
+def test_persistent_ready_snapshot_wins_over_stale_process_cache(monkeypatch):
+    supabase = _SettingsSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    uid = "parent-cross-instance"
+    snapshot = build_snapshot(
+        uid,
+        {
+            "id": "learn_language_milestones",
+            "content_category": "authority",
+        },
+        {
+            "session_id": "session-cross-instance",
+            "context_created_at": "2026-08-03T10:00:00+00:00",
+            "preferred_locale": "zh-CN",
+        },
+    )
+    preparing = main.snapshot_with_resource_readiness(snapshot, "preparing")
+    pair = [
+        {
+            "id": "cross-instance-article",
+            "kind": "article",
+            "content_category": "authority",
+            "locales": ["zh-CN"],
+            "url": "https://example.org/cross-instance-article",
+        },
+        {
+            "id": "cross-instance-video",
+            "kind": "video",
+            "content_category": "authority",
+            "locales": ["zh-CN"],
+            "url": "https://example.org/cross-instance-video",
+        },
+    ]
+    ready = snapshot_with_prepared_resource_pair(
+        snapshot,
+        pair,
+        content_set_id=f"pcs_{'b' * 24}",
+    )
+
+    assert asyncio.run(main._db_persist_recommendation_snapshots(uid, [ready]))
+    # Simulate another warm function instance whose process cache still holds
+    # the pre-generation state while durable storage already contains ready.
+    main._recommendation_snapshots[(uid, snapshot["recommendation_id"])] = preparing
+
+    restored = asyncio.run(
+        main._db_get_recommendation_snapshot(uid, snapshot["recommendation_id"])
+    )
+
+    assert prepared_resource_pair(restored) == pair
+    assert restored["prepared_content_set_id"] == f"pcs_{'b' * 24}"
 
 
 def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):

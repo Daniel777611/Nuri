@@ -249,6 +249,38 @@ function previewContentCategory(path: string): "authority" | "featured" | "case"
 function previewResourceCategory(resource: any): "authority" | "featured" | "case" {
   return resource.content_category || (resource.source_tier === "curated" ? "featured" : "authority");
 }
+
+function previewPreparedPair(
+  cardId: string,
+  category: "authority" | "featured" | "case",
+  preferredLocale: string,
+) {
+  const learningCard = learningCards.find((item) => item.id === cardId);
+  if (!learningCard) return [];
+  const candidates = orderPreviewResources(
+    learningCard.resources || [],
+    preferredLocale,
+  ).filter(
+    (resource) =>
+      resource.locales?.includes(preferredLocale) &&
+      previewResourceCategory(resource) === category,
+  );
+  const article = candidates.find((resource) => resource.kind === "article");
+  const video = candidates.find((resource) => resource.kind === "video");
+  return article && video
+    ? [article, video].map((resource) => ({
+        ...resource,
+        content_category: category,
+      }))
+    : [];
+}
+
+const previewRecommendationId = (
+  cardId: string,
+  category: "authority" | "featured" | "case",
+) => `preview-rec:${cardId}:${category}`;
+
+const previewContentSetId = (cardId: string) => `preview-pcs:${cardId}`;
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
@@ -395,18 +427,9 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       case: "真实案例",
     } as const;
     const items = (["authority", "featured", "case"] as const).map((category, index) => {
-      const pair = orderPreviewResources(baseCard.resources || [], preferredLocale)
-        .filter(
-          (resource) =>
-            resource.locales?.includes(preferredLocale) &&
-            previewResourceCategory(resource) === category,
-        )
-        .filter(
-          (resource, resourceIndex, resources) =>
-            resources.findIndex((candidate) => candidate.kind === resource.kind) === resourceIndex,
-        )
-        .slice(0, 2);
+      const pair = previewPreparedPair(baseCard.id, category, preferredLocale);
       const article = pair.find((resource) => resource.kind === "article");
+      const pairComplete = pair.length === 2;
       return {
         ...baseCard,
         title: article?.title || baseCard.title,
@@ -419,8 +442,15 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
           : "你已关闭对话个性化，这是 NURI 的可信来源精选",
         is_conversation_match: useConversation,
         related_session_id: useConversation ? "chat-1" : null,
+        context_created_at: "2026-07-15T09:00:00.000Z",
+        recommendation_id: previewRecommendationId(baseCard.id, category),
         rank: index + 1,
         resource_status: "reviewed",
+        resource_readiness: pairComplete ? "ready" : "unavailable",
+        resource_pair_complete: pairComplete,
+        prepared_content_set_id: pairComplete ? previewContentSetId(baseCard.id) : null,
+        resources: pair,
+        research_status: pairComplete ? "ready" : "unavailable",
         resource_summary: {
           preferred_locale: preferredLocale,
           categories: {
@@ -445,6 +475,27 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       generated_at: new Date().toISOString(),
     };
   }
+  if (routePath === "/feed/research/prepare" && method === "POST") {
+    const preferredLocale = previewResourceLocale(path);
+    const items = (Array.isArray(body.items) ? body.items : []).map((item: any) => {
+      const category = String(item.recommendation_id || "").split(":").pop();
+      const safeCategory =
+        category === "featured" || category === "case" ? category : "authority";
+      const resources = previewPreparedPair(item.card_id, safeCategory, preferredLocale);
+      const ready = resources.length === 2;
+      return {
+        card_id: item.card_id,
+        recommendation_id: item.recommendation_id,
+        content_category: safeCategory,
+        resource_readiness: ready ? "ready" : "unavailable",
+        resource_pair_complete: ready,
+        prepared_content_set_id: ready ? previewContentSetId(item.card_id) : null,
+        resources,
+        research_status: ready ? "ready" : "unavailable",
+      };
+    });
+    return { items };
+  }
   if (routePath.startsWith("/feed/") && routePath.endsWith("/detail")) {
     const contentId = routePath.split("/")[2];
     const learningCard = learningCards.find((item) => item.id === contentId);
@@ -452,20 +503,11 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       const isSleepMatch = privacy.allow_history_training && learningCard.topic === "sleep";
       const preferredLocale = previewResourceLocale(path);
       const contentCategory = previewContentCategory(path);
-      const resources = orderPreviewResources(
-        learningCard.resources || [],
+      const resources = previewPreparedPair(
+        learningCard.id,
+        contentCategory,
         preferredLocale,
-      )
-        .filter(
-          (resource) =>
-            resource.locales?.includes(preferredLocale) &&
-            previewResourceCategory(resource) === contentCategory,
-        )
-        .filter(
-          (resource, resourceIndex, allResources) =>
-            allResources.findIndex((candidate) => candidate.kind === resource.kind) === resourceIndex,
-        )
-        .slice(0, 2);
+      );
       const hasCompleteResourcePair = (["article", "video"] as const).every(
         (kind) => resources.some((resource) => resource.kind === kind),
       );
@@ -486,12 +528,12 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
             : "你已关闭对话个性化，这是 NURI 的可信来源精选",
         is_conversation_match: isSleepMatch,
         related_session_id: isSleepMatch ? "chat-1" : null,
-        research_status:
-          isSleepMatch && privacy.allow_external_content_research
-            ? "pending"
-            : isSleepMatch
-              ? "consent_required"
-              : "reviewed_fallback",
+        resource_readiness: hasCompleteResourcePair ? "ready" : "unavailable",
+        resource_pair_complete: hasCompleteResourcePair,
+        prepared_content_set_id: hasCompleteResourcePair
+          ? previewContentSetId(learningCard.id)
+          : null,
+        research_status: hasCompleteResourcePair ? "ready" : "unavailable",
         refresh_available:
           hasCompleteResourcePair && privacy.allow_external_content_research,
       };

@@ -659,18 +659,16 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
     assert card["resource_status"] == "research_on_open"
     assert expected_fragment in card["title"]
 
-    detail = asyncio.run(
-        main.get_card_detail(
-            card["id"],
-            session_id=card["related_session_id"],
-            context_created_at=card["context_created_at"],
-            uid="parent-1",
+    with pytest.raises(Exception) as unprepared:
+        asyncio.run(
+            main.get_card_detail(
+                card["id"],
+                session_id=card["related_session_id"],
+                context_created_at=card["context_created_at"],
+                uid="parent-1",
+            )
         )
-    )
-    assert detail["id"] == card["id"]
-    assert detail["is_dynamic_research_card"] is True
-    assert detail["resources"] == []
-    assert detail["research_status"] == "pending"
+    assert getattr(unprepared.value, "status_code", None) == 409
 
     researched_resources = [
         {

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -14,7 +14,13 @@ import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
-import { api, type PersonalizedFeedItem } from "@/src/api";
+import {
+  api,
+  type PersonalizedFeedItem,
+  type PreparedFeedItem,
+  type PreparedLearningResource,
+  type ResourceReadiness,
+} from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
 import HeroCarousel, {
@@ -60,6 +66,123 @@ type HeroFeedMeta = {
   generatedAt?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 };
+
+type FeedPreparationItem = {
+  card_id: string;
+  recommendation_id: string;
+};
+
+// Focus transitions can remount the Home screen while the server is still
+// preparing the same frozen recommendation set. Reuse that promise so a quick
+// chat/home switch never launches a second POST that could finish out of order.
+const inFlightFeedPreparations = new Map<
+  string,
+  ReturnType<typeof api.preparePersonalizedFeed>
+>();
+
+function preparePersonalizedFeedOnce(items: FeedPreparationItem[]) {
+  const normalized = [...items].sort((left, right) =>
+    left.recommendation_id.localeCompare(right.recommendation_id),
+  );
+  const key = normalized
+    .map((item) => `${item.recommendation_id}:${item.card_id}`)
+    .join("|");
+  const existing = inFlightFeedPreparations.get(key);
+  if (existing) return existing;
+
+  const pending = api.preparePersonalizedFeed(normalized);
+  inFlightFeedPreparations.set(key, pending);
+  const clear = () => {
+    if (inFlightFeedPreparations.get(key) === pending) {
+      inFlightFeedPreparations.delete(key);
+    }
+  };
+  pending.then(clear, clear);
+  return pending;
+}
+
+function exactPreparedPair(
+  resources: PreparedLearningResource[] | undefined,
+  category: HeroCard["content_category"],
+) {
+  if (!category || !Array.isArray(resources) || resources.length !== 2) return null;
+  const article = resources.find(
+    (resource) =>
+      resource.kind === "article" && resource.content_category === category,
+  );
+  const video = resources.find(
+    (resource) =>
+      resource.kind === "video" && resource.content_category === category,
+  );
+  return article && video ? { article, video } : null;
+}
+
+function isReadyHeroCard(card: HeroCard): boolean {
+  return (
+    card.resource_readiness === "ready" &&
+    card.resource_pair_complete === true &&
+    exactPreparedPair(card.resources, card.content_category) !== null
+  );
+}
+
+function awaitingPreparationCard(card: PersonalizedFeedItem): HeroCard {
+  if (isReadyHeroCard(card as HeroCard)) return card as HeroCard;
+  const resourceReadiness: ResourceReadiness = card.recommendation_id
+    ? "preparing"
+    : "unavailable";
+  return {
+    ...card,
+    resource_readiness: resourceReadiness,
+    resource_pair_complete: false,
+    prepared_content_set_id: null,
+  };
+}
+
+function mergePreparedCard(card: HeroCard, prepared: PreparedFeedItem | undefined): HeroCard {
+  if (!prepared) {
+    return {
+      ...card,
+      resource_readiness: "retryable",
+      resource_pair_complete: false,
+    };
+  }
+  const pair = exactPreparedPair(prepared.resources, card.content_category);
+  const ready =
+    prepared.resource_readiness === "ready" &&
+    prepared.resource_pair_complete === true &&
+    pair !== null;
+  if (!ready) {
+    return {
+      ...card,
+      resource_readiness:
+        prepared.resource_readiness === "ready"
+          ? "retryable"
+          : prepared.resource_readiness,
+      resource_pair_complete: false,
+      prepared_content_set_id: null,
+      research_status: prepared.research_status,
+    };
+  }
+  const category = card.content_category!;
+  return {
+    ...card,
+    title: pair.article.title,
+    publisher: pair.article.publisher,
+    summary: pair.article.description || card.summary,
+    resource_readiness: "ready",
+    resource_pair_complete: true,
+    prepared_content_set_id: prepared.prepared_content_set_id || null,
+    resources: [pair.article, pair.video],
+    research_status: prepared.research_status,
+    resource_summary: {
+      ...card.resource_summary,
+      categories: {
+        ...(card.resource_summary?.categories || {}),
+        [category]: { article: 1, video: 1 },
+      },
+    },
+  };
+}
 
 const conversationExcerpt = (text: string, maxLength = 26) => {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -138,12 +261,14 @@ export default function Home() {
   const activeFeedRefresh = useRef<string | null>(null);
   const heroImpressionKeys = useRef(new Set<string>());
   const openingNuriChat = useRef(false);
+  const preparationRetryAttempt = useRef(0);
+  const preparationRetrySet = useRef("");
 
-  const showToast = (m: string) => {
+  const showToast = useCallback((m: string) => {
     setToastMsg(m);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
-  };
+  }, []);
 
   const loadNuriPreview = useCallback(async () => {
     const requestId = ++nuriPreviewRequest.current;
@@ -218,19 +343,108 @@ export default function Home() {
       if (preserveExisting && categoryCards.length === 0) {
         throw new Error("personalized refresh returned no complete category set");
       }
-      setHeroCards(categoryCards);
-      setHeroFeedMeta({
+      const nextFeedMeta: HeroFeedMeta = {
         feedRequestId: response.feed_request_id || undefined,
         generatedAt: response.generated_at || undefined,
         initialContentCategory: response.initial_content_category,
-      });
-      setHeroFeedState(
+      };
+      const nextFeedState: HeroFeedState =
         categoryCards.length > 0 &&
           ["conversation", "profile"].includes(response.personalization_mode)
           ? "personalized"
-          : "curated",
+          : "curated";
+      const candidateCards = categoryCards.map(awaitingPreparationCard);
+
+      // A cold load may show honest per-card preparation states immediately.
+      // A warm return from chat keeps the previous feed untouched until the
+      // replacement cards and their exact article/video pairs are all resolved.
+      if (!preserveExisting) {
+        setHeroCards(candidateCards);
+        setHeroFeedMeta(nextFeedMeta);
+        setHeroFeedState(nextFeedState);
+        heroCardsPresent.current = candidateCards.length > 0;
+      }
+
+      const needsPreparation = candidateCards.some(
+        (card) => !isReadyHeroCard(card) && Boolean(card.recommendation_id),
       );
-      heroCardsPresent.current = categoryCards.length > 0;
+      // Prepare the complete three-lane set together. Sending only the missing
+      // lane can produce a different content_set_id and mix two research runs.
+      const cardsToPrepare = needsPreparation
+        ? candidateCards.filter((card) => Boolean(card.recommendation_id))
+        : [];
+      let preparedCards = candidateCards;
+      if (cardsToPrepare.length > 0) {
+        try {
+          const prepared = await preparePersonalizedFeedOnce(
+            cardsToPrepare.map((card) => ({
+              card_id: card.id,
+              recommendation_id: card.recommendation_id!,
+            })),
+          );
+          if (requestId !== heroRequest.current) return;
+          const preparedItems = Array.isArray(prepared?.items) ? prepared.items : [];
+          const preparedSetIds = new Set(
+            preparedItems
+              .map((item) => item.prepared_content_set_id)
+              .filter((value): value is string => Boolean(value)),
+          );
+          const completePreparedSet =
+            preparedItems.length === cardsToPrepare.length &&
+            preparedItems.every(
+              (item) =>
+                item.resource_readiness === "ready" &&
+                item.resource_pair_complete === true &&
+                Boolean(item.prepared_content_set_id),
+            ) &&
+            preparedSetIds.size === 1;
+          if (!completePreparedSet) {
+            throw new Error("prepared recommendation set was incomplete");
+          }
+          const preparedByRecommendation = new Map(
+            preparedItems.map((item) => [
+              item.recommendation_id,
+              item,
+            ]),
+          );
+          preparedCards = candidateCards.map((card) =>
+            !card.recommendation_id
+              ? card
+              : mergePreparedCard(
+                  card,
+                  preparedByRecommendation.get(card.recommendation_id),
+                ),
+          );
+        } catch {
+          if (requestId !== heroRequest.current) return;
+          if (preserveExisting) {
+            throw new Error("replacement recommendations were not fully prepared");
+          }
+          preparedCards = candidateCards.map((card) =>
+            isReadyHeroCard(card) || !card.recommendation_id
+              ? card
+              : {
+                  ...card,
+                  resource_readiness: "retryable" as const,
+                  resource_pair_complete: false,
+                },
+          );
+        }
+      }
+      if (requestId !== heroRequest.current) return;
+      if (
+        preserveExisting &&
+        (preparedCards.length !== 3 || !preparedCards.every(isReadyHeroCard))
+      ) {
+        throw new Error("replacement recommendations were not fully prepared");
+      }
+
+      // This is the only warm-refresh commit point: title, source, resources,
+      // feed metadata and readiness switch together, so old/new feeds never mix.
+      setHeroCards(preparedCards);
+      setHeroFeedMeta(nextFeedMeta);
+      setHeroFeedState(nextFeedState);
+      heroCardsPresent.current = preparedCards.length > 0;
       if (activeFeedRefresh.current === clientRefresh) {
         activeFeedRefresh.current = null;
       }
@@ -256,6 +470,34 @@ export default function Home() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    const recommendationSetKey = heroCards
+      .map((card) => card.recommendation_id || `${card.id}:${card.content_category || ""}`)
+      .sort()
+      .join("|");
+    if (preparationRetrySet.current !== recommendationSetKey) {
+      preparationRetrySet.current = recommendationSetKey;
+      preparationRetryAttempt.current = 0;
+    }
+    const hasRetryableCard = heroCards.some(
+      (card) => card.resource_readiness === "retryable" && card.recommendation_id,
+    );
+    if (!hasRetryableCard) {
+      if (heroCards.length > 0 && heroCards.every(isReadyHeroCard)) {
+        preparationRetryAttempt.current = 0;
+      }
+      return;
+    }
+    if (heroFeedRefreshing || preparationRetryAttempt.current >= 3) return;
+
+    const delayMs = 3000 * 2 ** preparationRetryAttempt.current;
+    const timer = setTimeout(() => {
+      preparationRetryAttempt.current += 1;
+      void loadPersonalizedFeed({ preserveExisting: true });
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }, [heroCards, heroFeedRefreshing, loadPersonalizedFeed]);
 
   const openNuriChat = async () => {
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
@@ -385,6 +627,20 @@ export default function Home() {
 
   const openHeroCard = useCallback(
     (card: HeroCard) => {
+      if (!isReadyHeroCard(card)) {
+        if (card.resource_readiness === "retryable") {
+          preparationRetryAttempt.current = 0;
+          void loadPersonalizedFeed({ preserveExisting: true });
+          showToast("正在重新准备文章和视频");
+          return;
+        }
+        showToast(
+          card.resource_readiness === "unavailable"
+              ? "暂未找到完整的文章和视频"
+              : "文章和视频正在准备，请稍等一下",
+        );
+        return;
+      }
       const position =
         card.rank ||
         Math.max(
@@ -420,6 +676,9 @@ export default function Home() {
           ...(card.recommendation_id
             ? { recommendation_id: card.recommendation_id }
             : {}),
+          ...(card.prepared_content_set_id
+            ? { prepared_content_set_id: card.prepared_content_set_id }
+            : {}),
           ...(heroFeedMeta.feedRequestId
             ? { feed_request_id: heroFeedMeta.feedRequestId }
             : {}),
@@ -427,7 +686,7 @@ export default function Home() {
         },
       });
     },
-    [heroCards, heroFeedMeta.feedRequestId, router],
+    [heroCards, heroFeedMeta.feedRequestId, loadPersonalizedFeed, router, showToast],
   );
 
   return (

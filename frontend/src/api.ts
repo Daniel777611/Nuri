@@ -17,6 +17,23 @@ export type PersonalizedResourceStatus =
 
 export type PersonalizedContentCategory = "authority" | "featured" | "case";
 
+export type ResourceReadiness =
+  | "ready"
+  | "preparing"
+  | "retryable"
+  | "unavailable";
+
+export type PreparedLearningResource = {
+  id: string;
+  kind: "article" | "video";
+  title: string;
+  publisher: string;
+  description?: string;
+  url?: string;
+  content_category?: PersonalizedContentCategory;
+  [key: string]: unknown;
+};
+
 export type PersonalizedFeedItem = {
   id: string;
   title: string;
@@ -36,6 +53,11 @@ export type PersonalizedFeedItem = {
   category_preference_weight?: number;
   is_primary_exposure_category?: boolean;
   resource_status?: PersonalizedResourceStatus;
+  resource_readiness?: ResourceReadiness;
+  resource_pair_complete?: boolean;
+  prepared_content_set_id?: string | null;
+  resources?: PreparedLearningResource[];
+  research_status?: string;
   curation_mode?: string;
   resource_summary?: {
     preferred_locale?: string;
@@ -53,6 +75,20 @@ export type PersonalizedFeedResponse = {
   generated_at?: string;
   category_mix?: Record<PersonalizedContentCategory, number>;
   initial_content_category?: PersonalizedContentCategory;
+};
+
+export type PreparedFeedItem = {
+  recommendation_id: string;
+  content_category: PersonalizedContentCategory;
+  resource_readiness: ResourceReadiness;
+  resource_pair_complete: boolean;
+  prepared_content_set_id?: string | null;
+  resources?: PreparedLearningResource[];
+  research_status?: string;
+};
+
+export type PrepareFeedResponse = {
+  items: PreparedFeedItem[];
 };
 
 export type RecommendationEventName =
@@ -355,12 +391,21 @@ export const api = {
           : ""
       }`,
     ),
+  preparePersonalizedFeed: (
+    items: { card_id: string; recommendation_id: string }[],
+  ) =>
+    req<PrepareFeedResponse>(
+      "/feed/research/prepare",
+      { method: "POST", body: JSON.stringify({ items }) },
+      110000,
+    ),
   getCardDetail: (
     id: string,
     sessionId?: string,
     contextCreatedAt?: string,
     recommendationId?: string,
     contentCategory?: PersonalizedContentCategory,
+    preparedContentSetId?: string,
   ) => {
     const query = [
       sessionId ? `session_id=${encodeURIComponent(sessionId)}` : "",
@@ -372,6 +417,9 @@ export const api = {
         : "",
       contentCategory
         ? `content_category=${encodeURIComponent(contentCategory)}`
+        : "",
+      preparedContentSetId
+        ? `prepared_content_set_id=${encodeURIComponent(preparedContentSetId)}`
         : "",
     ].filter(Boolean).join("&");
     return req(`/feed/${id}/detail${query ? `?${query}` : ""}`);
