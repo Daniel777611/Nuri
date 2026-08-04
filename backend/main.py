@@ -5049,6 +5049,83 @@ def _resource_with_delivery_metadata(resource: dict) -> dict:
     return value
 
 
+def _delivery_locale_priority(resource: dict, preferred_locale: Optional[str]) -> int:
+    """Rank delivery language without letting an English fallback lead zh-CN.
+
+    A Chinese account first sees an institution's official Chinese edition,
+    then an original/allowlisted Chinese destination.  A NURI-guided English
+    article remains a last-resort reading fallback.  English-audio video is
+    ranked after every Chinese option (and the delivery gate normally rejects
+    it entirely), so provider result order can never promote it accidentally.
+    """
+
+    if preferred_locale != "zh-CN":
+        return 0
+    kind = str(resource.get("kind") or "")
+    translation_type = str(resource.get("translation_type") or "")
+    source_language = str(resource.get("source_language") or "").casefold()
+    content_locale = str(resource.get("content_locale") or "").casefold()
+    display_locale = str(resource.get("display_locale") or "")
+    spoken_language = str(resource.get("spoken_language") or "").casefold()
+
+    # Video language is a hard user-experience boundary: subtitles, a Chinese
+    # guide, or a localized title do not turn English audio into Chinese video.
+    if kind == "video" and spoken_language not in {
+        "mandarin",
+        "putonghua",
+        "chinese",
+        "国语",
+        "普通话",
+        "华语",
+    }:
+        return 90
+    if translation_type == "official_translation" and display_locale == "zh-CN":
+        return 0
+    if display_locale == "zh-CN" and (
+        source_language in {"zh", "zh-cn", "chinese", "mandarin"}
+        or content_locale in {"zh", "zh-cn", "chinese", "mandarin"}
+    ):
+        return 1
+    if (
+        translation_type == "original"
+        and (
+            source_language in {"zh-tw", "traditional-chinese"}
+            or content_locale in {"zh-tw", "traditional-chinese"}
+        )
+    ):
+        return 5
+    if (
+        kind == "article"
+        and source_language == "en"
+        and translation_type == "nuri_guide"
+        and display_locale == "zh-CN"
+    ):
+        return 10
+    return 50
+
+
+def _delivery_resource_sort_key(
+    resource: dict,
+    preferred_locale: Optional[str],
+    content_category: str,
+) -> tuple[int, int, int]:
+    """Sort first by language fitness, then by source authority and freshness."""
+
+    authority_priority = 0
+    if content_category == "authority":
+        if _is_us_authority_resource(resource):
+            authority_priority = 0
+        elif _resource_parent_org_id(resource) in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS:
+            authority_priority = 1
+        else:
+            authority_priority = 2
+    return (
+        _delivery_locale_priority(resource, preferred_locale),
+        authority_priority,
+        0 if resource.get("research_source") == "openai_web_search" else 1,
+    )
+
+
 def _delivery_contract_pair(
     resources: list[dict],
     content_category: str,
@@ -5068,14 +5145,13 @@ def _delivery_contract_pair(
             require_dynamic=require_dynamic,
         )
     ]
-    if content_category == "authority" and preferred_locale == "zh-CN":
-        matching.sort(
-            key=lambda resource: (
-                str(resource.get("translation_type") or "") != "nuri_guide",
-                _resource_parent_org_id(resource)
-                not in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
-            )
+    matching.sort(
+        key=lambda resource: _delivery_resource_sort_key(
+            resource,
+            preferred_locale,
+            content_category,
         )
+    )
     pair: list[dict] = []
     for kind in ("article", "video"):
         resource = next(
@@ -5196,24 +5272,24 @@ def _category_resource_pair_options(
     ]
     articles = [resource for resource in matching if resource.get("kind") == "article"]
     videos = [resource for resource in matching if resource.get("kind") == "video"]
-    if content_category == "authority":
-        def authority_key(resource: dict) -> tuple[bool, bool]:
-            return (
-                str(resource.get("translation_type") or "") != "nuri_guide",
-                not _is_us_authority_resource(resource),
-            )
-
-        articles.sort(key=authority_key)
-        videos.sort(key=authority_key)
+    articles.sort(
+        key=lambda resource: _delivery_resource_sort_key(
+            resource,
+            preferred_locale,
+            content_category,
+        )
+    )
+    videos.sort(
+        key=lambda resource: _delivery_resource_sort_key(
+            resource,
+            preferred_locale,
+            content_category,
+        )
+    )
     candidates: list[list[dict]] = []
     seen: set[tuple[str, str]] = set()
     for article in articles:
         for video in videos:
-            if any(
-                _resource_parent_org_id(resource) in (excluded_primary_orgs or set())
-                for resource in (article, video)
-            ):
-                continue
             signature = (
                 str(article.get("url") or ""),
                 str(video.get("url") or ""),
@@ -5224,6 +5300,30 @@ def _category_resource_pair_options(
             candidates.append([article, video])
     candidates.sort(
         key=lambda pair: (
+            max(
+                _delivery_locale_priority(resource, preferred_locale)
+                for resource in pair
+            ),
+            sum(
+                _delivery_locale_priority(resource, preferred_locale)
+                for resource in pair
+            ),
+            # Source diversity is a tie-breaker inside the same language tier;
+            # it must never force a Chinese user onto an English or less-local
+            # destination merely to avoid reusing an institution.
+            sum(
+                _resource_parent_org_id(resource)
+                in (excluded_primary_orgs or set())
+                for resource in pair
+            ),
+            sum(
+                _delivery_resource_sort_key(
+                    resource,
+                    preferred_locale,
+                    content_category,
+                )[1]
+                for resource in pair
+            ),
             pair[0].get("research_source") != "openai_web_search",
             pair[1].get("research_source") != "openai_web_search",
         )
@@ -5241,6 +5341,14 @@ def _category_resource_pair_options(
     while candidates and len(selected) < max(1, max_pairs):
         candidates.sort(
             key=lambda pair: (
+                -max(
+                    _delivery_locale_priority(resource, preferred_locale)
+                    for resource in pair
+                ),
+                -sum(
+                    _delivery_locale_priority(resource, preferred_locale)
+                    for resource in pair
+                ),
                 str(pair[0].get("url") or "") not in used_article_urls
                 and str(pair[1].get("url") or "") not in used_video_urls,
                 str(pair[0].get("url") or "") not in used_article_urls,
@@ -5345,6 +5453,7 @@ def _resource_blueprint(
 def _select_category_resource_pair(
     resources: list[dict],
     content_category: Optional[str],
+    preferred_locale: Optional[str] = None,
 ) -> list[dict]:
     """Return at most one article and one video for one editorial lane."""
 
@@ -5355,12 +5464,16 @@ def _select_category_resource_pair(
         for resource in resources
         if str(resource.get("content_category") or "") == content_category
     ]
-    if content_category == "authority":
-        # Same-language and age gates run before this function.  Among equally
-        # eligible authority items, prefer original U.S. public-health,
-        # pediatric and university sources without trusting model-authored
-        # country labels alone.
-        matching.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
+    # Language fitness is the first ordering axis.  Among equally localized
+    # authority items, prefer verified U.S. public-health, pediatric and
+    # university sources without trusting model-authored country labels.
+    matching.sort(
+        key=lambda resource: _delivery_resource_sort_key(
+            resource,
+            preferred_locale,
+            str(content_category),
+        )
+    )
     pair: list[dict] = []
     for kind in ("article", "video"):
         selected = next(
@@ -5456,7 +5569,11 @@ def _reviewed_category_resource_pair(
     """
 
     reviewed = _reviewed_resources_for_context(resources, locale, topic_context)
-    pair = _select_category_resource_pair(reviewed, content_category)
+    pair = _select_category_resource_pair(
+        reviewed,
+        content_category,
+        preferred_locale=locale,
+    )
     # Never refill a missing format from an unfiltered pool.  That old fallback
     # could put a 10–12 month article back beside a 30 month recommendation.
     # A stage-correct single format is safer than a visually complete wrong-age
@@ -6448,6 +6565,9 @@ async def prepare_feed_research(
                             "kind": resource.get("kind"),
                             "parent_org_id": _resource_parent_org_id(resource),
                             "translation_type": resource.get("translation_type"),
+                            "source_language": resource.get("source_language"),
+                            "display_locale": resource.get("display_locale"),
+                            "spoken_language": resource.get("spoken_language"),
                         }
                         for resource in pair_options_by_category[category][0]
                     ]

@@ -128,12 +128,10 @@ US_AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
     }
 )
 
-# For Simplified-Chinese delivery NURI intentionally starts with the strongest
-# English-language primary evidence, then adds a Chinese in-product guide.  The
-# external destination remains the institution's original page; it is never
-# presented as an official Chinese translation.  Keeping this as an explicit
-# machine-readable set makes the whitelist drive candidate discovery and final
-# publication instead of acting only as a post-search URL validator.
+# English-language primary sources remain available as an article-only final
+# fallback for Simplified-Chinese delivery.  They must never outrank an
+# institution's official Chinese page, a reviewed Chinese authority page, or a
+# verified Mandarin video.
 ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
     {
         *US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
@@ -325,6 +323,8 @@ TRUSTED_RESOURCE_HOSTS = frozenset(
 REVIEWED_EXACT_RESOURCE_URLS = frozenset(
     {
         "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047380",
+        "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047086?p=1",
+        "https://www.cdc.gov/act-early/media/pdfs/2025/11/cdc-milestone-checklists-ltsae-chinese.pdf",
         "https://www.unicef.cn/videos/ecd-master-class-brain-development-ep02-first",
         "https://www.mama.cn/baby/yinger/article/793653.html",
         "https://www.bilibili.com/video/BV17r4y1x7Hu",
@@ -336,6 +336,12 @@ REVIEWED_EXACT_RESOURCE_URLS = frozenset(
         "https://www.unicef.cn/videos/how-to-guide-your-children-to-learn-through-play",
         "https://www.unicef.cn/stories/grandmothers-journey-raising-left-behind-children",
         "https://www.unicef.cn/videos/grandmother-zhang-qin-learns-responsive-care",
+        "https://www.parenting.com.tw/article/5086092",
+        "https://www.youtube.com/watch?v=-d0DmEv8qVs",
+        "https://www.ptt.cc/bbs/BabyMother/M.1427736608.A.7D6.html",
+        "https://www.youtube.com/watch?v=vcjbqp3K-fM",
+        "https://www.bilibili.com/video/BV1BH4y1U7yg",
+        "https://y.dxy.cn/hospital/879/925528.html",
     }
 )
 
@@ -1973,6 +1979,50 @@ _LANGUAGE_MILESTONE_FOCUS_TAGS = [
 
 _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
             {
+                "id": "language-mayo-official-translation-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "authority",
+                "source_tier": "authority",
+                "selection_basis": "official",
+                "title": "婴儿发育：7 到 9 月龄的发育里程碑",
+                "publisher": "妙佑医疗国际（Mayo Clinic）",
+                "language": "机构官方简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "US",
+                "script_language": "zh-Hans",
+                "source_language": "en",
+                "translation_type": "official_translation",
+                "age_range_months": [7, 9],
+                "focus_tags": ["语言", "沟通", "咿呀学语", "模仿声音", "语言里程碑"],
+                "description": "妙佑医疗国际官方简体中文页面，精确覆盖 7 到 9 月龄，说明咿呀发声、模仿、轮流回应、阅读和日常聊天等互动线索。",
+                "trust_note": "Mayo Clinic 官方简体中文健康资料，2026 年 5 月更新，并列出儿科学与言语语言专业参考来源。",
+                "recognition": "美国权威医疗机构 · 官方简体中文版本",
+                "selection_reason": "当前宝宝正处于 7 到 9 月龄阶段，可直接用中文对照咿呀发声、模仿和来回互动。",
+                "url": "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047086?p=1",
+            },
+            {
+                "id": "language-cdc-milestone-checklist-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "authority",
+                "source_tier": "authority",
+                "selection_basis": "official",
+                "title": "CDC 发育里程碑清单：9 月龄",
+                "publisher": "美国疾病控制与预防中心（CDC）",
+                "language": "机构官方简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "US",
+                "script_language": "zh-Hans",
+                "source_language": "en",
+                "translation_type": "official_translation",
+                "age_range_months": [9, 9],
+                "focus_tags": ["语言", "沟通", "咿呀学语", "模仿声音", "发育里程碑"],
+                "description": "CDC 官方简体中文发育里程碑清单；9 月龄内容位于第 7 页，包含发声、回应名字、手势沟通和家庭互动建议。",
+                "trust_note": "美国 CDC 官方简体中文资料，2025 年 11 月更新；NURI 导读会直接提示查看第 7 页。",
+                "recognition": "美国政府公共卫生机构 · 官方简体中文版本",
+                "selection_reason": "作为 9 月龄语言与沟通观察的权威对照，并明确里程碑是观察工具而不是诊断标签。",
+                "url": "https://www.cdc.gov/act-early/media/pdfs/2025/11/cdc-milestone-checklists-ltsae-chinese.pdf",
+            },
+            {
                 "id": "language-fhs-8-12-authority-article-zh-cn",
                 "kind": "article",
                 "content_category": "authority",
@@ -2057,6 +2107,52 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
                 "recognition": "国际儿童机构 · 普通话实操短片",
                 "selection_reason": "短而具体，适合从一个日常游戏开始增加有回应的语言互动。",
                 "url": "https://www.unicef.cn/videos/how-to-guide-your-children-to-learn-through-play",
+            },
+            {
+                "id": "language-zheng-featured-video-zh-cn-v1",
+                "kind": "video",
+                "content_category": "featured",
+                "source_tier": "curated",
+                "selection_basis": "expert_and_audience",
+                "title": "你真的会和宝宝互动吗，如何正确引导宝宝说话？",
+                "publisher": "郑奶奶科学育儿",
+                "language": "普通话视频 · 简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [6, 18],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "亲子互动", "引导说话"],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "已核验为简体中文育儿频道的连续普通话讲解，未使用粤语音轨。",
+                "description": "用宝宝看、指、发声和停顿等待回应的日常场景，示范怎样把交流变成来回互动。",
+                "trust_note": "高关注育儿创作者的实操短视频；页面含创作者个人咨询联系方式，因此只归为高可读性精选，不作为医学权威。",
+                "recognition": "约 35.4 万关注 · 约 1.9 万次观看（2026-08 核验）",
+                "selection_reason": "比长篇课程更容易看完，方法适合 6—18 月龄宝宝，可从一次停顿等待和一次模仿回应开始。",
+                "commercial_risk": "creator_self_promo",
+                "url": "https://www.bilibili.com/video/BV1BH4y1U7yg",
+            },
+            {
+                "id": "language-dxy-hospital-case-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "五大能区评估帮你了解宝宝的发育状况",
+                "publisher": "珠海市妇幼保健院 · 丁香园医院汇",
+                "language": "简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [6, 12],
+                "focus_tags": ["语言", "沟通", "发声", "回应名字", "发育里程碑"],
+                "description": "以家庭带宝宝评估的经历切入，再按月龄梳理发声、互动、理解指令和需要留意的信号。",
+                "trust_note": "珠海市妇幼保健院在丁香园医院汇发布的科普；属于医院自主内容，不等同于同行评议指南。",
+                "recognition": "妇幼保健院科普 · 丁香园医院汇",
+                "selection_reason": "把 6 至 12 月龄语言表现放进真实家庭观察情境，便于理解如何记录变化并向专业人员提问。",
+                "case_evidence": "文章以家长带宝宝接受发育评估的家庭经历开场，再说明不同月龄的观察重点。",
+                "case_evidence_url": "https://y.dxy.cn/hospital/879/925528.html",
+                "url": "https://y.dxy.cn/hospital/879/925528.html",
             },
             {
                 "id": "language-zhang-qin-case-article-zh-cn",
@@ -2455,7 +2551,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     }
 )
 
-_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v1"
+_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v2-localized-first"
 _NURI_GUIDE_DISCLAIMER = (
     "外部内容为英文原文；中文内容由 NURI 导读，不是发布机构的官方翻译；"
     "重要结论请以原文为准。"
@@ -2505,6 +2601,104 @@ def _reviewed_delivery_resource(resource: dict) -> dict:
             }
         )
     return value
+
+
+def _reviewed_localized_delivery_resource(resource: dict) -> dict:
+    """Promote an exact reviewed Chinese page into the instant delivery lane."""
+
+    category = str(resource["content_category"])
+    kind = str(resource["kind"])
+    org_id = resource_parent_org_id(resource)
+    official_translation = bool(
+        kind == "article"
+        and category == "authority"
+        and org_id in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS
+    )
+    script_language = str(resource.get("script_language") or "")
+    source_region = str(resource.get("source_region") or "").upper()
+    chinese_source_language = (
+        "zh-TW"
+        if script_language == "zh-Hant" or source_region == "TW"
+        else "zh-CN"
+    )
+    value = {
+        "source_tier": "authority" if category == "authority" else "curated",
+        "selection_basis": {
+            "authority": "official",
+            "featured": "expert_and_audience",
+            "case": "lived_experience",
+        }[category],
+        "source_quality_lane": {
+            "authority": "primary_evidence",
+            "featured": "high_readability",
+            "case": "lived_experience",
+        }[category],
+        "source_language": (
+            "en" if official_translation else chinese_source_language
+        ),
+        "display_locale": "zh-CN",
+        "content_locale": chinese_source_language,
+        "language": (
+            "机构官方简体中文" if official_translation else "简体中文"
+        ),
+        "locales": ["zh-CN"],
+        "translation_type": (
+            "official_translation" if official_translation else "original"
+        ),
+        "translation_disclaimer": "",
+        "research_source": "reviewed_whitelist",
+        "delivery_source_contract": _DELIVERY_SOURCE_CONTRACT_VERSION,
+        "link_health_status": "manual_verified",
+        "content_page_type": kind,
+        "commercial_risk": "clear",
+        **resource,
+    }
+    # Explicit resource metadata is allowed to refine the automatic labels,
+    # but it may not turn an English page into a Chinese one.
+    value["display_locale"] = "zh-CN"
+    value["locales"] = ["zh-CN"]
+    value.setdefault(
+        "translation_type",
+        "official_translation" if official_translation else "original",
+    )
+    if kind == "video":
+        value["spoken_language"] = "mandarin"
+        value["spoken_language_status"] = "verified"
+        value.setdefault(
+            "spoken_language_evidence",
+            value.get("language_evidence")
+            or "该审核资源的主要口语已人工确认是普通话/国语/华语。",
+        )
+        value.setdefault("spoken_language_evidence_url", value["url"])
+        value.setdefault(
+            "video_page_evidence",
+            "已核验为可直接播放的中文视频页面。",
+        )
+        value.setdefault("video_page_evidence_url", value["url"])
+    return value
+
+
+def _is_reviewed_chinese_delivery_resource(resource: dict) -> bool:
+    """Admit exact Chinese pages and verified Mandarin videos for zh-CN.
+
+    Simplified Chinese is preferred by ranking. Traditional-Chinese articles
+    and Taiwan Mandarin videos remain a reviewed Chinese-language fallback and
+    retain their visible language/region label instead of being presented as a
+    Simplified-Chinese original.
+    """
+
+    locales = {
+        str(locale)
+        for locale in (resource.get("locales") or [])
+        if str(locale)
+    }
+    if locales.intersection({"zh-CN", "zh-TW"}):
+        return True
+    return bool(
+        resource.get("kind") == "video"
+        and str(resource.get("spoken_language") or "").casefold()
+        in {"mandarin", "putonghua", "guoyu", "chinese"}
+    )
 
 
 # A small, exact-URL MVP baseline keeps the product usable when live web search
@@ -2820,8 +3014,31 @@ def _with_resource_curation_metadata(resource: dict) -> dict:
         merged["content_category"] = (
             "featured" if merged.get("source_tier") == "curated" else "authority"
         )
+    locales = [str(locale) for locale in (merged.get("locales") or [])]
+    # Legacy reviewed Chinese entries predate the delivery-language contract.
+    # Without these fields they sort *after* an English article with a NURI
+    # guide, even though their destination is already Chinese.  Infer only from
+    # an explicit locale declaration; never overwrite resources already marked
+    # as English or as a NURI guide.
+    if (
+        not merged.get("source_language")
+        and not merged.get("translation_type")
+        and "zh-CN" in locales
+    ):
+        merged["source_language"] = "zh-CN"
+        merged["content_locale"] = "zh-CN"
+        merged["display_locale"] = "zh-CN"
+        merged["translation_type"] = "original"
+    elif (
+        not merged.get("source_language")
+        and not merged.get("translation_type")
+        and "zh-TW" in locales
+    ):
+        merged["source_language"] = "zh-TW"
+        merged["content_locale"] = "zh-TW"
+        merged["display_locale"] = "zh-TW"
+        merged["translation_type"] = "original"
     if merged.get("kind") == "video" and not merged.get("spoken_language"):
-        locales = merged.get("locales") or []
         merged["spoken_language"] = (
             "mandarin" if any(locale in {"zh-CN", "zh-TW"} for locale in locales) else "english"
         )
@@ -2868,7 +3085,13 @@ for _card in LEARNING_CONTENT_CARDS:
             *_REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID.get(_card["id"], []),
             *_reviewed_english_resources,
             *_CURATED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
-            *_REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.get(_card["id"], []),
+            *[
+                _reviewed_localized_delivery_resource(resource)
+                for resource in _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.get(
+                    _card["id"], []
+                )
+                if _is_reviewed_chinese_delivery_resource(resource)
+            ],
         ]
     ]
 

@@ -81,6 +81,10 @@ test("real login keeps its session and opens three ready recommendation lanes", 
   for (const category of RECOMMENDATION_CATEGORIES) {
     const card = await readyRecommendationCard(page, category.key);
     await expect(card).toContainText(category.label);
+    if (category.key === "authority" || category.key === "featured") {
+      await expect(card).toContainText(/机构官方(?:简体)?中文|简体中文|普通话/);
+      await expect(card).not.toContainText(/英文原文|英文视频|英文原声/);
+    }
     cardTexts.push(await card.innerText());
   }
   expect(new Set(cardTexts).size, "the three lanes must not reuse one card").toBe(
@@ -107,6 +111,20 @@ test("real login keeps its session and opens three ready recommendation lanes", 
     await expect(resourceSection).toContainText("文章");
     await expect(resourceSection).toContainText("视频");
     await expect(resourceSection).not.toContainText("正在准备");
+    if (category.key === "authority" || category.key === "featured") {
+      const article = resources.filter({
+        has: page.getByText("文章", { exact: true }),
+      });
+      const video = resources.filter({
+        has: page.getByText("视频", { exact: true }),
+      });
+      await expect(article).toHaveCount(1);
+      await expect(video).toHaveCount(1);
+      await expect(article).toContainText(/机构官方(?:简体)?中文|简体中文/);
+      await expect(article).not.toContainText(/英文原文|英文文章/);
+      await expect(video).toContainText(/普通话|国语|华语/);
+      await expect(video).not.toContainText(/英文视频|英文原声|English/);
+    }
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-avatar")).toBeVisible({

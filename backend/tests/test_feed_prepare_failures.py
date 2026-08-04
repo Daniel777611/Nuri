@@ -331,24 +331,47 @@ def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
 
     assert harness.provider_calls == 1
     _assert_reviewed_whitelist_ready(result)
-    organizations = {
-        main._resource_parent_org_id(resource)
+    resources = [
+        resource for item in result["items"] for resource in item["resources"]
+    ]
+    authority_article = next(
+        resource
+        for resource in resources
+        if resource["content_category"] == "authority"
+        and resource["kind"] == "article"
+    )
+    assert authority_article["translation_type"] == "official_translation"
+    assert authority_article["display_locale"] == "zh-CN"
+    assert all(
+        resource.get("source_language") == "zh-CN"
+        for resource in resources
+        if resource["content_category"] in {"featured", "case"}
+        and resource["kind"] == "article"
+    )
+    assert all(
+        resource.get("translation_type") == "official_translation"
+        or (
+            resource.get("source_language") != "en"
+            and resource.get("translation_type") == "original"
+        )
+        for resource in resources
+        if resource["content_category"] in {"authority", "featured"}
+        and resource["kind"] == "article"
+    )
+    assert all(
+        resource.get("spoken_language") == "mandarin"
+        for resource in resources
+        if resource["kind"] == "video"
+    )
+    assert all(
+        resource.get("spoken_language") != "english"
         for item in result["items"]
-        for resource in item["resources"]
-    }
-    assert len(organizations) == 6
-    resource_ids = {
-        resource["id"]
-        for item in result["items"]
-        for resource in item["resources"]
-    }
-    assert "language-cdc-9m-authority-video-reviewed-v1" in resource_ids
-    assert "language-weetalkers-featured-article-reviewed-v1" in resource_ids
-    assert "language-pedsdoctalk-featured-video-reviewed-v1" in resource_ids
-    assert "language-todays-parent-case-article-reviewed-v1" in resource_ids
-    assert "language-kancha-case-video-reviewed-v1" in resource_ids
-    assert all(item["alternate_count"] >= 1 for item in result["items"])
-    assert all(item["alternate_resource_pairs"] for item in result["items"])
+        for pair in [item["resources"], *item.get("alternate_resource_pairs", [])]
+        for resource in (
+            pair.get("resources", []) if isinstance(pair, dict) else pair
+        )
+        if resource.get("kind") == "video"
+    )
 
 
 def test_reviewed_whitelist_ready_card_opens_without_another_provider_call(

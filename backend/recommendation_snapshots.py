@@ -19,11 +19,11 @@ from typing import Any, Mapping, Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 
-SNAPSHOT_VERSION = 4
-SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v4"
-SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v1"
-# Source semantics changed materially in v4: old ready packages may contain a
-# static HK authority page or the same institutional publisher in every lane.
+SNAPSHOT_VERSION = 5
+SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v5-localized-first"
+SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v2-localized-first"
+# Source semantics changed materially in v5: old ready packages may put an
+# English original/video ahead of an available Chinese edition for zh-CN.
 # Treat those snapshots as cache entries, not durable user data, and rebuild.
 SUPPORTED_SNAPSHOT_VERSIONS = frozenset({SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90

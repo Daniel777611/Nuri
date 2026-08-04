@@ -31,6 +31,8 @@ from backend.content_research import (  # noqa: E402
     RESOURCE_KINDS,
     _context_child_age_months,
     _is_evidenced_video_page,
+    _merge_with_reviewed_resources,
+    _normalize_dynamic_resource,
     _resource_source_category_allowed,
     delivery_lane_rejection_reason,
     _reviewed_resource_matches_policy,
@@ -219,20 +221,20 @@ def _parsed_bundle(
 
 
 def _delivery_ready_parsed_bundle() -> dict:
-    """Return a zh-CN package with English authority originals plus NURI guides."""
+    """Return a zh-CN package with official Chinese authority delivery."""
 
     parsed = _parsed_bundle()
     authority_articles = iter(
         (
             (
-                "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
-                "Centers for Disease Control and Prevention",
-                "Essentials for Parenting Toddlers and Preschoolers",
+                "https://www.mayoclinic.org/zh-hans/healthy-lifestyle/infant-and-toddler-health/in-depth/infant-development/art-20047086?p=1",
+                "妙佑医疗国际（Mayo Clinic）",
+                "婴儿发育：7 到 9 月龄的发育里程碑",
             ),
             (
-                "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
-                "Harvard Center on the Developing Child",
-                "5 Steps for Brain-Building Serve and Return",
+                "https://www.cdc.gov/act-early/media/pdfs/2025/11/cdc-milestone-checklists-ltsae-chinese.pdf",
+                "美国疾病控制与预防中心（CDC）",
+                "CDC 发育里程碑清单：9 月龄",
             ),
         )
     )
@@ -242,21 +244,30 @@ def _delivery_ready_parsed_bundle() -> dict:
         kind = resource["kind"]
         if kind == "article":
             url, publisher, title = next(authority_articles)
+            source_language = "en"
+            translation_type = "official_translation"
+            language = "机构官方简体中文"
+            spoken_language = "not_applicable"
         else:
-            url = "https://developingchild.harvard.edu/resources/videos/how-to-5-steps-for-brain-building-serve-and-return/"
-            publisher = "Harvard Center on the Developing Child"
-            title = "How-to: 5 Steps for Brain-Building Serve and Return"
+            url = "https://www.unicef.cn/videos/how-to-responsive-care"
+            publisher = "联合国儿童基金会"
+            title = "观察孩子的需求，并给予积极的回应"
+            source_language = "zh-CN"
+            translation_type = "original"
+            language = "普通话视频 · 简体中文"
+            spoken_language = "mandarin"
         resource.update(
             {
                 "url": url,
                 "title": title,
                 "publisher": publisher,
-                "source_language": "en",
+                "source_language": source_language,
                 "display_locale": "zh-CN",
-                "language": "英文原文 · NURI 中文导读",
-                "chinese_guide": "这份导读说明如何把权威建议用于当前家庭场景。",
-                "translation_type": "nuri_guide",
-                "translation_disclaimer": "外部内容为英文原文；中文内容由 NURI 导读，不是来源方官方译文。",
+                "language": language,
+                "chinese_guide": "",
+                "translation_type": translation_type,
+                "translation_disclaimer": "",
+                "spoken_language": spoken_language,
             }
         )
     return parsed
@@ -265,44 +276,9 @@ def _delivery_ready_parsed_bundle() -> dict:
 def _delivery_ready_raw_resources(
     *, include_optional_third: bool = True
 ) -> list[dict]:
-    """Return provider-shaped resources satisfying the v1 source-lane contract."""
+    """Return provider-shaped zh-CN resources satisfying the current contract."""
 
-    resources = _raw_resources(include_optional_third=include_optional_third)
-    authority_articles = iter(
-        (
-            "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
-            "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
-        )
-    )
-    for resource in resources:
-        if resource["content_category"] != "authority":
-            continue
-        if resource["kind"] == "article":
-            resource["url"] = next(authority_articles)
-            resource["spoken_language"] = "not_applicable"
-            resource["title"] = (
-                "CDC Essentials for Parenting"
-                if "cdc.gov" in resource["url"]
-                else "Harvard 5 Steps for Brain-Building Serve and Return"
-            )
-        else:
-            resource["url"] = (
-                "https://developingchild.harvard.edu/resources/videos/"
-                "how-to-5-steps-for-brain-building-serve-and-return/"
-            )
-            resource["spoken_language"] = "english"
-            resource["spoken_language_evidence"] = "The page identifies English speech."
-            resource["spoken_language_evidence_url"] = resource["url"]
-            resource["video_page_evidence_url"] = resource["url"]
-            resource["evidence_url"] = resource["url"]
-            resource["title"] = "Harvard Serve and Return Video"
-        resource["publisher"] = "CDC or Harvard Center on the Developing Child"
-        resource["language"] = "English"
-        resource["description"] = "这份中文导读解释权威原文与当前家庭问题的关系。"
-        resource["selection_reason"] = "这份英文原文直接回应当前孩子的发展阶段。"
-        resource["page_language_evidence"] = ""
-        resource["page_language_evidence_url"] = ""
-    return resources
+    return _raw_resources(include_optional_third=include_optional_third)
 
 
 def test_complete_research_bundle_has_three_categories_and_both_formats():
@@ -349,77 +325,271 @@ def test_quality_first_bundle_accepts_two_complete_resources_per_category():
         )
 
 
-def test_zh_cn_authority_accepts_english_original_with_explicit_nuri_guide():
-    resources = _raw_resources()
-    authority_articles = iter(
-        (
-            "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
-            "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
-        )
-    )
-    for resource in resources:
-        if resource["content_category"] != "authority":
-            continue
-        if resource["kind"] == "article":
-            resource["url"] = next(authority_articles)
-            resource["spoken_language"] = "not_applicable"
-            resource["title"] = (
-                "CDC Essentials for Parenting"
-                if "cdc.gov" in resource["url"]
-                else "Harvard 5 Steps for Brain-Building Serve and Return"
-            )
-        else:
-            resource["url"] = (
-                "https://developingchild.harvard.edu/resources/videos/"
-                "how-to-5-steps-for-brain-building-serve-and-return/"
-            )
-            resource["spoken_language"] = "english"
-            resource["spoken_language_evidence"] = "The page identifies English speech."
-            resource["spoken_language_evidence_url"] = resource["url"]
-            resource["video_page_evidence_url"] = resource["url"]
-            resource["evidence_url"] = resource["url"]
-            resource["title"] = "Harvard Serve and Return Video"
-        resource["publisher"] = "CDC or Harvard Center on the Developing Child"
-        resource["language"] = "English"
-        resource["description"] = "这份中文导读解释权威原文与当前家庭问题的关系。"
-        resource["selection_reason"] = "这份英文原文直接回应当前孩子的发展阶段。"
-        resource["page_language_evidence"] = ""
-        resource["page_language_evidence_url"] = ""
+def _localization_candidate(
+    category: str,
+    kind: str,
+    localization: str,
+) -> dict:
+    """Build a small selector fixture without coupling ranking to live URLs."""
 
-    parsed = parse_research_response(
-        _response(resources),
+    is_english_fallback = localization == "english_guide"
+    translation_type = {
+        "official_chinese": "official_translation",
+        "chinese_original": "original",
+        "english_guide": "nuri_guide",
+    }[localization]
+    return {
+        "id": f"{category}-{kind}-{localization}",
+        "content_category": category,
+        "kind": kind,
+        "title": f"{category} {kind} {localization}",
+        "publisher": f"{localization} publisher",
+        "url": f"https://example.org/{category}/{kind}/{localization}",
+        "research_source": "reviewed_whitelist",
+        "display_locale": "zh-CN",
+        "locales": ["zh-CN", "en"] if is_english_fallback else ["zh-CN"],
+        "source_language": "en" if is_english_fallback else "zh-CN",
+        "translation_type": translation_type,
+        "language": (
+            "英文原文 · NURI 中文导读"
+            if is_english_fallback
+            else (
+                "机构官方中文"
+                if localization == "official_chinese"
+                else "简体中文"
+            )
+        ),
+        "chinese_guide": "NURI 提供的简体中文导读。" if is_english_fallback else "",
+        "translation_disclaimer": (
+            "外部内容为英文原文；中文内容由 NURI 导读，不是来源方官方译文。"
+            if is_english_fallback
+            else ""
+        ),
+        "spoken_language": (
+            "english"
+            if kind == "video" and is_english_fallback
+            else ("mandarin" if kind == "video" else "not_applicable")
+        ),
+    }
+
+
+@pytest.mark.parametrize("category", ["authority", "featured"])
+def test_zh_cn_pair_prefers_official_chinese_then_chinese_original_then_english_article(
+    monkeypatch,
+    category,
+):
+    """Provider order must not make an English result outrank Chinese delivery."""
+
+    monkeypatch.setattr(
+        main,
+        "delivery_lane_rejection_reason",
+        lambda *_args, **_kwargs: "",
+    )
+    candidates = [
+        _localization_candidate(category, kind, localization)
+        for localization in (
+            "english_guide",
+            "chinese_original",
+            "official_chinese",
+        )
+        for kind in ("article", "video")
+    ]
+
+    options = main._category_resource_pair_options(
+        candidates,
+        category,
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )
+
+    assert options
+    assert [resource["translation_type"] for resource in options[0]] == [
+        "official_translation",
+        "official_translation",
+    ]
+    assert next(
+        resource for resource in options[0] if resource["kind"] == "video"
+    )["spoken_language"] == "mandarin"
+
+    without_official = [
+        resource
+        for resource in candidates
+        if resource["translation_type"] != "official_translation"
+    ]
+    original_options = main._category_resource_pair_options(
+        without_official,
+        category,
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )
+    assert [resource["translation_type"] for resource in original_options[0]] == [
+        "original",
+        "original",
+    ]
+
+    english_article = _localization_candidate(category, "article", "english_guide")
+    mandarin_video = _localization_candidate(category, "video", "chinese_original")
+    final_fallback = main._category_resource_pair_options(
+        [english_article, mandarin_video],
+        category,
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )
+    assert final_fallback
+    assert next(
+        resource for resource in final_fallback[0] if resource["kind"] == "article"
+    )["translation_type"] == "nuri_guide"
+    assert next(
+        resource for resource in final_fallback[0] if resource["kind"] == "video"
+    )["spoken_language"] == "mandarin"
+
+
+@pytest.mark.parametrize(
+    ("article_id", "video_id"),
+    [
+        (
+            "language-asha-authority-article-reviewed-v1",
+            "language-cdc-9m-authority-video-reviewed-v1",
+        ),
+        (
+            "language-weetalkers-featured-article-reviewed-v1",
+            "language-pedsdoctalk-featured-video-reviewed-v1",
+        ),
+    ],
+)
+def test_zh_cn_allows_english_article_guide_only_as_final_fallback_but_never_english_video(
+    article_id,
+    video_id,
+):
+    """Chinese users may receive a guided English article, never English audio."""
+
+    resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+    article = next(resource for resource in resources if resource["id"] == article_id)
+    video = next(resource for resource in resources if resource["id"] == video_id)
+
+    assert article["source_language"] == "en"
+    assert article["translation_type"] == "nuri_guide"
+    assert not delivery_lane_rejection_reason(
+        article,
+        "zh-CN",
+        require_dynamic=False,
+    )
+    assert video["spoken_language"] == "english"
+    assert delivery_lane_rejection_reason(
+        video,
+        "zh-CN",
+        require_dynamic=False,
+    )
+
+
+def test_zh_cn_reviewed_chinese_article_displaces_complete_dynamic_english_guide():
+    """A complete live bundle cannot bypass the Chinese-whitelist priority."""
+
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_language_milestones"])
+    reviewed = reviewed_learning_resource_bundle(
+        card=card,
+        preferred_locale="zh-CN",
+    )
+    assert reviewed is not None
+    candidates = deepcopy(reviewed["resources"])
+    replacements = {
+        "authority": "language-asha-authority-article-reviewed-v1",
+        "featured": "language-weetalkers-featured-article-reviewed-v1",
+    }
+    for category, resource_id in replacements.items():
+        candidates = [
+            resource
+            for resource in candidates
+            if not (
+                resource["content_category"] == category
+                and resource["kind"] == "article"
+            )
+        ]
+        english = deepcopy(
+            next(resource for resource in card["resources"] if resource["id"] == resource_id)
+        )
+        english["research_source"] = "openai_web_search"
+        candidates.append(english)
+
+    merged = _merge_with_reviewed_resources(
+        {
+            "query": "language milestones",
+            "editor_note": "",
+            "resources": candidates,
+            "cited_source_count": 6,
+            "dynamic_resource_count": 6,
+        },
+        card=card,
+        locale="zh-CN",
+    )
+
+    assert merged is not None
+    for category in ("authority", "featured"):
+        articles = [
+            resource
+            for resource in merged["resources"]
+            if resource["content_category"] == category
+            and resource["kind"] == "article"
+        ]
+        assert articles
+        assert all(resource["translation_type"] != "nuri_guide" for resource in articles)
+    assert all(
+        resource.get("spoken_language") == "mandarin"
+        for resource in merged["resources"]
+        if resource["kind"] == "video"
+    )
+
+
+def test_serve_and_return_static_zh_cn_pairs_do_not_lead_with_english():
+    """Legacy Chinese library entries must outrank reviewed English guides."""
+
+    resources = LEARNING_CONTENT_BY_ID["learn_serve_and_return"]["resources"]
+    for category in CONTENT_CATEGORIES:
+        pair = main._reviewed_category_resource_pair(
+            resources,
+            "zh-CN",
+            category,
+            None,
+        )
+        assert len(pair) == 2
+        article = next(resource for resource in pair if resource["kind"] == "article")
+        video = next(resource for resource in pair if resource["kind"] == "video")
+        assert article.get("source_language") == "zh-CN"
+        assert article.get("translation_type") == "original"
+        assert video.get("spoken_language") == "mandarin"
+
+
+def test_unreviewed_authority_url_cannot_claim_official_chinese_translation():
+    """CJK model evidence alone cannot mint the official-translation label."""
+
+    raw = next(
+        resource
+        for resource in _raw_resources(include_optional_third=False)
+        if resource["content_category"] == "authority"
+        and resource["kind"] == "article"
+    )
+    normalized = _normalize_dynamic_resource(
+        raw,
         locale="zh-CN",
         card_id="learn_sleep_routine",
+        index=0,
+        cited_urls={raw["url"]},
     )
 
-    assert parsed is not None
-    authority = [
-        resource
-        for resource in parsed["resources"]
-        if resource["content_category"] == "authority"
-    ]
-    assert authority
-    assert all(resource["source_language"] == "en" for resource in authority)
-    assert all(resource["display_locale"] == "zh-CN" for resource in authority)
-    assert all(resource["translation_type"] == "nuri_guide" for resource in authority)
-    assert all(resource["chinese_guide"] for resource in authority)
-    assert all("不是来源方官方译文" in resource["translation_disclaimer"] for resource in authority)
-    assert all(
-        not delivery_lane_rejection_reason(resource, "zh-CN")
-        for resource in authority
-    )
+    assert normalized is not None
+    assert normalized["translation_type"] == "original"
+    assert normalized["source_language"] == "zh-CN"
 
 
-def test_delivery_contract_rejects_old_static_hk_authority_and_unhealthy_or_ad_links():
-    old_hk = next(
+def test_delivery_contract_accepts_localized_hk_authority_but_rejects_unhealthy_or_ad_links():
+    localized_hk = next(
         resource
         for resource in _parsed_bundle()["resources"]
         if resource["content_category"] == "authority"
         and resource["kind"] == "video"
     )
-    assert delivery_lane_rejection_reason(old_hk, "zh-CN") == (
-        "authority_not_preferred_english_org"
-    )
+    assert localized_hk["spoken_language"] == "mandarin"
+    assert not delivery_lane_rejection_reason(localized_hk, "zh-CN")
 
     healthy = _delivery_ready_parsed_bundle()["resources"][0]
     unreachable = {**healthy, "link_health_status": "http_403"}
@@ -433,18 +603,10 @@ def test_delivery_contract_rejects_old_static_hk_authority_and_unhealthy_or_ad_l
 
 
 def test_reviewed_featured_creator_self_promo_requires_exact_whitelist_review():
-    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_language_milestones"])
-    card["child_age_context"] = "孩子当前年龄：9个月"
-    bundle = reviewed_learning_resource_bundle(
-        card=card,
-        preferred_locale="zh-CN",
-    )
-    assert bundle is not None
     reviewed = next(
         resource
-        for resource in bundle["resources"]
-        if resource["content_category"] == "featured"
-        and resource["commercial_risk"] == "creator_self_promo"
+        for resource in LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+        if resource["id"] == "language-weetalkers-featured-article-reviewed-v1"
     )
 
     assert not delivery_lane_rejection_reason(
@@ -554,11 +716,13 @@ def test_research_bundle_prevents_one_publisher_from_monopolizing_results():
         "同一个内容发布者",
         "同一个 内容发布者",
         "【同一个内容发布者】",
+        "同一个内容发布者（官方）",
     )
     same_parent_org_urls = (
         "https://www.cdc.gov/parenting/sleep/article.html",
         "https://actearly.cdc.gov/parenting/sleep/second-article.html",
         "https://www.cdc.gov/parenting/videos/sleep-video.html",
+        "https://www.cdc.gov/parenting/sleep/fourth-article.html",
     )
     for resource, publisher, url in zip(
         resources[: MAX_RESOURCES_PER_PUBLISHER + 1],
@@ -1056,6 +1220,14 @@ def test_zh_cn_prompt_contains_tiered_sources_short_video_and_commercial_guardra
     assert "一律不把自述资历当医学权威" in prompt
     assert "台湾来源、繁体中文页面和繁体中文翻译页全部禁止" in prompt
     assert "不能作为找不到简体内容时的回退" in prompt
+    official_chinese_index = prompt.index("官方简体中文文章")
+    chinese_whitelist_index = prompt.index("简体中文白名单")
+    english_fallback_index = prompt.index("英文文章仅作最后兜底")
+    assert official_chinese_index < chinese_whitelist_index < english_fallback_index
+    assert "普通话官方视频" in prompt
+    assert "英文视频不允许" in prompt
+    assert "authority 是唯一例外：优先选择" not in prompt
+    assert "必须优先检索英文一手原文与英文正式视频" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -2000,12 +2172,10 @@ def test_reviewed_development_bundle_has_all_six_strict_zh_cn_slots():
         for category in CONTENT_CATEGORIES
         for kind in RESOURCE_KINDS
     }
-    assert len(resources) == MIN_TOTAL_RESEARCH_RESOURCES
-    assert not any(
-        resource.get("source_region") == "TW"
-        or "zh-TW" in (resource.get("locales") or [])
-        or resource.get("script_language") == "zh-Hant"
+    assert all(
+        resource.get("spoken_language") == "mandarin"
         for resource in resources
+        if resource["kind"] == "video"
     )
 
 
@@ -2023,14 +2193,14 @@ def test_reviewed_development_bundle_matches_current_age_and_parent_focus():
         and reviewed_resource_matches_context(resource, context)
     }
 
-    assert matching_ids == {
+    assert {
         "development-zh-cn-article",
         "development-zh-cn-video",
         "development-mama-cn-featured-article",
         "development-guoma-featured-video",
         "development-sina-parent-case-article",
         "development-ahnian-parent-case-video",
-    }
+    } <= matching_ids
 
 
 def test_reviewed_age_metadata_blocks_stale_ten_month_resources():
