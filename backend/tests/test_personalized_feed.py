@@ -1644,9 +1644,16 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         for category in ("authority", "featured", "case")
     }
     assert all(
-        {resource["kind"] for resource in pair} == {"article", "video"}
-        for pair in primary_pairs.values()
+        {resource["kind"] for resource in primary_pairs[category]}
+        == {"article", "video"}
+        for category in ("authority", "featured")
     )
+    # Legacy case candidates may remain searchable in the library, but an
+    # unverified or promotional parent video must not be forced into delivery
+    # merely to satisfy the two-format layout.
+    assert not primary_pairs["case"] or {
+        resource["kind"] for resource in primary_pairs["case"]
+    } == {"article", "video"}
     authority_article = next(
         resource
         for resource in primary_pairs["authority"]
@@ -1712,9 +1719,13 @@ def test_traditional_resources_are_taiwan_authority_first(card):
         for category in ("authority", "featured", "case")
     }
     assert all(
-        {resource["kind"] for resource in pair} == {"article", "video"}
-        for pair in primary_pairs.values()
+        {resource["kind"] for resource in primary_pairs[category]}
+        == {"article", "video"}
+        for category in ("authority", "featured")
     )
+    assert not primary_pairs["case"] or {
+        resource["kind"] for resource in primary_pairs["case"]
+    } == {"article", "video"}
     resources = [resource for pair in primary_pairs.values() for resource in pair]
     assert all(resource["source_region"] == "TW" for resource in resources)
     assert all(

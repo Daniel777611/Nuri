@@ -29,6 +29,7 @@ try:
     from backend.recommendation_feedback import canonical_resource_url
     from backend.content_library import (
         AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
+        CASE_FORBIDDEN_PARENT_ORG_IDS,
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
@@ -43,6 +44,7 @@ except ImportError:  # pragma: no cover - direct module execution compatibility
     from recommendation_feedback import canonical_resource_url  # type: ignore
     from content_library import (  # type: ignore
         AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
+        CASE_FORBIDDEN_PARENT_ORG_IDS,
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
@@ -81,8 +83,8 @@ _CACHE_MAX_ITEMS = int(os.getenv("CONTENT_RESEARCH_CACHE_MAX_ITEMS", "128"))
 _RESEARCH_CACHE: "OrderedDict[str, tuple[float, Optional[dict]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
-_RESEARCH_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
-DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
+_RESEARCH_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
+DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
 
 _FEEDBACK_PREFERENCE_CODES = frozenset(
     {
@@ -443,8 +445,50 @@ _CASE_MARKERS = (
     "my child",
 )
 
+_CASE_PROCESS_MARKERS = (
+    "尝试",
+    "嘗試",
+    "调整",
+    "調整",
+    "做法",
+    "回应",
+    "回應",
+    "练习",
+    "練習",
+    "记录",
+    "記錄",
+    "实践",
+    "實踐",
+    "后来",
+    "後來",
+    "结果",
+    "結果",
+    "反思",
+    "取舍",
+    "取捨",
+    "tried",
+    "adjusted",
+    "changed",
+    "responded",
+    "practiced",
+    "recorded",
+    "what worked",
+    "learned",
+)
+
 def _safe_text(value: object, limit: int = 500) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _case_evidence_has_practical_process(resource: dict) -> bool:
+    """Require lived identity plus an observable action, adjustment or result."""
+
+    evidence = _safe_text(resource.get("case_evidence"), 500).casefold()
+    return bool(
+        evidence
+        and any(marker.casefold() in evidence for marker in _CASE_MARKERS)
+        and any(marker.casefold() in evidence for marker in _CASE_PROCESS_MARKERS)
+    )
 
 
 def redact_conversation_text(value: object, limit: int = 360) -> str:
@@ -967,19 +1011,27 @@ def _resource_source_category_allowed(
         and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
     ):
         return False
+    if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
+        return False
     if category == "authority":
         return _is_allowed_authority_resource(resource, locale)
-    # Dynamic results cannot relabel an institution to bypass authority checks.
-    # A manually opened family story published by an authority organization can
-    # still be a case when its first-person evidence is stored on the exact URL.
+    # A hospital explainer or professional-platform post is not a parent case,
+    # even when an editor has attached a family-flavoured summary to it.
+    if category == "case" and locale == "zh-CN" and (
+        _is_zh_cn_hospital_resource(resource)
+        or _is_zh_cn_professional_platform_resource(resource)
+    ):
+        return False
+    # Exact reviewed family pages may bypass creator-name heuristics, but never
+    # the institutional ban or the requirement to show a concrete process.
     reviewed_case = bool(
         category == "case"
         and resource.get("research_source") == "reviewed_whitelist"
-        and _safe_text(resource.get("case_evidence"), 300)
+        and _case_evidence_has_practical_process(resource)
         and _normalized_url_key(str(resource.get("case_evidence_url") or ""))
         == _normalized_url_key(str(resource.get("url") or ""))
     )
-    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS and not reviewed_case:
+    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS:
         return False
     # Exact manually opened family stories are curated at URL level. They do
     # not need to imitate a Chinese social-platform publisher name in order to
@@ -1141,6 +1193,9 @@ def _zh_cn_source_priority(resource: dict) -> int:
     readability_status = str(
         resource.get("featured_readability_status") or ""
     ).casefold()
+    case_process_status = str(
+        resource.get("case_process_status") or ""
+    ).casefold()
 
     # The ordering is deliberate and large enough to dominate weaker source
     # tie-breakers below: official Chinese edition, reviewed Chinese original,
@@ -1173,6 +1228,11 @@ def _zh_cn_source_priority(resource: dict) -> int:
         if readability_status == "verified":
             score += 40
         elif readability_status == "rejected":
+            score -= 1000
+    if category == "case":
+        if case_process_status == "verified":
+            score += 50
+        elif case_process_status in {"promotion_only", "rejected"}:
             score -= 1000
     if category == "authority" and _is_zh_cn_hospital_resource(resource):
         score += 10
@@ -1935,7 +1995,7 @@ def _is_lived_parent_case(resource: dict, cited_urls: set[str]) -> bool:
     evidence_key = _normalized_url_key(str(resource.get("case_evidence_url") or ""))
     if not resource_key or resource_key != evidence_key:
         return False
-    if not _safe_text(resource.get("case_evidence"), 300):
+    if not _case_evidence_has_practical_process(resource):
         return False
     visible_identity = " ".join(
         _safe_text(resource.get(field), 300).casefold()
@@ -2103,7 +2163,14 @@ def _normalize_dynamic_resource(
     }[category]
     commercial_text = " ".join(
         _safe_text(raw.get(field), 360).casefold()
-        for field in ("title", "description", "selection_reason", "audience_note")
+        for field in (
+            "title",
+            "description",
+            "selection_reason",
+            "audience_note",
+            "trust_note",
+            "recognition",
+        )
     )
     commercial_risk = (
         "blocked"
@@ -2181,6 +2248,34 @@ def _normalize_dynamic_resource(
         "evidence_url": str(raw.get("evidence_url") or "").strip(),
         "case_evidence": _safe_text(raw.get("case_evidence"), 300),
         "case_evidence_url": str(raw.get("case_evidence_url") or "").strip(),
+        "case_process_status": (
+            "verified"
+            if category == "case" and _case_evidence_has_practical_process(raw)
+            else ""
+        ),
+        "case_process_evidence": (
+            _safe_text(raw.get("case_evidence"), 300)
+            if category == "case" and _case_evidence_has_practical_process(raw)
+            else ""
+        ),
+        "content_substance_status": (
+            "verified"
+            if category == "case"
+            and kind == "video"
+            and commercial_risk == "clear"
+            and _case_evidence_has_practical_process(raw)
+            and _safe_text(raw.get("video_page_evidence"), 300)
+            else ""
+        ),
+        "content_substance_evidence": (
+            _safe_text(raw.get("case_evidence"), 300)
+            if category == "case"
+            and kind == "video"
+            and commercial_risk == "clear"
+            and _case_evidence_has_practical_process(raw)
+            and _safe_text(raw.get("video_page_evidence"), 300)
+            else ""
+        ),
         "research_source": "openai_web_search",
     }
 
@@ -2217,8 +2312,16 @@ def delivery_lane_rejection_reason(
         return "link_not_search_verified"
     if resource.get("content_page_type") != kind:
         return "landing_or_wrong_page_type"
-    path = urlparse(str(resource.get("url") or "")).path.strip("/")
-    if not path:
+    parsed_url = urlparse(str(resource.get("url") or ""))
+    path = parsed_url.path.strip("/")
+    reviewed_query_article = bool(
+        not path
+        and kind == "article"
+        and research_source == "reviewed_whitelist"
+        and parsed_url.query
+        and is_reviewed_exact_resource_url(str(resource.get("url") or ""))
+    )
+    if not path and not reviewed_query_article:
         return "landing_or_wrong_page_type"
     allowed_commercial_risks = {"clear"}
     if category == "featured" and research_source == "reviewed_whitelist":
@@ -2239,7 +2342,18 @@ def delivery_lane_rejection_reason(
         == "rejected"
     ):
         return "featured_not_readable"
-    if str(resource.get("display_locale") or "") != locale:
+    display_locale = str(resource.get("display_locale") or "")
+    reviewed_tw_fallback = bool(
+        locale == "zh-TW"
+        and research_source == "reviewed_whitelist"
+        and "zh-TW" in set(resource.get("locales") or [])
+        and (
+            str(resource.get("content_locale") or "") == "zh-TW"
+            or str(resource.get("script_language") or "") == "zh-Hant"
+            or str(resource.get("source_region") or "").upper() == "TW"
+        )
+    )
+    if display_locale != locale and not reviewed_tw_fallback:
         return "wrong_display_locale"
     if locale == "zh-CN" and kind == "video":
         if str(resource.get("spoken_language") or "").casefold() != "mandarin":
@@ -2260,6 +2374,8 @@ def delivery_lane_rejection_reason(
         and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
     ):
         return "authority_video_promotion_only_source"
+    if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
+        return "case_institutional_campaign_source"
     if category == "authority":
         if str(resource.get("source_quality_lane") or "") != "primary_evidence":
             return "authority_not_primary_evidence"
@@ -2297,7 +2413,7 @@ def delivery_lane_rejection_reason(
     reviewed_case = bool(
         category == "case"
         and research_source == "reviewed_whitelist"
-        and _safe_text(resource.get("case_evidence"), 300)
+        and _case_evidence_has_practical_process(resource)
     )
     reviewed_readable_feature = bool(
         category == "featured"
@@ -2336,8 +2452,22 @@ def delivery_lane_rejection_reason(
         return "case_source_not_approved"
     if locale == "zh-CN" and _resource_declares_english_original(resource):
         return "case_not_chinese"
-    if not _safe_text(resource.get("case_evidence"), 300):
-        return "case_evidence_missing"
+    if not _case_evidence_has_practical_process(resource):
+        return "case_process_evidence_missing"
+    case_process_status = str(
+        resource.get("case_process_status") or ""
+    ).casefold()
+    if case_process_status != "verified":
+        return "case_process_not_verified"
+    if case_process_status in {
+        "promotion_only",
+        "rejected",
+    }:
+        return "case_not_practically_useful"
+    if kind == "video" and str(
+        resource.get("content_substance_status") or ""
+    ).casefold() != "verified":
+        return "case_video_substance_not_verified"
     return ""
 
 
@@ -2918,6 +3048,15 @@ def reviewed_resource_matches_context(
     if child_age_months is None and not focus_text.strip():
         return True
     if has_age_metadata and child_age_months is not None:
+        # A lived-experience item must match both the child's stage and the
+        # concrete problem. Age alone must not turn an unrelated parent vlog
+        # into a useful case recommendation.
+        if (
+            resource_content_category(resource) == "case"
+            and has_focus_metadata
+            and focus_text.strip()
+        ):
+            return bool(age_match and focus_match)
         return age_match
     return bool(age_match or focus_match)
 
@@ -2988,7 +3127,10 @@ def _source_priority_policy(locale: str) -> str:
         "丁香医生、丁香妈妈、小荷医典等专业平台只能归入 featured，且必须同页显示可核验作者、审核人和审核依据，或 URL 已逐条审核。"
         "妈妈网 (mama.cn)、亲贝网 (qinbei.com)、育儿网 (ci123.com)、宝宝树 (babytree.com)、"
         "中国孕婴童网 (baobaoshiye.cn) 不做整站召回；只有逐条审核的 exact URL 可以进入。\n"
-        f"- case 优先真实家庭经历与父亲视角：{cases}。必须明确是亲历内容，不代表医疗建议。\n"
+        f"- case 优先真实家庭经历与父亲视角：{cases}。优先小红书具体公开笔记、YouTube/Bilibili"
+        "优秀父母创作者和可公开直达的第一人称家长文章；搜索页、账号主页和机构公益片不能进入。"
+        "必须同时写清相似家庭遇到的具体问题、父母尝试或调整了什么、以及结果/取舍/反思，"
+        "不能只给萌娃画面、里程碑讲解或一句‘真实家庭’标签。个人经验不代表医疗建议。\n"
         "- 视频先看主题与月龄是否准确、内容是否有实质、讲解或示范是否完整；至少要有三个具体知识点，或一段能让家长照着做的完整示范。"
         "宣传片、机构形象片、品牌活动回顾、预告片和只有口号没有方法的视频一律淘汰。只有内容质量相同时，才偏好更容易看完的 4 至 15 分钟视频；"
         "优质长视频可以保留并标出关键章节，短本身不加分。优先链接具体视频播放页，不接受账号主页、搜索页、合集页；"
@@ -3063,7 +3205,9 @@ def build_research_prompt(
 质量优先输出六至九项：authority、featured、case 每类先选恰好一篇 article 和一个 video；只有找到通过完全相同的相关性、语言、引用、来源与去重门槛的第三项时，才为该类增加第三项。不得为了凑满九项降低门槛；第三项可以是 article 或 video。
 1. authority：CDC、政府卫生机构、大学/大学医院、学术期刊或专业医学组织的原始内容与正式视频。
 2. featured：写得精彩、实用、被专家或广泛读者认可的优质文章，以及有专业背景或长期良好口碑的高质量视频。
-3. case：真实父母第一人称文章或经过编辑核实的家庭案例，以及真实父母分享具体经历、过程和取舍的视频；不得把个人经验包装成医学结论。
+3. case：真实父母第一人称文章，以及真实父母分享具体经历、过程和取舍的视频；优先可公开直达的
+小红书具体笔记与优秀 YouTube/Bilibili 父母创作者。机构公益片、医院科普、纯萌娃记录和只有口号
+没有家长做法的内容不能归为案例；不得把个人经验包装成医学结论。
 
 语言规则：{_language_policy(locale)}
 
@@ -3084,7 +3228,9 @@ def build_research_prompt(
 - 每个视频的 evidence_url 必须是本次搜索实际核验过的机构主页、频道资料或创作者资历依据；视频没有独立且可引用的依据时，不要选择该视频。普通文章返回空字符串；仅当 authority 文章来自医院官方公众号等共享发布平台时，evidence_url 填医院官网对公众号名称的认证页。
 - featured/case 视频若播放页本身直接显示发布者身份，可将 evidence_url 留空并由已引用的播放页自证；若填写 evidence_url，则该 URL 必须由本次搜索引用，绝不能填写未引用的频道页或个人主页。
 - 新发现的站外 authority 视频，其 evidence_url 必须是权威机构域名下直接标识该视频的具体视频页，不能用机构首页或无关文章借用权威性。
-- 典型案例必须是真实父母第一人称经历或有明确家庭当事人的编辑案例。case_evidence 说明页面上哪一部分证明它是父母/家庭亲身经验，case_evidence_url 必须是本次搜索核验过的对应页面。非案例类别的这两个字段返回空字符串。
+- 典型案例必须是真实父母第一人称经历。case_evidence 必须在同一段里说明家庭的具体阶段/问题、
+父母实际尝试或调整的做法、以及结果/取舍/反思；只证明“有家庭出镜”不合格。case_evidence_url
+必须是本次搜索核验过的对应页面。非案例类别的这两个字段返回空字符串。
 - editor_note 用一两句话解释这组六至九项为什么适合当前家庭，不要泄露隐私。
 """
 

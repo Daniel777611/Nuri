@@ -54,6 +54,7 @@ from starlette.background import BackgroundTask
 try:
     from backend.content_library import (
         AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
+        CASE_FORBIDDEN_PARENT_ORG_IDS,
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
@@ -107,6 +108,7 @@ try:
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
+        CASE_FORBIDDEN_PARENT_ORG_IDS,
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
@@ -5128,6 +5130,9 @@ def _delivery_resource_sort_key(
     readability_status = str(
         resource.get("featured_readability_status") or ""
     ).casefold()
+    case_process_status = str(
+        resource.get("case_process_status") or ""
+    ).casefold()
     if str(resource.get("kind") or "") == "video":
         if substance_status in {"ad_like", "rejected"}:
             quality_priority = 90
@@ -5137,6 +5142,11 @@ def _delivery_resource_sort_key(
         if readability_status == "rejected":
             quality_priority = 90
         elif readability_status != "verified":
+            quality_priority = max(quality_priority, 1)
+    if content_category == "case":
+        if case_process_status in {"promotion_only", "rejected"}:
+            quality_priority = 90
+        elif case_process_status != "verified":
             quality_priority = max(quality_priority, 1)
 
     authority_priority = 0
@@ -5532,6 +5542,22 @@ def _reviewed_editorial_quality_allowed(resource: dict) -> bool:
         and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
     ):
         return False
+    if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
+        return False
+    if category == "case":
+        case_process_status = str(
+            resource.get("case_process_status") or ""
+        ).casefold()
+        if case_process_status in {"promotion_only", "rejected"}:
+            return False
+        if case_process_status != "verified":
+            return False
+        if (
+            kind == "video"
+            and str(resource.get("content_substance_status") or "").casefold()
+            != "verified"
+        ):
+            return False
     if kind == "video" and str(
         resource.get("content_substance_status") or ""
     ).casefold() in {"ad_like", "rejected"}:
@@ -5708,12 +5734,33 @@ def _category_feed_card(
 
 
 def _resource_matches_preferred_locale(resource: dict, locale: str) -> bool:
-    """Do not pass Traditional/Taiwan fallbacks off as Simplified Chinese."""
+    """Keep Chinese fallbacks available without disguising their script.
+
+    Exact reviewed Traditional-Chinese parent/editorial pages are a better
+    fallback for a Chinese account than an English original. Their existing
+    ``language`` and region labels remain visible, so this does not present a
+    Taiwan source as Simplified Chinese.
+    """
 
     locales = resource.get("locales") or []
     if locale not in locales:
         return False
     if locale != "zh-CN":
+        return True
+    reviewed_chinese_fallback = bool(
+        resource.get("research_source") == "reviewed_whitelist"
+        and str(resource.get("content_category") or "") in {"featured", "case"}
+        and (
+            str(resource.get("content_category") or "") != "case"
+            or str(resource.get("case_process_status") or "").casefold()
+            == "verified"
+        )
+        and (
+            str(resource.get("source_region") or "").upper() == "TW"
+            or str(resource.get("script_language") or "") == "zh-Hant"
+        )
+    )
+    if reviewed_chinese_fallback:
         return True
     if (
         str(resource.get("kind") or "") == "video"

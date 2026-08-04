@@ -383,7 +383,7 @@ def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
         if resource["content_category"] == "featured"
     )
     assert all(
-        resource.get("source_language") == "zh-CN"
+        resource.get("source_language") in {"zh-CN", "zh-TW"}
         for resource in resources
         if resource["content_category"] in {"featured", "case"}
         and resource["kind"] == "article"

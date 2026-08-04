@@ -334,7 +334,7 @@ class _SettingsSupabase:
         return _SettingsTable(self.store, fail_delete=self.fail_delete)
 
 
-def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
+def test_category_card_feed_and_details_keep_category_delivery_contract(
     monkeypatch,
 ):
     supabase = _SettingsSupabase()
@@ -412,7 +412,10 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
     } == payload["category_mix"]
     assert sum(item["is_primary_exposure_category"] for item in items) == 1
 
-    for item in items:
+    ready_items = [
+        item for item in items if item["content_category"] != "case"
+    ]
+    for item in ready_items:
         category = item["content_category"]
         assert item["resource_pair_complete"] is True
         assert item["resource_readiness"] == "ready"
@@ -475,6 +478,28 @@ def test_category_card_feed_and_details_keep_fixed_two_resource_contract(
             for formats in detail["resource_summary"]["categories"].values()
             for count in formats.values()
         ) == 2
+
+    # The reviewed sleep case video in the legacy fixture contains a paid
+    # partnership.  With no research provider available, leaving this lane
+    # retryable is preferable to silently serving an advert as parent help.
+    case_item = items[2]
+    assert case_item["content_category"] == "case"
+    assert case_item["resource_pair_complete"] is False
+    assert case_item["resource_readiness"] == "retryable"
+    assert case_item.get("research_status") is None
+    assert case_item.get("resources", []) == []
+
+    case_detail = asyncio.run(
+        main.get_card_detail(
+            case_item["id"],
+            recommendation_id=case_item["recommendation_id"],
+            content_category="case",
+            uid="parent-1",
+        )
+    )
+    assert case_detail["resource_pair_complete"] is False
+    assert case_detail["resource_readiness"] == "retryable"
+    assert case_detail["resources"] == []
 
     authority = items[0]
     with pytest.raises(Exception) as error:
@@ -697,11 +722,15 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
         preferred_locale="zh-CN",
     )
     assert bundle is not None
-    pair = [
+    authority_resources = [
         resource
         for resource in bundle["resources"]
         if resource["content_category"] == "authority"
-    ][:2]
+    ]
+    pair = [
+        next(resource for resource in authority_resources if resource["kind"] == "article"),
+        next(resource for resource in authority_resources if resource["kind"] == "video"),
+    ]
     prepared = snapshot_with_prepared_resource_pair(
         snapshot,
         pair,

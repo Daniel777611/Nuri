@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
+    CASE_FORBIDDEN_PARENT_ORG_IDS,
     LEARNING_CONTENT_BY_ID,
     is_trusted_resource_url,
     resource_parent_org_id,
@@ -167,7 +168,8 @@ def _raw_resources(
                             else (url if kind == "video" else "")
                         ),
                         "case_evidence": (
-                            "A parent describes this family's first-person experience."
+                            "A parent describes the family's problem, what they tried "
+                            "and adjusted, and what they learned from the result."
                             if category == "case"
                             else ""
                         ),
@@ -602,11 +604,11 @@ def test_verified_quality_anchors_beat_complete_but_unverified_dynamic_slots():
     }
 
 
-def test_serve_and_return_static_zh_cn_pairs_do_not_lead_with_english():
-    """Legacy Chinese library entries must outrank reviewed English guides."""
+def test_serve_and_return_static_zh_cn_pairs_keep_institutions_out_of_case_lane():
+    """Chinese primary lanes stay localized while case remains person-led."""
 
     resources = LEARNING_CONTENT_BY_ID["learn_serve_and_return"]["resources"]
-    for category in CONTENT_CATEGORIES:
+    for category in ("authority", "featured"):
         pair = main._reviewed_category_resource_pair(
             resources,
             "zh-CN",
@@ -619,6 +621,19 @@ def test_serve_and_return_static_zh_cn_pairs_do_not_lead_with_english():
         assert article.get("source_language") == "zh-CN"
         assert article.get("translation_type") == "original"
         assert video.get("spoken_language") == "mandarin"
+
+    cases = main._reviewed_category_resource_pair(
+        resources,
+        "zh-CN",
+        "case",
+        None,
+    )
+    assert cases
+    assert all(
+        resource_parent_org_id(resource) not in CASE_FORBIDDEN_PARENT_ORG_IDS
+        for resource in cases
+    )
+    assert all(resource.get("case_process_status") == "verified" for resource in cases)
 
 
 def test_unreviewed_authority_url_cannot_claim_official_chinese_translation():
@@ -695,6 +710,178 @@ def test_unicef_cannot_fill_featured_or_authority_video_delivery_lanes():
     )
     assert delivery_lane_rejection_reason(authority_video, "zh-CN") == (
         "authority_video_promotion_only_source"
+    )
+
+
+def test_unicef_campaign_story_cannot_fill_parent_case_lane():
+    """Institutional family stories stay out of the person-led case lane."""
+
+    case_article = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["content_category"] == "case"
+        and resource["kind"] == "article"
+    )
+    unicef_case = {
+        **case_article,
+        "publisher": "联合国儿童基金会（UNICEF）",
+        "url": "https://www.unicef.cn/parenting-site/family-responsive-care-story",
+        "case_evidence_url": (
+            "https://www.unicef.cn/parenting-site/family-responsive-care-story"
+        ),
+        "case_evidence": (
+            "A parent describes the family problem, what they tried and adjusted, "
+            "and what changed afterward."
+        ),
+        "case_process_status": "verified",
+    }
+
+    assert delivery_lane_rejection_reason(unicef_case, "zh-CN") == (
+        "case_institutional_campaign_source"
+    )
+
+
+@pytest.mark.parametrize("child_age_months", [9, 11])
+def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
+    child_age_months,
+):
+    resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+    context = {
+        "child_age_context": f"孩子当前年龄：{child_age_months}个月",
+        "recommendation_focus": (
+            "宝宝重复音节、回应名字，也想练习轮流发声和语言沟通"
+        ),
+    }
+
+    pair = main._reviewed_category_resource_pair(
+        resources,
+        "zh-CN",
+        "case",
+        context,
+    )
+
+    assert [resource["id"] for resource in pair] == [
+        "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+        "language-yayas-parent-sign-case-video-zh-cn-v1",
+    ]
+    assert {resource["kind"] for resource in pair} == {"article", "video"}
+    assert all(resource.get("case_process_status") == "verified" for resource in pair)
+    assert all(
+        resource_parent_org_id(resource) not in CASE_FORBIDDEN_PARENT_ORG_IDS
+        for resource in pair
+    )
+    video = next(resource for resource in pair if resource["kind"] == "video")
+    assert video["content_substance_status"] == "verified"
+    assert video["spoken_language"] == "mandarin"
+    assert "unicef" not in video["url"].casefold()
+
+
+@pytest.mark.parametrize("preferred_locale", ["zh-CN", "zh-TW"])
+@pytest.mark.parametrize(
+    "card_id, focus, child_age_months, expected_case_ids",
+    [
+        (
+            "learn_language_milestones",
+            "宝宝重复音节、回应名字，也想练习轮流发声和语言沟通",
+            9,
+            [
+                "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+                "language-yayas-parent-sign-case-video-zh-cn-v1",
+            ],
+        ),
+        (
+            "learn_language_milestones",
+            "寶寶重複音節、回應名字，也想練習輪流發聲和語言溝通",
+            11,
+            [
+                "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+                "language-yayas-parent-sign-case-video-zh-cn-v1",
+            ],
+        ),
+        (
+            "learn_serve_and_return",
+            "想把亲子互动和回应式互动放进日常",
+            9,
+            [
+                "connection-mommycarry-parent-case-article",
+                "connection-yayas-parent-sign-case-video-zh-cn-v1",
+            ],
+        ),
+        (
+            "learn_serve_and_return",
+            "想把親子互動和回應式互動放進日常",
+            11,
+            [
+                "connection-mommycarry-parent-case-article",
+                "connection-peter-parent-case-video",
+            ],
+        ),
+    ],
+)
+def test_reviewed_bundle_keeps_parent_case_ready_across_stage_and_chinese_locale(
+    preferred_locale,
+    card_id,
+    focus,
+    child_age_months,
+    expected_case_ids,
+):
+    card = deepcopy(LEARNING_CONTENT_BY_ID[card_id])
+    card.update(
+        {
+            "child_age_context": f"孩子当前年龄：{child_age_months}个月",
+            "recommendation_focus": focus,
+        }
+    )
+
+    bundle = reviewed_learning_resource_bundle(
+        card=card,
+        preferred_locale=preferred_locale,
+    )
+
+    assert bundle is not None
+    pair = main._select_category_resource_pair(
+        bundle["resources"],
+        "case",
+        preferred_locale,
+    )
+    assert [resource["id"] for resource in pair] == expected_case_ids
+    assert all(resource.get("case_process_status") == "verified" for resource in pair)
+    video = next(resource for resource in pair if resource["kind"] == "video")
+    assert video["content_substance_status"] == "verified"
+    assert resource_parent_org_id(video) not in CASE_FORBIDDEN_PARENT_ORG_IDS
+
+
+def test_dynamic_parent_case_video_receives_verified_process_and_substance_status():
+    bundle = _delivery_ready_parsed_bundle()
+    video = next(
+        resource
+        for resource in bundle["resources"]
+        if resource["content_category"] == "case"
+        and resource["kind"] == "video"
+    )
+
+    assert video["case_process_status"] == "verified"
+    assert video["content_substance_status"] == "verified"
+    assert not delivery_lane_rejection_reason(video, "zh-CN")
+
+
+def test_parent_case_without_attempt_adjustment_or_feedback_is_rejected():
+    """First-person identity alone is not an actionable parent case."""
+
+    case_article = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["content_category"] == "case"
+        and resource["kind"] == "article"
+    )
+    identity_only_case = {
+        **case_article,
+        "case_evidence": "A parent describes this family's first-person experience.",
+        "case_evidence_url": case_article["url"],
+    }
+
+    assert delivery_lane_rejection_reason(identity_only_case, "zh-CN") == (
+        "case_process_evidence_missing"
     )
 
 
@@ -2370,9 +2557,9 @@ def test_reviewed_development_bundle_matches_current_age_and_parent_focus():
         "development-zh-cn-video",
         "development-mama-cn-featured-article",
         "development-guoma-featured-video",
-        "development-sina-parent-case-article",
         "development-ahnian-parent-case-video",
     } <= matching_ids
+    assert "development-sina-parent-case-article" not in matching_ids
 
 
 def test_reviewed_age_metadata_blocks_stale_ten_month_resources():
@@ -2409,13 +2596,9 @@ def test_category_pair_never_backfills_a_wrong_age_format():
         context,
     )
 
-    assert {resource["id"] for resource in pair} == {
-        "development-ahnian-parent-case-video"
-    }
-    assert not any(
-        resource.get("age_range_months") == [10, 10]
-        for resource in pair
-    )
+    # A case must match both the child's stage and the current problem.  A
+    # same-age but off-topic parent vlog is not a safe fallback.
+    assert pair == []
 
 
 def test_authority_pair_prefers_verified_us_source_not_untrusted_country_claim():
@@ -3518,9 +3701,13 @@ def test_research_endpoint_returns_fallback_when_provider_fails(
         for resource in research["resources"]
     )
     assert all(
-        resource.get("source_region") != "TW"
+        "繁体" in str(resource.get("language") or "")
+        or "繁體" in str(resource.get("language") or "")
+        or "台湾" in str(resource.get("language") or "")
+        or "台灣" in str(resource.get("language") or "")
         for resource in research["resources"]
         if resource.get("kind") == "article"
+        and resource.get("source_region") == "TW"
     )
     assert all(
         resource.get("spoken_language") == "mandarin"

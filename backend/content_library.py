@@ -174,6 +174,12 @@ FEATURED_SOURCE_PARENT_ORG_IDS = frozenset(
 # featured lane is meant to provide.
 FEATURED_FORBIDDEN_PARENT_ORG_IDS = frozenset({"unicef"})
 AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS = frozenset({"unicef"})
+# The case lane is intentionally person-led rather than institution-led.  A
+# government or NGO may publish a legitimate family story, but those assets
+# repeatedly behaved like campaign material in the product.  Keep them in the
+# authority lane and reserve case cards for directly attributable parents and
+# family creators with a concrete process a similar family can inspect.
+CASE_FORBIDDEN_PARENT_ORG_IDS = frozenset(AUTHORITY_SOURCE_PARENT_ORG_IDS)
 
 
 def source_domains_for_parent_orgs(parent_org_ids: set[str] | frozenset[str]) -> tuple[str, ...]:
@@ -353,7 +359,12 @@ REVIEWED_EXACT_RESOURCE_URLS = frozenset(
         "https://www.youtube.com/watch?v=yzRi9GlSptM",
         "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5",
         "https://babyedu.sfaa.gov.tw/info/10000094",
-        "https://y.dxy.cn/hospital/879/925528.html",
+        "https://www.mombaby.com.tw/articles/9920801",
+        "https://silviathetraveler.com/baby-talk/",
+        "https://www.youtube.com/watch?v=kKkDdtpGByE",
+        "https://www.ptt.cc/bbs/BabyMother/M.1330075144.A.08A.html",
+        "https://www.youtube.com/watch?v=M0ZYaQ6Yv2g",
+        "https://www.mommycarry.com/?p=1400",
     }
 )
 
@@ -1192,6 +1203,9 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
         {
             "id": "connection-zh-cn-article",
             "kind": "article",
+            "content_category": "authority",
+            "source_tier": "authority",
+            "selection_basis": "official",
             "title": "亲子沟通——给一岁前婴儿的家长",
             "publisher": "香港特别行政区政府卫生署家庭健康服务",
             "language": "简体中文",
@@ -1202,6 +1216,9 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
         {
             "id": "connection-zh-cn-video",
             "kind": "video",
+            "content_category": "authority",
+            "source_tier": "authority",
+            "selection_basis": "official",
             "title": "亲子沟通（四至六个月）",
             "publisher": "香港特别行政区政府卫生署家庭健康服务",
             "language": "普通话影片 · 简体剧本",
@@ -1216,6 +1233,9 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
         {
             "id": "connection-zh-tw-article",
             "kind": "article",
+            "content_category": "authority",
+            "source_tier": "authority",
+            "selection_basis": "official",
             "title": "用愛說故事，親子共讀從零歲開始",
             "publisher": "臺灣衛生福利部國民健康署",
             "language": "繁體中文 · 台灣",
@@ -1227,6 +1247,9 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
         {
             "id": "connection-zh-tw-video",
             "kind": "video",
+            "content_category": "authority",
+            "source_tier": "authority",
+            "selection_basis": "official",
             "title": "親子互動秘笈 1：怎麼樣「互動」最好？",
             "publisher": "臺灣衛生福利部社會及家庭署 · 育兒親職網",
             "language": "華語影音課 · 台灣",
@@ -1429,7 +1452,20 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
             "trust_note": "公開第一人稱家庭經驗；不作發展評估或普遍效果證據。",
             "recognition": "真實新手父母經驗",
             "selection_reason": "能看到一個家庭如何把互動放進換尿布、玩耍等真實日常。",
-            "case_evidence": "作者以母親第一人稱描述自己、丈夫與寶寶按月齡實際玩過的遊戲。",
+            "age_range_months": [0, 12],
+            "focus_tags": [
+                "亲子互动",
+                "回应式互动",
+                "日常陪伴",
+                "轮流交流",
+                "親子互動",
+                "回應式互動",
+                "日常陪伴",
+                "輪流交流",
+            ],
+            "case_process_status": "verified",
+            "case_process_evidence": "母親按月齡記錄夫妻實際嘗試過的觸摸、聲音、換尿布與躲貓貓遊戲，也說明寶寶的反應和自己如何調整。",
+            "case_evidence": "作者以母親第一人稱記錄自己和丈夫按月齡嘗試觸摸、聲音與躲貓貓遊戲，並描述寶寶的回應與後續調整。",
             "case_evidence_url": "https://www.mommycarry.com/?p=1400",
             "url": "https://www.mommycarry.com/?p=1400",
         },
@@ -1451,7 +1487,22 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
             "trust_note": "公開真實家庭互動；是生活案例，不作發展標準或效果保證。",
             "recognition": "真實家庭頻道 · 約 5.6 萬次觀看（2026-07 核驗）",
             "selection_reason": "保留孩子不按腳本反應的真實感，方便家長理解互動重點而非追求完美。",
-            "case_evidence": "影片由父母與孩子共同出鏡，完整呈現家庭遊戲過程。",
+            "age_range_months": [10, 18],
+            "focus_tags": [
+                "亲子互动",
+                "观察回应",
+                "轮流",
+                "家庭游戏",
+                "親子互動",
+                "觀察回應",
+                "輪流",
+                "家庭遊戲",
+            ],
+            "content_substance_status": "verified",
+            "content_substance_evidence": "影片完整保留父母發起遊戲、孩子回應與家長跟著調整的連續過程，不是活動預告或品牌宣傳。",
+            "case_process_status": "verified",
+            "case_process_evidence": "父母實際嘗試背後畫畫和猜圖，根據孩子沒有照腳本反應的情況改變提示與等待方式。",
+            "case_evidence": "影片由父母與孩子共同出鏡，記錄全家嘗試遊戲、觀察孩子回應並調整提示的完整家庭過程。",
             "case_evidence_url": "https://www.youtube.com/watch?v=j50rZljX8XI",
             "url": "https://www.youtube.com/watch?v=j50rZljX8XI",
         },
@@ -1976,20 +2027,31 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID = {
 
 _LANGUAGE_MILESTONE_FOCUS_TAGS = [
     "语言",
+    "語言",
     "沟通",
+    "溝通",
     "发声",
+    "發聲",
     "轮流发声",
+    "輪流發聲",
     "音节",
+    "音節",
     "重复音节",
+    "重複音節",
     "模仿音节",
+    "模仿音節",
     "学他发音",
     "学她发音",
     "咿呀",
     "语音理解",
     "模仿声音",
+    "模仿聲音",
     "声音回应",
+    "聲音回應",
     "回应名字",
+    "回應名字",
     "名字反应",
+    "名字反應",
     "叫他或她时会回应",
     "叫他时会回应",
     "叫她时会回应",
@@ -2164,83 +2226,144 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
                 "url": "https://www.bilibili.com/video/BV1BH4y1U7yg",
             },
             {
-                "id": "language-dxy-hospital-case-article-zh-cn-v1",
+                "id": "language-ptt-turntaking-parent-case-article-zh-cn-v1",
                 "kind": "article",
                 "content_category": "case",
                 "source_tier": "curated",
                 "selection_basis": "lived_experience",
-                "title": "五大能区评估帮你了解宝宝的发育状况",
-                "publisher": "珠海市妇幼保健院 · 丁香园医院汇",
-                "language": "简体中文",
-                "locales": ["zh-CN"],
-                "source_region": "CN",
-                "script_language": "zh-Hans",
+                "title": "全职妈妈的 0～1 岁游戏：从第一声开始轮流回应",
+                "publisher": "PTT BabyMother · 真实妈妈分享",
+                "language": "繁体中文 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
                 "age_range_months": [6, 12],
-                "focus_tags": ["语言", "沟通", "发声", "回应名字", "发育里程碑"],
-                "description": "以家庭带宝宝评估的经历切入，再按月龄梳理发声、互动、理解指令和需要留意的信号。",
-                "trust_note": "珠海市妇幼保健院在丁香园医院汇发布的科普；属于医院自主内容，不等同于同行评议指南。",
-                "recognition": "妇幼保健院科普 · 丁香园医院汇",
-                "selection_reason": "把 6 至 12 月龄语言表现放进真实家庭观察情境，便于理解如何记录变化并向专业人员提问。",
-                "case_evidence": "文章以家长带宝宝接受发育评估的家庭经历开场，再说明不同月龄的观察重点。",
-                "case_evidence_url": "https://y.dxy.cn/hospital/879/925528.html",
-                "url": "https://y.dxy.cn/hospital/879/925528.html",
-            },
-            {
-                "id": "language-zhang-qin-case-article-zh-cn",
-                "kind": "article",
-                "content_category": "case",
-                "source_tier": "curated",
-                "selection_basis": "lived_experience",
-                "title": "张琴奶奶的回应性照护实践：从交谈、唱歌和玩耍开始",
-                "publisher": "联合国儿童基金会 · 真实家庭故事",
-                "language": "简体中文",
-                "locales": ["zh-CN"],
-                "source_region": "INTL",
-                "script_language": "zh-Hans",
-                # This lived-experience item is intentionally age-neutral, so
-                # it must match the concrete language signal that selected the
-                # card instead of borrowing the child's age. Keep these tags
-                # aligned with the production language-topic aliases.
                 "focus_tags": [
                     *_LANGUAGE_MILESTONE_FOCUS_TAGS,
-                    "交谈",
-                    "回应式互动",
+                    "轮流发声",
+                    "模仿声音",
+                    "日常旁白",
                 ],
-                "description": "记录一位照护者怎样把交谈、讲故事、唱歌和玩耍放进家庭日常，以及孩子语言表达逐步变清晰的过程。",
-                "trust_note": "联合国儿童基金会记录的第一人称照护经历；案例不作为同月龄里程碑或普遍效果保证。",
-                "recognition": "真实照护者经历 · 儿童早期发展项目",
-                "selection_reason": "用于理解方法如何落到真实家庭，不用于把案例中的孩子与当前宝宝比较。",
-                "case_evidence": "文章记录张琴作为主要照护者参加养育照护活动，并在家练习交谈、唱歌、玩耍和及时回应。",
-                "case_evidence_url": "https://www.unicef.cn/stories/grandmothers-journey-raising-left-behind-children",
-                "url": "https://www.unicef.cn/stories/grandmothers-journey-raising-left-behind-children",
+                "description": "一位全职妈妈从宝宝第一次发声开始，记录自己怎样模仿声音、停下来等宝宝接话、介绍正在做的事，并在宝宝抗拒时停止和调整。",
+                "trust_note": "公开第一人称父母经验；用于理解真实家庭的尝试、反馈与取舍，不替代语言发展评估。",
+                "recognition": "真实妈妈长篇实践 · 0～1 岁互动游戏",
+                "selection_reason": "和连续音节、模仿回应及轮流交流直接对应，能看到家长实际说什么、如何等待，以及宝宝不配合时怎么调整。",
+                "case_process_status": "verified",
+                "case_process_evidence": "作者说明从宝宝第一声开始模仿、轮流发声、给日常活动做旁白，并记录宝宝回应或抗拒时自己如何继续或停止。",
+                "case_evidence": "真实妈妈交代家庭场景，逐步描述自己试过的发声互动、宝宝的反馈及后续调整。",
+                "case_evidence_url": "https://www.ptt.cc/bbs/BabyMother/M.1330075144.A.08A.html",
+                "url": "https://www.ptt.cc/bbs/BabyMother/M.1330075144.A.08A.html",
             },
             {
-                "id": "language-zhang-qin-case-video-zh-cn",
+                "id": "language-mombaby-parent-case-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "语言发展懒人包：新手爸妈必知0～6岁的语言发展知识",
+                "publisher": "妈妈宝宝 · 胖灵精妈妈",
+                "language": "繁体中文 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [6, 10],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "轮流对话", "忙碌家长"],
+                "description": "一位妈妈写下自己做家事、喂饭和照顾宝宝时怎样持续说旁白、回应发声，并把宝宝听不懂的“胖星语”当成来回交流。",
+                "trust_note": "公开第一人称育儿经历；作者把家庭做法与发展资料并列，不把自己孩子的表现当作所有宝宝的标准。",
+                "recognition": "真实母亲长篇实践 · 6—10月龄牙牙学语",
+                "selection_reason": "和当前九月龄连续音节直接对应，也能看到忙碌家长怎样把语言互动放进家务、喂饭等真实日常。",
+                "case_process_status": "verified",
+                "case_process_evidence": "作者交代自己做完家事常很累，仍尝试边做边说、区分忙与不忙时的回应方式，并记录宝宝如何用眼神、发声和动作反馈。",
+                "case_evidence": "真实妈妈记录照顾胖灵精时遇到不知道聊什么的问题，尝试给家中物品和家务做旁白、回应宝宝发声，并反思忙碌时也能用语调保持交流。",
+                "case_evidence_url": "https://www.mombaby.com.tw/articles/9920801",
+                "url": "https://www.mombaby.com.tw/articles/9920801",
+            },
+            {
+                "id": "language-silvia-parent-case-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "宝宝发出噗噗怪声、乱喷口水，正常吗？宝宝学说话的第一课",
+                "publisher": "希游记 Silvia · 真实妈妈记录",
+                "language": "繁体中文 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [4, 10],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "模仿声音", "面对面回应"],
+                "description": "妈妈记录孩子反复噗声和喷口水的发声期，以及自己怎样面对面回应、让孩子看嘴型并放慢说话速度。",
+                "trust_note": "真实母亲公开记录；用来理解一个家庭的观察和做法，不代替发展评估。",
+                "recognition": "真实妈妈与宝宝发声记录",
+                "selection_reason": "提供另一种很具体的家庭情境：宝宝声音听不懂时，不急着纠正，而是先模仿、回应和等待。",
+                "case_process_status": "verified",
+                "case_process_evidence": "作者记录孩子持续发出噗声带来的困惑，说明父母后来如何面对面模仿、回应、放慢语速，并把这个阶段视作发声实验。",
+                "case_evidence": "Silvia 以妈妈身份记录艾立克反复发声的真实场景，尝试面对面回应、模仿声音和放慢语速，并反思无需禁止这种发声实验。",
+                "case_evidence_url": "https://silviathetraveler.com/baby-talk/",
+                "url": "https://silviathetraveler.com/baby-talk/",
+            },
+            {
+                "id": "language-yayas-parent-sign-case-video-zh-cn-v1",
                 "kind": "video",
                 "content_category": "case",
                 "source_tier": "curated",
                 "selection_basis": "lived_experience",
-                "title": "张琴奶奶学习回应性照护的真实历程",
-                "publisher": "联合国儿童基金会 · 真实家庭视频",
-                "language": "普通话视频 · 简体中文",
-                "locales": ["zh-CN"],
-                "source_region": "INTL",
-                "script_language": "zh-Hans",
+                "title": "宝宝还不会说时怎么表达？双胞胎妈妈的手语实践",
+                "publisher": "YayasLife · 双胞胎妈妈",
+                "language": "普通话视频 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [6, 12],
                 "focus_tags": [
                     *_LANGUAGE_MILESTONE_FOCUS_TAGS,
-                    "交谈",
-                    "回应式互动",
+                    "不会表达",
+                    "手势沟通",
+                    "亲子回应",
                 ],
                 "spoken_language": "mandarin",
                 "spoken_language_status": "verified",
-                "language_evidence": "联合国儿童基金会中文发布页的家庭采访视频，主要口语为普通话。",
-                "description": "跟随真实照护者学习观察、交谈、鼓励和回应，并说明这些做法怎样进入每天的家庭互动。",
-                "trust_note": "联合国儿童基金会发布的真实家庭记录；案例不代替个别儿童的语言发展评估。",
-                "recognition": "儿童早期发展项目 · 普通话家庭案例",
-                "selection_reason": "先看真实家庭怎样练习回应，再挑一个适合当前宝宝的互动动作尝试。",
-                "case_evidence": "视频由张琴本人和参与项目的家庭出镜，记录其学习并实践回应性照护的过程。",
-                "case_evidence_url": "https://www.unicef.cn/videos/grandmother-zhang-qin-learns-responsive-care",
-                "url": "https://www.unicef.cn/videos/grandmother-zhang-qin-learns-responsive-care",
+                "language_evidence": "已核验为双胞胎妈妈以国语/普通话连续讲解并示范真实家庭场景。",
+                "description": "双胞胎妈妈说明宝宝有需要却不会表达、容易哭的真实问题，并在吃饭、继续和结束等日常场景示范 Eat、More、All done 三个手势。",
+                "trust_note": "真实父母创作者的家庭实践；不是机构公益宣传、品牌广告或医疗结论。",
+                "recognition": "父母创作者 · 约 1.87 万订阅 · 约 3.44 万次观看 · 5 分 58 秒",
+                "selection_reason": "同阶段宝宝常有表达需要却说不出的情况；视频完整展示问题、分阶段尝试、宝宝反馈和妈妈如何理解需求。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "视频主体持续讲解并示范三个具体手势的使用场景、教学阶段和家庭反馈，没有用机构口号代替方法。",
+                "case_process_status": "verified",
+                "case_process_evidence": "妈妈先描述沟通困难，再示范在真实吃饭与结束场景反复使用手势，并说明宝宝逐步理解后带来的沟通变化。",
+                "case_evidence": "双胞胎妈妈以自家育儿经历说明问题、实际尝试与反馈，内容主体是家庭过程而不是宣传。",
+                "case_evidence_url": "https://www.youtube.com/watch?v=M0ZYaQ6Yv2g",
+                "url": "https://www.youtube.com/watch?v=M0ZYaQ6Yv2g",
+            },
+            {
+                "id": "language-parent-games-case-video-zh-cn-v1",
+                "kind": "video",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "七到九个月宝宝：感官、认知发展训练小游戏",
+                "publisher": "育儿教养经 · 创业系妈妈",
+                "language": "普通话视频 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [7, 9],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "语言训练游戏", "亲子互动"],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "已核验为台湾妈妈以国语/普通话连续讲解，并实拍家庭游戏过程。",
+                "description": "一位创业妈妈按七到九月龄展示纸箱爬行、剪贴说故事和躲猫猫三种实际玩过的游戏，其中说故事与来回回应直接对应语言发展。",
+                "trust_note": "真实妈妈和孩子的家庭实践；频道页面有母婴活动链接，但本片主体是三段完整亲子游戏，不是产品广告。",
+                "recognition": "父母创作者 · 约4.1万订阅 · 约1.28万次观看 · 4分51秒",
+                "selection_reason": "月龄和当前宝宝一致，能直接看到家长怎样准备、示范、观察回应并调整互动，不是只讲里程碑或播放公益口号。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "视频按时间轴完整展示三种家庭游戏，包含一段七到九月龄语言训练游戏和真实亲子互动。",
+                "case_process_status": "verified",
+                "case_process_evidence": "妈妈说明同月龄孩子的阶段特点，实际尝试三种家中游戏，并用自己孩子对躲猫猫、声音和说故事的反应解释如何继续调整。",
+                "case_evidence": "创业系妈妈分享自家七到九月龄孩子的真实互动，尝试纸箱爬行、剪贴说故事和躲猫猫，并记录孩子对声音与呼唤的回应。",
+                "case_evidence_url": "https://www.youtube.com/watch?v=kKkDdtpGByE",
+                "url": "https://www.youtube.com/watch?v=kKkDdtpGByE",
             },
 ]
 
@@ -2449,6 +2572,37 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
             ),
             *_REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES,
             {
+                "id": "language-hpa-reading-0-12-authority-article-zh-tw-v1",
+                "kind": "article",
+                "content_category": "authority",
+                "source_tier": "authority",
+                "selection_basis": "official",
+                "title": "親子共讀分齡秘笈全攻略：產前至 12 個月",
+                "publisher": "臺灣衛生福利部國民健康署",
+                "parent_org_id": "tw_hpa",
+                "language": "繁體中文 · 台灣",
+                "locales": ["zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [0, 12],
+                "focus_tags": [
+                    "语言",
+                    "語言",
+                    "沟通",
+                    "溝通",
+                    "咿呀",
+                    "模仿声音",
+                    "模仿聲音",
+                    "回应",
+                    "回應",
+                ],
+                "description": "按 0 至 12 個月說明寶寶抓書、看圖、咿呀回應和模仿表情等表現，以及家長如何跟著寶寶反應共讀。",
+                "trust_note": "臺灣中央衛生主管機關官方分齡親子共讀資料；用於日常互動與觀察，不替代發展評估。",
+                "recognition": "政府官方分齡資料 · 0 至 12 個月",
+                "selection_reason": "直接覆蓋目前月齡，並把語言互動放進家長每天可做的共讀場景。",
+                "url": "https://www.hpa.gov.tw/Pages/Detail.aspx?nodeid=870&pid=13573&sid=19219",
+            },
+            {
                 "id": "language-parenting-featured-article",
                 "kind": "article",
                 "content_category": "featured",
@@ -2525,6 +2679,50 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
                 "case_evidence": "父母直接描述兩歲半兒子的理解、說話情況與就醫經過。",
                 "case_evidence_url": "https://www.youtube.com/watch?v=vcjbqp3K-fM",
                 "url": "https://www.youtube.com/watch?v=vcjbqp3K-fM",
+            },
+        ],
+        "learn_serve_and_return": [
+            {
+                "id": "connection-yayas-parent-sign-case-video-zh-cn-v1",
+                "kind": "video",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "宝宝还不会说时怎么表达？双胞胎妈妈的手语实践",
+                "publisher": "YayasLife · 双胞胎妈妈",
+                "language": "普通话视频 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [6, 12],
+                "focus_tags": [
+                    "亲子互动",
+                    "回应式互动",
+                    "轮流交流",
+                    "亲子回应",
+                    "不会表达",
+                    "手势沟通",
+                    "親子互動",
+                    "回應式互動",
+                    "輪流交流",
+                    "親子回應",
+                    "不會表達",
+                    "手勢溝通",
+                ],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "已核验为双胞胎妈妈以国语/普通话连续讲解并示范真实家庭场景。",
+                "description": "双胞胎妈妈说明宝宝有需要却不会表达、容易哭的真实问题，并在吃饭、继续和结束等日常场景示范三个手势。",
+                "trust_note": "真实父母创作者的家庭实践；不是机构公益宣传、品牌广告或医疗结论。",
+                "recognition": "父母创作者 · 约 1.87 万订阅 · 约 3.44 万次观看 · 5 分 58 秒",
+                "selection_reason": "能看到家长怎样发现信号、做出回应、重复练习并根据宝宝理解程度调整，直接对应来回互动。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "视频主体持续讲解并示范三个具体手势的使用场景、教学阶段和家庭反馈，没有用机构口号代替方法。",
+                "case_process_status": "verified",
+                "case_process_evidence": "妈妈先描述沟通困难，再示范在真实吃饭与结束场景反复使用手势，并说明宝宝逐步理解后带来的沟通变化。",
+                "case_evidence": "双胞胎妈妈以自家育儿经历说明沟通问题、实际尝试与反馈，内容主体是家庭过程而不是宣传。",
+                "case_evidence_url": "https://www.youtube.com/watch?v=M0ZYaQ6Yv2g",
+                "url": "https://www.youtube.com/watch?v=M0ZYaQ6Yv2g",
             },
         ],
         "learn_tantrum_boundaries": [
@@ -2610,7 +2808,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     }
 )
 
-_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
+_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
 _NURI_GUIDE_DISCLAIMER = (
     "外部内容为英文原文；中文内容由 NURI 导读，不是发布机构的官方翻译；"
     "重要结论请以原文为准。"
@@ -3035,7 +3233,9 @@ _REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID = {
                 "selection_reason": "与忙碌创业父母的时间冲突直接相关，也呈现试错和不完美，而不是标准答案。",
                 "age_range_months": [3, 24],
                 "focus_tags": ["工作忙", "陪伴时间少", "职场父母", "内疚"],
-                "case_evidence": "作者以职场母亲第一人称回顾产后三个月复工及家庭时间安排。",
+                "case_process_status": "verified",
+                "case_process_evidence": "作者记录产后三个月复工遇到的时间与内疚冲突、自己尝试的家庭安排，以及哪些做法有效或需要取舍。",
+                "case_evidence": "作者以职场母亲第一人称记录产后三个月复工后的时间冲突，尝试调整喂养、陪玩与工作安排，并反思结果和取舍。",
                 "case_evidence_url": "https://www.meghanmoloney.com/10-things-ive-learned-so-far-as-a-working-mom/",
                 "url": "https://www.meghanmoloney.com/10-things-ive-learned-so-far-as-a-working-mom/",
             }
@@ -3136,6 +3336,25 @@ _MULTILINGUAL_ENGLISH_RESOURCE_IDS = frozenset(
     }
 )
 
+# These legacy localized entries were subsequently opened and promoted into
+# the deterministic delivery lane. Wrapping the existing dictionaries keeps
+# one source of editorial copy while preventing an unverified duplicate from
+# remaining in the merged card.
+_PROMOTED_LOCALIZED_REVIEWED_RESOURCE_IDS = frozenset(
+    {
+        "connection-zh-cn-article",
+        "connection-zh-cn-video",
+        "connection-zh-tw-article",
+        "connection-zh-tw-video",
+        "connection-dxy-featured-article-zh-cn-v1",
+        "connection-huang-featured-video-zh-cn-v1",
+        "connection-cylaw-featured-article",
+        "connection-wanling-featured-video",
+        "connection-mommycarry-parent-case-article",
+        "connection-peter-parent-case-video",
+    }
+)
+
 for _card in LEARNING_CONTENT_CARDS:
     _reviewed_english_resources = [
         {
@@ -3151,10 +3370,38 @@ for _card in LEARNING_CONTENT_CARDS:
     _card["resources"] = [
         _with_resource_curation_metadata(resource)
         for resource in [
-            *_LOCALIZED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
-            *_LOCALIZED_RESOURCES_BY_CARD_ID.get(
-                f"{_card['id']}_reviewed", []
-            ),
+            *[
+                resource
+                for resource in _LOCALIZED_RESOURCES_BY_CARD_ID.get(
+                    _card["id"], []
+                )
+                if resource.get("id")
+                not in _PROMOTED_LOCALIZED_REVIEWED_RESOURCE_IDS
+            ],
+            *[
+                _reviewed_localized_delivery_resource(resource)
+                for resource in _LOCALIZED_RESOURCES_BY_CARD_ID.get(
+                    _card["id"], []
+                )
+                if resource.get("id")
+                in _PROMOTED_LOCALIZED_REVIEWED_RESOURCE_IDS
+            ],
+            *[
+                resource
+                for resource in _LOCALIZED_RESOURCES_BY_CARD_ID.get(
+                    f"{_card['id']}_reviewed", []
+                )
+                if resource.get("id")
+                not in _PROMOTED_LOCALIZED_REVIEWED_RESOURCE_IDS
+            ],
+            *[
+                _reviewed_localized_delivery_resource(resource)
+                for resource in _LOCALIZED_RESOURCES_BY_CARD_ID.get(
+                    f"{_card['id']}_reviewed", []
+                )
+                if resource.get("id")
+                in _PROMOTED_LOCALIZED_REVIEWED_RESOURCE_IDS
+            ],
             *_REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID.get(_card["id"], []),
             *_reviewed_english_resources,
             *_CURATED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
