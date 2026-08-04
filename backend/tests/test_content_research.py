@@ -40,6 +40,7 @@ from backend.content_research import (  # noqa: E402
     parse_research_response,
     redact_conversation_text,
     research_learning_resources,
+    reviewed_learning_resource_bundle,
     reviewed_resource_matches_context,
 )
 
@@ -427,6 +428,36 @@ def test_delivery_contract_rejects_old_static_hk_authority_and_unhealthy_or_ad_l
     )
     advertisement = {**healthy, "commercial_risk": "blocked"}
     assert delivery_lane_rejection_reason(advertisement, "zh-CN") == (
+        "commercial_or_ad"
+    )
+
+
+def test_reviewed_featured_creator_self_promo_requires_exact_whitelist_review():
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_language_milestones"])
+    card["child_age_context"] = "孩子当前年龄：9个月"
+    bundle = reviewed_learning_resource_bundle(
+        card=card,
+        preferred_locale="zh-CN",
+    )
+    assert bundle is not None
+    reviewed = next(
+        resource
+        for resource in bundle["resources"]
+        if resource["content_category"] == "featured"
+        and resource["commercial_risk"] == "creator_self_promo"
+    )
+
+    assert not delivery_lane_rejection_reason(
+        reviewed,
+        "zh-CN",
+        require_dynamic=False,
+    )
+    dynamic_copy = {
+        **reviewed,
+        "research_source": "openai_web_search",
+        "link_health_status": "search_cited",
+    }
+    assert delivery_lane_rejection_reason(dynamic_copy, "zh-CN") == (
         "commercial_or_ad"
     )
 

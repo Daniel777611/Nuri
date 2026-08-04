@@ -2056,7 +2056,14 @@ def delivery_lane_rejection_reason(
     path = urlparse(str(resource.get("url") or "")).path.strip("/")
     if not path:
         return "landing_or_wrong_page_type"
-    if resource.get("commercial_risk") != "clear":
+    allowed_commercial_risks = {"clear"}
+    if category == "featured" and research_source == "reviewed_whitelist":
+        # High-readability expert creators commonly link to their own free or
+        # paid products.  Exact-URL review may admit that limited risk when it
+        # is disclosed in ``trust_note``; sponsorships, affiliate funnels and
+        # product-led advertorials remain blocked.
+        allowed_commercial_risks.add("creator_self_promo")
+    if resource.get("commercial_risk") not in allowed_commercial_risks:
         return "commercial_or_ad"
     if str(resource.get("display_locale") or "") != locale:
         return "wrong_display_locale"

@@ -318,9 +318,9 @@ def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
     harness = _PrepareHarness(
         monkeypatch,
         card_id="learn_language_milestones",
-        message="我会回应孩子的声音，他会模仿爸爸妈妈，想了解11个月宝宝的语言沟通和轮流互动。",
+        message="我会回应孩子的声音，他会模仿爸爸妈妈，想了解9个月宝宝的语言沟通和轮流互动。",
         recommendation_focus="语言发育、回应声音、亲子沟通和轮流互动",
-        child_age_context="11个月",
+        child_age_context="9个月",
     )
     harness.use_research_results(
         monkeypatch,
@@ -337,6 +337,18 @@ def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
         for resource in item["resources"]
     }
     assert len(organizations) == 6
+    resource_ids = {
+        resource["id"]
+        for item in result["items"]
+        for resource in item["resources"]
+    }
+    assert "language-cdc-9m-authority-video-reviewed-v1" in resource_ids
+    assert "language-weetalkers-featured-article-reviewed-v1" in resource_ids
+    assert "language-pedsdoctalk-featured-video-reviewed-v1" in resource_ids
+    assert "language-todays-parent-case-article-reviewed-v1" in resource_ids
+    assert "language-kancha-case-video-reviewed-v1" in resource_ids
+    assert all(item["alternate_count"] >= 1 for item in result["items"])
+    assert all(item["alternate_resource_pairs"] for item in result["items"])
 
 
 def test_reviewed_whitelist_ready_card_opens_without_another_provider_call(

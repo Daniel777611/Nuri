@@ -701,7 +701,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
         resource
         for resource in bundle["resources"]
         if resource["content_category"] == "authority"
-    ]
+    ][:2]
     prepared = snapshot_with_prepared_resource_pair(
         snapshot,
         pair,
