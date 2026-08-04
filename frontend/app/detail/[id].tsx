@@ -25,6 +25,11 @@ import {
   type RecommendationEventName,
   type RecommendationFeedbackReason,
 } from "@/src/api";
+import { preparePersonalizedFeedOnce } from "@/src/feedPreparation";
+import {
+  getRecommendationDetailHandoff,
+  type RecommendationDetailHandoff,
+} from "@/src/recommendationDetailHandoff";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
@@ -178,6 +183,45 @@ function isReadyDetail(
   );
 }
 
+function isUsableGuide(detail: any): boolean {
+  return Boolean(
+    detail &&
+      typeof detail.id === "string" &&
+      typeof detail.title === "string" &&
+      (typeof detail.summary === "string" || typeof detail.body === "string"),
+  );
+}
+
+function guideFromHandoff(
+  handoff: RecommendationDetailHandoff | null,
+): any | null {
+  if (!handoff) return null;
+  const card = handoff.card;
+  const ready = isReadyDetail(card, card.content_category);
+  return {
+    ...card,
+    // Feed cards intentionally carry only a concise summary. Promote that
+    // summary into the guide body during the handoff so the destination is
+    // useful immediately without placing conversation-derived copy in the URL.
+    summary: ready ? card.summary : undefined,
+    body: ready ? (card as any).body : card.summary || "",
+    // A handoff makes the editorial guide immediately addressable, but only a
+    // completed preparation may put external URLs on screen.
+    resources: ready ? card.resources || [] : [],
+    resource_pair_complete: ready,
+    resource_readiness: ready
+      ? "ready"
+      : card.resource_readiness === "unavailable"
+        ? "unavailable"
+        : card.resource_readiness === "retryable"
+          ? "retryable"
+          : "preparing",
+    research_status:
+      card.research_status ||
+      (card.resource_readiness === "retryable" ? "retryable" : "preparing"),
+  };
+}
+
 export default function Detail() {
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
@@ -189,6 +233,7 @@ export default function Detail() {
     prepared_content_set_id: preparedContentSetId,
     feed_request_id: feedRequestId,
     content_category: contentCategory,
+    handoff_key: handoffKey,
     rank: recommendationRank,
   } = useLocalSearchParams<{
     id: string;
@@ -198,9 +243,11 @@ export default function Detail() {
     prepared_content_set_id?: string;
     feed_request_id?: string;
     content_category?: ResourceContentCategory;
+    handoff_key?: string;
     rank?: string;
   }>();
-  const [card, setCard] = useState<any>(null);
+  const initialHandoff = getRecommendationDetailHandoff(handoffKey);
+  const [card, setCard] = useState<any>(() => guideFromHandoff(initialHandoff));
   const [loadError, setLoadError] =
     useState<"expired" | "preparing" | "generic" | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
@@ -218,6 +265,8 @@ export default function Detail() {
   const dwellStartedAt = useRef<number | null>(null);
   const dwellSent = useRef(false);
   const contentRequestId = useRef(0);
+  const detailIdentity = useRef("");
+  const detailViewTracked = useRef(false);
   const dwellContext = useRef<Omit<RecommendationEventInput, "event" | "duration_ms">>({});
   const frameWidth = Math.min(viewportWidth, DETAIL_FRAME_WIDTH);
   const parsedRecommendationRank = Number.parseInt(recommendationRank || "", 10);
@@ -294,32 +343,38 @@ export default function Detail() {
     if (!id) return;
     let active = true;
     const requestId = ++contentRequestId.current;
-    setCard(null);
-    setLoadError(null);
-    setContentFeedback(null);
-    setFeedbackReasonOpen(false);
-    setFeedbackReason(null);
-    setFeedbackSubmitting(false);
-    setResourceRefreshState("idle");
-    dwellStartedAt.current = null;
-    dwellSent.current = false;
+    const identity = [
+      id,
+      recommendationId,
+      contentCategory,
+      contextCreatedAt,
+    ].join("|");
+    const isNewDetail = detailIdentity.current !== identity;
+    detailIdentity.current = identity;
+    const handoff = getRecommendationDetailHandoff(handoffKey);
+    const guide = guideFromHandoff(handoff);
 
-    api
-      .getCardDetail(
-        id as string,
-        sessionId,
-        contextCreatedAt,
-        recommendationId,
-        contentCategory,
-        preparedContentSetId,
-      )
-      .then((detail: any) => {
-        if (!active || contentRequestId.current !== requestId) return;
-        if (!isReadyDetail(detail, contentCategory)) {
-          setLoadError("preparing");
-          return;
-        }
-        setCard(detail);
+    if (isNewDetail) {
+      setCard(guide);
+      setLoadError(null);
+      setContentFeedback(null);
+      setFeedbackReasonOpen(false);
+      setFeedbackReason(null);
+      setFeedbackSubmitting(false);
+      setResourceRefreshState("idle");
+      dwellStartedAt.current = null;
+      dwellSent.current = false;
+      detailViewTracked.current = false;
+    } else {
+      setLoadError(null);
+      if (guide) setCard((current: any) => current || guide);
+    }
+
+    const acceptDetail = (detail: any) => {
+      if (!active || contentRequestId.current !== requestId) return;
+      setCard(detail);
+      setLoadError(null);
+      if (!detailViewTracked.current) {
         dwellContext.current = {
           card_id: id as string,
           recommendation_id: recommendationId || undefined,
@@ -329,12 +384,102 @@ export default function Detail() {
           locale: detail.preferred_locale || undefined,
         };
         dwellStartedAt.current = Date.now();
+        detailViewTracked.current = true;
         trackRecommendation("detail_view").catch(() => {});
-      })
-      .catch((error: unknown) => {
+      }
+    };
+
+    if (guide) acceptDetail(guide);
+
+    const fetchDetail = (contentSetId?: string) =>
+      api.getCardDetail(
+        id as string,
+        sessionId,
+        contextCreatedAt,
+        recommendationId,
+        contentCategory,
+        contentSetId,
+      );
+
+    const loadDetail = async () => {
+      try {
+        try {
+          const detail = await fetchDetail(preparedContentSetId);
+          if (!active || contentRequestId.current !== requestId) return;
+          if (isUsableGuide(detail)) {
+            acceptDetail(detail);
+            return;
+          }
+        } catch (error: unknown) {
+          const status =
+            error && typeof error === "object" ? (error as any).status : null;
+          // A preparation can finish between navigation and this GET. The
+          // backend then requires its newly-issued content-set ID and answers
+          // this first ID-less request with 404. Re-reading the shared prepare
+          // result gives us that exact ID without weakening the detail guard.
+          if (
+            (status !== 409 && status !== 404) ||
+            !handoff?.preparationItems.length
+          ) {
+            throw error;
+          }
+        }
+
+        if (!handoff?.preparationItems.length) {
+          setLoadError("preparing");
+          return;
+        }
+
+        const prepared = await preparePersonalizedFeedOnce(handoff.preparationItems);
+        if (!active || contentRequestId.current !== requestId) return;
+        const preparedItem = (prepared?.items || []).find(
+          (item) =>
+            item.recommendation_id === recommendationId &&
+            (!contentCategory || item.content_category === contentCategory),
+        );
+        if (
+          !preparedItem ||
+          preparedItem.resource_readiness !== "ready" ||
+          preparedItem.resource_pair_complete !== true ||
+          !preparedItem.prepared_content_set_id
+        ) {
+          setCard((current: any) => ({
+            ...(current || guide),
+            resource_readiness: "retryable",
+            resource_pair_complete: false,
+            resources: [],
+            research_status: "retryable",
+          }));
+          return;
+        }
+
+        const detail = await fetchDetail(preparedItem.prepared_content_set_id);
+        if (!active || contentRequestId.current !== requestId) return;
+        if (!isReadyDetail(detail, contentCategory)) {
+          throw new Error("prepared detail did not contain a complete resource pair");
+        }
+        acceptDetail(detail);
+      } catch (error: unknown) {
         if (!active || contentRequestId.current !== requestId) return;
         const status =
           error && typeof error === "object" ? (error as any).status : null;
+        if (guide) {
+          setCard((current: any) =>
+            isReadyDetail(current, contentCategory) &&
+            status !== 404 &&
+            status !== 409
+              ? current
+              : {
+                  ...(current || guide),
+                  resource_readiness: "retryable",
+                  resource_pair_complete: false,
+                  resources: [],
+                  research_status: "retryable",
+                },
+          );
+          setLoadError(null);
+          return;
+        }
         setLoadError(
           status === 409
             ? "preparing"
@@ -342,7 +487,10 @@ export default function Detail() {
               ? "expired"
               : "generic",
         );
-      });
+      }
+    };
+
+    void loadDetail();
 
     // A favorites outage must not prevent the article itself from rendering.
     api
@@ -363,6 +511,7 @@ export default function Detail() {
     contentCategory,
     feedRequestId,
     flushDwell,
+    handoffKey,
     id,
     preparedContentSetId,
     recommendationId,
@@ -630,7 +779,14 @@ export default function Detail() {
     const visibleResources = (["article", "video"] as const)
       .map((kind) => categoryResources.find((resource) => resource.kind === kind))
       .filter((resource): resource is LearningResource => Boolean(resource));
-    const resourcePairComplete = visibleResources.length === 2;
+    const resourcePairComplete =
+      card.resource_readiness === "ready" &&
+      card.resource_pair_complete === true &&
+      visibleResources.length === 2;
+    const resourcePreparationPending =
+      !resourcePairComplete &&
+      (card.resource_readiness === "preparing" ||
+        card.resource_readiness === "retryable");
     const activeResourceLocaleLabel =
       RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言";
     return (
@@ -681,10 +837,14 @@ export default function Detail() {
         ) : null}
 
         {card.summary ? <Text style={styles.lead}>{card.summary}</Text> : null}
-        <Text style={styles.sectionTitle}>NURI 内容导读</Text>
-        <Text style={styles.body}>{card.body}</Text>
+        {card.body ? (
+          <>
+            <Text style={styles.sectionTitle}>NURI 内容导读</Text>
+            <Text style={styles.body}>{card.body}</Text>
+          </>
+        ) : null}
 
-        {resources.length || card.research_status ? (
+        {resources.length || card.research_status || resourcePreparationPending ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
             <View style={styles.resourcesTitleRow}>
               <Text style={[styles.sectionTitle, styles.resourcesTitle]}>
@@ -764,7 +924,43 @@ export default function Detail() {
                   <Text style={styles.preferenceBadgeText}>{activeResourceLocaleLabel}</Text>
                 </View>
               </View>
-            {card.research_status === "fresh" || card.research_status === "hybrid" ? (
+            {resourcePreparationPending ? (
+              <View style={styles.researchStatusCard} testID="detail-research-status">
+                {card.resource_readiness === "preparing" ? (
+                  <ActivityIndicator size="small" color="#4F4B9C" />
+                ) : (
+                  <Ionicons name="refresh-outline" size={17} color="#4F4B9C" />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.researchStatusLabel}>
+                    {card.resource_readiness === "preparing"
+                      ? "导读已可阅读，正在准备文章和视频"
+                      : "导读已可阅读，文章和视频需要重试"}
+                  </Text>
+                  <Text style={styles.researchStatusText}>
+                    NURI 只会在一篇文章和一个视频都通过主题、语言与来源核验后显示外部链接。
+                  </Text>
+                  {card.resource_readiness === "retryable" ? (
+                    <Pressable
+                      onPress={() => {
+                        setCard((current: any) => ({
+                          ...current,
+                          resource_readiness: "preparing",
+                          research_status: "preparing",
+                        }));
+                        setReloadSequence((value) => value + 1);
+                      }}
+                      style={styles.refreshResourcesButton}
+                      accessibilityRole="button"
+                      testID="detail-prepare-retry"
+                    >
+                      <Ionicons name="refresh-outline" size={16} color="#4F4B9C" />
+                      <Text style={styles.refreshResourcesButtonText}>重新准备</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            ) : card.research_status === "fresh" || card.research_status === "hybrid" ? (
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <Ionicons name="search" size={16} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
@@ -941,7 +1137,9 @@ export default function Detail() {
                 )) : (
                 <View style={styles.emptyResourceGroup}>
                   <Text style={styles.emptyResourceGroupText}>
-                    暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。
+                    {resourcePreparationPending
+                      ? "文章和视频仍在核验中；你可以先阅读上面的导读。"
+                      : "暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。"}
                   </Text>
                 </View>
               )}

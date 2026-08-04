@@ -304,7 +304,6 @@ export default function HeroCarousel({
           const cardReady = isCardReady(card);
           const cardPreparing = card.resource_readiness === "preparing";
           const cardRetryable = card.resource_readiness === "retryable";
-          const cardDisabled = isRefreshing || (!cardReady && !cardRetryable);
           const colors =
             card.colors ||
             CATEGORY_COLORS[card.content_category || ""] ||
@@ -314,12 +313,11 @@ export default function HeroCarousel({
             <Pressable
               key={cardIdentity(card)}
               onPress={() => onCardPress(card)}
-              disabled={cardDisabled}
               style={{ width }}
               accessibilityRole="button"
               accessibilityLabel={
                 isRefreshing
-                  ? "正在根据刚刚的对话更新推荐"
+                  ? `打开当前显示的内容：${card.title}`
                   : cardPreparing
                     ? `正在准备内容：${card.title}`
                     : cardRetryable
@@ -329,7 +327,6 @@ export default function HeroCarousel({
                       : `内容暂不可用：${card.title}`
               }
               accessibilityState={{
-                disabled: cardDisabled,
                 busy: isRefreshing || cardPreparing,
               }}
               testID={`home-hero-card-${card.id}-${card.content_category || "topic"}`}
@@ -366,17 +363,18 @@ export default function HeroCarousel({
                   <View style={[styles.heroBtn, !cardReady && styles.heroBtnDisabled]}>
                     <Text style={[styles.heroBtnText, !cardReady && styles.heroBtnTextDisabled]}>
                       {cardPreparing
-                        ? "正在准备…"
+                        ? "先看内容导读"
                         : card.resource_readiness === "retryable"
-                          ? "立即重试"
+                          ? "打开并继续准备"
                           : card.resource_readiness === "unavailable"
-                            ? "暂不可用"
+                            ? "查看内容导读"
                             : "查看文章与视频"}
                     </Text>
                   </View>
                 </View>
                 {isRefreshing ? (
                   <View
+                    pointerEvents="none"
                     style={styles.refreshingOverlay}
                     accessibilityLiveRegion={index === page ? "polite" : "none"}
                     testID={index === page ? "home-hero-refreshing" : undefined}

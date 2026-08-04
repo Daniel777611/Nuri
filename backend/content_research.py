@@ -2830,6 +2830,28 @@ def _merge_with_reviewed_resources(
     }
 
 
+def reviewed_learning_resource_bundle(
+    *,
+    card: dict,
+    preferred_locale: str,
+    excluded_urls: Optional[Iterable[str]] = None,
+) -> Optional[dict]:
+    """Return a complete, policy-gated bundle from the reviewed library only.
+
+    This is the deterministic fallback for a provider outage or rate limit. It
+    deliberately reuses the exact same locale, trust, topic and child-stage
+    gates as the dynamic-research merge. If any article/video slot is missing,
+    the result stays unavailable instead of filling it with a nearby topic.
+    """
+
+    return _merge_with_reviewed_resources(
+        None,
+        card=card,
+        locale=normalize_resource_locale(preferred_locale),
+        excluded_urls=excluded_urls,
+    )
+
+
 def research_learning_resources(
     client: Any,
     *,

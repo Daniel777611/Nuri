@@ -28,6 +28,8 @@ import HeroCarousel, {
   type HeroCard,
   type HeroFeedState,
 } from "@/src/components/HeroCarousel";
+import { preparePersonalizedFeedOnce } from "@/src/feedPreparation";
+import { storeRecommendationDetailHandoff } from "@/src/recommendationDetailHandoff";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
@@ -70,40 +72,6 @@ type HeroFeedMeta = {
   generatedAt?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 };
-
-type FeedPreparationItem = {
-  card_id: string;
-  recommendation_id: string;
-};
-
-// Focus transitions can remount the Home screen while the server is still
-// preparing the same frozen recommendation set. Reuse that promise so a quick
-// chat/home switch never launches a second POST that could finish out of order.
-const inFlightFeedPreparations = new Map<
-  string,
-  ReturnType<typeof api.preparePersonalizedFeed>
->();
-
-function preparePersonalizedFeedOnce(items: FeedPreparationItem[]) {
-  const normalized = [...items].sort((left, right) =>
-    left.recommendation_id.localeCompare(right.recommendation_id),
-  );
-  const key = normalized
-    .map((item) => `${item.recommendation_id}:${item.card_id}`)
-    .join("|");
-  const existing = inFlightFeedPreparations.get(key);
-  if (existing) return existing;
-
-  const pending = api.preparePersonalizedFeed(normalized);
-  inFlightFeedPreparations.set(key, pending);
-  const clear = () => {
-    if (inFlightFeedPreparations.get(key) === pending) {
-      inFlightFeedPreparations.delete(key);
-    }
-  };
-  pending.then(clear, clear);
-  return pending;
-}
 
 function exactPreparedPair(
   resources: PreparedLearningResource[] | undefined,
@@ -671,20 +639,6 @@ export default function Home() {
 
   const openHeroCard = useCallback(
     (card: HeroCard) => {
-      if (!isReadyHeroCard(card)) {
-        if (card.resource_readiness === "retryable") {
-          preparationRetryAttempt.current = 0;
-          void loadPersonalizedFeed({ preserveExisting: true });
-          showToast("正在重新准备文章和视频");
-          return;
-        }
-        showToast(
-          card.resource_readiness === "unavailable"
-              ? "暂未找到完整的文章和视频"
-              : "文章和视频正在准备，请稍等一下",
-        );
-        return;
-      }
       const position =
         card.rank ||
         Math.max(
@@ -695,6 +649,16 @@ export default function Home() {
               (card.recommendation_id || `${card.id}:${card.content_category}`),
           ) + 1,
         );
+      const preparationItems = heroCards
+        .filter(
+          (item): item is HeroCard & { recommendation_id: string } =>
+            Boolean(item.recommendation_id),
+        )
+        .map((item) => ({
+          card_id: item.id,
+          recommendation_id: item.recommendation_id,
+        }));
+      const handoffKey = storeRecommendationDetailHandoff(card, preparationItems);
       api
         .trackRecommendationEvent({
           event: "card_open",
@@ -726,11 +690,27 @@ export default function Home() {
           ...(heroFeedMeta.feedRequestId
             ? { feed_request_id: heroFeedMeta.feedRequestId }
             : {}),
+          handoff_key: handoffKey,
           rank: String(position),
         },
       });
+      if (
+        !isReadyHeroCard(card) &&
+        card.resource_readiness !== "unavailable" &&
+        preparationItems.length > 0
+      ) {
+        // Navigation is never held hostage by research. Detail immediately
+        // paints the guide handoff and observes this shared request in place.
+        preparationRetryAttempt.current = 0;
+        void preparePersonalizedFeedOnce(preparationItems).catch((error) => {
+          console.warn("[home-feed] background preparation after open failed", {
+            errorName: error instanceof Error ? error.name : typeof error,
+            requestedCount: preparationItems.length,
+          });
+        });
+      }
     },
-    [heroCards, heroFeedMeta.feedRequestId, loadPersonalizedFeed, router, showToast],
+    [heroCards, heroFeedMeta.feedRequestId, router],
   );
 
   return (

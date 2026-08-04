@@ -64,6 +64,7 @@ try:
         MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
+        reviewed_learning_resource_bundle,
         reviewed_resource_matches_context,
         summarize_resource_slots,
     )
@@ -103,6 +104,7 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         MIN_TOTAL_RESEARCH_RESOURCES,
         redact_conversation_text,
         research_learning_resources,
+        reviewed_learning_resource_bundle,
         reviewed_resource_matches_context,
         summarize_resource_slots,
     )
@@ -5599,15 +5601,20 @@ async def get_personalized_feed(
                     if item["curation_mode"] == "conversation_web_research"
                     else "reviewed"
                 )
-        if item.get("resource_status") == "research_on_open":
-            item["resource_readiness"] = "preparing"
-        elif item.get("resource_pair_complete"):
+        if item.get("resource_pair_complete"):
             item["resource_readiness"] = "ready"
             # Reviewed resources are already policy-, locale- and age-gated.
-            # Returning the strict pair lets consent-off/provider-off accounts
-            # open useful details without ever entering external preparation.
+            # Returning the strict pair also lets provider-eligible accounts
+            # open immediately while dynamic research remains available as an
+            # explicit refresh. A prepared snapshot still replaces this pair.
             item["resources"] = reviewed
-            item["research_status"] = "ready"
+            item["research_status"] = (
+                "reviewed_fallback"
+                if item.get("resource_status") == "research_on_open"
+                else "ready"
+            )
+        elif item.get("resource_status") == "research_on_open":
+            item["resource_readiness"] = "preparing"
         else:
             item["resource_readiness"] = "retryable"
         item["prepared_content_set_id"] = None
@@ -5802,6 +5809,61 @@ async def prepare_feed_research(
             for pair in pairs_by_category.values()
         )
     )
+    reviewed_fallback_used = False
+    if not complete_bundle and not card.get("is_dynamic_research_card"):
+        # Provider failures and incomplete live-search sets must not strand a
+        # card when this exact topic already has a complete reviewed bundle.
+        # The helper applies the same hard locale, trust, child-stage and topic
+        # gates as dynamic research; an incomplete reviewed set remains
+        # retryable rather than borrowing from a nearby topic.
+        reviewed_research = reviewed_learning_resource_bundle(
+            card=card,
+            preferred_locale=str(first.get("preferred_locale") or "zh-CN"),
+        )
+        reviewed_resources = list(
+            (reviewed_research or {}).get("resources") or []
+        )
+        reviewed_pairs = {
+            category: _select_category_resource_pair(
+                reviewed_resources,
+                category,
+            )
+            for category in CONTENT_CATEGORIES
+        }
+        reviewed_complete = bool(
+            reviewed_research
+            and MIN_TOTAL_RESEARCH_RESOURCES
+            <= len(reviewed_resources)
+            <= MAX_TOTAL_RESEARCH_RESOURCES
+            and all(
+                len(pair) == 2
+                and {
+                    str(resource.get("kind") or "")
+                    for resource in pair
+                }
+                == {"article", "video"}
+                for pair in reviewed_pairs.values()
+            )
+        )
+        if reviewed_complete:
+            research = reviewed_research
+            resources = reviewed_resources
+            pairs_by_category = reviewed_pairs
+            complete_bundle = True
+            reviewed_fallback_used = True
+            print(
+                json.dumps(
+                    {
+                        "event": "content_research.prepare_reviewed_fallback",
+                        "card_id": card_id,
+                        "locale": str(first.get("preferred_locale") or ""),
+                        "resource_count": len(resources),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
     if not complete_bundle:
         print(
             json.dumps(
@@ -5857,6 +5919,9 @@ async def prepare_feed_research(
     return {
         "resource_readiness": "ready",
         "prepared_content_set_id": content_set_id,
+        "research_status": (
+            "reviewed_fallback" if reviewed_fallback_used else "ready"
+        ),
         "items": _prepare_response_items(prepared),
     }
 
@@ -6115,6 +6180,13 @@ async def get_card_detail(
                     preferred_locale=preferred_locale,
                     resources=prepared_pair,
                 )
+        elif research_eligible and card.get("resource_pair_complete"):
+            # A strict reviewed pair is already safe to open. Live search is
+            # an optional replacement path, not a gate that can turn a
+            # provider outage into an unopenable detail page.
+            card["resource_readiness"] = "ready"
+            card["research_status"] = "reviewed_fallback"
+            card["prepared_content_set_id"] = None
         elif research_eligible:
             # Web research is deliberately performed by the authenticated
             # batch-prepare endpoint, never by a detail-page navigation.
@@ -6162,7 +6234,10 @@ async def get_card_detail(
                 resources=card["resources"],
             )
         card["preferred_locale"] = preferred_locale
-        card["refresh_available"] = bool(research_eligible and prepared_pair)
+        card["refresh_available"] = bool(
+            research_eligible
+            and (prepared_pair or card.get("resource_pair_complete"))
+        )
         card["resource_blueprint"] = _resource_blueprint(selected_content_category)
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale
