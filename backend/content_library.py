@@ -37,6 +37,7 @@ SOURCE_PARENT_ORG_DOMAINS = (
     ("pathways_foundation", ("pathways.org",)),
     ("understood_org", ("understood.org",)),
     ("sesame_workshop", ("sesameworkshop.org",)),
+    ("vroom_bezos_family_foundation", ("vroom.org",)),
     ("asha", ("asha.org",)),
     ("childrens_hospital_of_philadelphia", ("chop.edu",)),
     ("jama_network", ("jamanetwork.com",)),
@@ -94,6 +95,7 @@ AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
             "pathways_foundation",
             "understood_org",
             "sesame_workshop",
+            "vroom_bezos_family_foundation",
         }
     }
 )
@@ -120,6 +122,31 @@ US_AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
     }
 )
 
+# For Simplified-Chinese delivery NURI intentionally starts with the strongest
+# English-language primary evidence, then adds a Chinese in-product guide.  The
+# external destination remains the institution's original page; it is never
+# presented as an official Chinese translation.  Keeping this as an explicit
+# machine-readable set makes the whitelist drive candidate discovery and final
+# publication instead of acting only as a post-search URL validator.
+ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
+    {
+        *US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        "world_health_organization",
+        "unicef",
+        "cochrane",
+        "sickkids_toronto",
+        "royal_childrens_hospital_melbourne",
+        "british_columbia_healthlinkbc",
+        "university_of_oxford",
+        "university_of_cambridge",
+        "university_college_london",
+        "university_of_toronto",
+        "university_of_british_columbia",
+        "university_of_sydney",
+        "university_of_melbourne",
+    }
+)
+
 FEATURED_SOURCE_PARENT_ORG_IDS = frozenset(
     {
         "raising_children_network",
@@ -129,8 +156,22 @@ FEATURED_SOURCE_PARENT_ORG_IDS = frozenset(
         "pathways_foundation",
         "understood_org",
         "sesame_workshop",
+        "vroom_bezos_family_foundation",
     }
 )
+
+
+def source_domains_for_parent_orgs(parent_org_ids: set[str] | frozenset[str]) -> tuple[str, ...]:
+    """Return deterministic discovery domains for an approved organization set."""
+
+    return tuple(
+        dict.fromkeys(
+            domain
+            for org_id, domains in SOURCE_PARENT_ORG_DOMAINS
+            if org_id in parent_org_ids
+            for domain in domains
+        )
+    )
 
 _PARENT_ORG_PUBLISHER_ALIASES = (
     ("american_academy_of_pediatrics", ("american academy of pediatrics", "美国儿科学会", "美國兒科學會", "aap")),
@@ -139,6 +180,9 @@ _PARENT_ORG_PUBLISHER_ALIASES = (
     ("world_health_organization", ("world health organization", "世界卫生组织", "世界衛生組織", "who")),
     ("harvard_center_developing_child", ("harvard center on the developing child", "哈佛大学儿童发展中心", "哈佛大學兒童發展中心")),
     ("raising_children_network", ("raising children network",)),
+    ("zero_to_three", ("zero to three",)),
+    ("pathways_foundation", ("pathways.org", "pathways")),
+    ("vroom_bezos_family_foundation", ("vroom", "bezos family foundation")),
     ("mayo_clinic", ("mayo clinic", "妙佑医疗", "妙佑醫療")),
     ("sickkids_toronto", ("sickkids", "aboutkidshealth")),
     ("royal_childrens_hospital_melbourne", ("royal children's hospital", "royal childrens hospital")),
@@ -2402,6 +2446,272 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     }
 )
 
+_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v1"
+_NURI_GUIDE_DISCLAIMER = (
+    "外部内容为英文原文；中文内容由 NURI 导读，不是发布机构的官方翻译；"
+    "重要结论请以原文为准。"
+)
+
+
+def _reviewed_delivery_resource(resource: dict) -> dict:
+    """Mark an exact, manually opened URL as an instant delivery candidate."""
+
+    category = str(resource["content_category"])
+    kind = str(resource["kind"])
+    value = {
+        "source_tier": "authority" if category == "authority" else "curated",
+        "selection_basis": {
+            "authority": "official",
+            "featured": "expert_and_audience",
+            "case": "lived_experience",
+        }[category],
+        "source_quality_lane": {
+            "authority": "primary_evidence",
+            "featured": "high_readability",
+            "case": "lived_experience",
+        }[category],
+        "source_language": "en",
+        "display_locale": "zh-CN",
+        "language": "英文原文 · NURI 中文导读",
+        "locales": ["zh-CN", "en"],
+        "translation_type": "nuri_guide",
+        "translation_disclaimer": _NURI_GUIDE_DISCLAIMER,
+        "research_source": "reviewed_whitelist",
+        "delivery_source_contract": _DELIVERY_SOURCE_CONTRACT_VERSION,
+        "link_health_status": "manual_verified",
+        "content_page_type": kind,
+        "commercial_risk": "clear",
+        **resource,
+    }
+    value["chinese_guide"] = str(value.get("description") or "")
+    if kind == "video":
+        value.update(
+            {
+                "spoken_language": "english",
+                "spoken_language_status": "verified",
+                "spoken_language_evidence": "已核验为英文原声的具体视频播放页。",
+                "spoken_language_evidence_url": value["url"],
+                "video_page_evidence": "已核验为具体视频播放页，不是频道、合集或广告落地页。",
+                "video_page_evidence_url": value["url"],
+            }
+        )
+    return value
+
+
+# A small, exact-URL MVP baseline keeps the product usable when live web search
+# is rate-limited.  It is deliberately separate from the legacy static library:
+# every entry was opened on 2026-08-04, the three editorial lanes use different
+# sources, and English destinations are always labelled as NURI-guided originals.
+_REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID = {
+    "learn_language_milestones": [
+        _reviewed_delivery_resource(
+            {
+                "id": "language-asha-authority-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "authority",
+                "title": "Communication Milestones: Birth to 1 Year",
+                "publisher": "American Speech-Language-Hearing Association",
+                "description": "按 7–12 个月整理听力、手势、声音模仿与轮流交流信号，并给家长日常互动方法。",
+                "trust_note": "美国言语语言听力专业协会的分龄原始资料。",
+                "recognition": "专业协会 · 7–12 个月沟通里程碑",
+                "selection_reason": "与 11 个月宝宝的回应名字、模仿音节和来回发声直接对应。",
+                "age_range_months": [7, 12],
+                "focus_tags": ["语言", "沟通", "模仿音节", "回应名字"],
+                "url": "https://www.asha.org/public/developmental-milestones/communication-milestones-birth-to-1-year/",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "language-cdc-authority-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "authority",
+                "title": "1 Year – Calls a parent ‘mama’ or ‘dada’ or another special name",
+                "publisher": "CDC",
+                "description": "CDC 用真实短片展示一岁左右宝宝有意义地称呼主要照顾者这一语言里程碑。",
+                "trust_note": "美国 CDC 官方一岁发展里程碑示例视频。",
+                "recognition": "CDC 官方短片 · 具体行为示例",
+                "selection_reason": "六秒画面让家长迅速看懂一个具体沟通信号，而不是只读抽象清单。",
+                "age_range_months": [10, 14],
+                "focus_tags": ["语言", "沟通", "称呼", "发声"],
+                "evidence_url": "https://www.cdc.gov/act-early/milestones/1-year.html",
+                "url": "https://www.youtube.com/watch?v=zQafMJwPzKQ",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "language-zero-to-three-featured-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "featured",
+                "title": "Supporting Language and Literacy Skills from 0-12 Months",
+                "publisher": "ZERO TO THREE",
+                "description": "用容易阅读的日常场景解释零至十二个月如何通过回应、说话、唱歌和共读支持语言发展。",
+                "trust_note": "美国婴幼儿发展非营利机构的家庭友好型内容。",
+                "recognition": "高可读性 · 日常互动导向",
+                "selection_reason": "不用额外上课，能直接把方法放进喂饭、换尿布、玩耍和睡前。",
+                "age_range_months": [0, 12],
+                "focus_tags": ["语言", "沟通", "共读", "回应式互动"],
+                "url": "https://www.zerotothree.org/resource/supporting-language-and-literacy-skills-from-0-12-months/",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "language-pathways-featured-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "featured",
+                "title": "10–12 Month Baby Communication Milestones to Look For",
+                "publisher": "Pathways.org",
+                "description": "约九十秒，用宝宝真实画面展示 10–12 个月可观察的九个沟通信号。",
+                "trust_note": "Pathways 的儿科治疗师审核内容；画面具体，适合家长快速理解。",
+                "recognition": "短视频 · 分龄示范",
+                "selection_reason": "月龄精确、篇幅短，能马上对照孩子现在的手势、声音和轮流互动。",
+                "age_range_months": [10, 12],
+                "focus_tags": ["语言", "沟通", "手势", "声音回应"],
+                "url": "https://www.youtube.com/watch?v=zjsb0Xq9WmI",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "language-periodic-fable-case-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "case",
+                "title": "10-Month-Old Maeve Speaks First Real Word Today: ‘Mama’",
+                "publisher": "The Periodic Fable · 真实母亲记录",
+                "description": "一位母亲记录十月龄女儿第一次有意义地说出“妈妈”的具体当天与家庭感受。",
+                "trust_note": "公开家庭亲历；只用于理解真实情境，不作为普遍发育标准。",
+                "recognition": "10 月龄真实家庭记录",
+                "selection_reason": "让家长看到真实发展并不总像清单一样整齐，同时避免把单个案例当成标准答案。",
+                "age_range_months": [9, 12],
+                "focus_tags": ["语言", "沟通", "第一次说话", "妈妈"],
+                "case_evidence": "作者以母亲第一人称记录女儿 Maeve 十月龄第一次有意义说出 Mama 的当天。",
+                "case_evidence_url": "https://theperiodicfable.wordpress.com/2014/06/04/10-month-old-maeves-speaks-first-real-word-today-mama/",
+                "url": "https://theperiodicfable.wordpress.com/2014/06/04/10-month-old-maeves-speaks-first-real-word-today-mama/",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "language-cali-momma-case-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "case",
+                "title": "10 months old baby talking. Mother and daughter",
+                "publisher": "Cali Momma · 真实母女互动",
+                "description": "十一秒真实家庭片段，展示母亲和十月龄宝宝来回发声与回应。",
+                "trust_note": "真实家长短片；不代表所有宝宝都应出现相同表现。",
+                "recognition": "真实家庭短片",
+                "selection_reason": "非常直观地看到来回交流是什么样，同时明确它不是医学或发育标准。",
+                "age_range_months": [9, 12],
+                "focus_tags": ["语言", "沟通", "轮流发声", "母女互动"],
+                "case_evidence": "视频标题与画面均为母亲和十月龄女儿的真实互动。",
+                "case_evidence_url": "https://www.youtube.com/watch?v=zMQZ7OkgbXE",
+                "url": "https://www.youtube.com/watch?v=zMQZ7OkgbXE",
+            }
+        ),
+    ],
+    "learn_serve_and_return": [
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-harvard-authority-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "authority",
+                "title": "Serve and Return",
+                "publisher": "Harvard Center on the Developing Child",
+                "description": "哈佛用清晰网页解释婴幼儿发出信号、照顾者回应的来回互动，以及它为何支持语言和大脑发展。",
+                "trust_note": "哈佛大学发展中儿童中心的 Serve and Return 官方专题页。",
+                "recognition": "哈佛官方 · 可直接阅读的专题页",
+                "selection_reason": "先理解核心原理，再把观察和回应放进换尿布、吃饭或等候等零碎时间。",
+                "age_range_months": [0, 36],
+                "focus_tags": ["陪伴", "亲子互动", "回应式互动", "时间少"],
+                "url": "https://developingchild.harvard.edu/key-concept/serve-and-return/",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-harvard-authority-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "authority",
+                "title": "5 Steps for Brain-Building Serve and Return",
+                "publisher": "Harvard Center on the Developing Child",
+                "description": "哈佛官方视频用成人与婴幼儿互动的真实画面演示来回回应五步法。",
+                "trust_note": "哈佛大学发展中儿童中心官方视频。",
+                "recognition": "哈佛官方示范视频",
+                "selection_reason": "先看具体动作，再在换尿布、吃饭或散步时只练其中一步。",
+                "age_range_months": [0, 36],
+                "focus_tags": ["陪伴", "亲子互动", "回应式互动"],
+                "evidence_url": "https://developingchild.harvard.edu/key-concept/serve-and-return/",
+                "url": "https://www.youtube.com/watch?v=KNrnZag17Ek",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-vroom-featured-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "featured",
+                "title": "Ready, Set, Vroom: Brain Building for New Parents",
+                "publisher": "Vroom · Bezos Family Foundation",
+                "description": "面向忙碌新父母，把等候、吃饭、换尿布和出门等已有日常转化为短而有效的互动。",
+                "trust_note": "Vroom 的家庭友好型脑发展内容，强调无需额外器材或大段时间。",
+                "recognition": "高可读性 · 忙碌父母场景",
+                "selection_reason": "直接回应“创业忙、陪伴时间少”，重点不是增加任务，而是提高已有片刻的质量。",
+                "age_range_months": [0, 36],
+                "focus_tags": ["高质量陪伴", "时间少", "亲子互动", "日常片刻"],
+                "url": "https://www.vroom.org/new-parents",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-vroom-featured-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "featured",
+                "title": "Brain Building Basics",
+                "publisher": "Vroom · Bezos Family Foundation",
+                "description": "三分钟示范观察、跟随、交谈、轮流和延伸，帮助父母把日常片刻变成高质量互动。",
+                "trust_note": "Vroom 官方家庭教育视频；不是产品广告。",
+                "recognition": "三分钟实操视频",
+                "selection_reason": "结构清楚、容易看完，适合先学一个动作并立即尝试。",
+                "age_range_months": [0, 36],
+                "focus_tags": ["高质量陪伴", "亲子互动", "时间少"],
+                "url": "https://www.youtube.com/watch?v=WQNm4ASB7iY",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-meghan-working-mom-case-article-reviewed-v1",
+                "kind": "article",
+                "content_category": "case",
+                "title": "10 Things I’ve Learned So Far As a Working Mom",
+                "publisher": "Meghan Moloney · 真实职场母亲记录",
+                "description": "一位母亲记录产后三个月复工后，在工作、喂养、陪玩、内疚与有限时间之间的真实取舍。",
+                "trust_note": "第一人称家庭经验；不把个人安排当作每个家庭都应采用的方案。",
+                "recognition": "职场母亲真实经历",
+                "selection_reason": "与忙碌创业父母的时间冲突直接相关，也呈现试错和不完美，而不是标准答案。",
+                "age_range_months": [3, 24],
+                "focus_tags": ["工作忙", "陪伴时间少", "职场父母", "内疚"],
+                "case_evidence": "作者以职场母亲第一人称回顾产后三个月复工及家庭时间安排。",
+                "case_evidence_url": "https://www.meghanmoloney.com/10-things-ive-learned-so-far-as-a-working-mom/",
+                "url": "https://www.meghanmoloney.com/10-things-ive-learned-so-far-as-a-working-mom/",
+            }
+        ),
+        _reviewed_delivery_resource(
+            {
+                "id": "connection-unicef-grandfather-case-video-reviewed-v1",
+                "kind": "video",
+                "content_category": "case",
+                "title": "Raising Parents: How a Ghanaian grandfather is challenging gender stereotypes",
+                "publisher": "UNICEF · 真实家庭纪录",
+                "description": "真实家庭纪录：祖父支持女儿兼顾工作、教育与育儿，让孩子持续得到照顾和互动。",
+                "trust_note": "UNICEF 发布的家庭纪录；案例用于理解支持网络，不代表唯一家庭分工方式。",
+                "recognition": "真实家庭纪录",
+                "selection_reason": "把“父母时间不够”从个人内疚转向可协商的家庭支持与稳定回应。",
+                "age_range_months": [0, 72],
+                "focus_tags": ["工作忙", "陪伴时间少", "家庭支持", "共同照护"],
+                "case_evidence": "视频记录一位祖父和女儿如何在真实家庭中共同承担照护与工作压力。",
+                "case_evidence_url": "https://www.youtube.com/watch?v=FZcAZ0i9KnA",
+                "url": "https://www.youtube.com/watch?v=FZcAZ0i9KnA",
+            }
+        ),
+    ],
+}
+
+
 _AUTHORITY_RESOURCE_DEFAULTS = {
     "source_tier": "authority",
     "content_category": "authority",
@@ -2472,6 +2782,7 @@ for _card in LEARNING_CONTENT_CARDS:
             *_LOCALIZED_RESOURCES_BY_CARD_ID.get(
                 f"{_card['id']}_reviewed", []
             ),
+            *_REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID.get(_card["id"], []),
             *_reviewed_english_resources,
             *_CURATED_RESOURCES_BY_CARD_ID.get(_card["id"], []),
             *_REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.get(_card["id"], []),

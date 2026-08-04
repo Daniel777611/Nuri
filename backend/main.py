@@ -55,6 +55,7 @@ try:
     from backend.content_library import (
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
+        ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
@@ -65,6 +66,8 @@ try:
         CONTENT_CATEGORIES,
         MAX_TOTAL_RESEARCH_RESOURCES,
         MIN_TOTAL_RESEARCH_RESOURCES,
+        DELIVERY_SOURCE_CONTRACT_VERSION,
+        delivery_lane_rejection_reason,
         redact_conversation_text,
         research_learning_resources,
         reviewed_learning_resource_bundle,
@@ -84,6 +87,8 @@ try:
         snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
+        SNAPSHOT_CONTEXT_VERSION,
+        SNAPSHOT_VERSION,
     )
     from backend.recommendation_feedback import (
         EVENT_RETENTION_DAYS,
@@ -101,6 +106,7 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
+        ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
@@ -111,6 +117,8 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         CONTENT_CATEGORIES,
         MAX_TOTAL_RESEARCH_RESOURCES,
         MIN_TOTAL_RESEARCH_RESOURCES,
+        DELIVERY_SOURCE_CONTRACT_VERSION,
+        delivery_lane_rejection_reason,
         redact_conversation_text,
         research_learning_resources,
         reviewed_learning_resource_bundle,
@@ -130,6 +138,8 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
+        SNAPSHOT_CONTEXT_VERSION,
+        SNAPSHOT_VERSION,
     )
     from recommendation_feedback import (  # type: ignore
         EVENT_RETENTION_DAYS,
@@ -690,8 +700,9 @@ async def _db_persist_recommendation_snapshots(
 def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
     """Expose a prepared, binding-validated pair on its matching home card."""
 
-    pair = prepared_resource_pair(snapshot)
-    pair_pool = prepared_resource_pairs(snapshot)
+    source_contract_ready = _prepared_snapshot_set_meets_source_contract([snapshot])
+    pair = prepared_resource_pair(snapshot) if source_contract_ready else None
+    pair_pool = prepared_resource_pairs(snapshot) if source_contract_ready else []
     readiness = str(snapshot.get("resource_readiness") or "")
     if pair:
         article = next(resource for resource in pair if resource.get("kind") == "article")
@@ -1728,7 +1739,7 @@ class ResearchPrepareItem(BaseModel):
 
 
 class ResearchPrepareRequest(BaseModel):
-    items: List[ResearchPrepareItem] = Field(min_length=1, max_length=3)
+    items: List[ResearchPrepareItem] = Field(min_length=3, max_length=3)
 
 class AskRequest(BaseModel):
     question:  str
@@ -5038,6 +5049,100 @@ def _resource_with_delivery_metadata(resource: dict) -> dict:
     return value
 
 
+def _delivery_contract_pair(
+    resources: list[dict],
+    content_category: str,
+    preferred_locale: str,
+    *,
+    require_dynamic: bool = True,
+) -> list[dict]:
+    """Select one publishable article/video pair that satisfies the lane contract."""
+
+    matching = [
+        _resource_with_delivery_metadata(resource)
+        for resource in resources
+        if str(resource.get("content_category") or "") == content_category
+        and not delivery_lane_rejection_reason(
+            resource,
+            preferred_locale,
+            require_dynamic=require_dynamic,
+        )
+    ]
+    if content_category == "authority" and preferred_locale == "zh-CN":
+        matching.sort(
+            key=lambda resource: (
+                str(resource.get("translation_type") or "") != "nuri_guide",
+                _resource_parent_org_id(resource)
+                not in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+            )
+        )
+    pair: list[dict] = []
+    for kind in ("article", "video"):
+        resource = next(
+            (item for item in matching if item.get("kind") == kind),
+            None,
+        )
+        if resource:
+            pair.append(resource)
+    return pair
+
+
+def _prepared_snapshot_set_meets_source_contract(snapshots: list[dict]) -> bool:
+    """Reject previously prepared packages created under the old source rules."""
+
+    if not snapshots or any(
+        snapshot.get("version") != SNAPSHOT_VERSION
+        or snapshot.get("context_version") != SNAPSHOT_CONTEXT_VERSION
+        or snapshot.get("source_contract_version")
+        != DELIVERY_SOURCE_CONTRACT_VERSION
+        for snapshot in snapshots
+    ):
+        return False
+    for snapshot in snapshots:
+        category = str(snapshot.get("content_category") or "")
+        locale = str(snapshot.get("preferred_locale") or "zh-CN")
+        pairs = prepared_resource_pairs(snapshot)
+        if not pairs:
+            return False
+        if any(
+            len(
+                _delivery_contract_pair(
+                    pair["resources"],
+                    category,
+                    locale,
+                    require_dynamic=False,
+                )
+            )
+            != 2
+            for pair in pairs
+        ):
+            return False
+    return True
+
+
+def _delivery_gate_diagnostics(
+    resources: list[dict],
+    locale: str,
+    *,
+    require_dynamic: bool = True,
+) -> dict:
+    reasons: dict[str, int] = {}
+    accepted = {category: {"article": 0, "video": 0} for category in CONTENT_CATEGORIES}
+    for resource in resources:
+        category = str(resource.get("content_category") or "")
+        kind = str(resource.get("kind") or "")
+        reason = delivery_lane_rejection_reason(
+            resource,
+            locale,
+            require_dynamic=require_dynamic,
+        )
+        if reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif category in accepted and kind in accepted[category]:
+            accepted[category][kind] += 1
+    return {"accepted_slots": accepted, "rejection_counts": reasons}
+
+
 def _attach_featured_evidence_anchor(resources: list[dict]) -> list[dict]:
     """Bind every featured item to the vetted authority lane in its package."""
 
@@ -5070,6 +5175,8 @@ def _category_resource_pair_options(
     content_category: str,
     *,
     excluded_primary_orgs: Optional[set[str]] = None,
+    preferred_locale: Optional[str] = None,
+    require_dynamic: bool = True,
     max_pairs: int = 3,
 ) -> list[list[dict]]:
     """Build a primary pair and instant alternatives from a validated pool."""
@@ -5078,16 +5185,35 @@ def _category_resource_pair_options(
         _resource_with_delivery_metadata(resource)
         for resource in resources
         if str(resource.get("content_category") or "") == content_category
+        and (
+            not preferred_locale
+            or not delivery_lane_rejection_reason(
+                resource,
+                preferred_locale,
+                require_dynamic=require_dynamic,
+            )
+        )
     ]
     articles = [resource for resource in matching if resource.get("kind") == "article"]
     videos = [resource for resource in matching if resource.get("kind") == "video"]
     if content_category == "authority":
-        articles.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
-        videos.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
+        def authority_key(resource: dict) -> tuple[bool, bool]:
+            return (
+                str(resource.get("translation_type") or "") != "nuri_guide",
+                not _is_us_authority_resource(resource),
+            )
+
+        articles.sort(key=authority_key)
+        videos.sort(key=authority_key)
     candidates: list[list[dict]] = []
     seen: set[tuple[str, str]] = set()
     for article in articles:
         for video in videos:
+            if any(
+                _resource_parent_org_id(resource) in (excluded_primary_orgs or set())
+                for resource in (article, video)
+            ):
+                continue
             signature = (
                 str(article.get("url") or ""),
                 str(video.get("url") or ""),
@@ -5096,10 +5222,8 @@ def _category_resource_pair_options(
                 continue
             seen.add(signature)
             candidates.append([article, video])
-    excluded = excluded_primary_orgs or set()
     candidates.sort(
         key=lambda pair: (
-            _resource_parent_org_id(pair[0]) in excluded,
             pair[0].get("research_source") != "openai_web_search",
             pair[1].get("research_source") != "openai_web_search",
         )
@@ -5395,7 +5519,11 @@ def _category_feed_card(
     )
     # The card is about the concrete content the user will open, while the
     # topic and NURI guide remain available on the detail page.
-    if article and str(article.get("title") or "").strip():
+    if (
+        (context_state != "ready" or not content_research_oai)
+        and article
+        and str(article.get("title") or "").strip()
+    ):
         card["title"] = article["title"]
         card["summary"] = article.get("description") or card.get("summary")
         card["publisher"] = article.get("publisher") or card.get("publisher")
@@ -5600,7 +5728,11 @@ def _prepare_retry_or_previous_payload(snapshots: list[dict]) -> dict:
         for snapshot, pair in zip(snapshots, pairs)
         if pair
     }
-    if all(pairs) and len(set_ids) == 1:
+    if (
+        all(pairs)
+        and len(set_ids) == 1
+        and _prepared_snapshot_set_meets_source_contract(snapshots)
+    ):
         previous_set_id = next(iter(set_ids))
         return {
             "resource_readiness": "ready",
@@ -5626,9 +5758,9 @@ async def _mark_prepare_retryable(uid: str, snapshots: list[dict]) -> list[dict]
             uid,
             snapshot.get("recommendation_id"),
         )
-        if current and prepared_resource_pair(current):
+        if current and prepared_resource_pair(current) and _prepared_snapshot_set_meets_source_contract([current]):
             retryable.append(current)
-        elif prepared_resource_pair(snapshot):
+        elif prepared_resource_pair(snapshot) and _prepared_snapshot_set_meets_source_contract([snapshot]):
             retryable.append(snapshot)
         else:
             # Failure is returned to this caller, but is intentionally not an
@@ -5854,7 +5986,14 @@ async def get_personalized_feed(
                     if item["curation_mode"] == "conversation_web_research"
                     else "reviewed"
                 )
-        if item.get("resource_pair_complete"):
+        if item.get("resource_status") == "research_on_open":
+            # Conversation-matched category cards never publish a reviewed
+            # static pair as if it were the newly researched recommendation.
+            # The previous complete v4 package stays visible client-side until
+            # prepare atomically returns all three fresh lanes.
+            item["resource_readiness"] = "preparing"
+            item.pop("resources", None)
+        elif item.get("resource_pair_complete"):
             item["resource_readiness"] = "ready"
             # Reviewed resources are already policy-, locale- and age-gated.
             # Returning the strict pair also lets provider-eligible accounts
@@ -5866,8 +6005,6 @@ async def get_personalized_feed(
                 if item.get("resource_status") == "research_on_open"
                 else "ready"
             )
-        elif item.get("resource_status") == "research_on_open":
-            item["resource_readiness"] = "preparing"
         else:
             item["resource_readiness"] = "retryable"
         item["prepared_content_set_id"] = None
@@ -5919,6 +6056,9 @@ async def prepare_feed_research(
         seen_categories.add(category)
         snapshots.append(snapshot)
 
+    if seen_categories != set(CONTENT_CATEGORIES):
+        raise HTTPException(422, "all recommendation categories are required")
+
     group_fields = (
         "card_id",
         "session_id",
@@ -5944,7 +6084,8 @@ async def prepare_feed_research(
     if (
         all(ready_pairs)
         and len(ready_set_ids) == 1
-        and all(len(pair_pool) >= 2 for pair_pool in ready_pair_pools)
+        and all(pair_pool for pair_pool in ready_pair_pools)
+        and _prepared_snapshot_set_meets_source_contract(snapshots)
     ):
         return {
             "resource_readiness": "ready",
@@ -5978,7 +6119,8 @@ async def prepare_feed_research(
     if (
         all(persisted_ready_pairs)
         and len(persisted_ready_ids) == 1
-        and all(len(pair_pool) >= 2 for pair_pool in persisted_pair_pools)
+        and all(pair_pool for pair_pool in persisted_pair_pools)
+        and _prepared_snapshot_set_meets_source_contract(snapshots)
     ):
         return {
             "resource_readiness": "ready",
@@ -6007,8 +6149,6 @@ async def prepare_feed_research(
             != context.get("child_profile_fingerprint")
         )
         or _context_requires_urgent_handoff(context)
-        or not context.get("external_research_allowed")
-        or not content_research_oai
     ):
         retryable = await _mark_prepare_retryable(uid, snapshots)
         return _prepare_retry_or_previous_payload(retryable)
@@ -6041,6 +6181,7 @@ async def prepare_feed_research(
         if first.get(field) not in (None, ""):
             card[field] = first[field]
     card["is_conversation_match"] = True
+    preferred_locale = str(first.get("preferred_locale") or "zh-CN")
     research = await _research_card_detail_resources(
         card=card,
         context=context,
@@ -6058,7 +6199,11 @@ async def prepare_feed_research(
         list((research or {}).get("resources") or [])
     )
     pairs_by_category = {
-        category: _select_category_resource_pair(resources, category)
+        category: _delivery_contract_pair(
+            resources,
+            category,
+            preferred_locale,
+        )
         for category in CONTENT_CATEGORIES
     }
     complete_bundle = bool(
@@ -6073,61 +6218,39 @@ async def prepare_feed_research(
         )
     )
     reviewed_fallback_used = False
-    if not complete_bundle and not card.get("is_dynamic_research_card"):
-        # Provider failures and incomplete live-search sets must not strand a
-        # card when this exact topic already has a complete reviewed bundle.
-        # The helper applies the same hard locale, trust, child-stage and topic
-        # gates as dynamic research; an incomplete reviewed set remains
-        # retryable rather than borrowing from a nearby topic.
-        reviewed_research = reviewed_learning_resource_bundle(
-            card=card,
-            preferred_locale=str(first.get("preferred_locale") or "zh-CN"),
+    if not complete_bundle:
+        dynamic_diagnostics = _delivery_gate_diagnostics(
+            resources,
+            preferred_locale,
         )
-        reviewed_resources = list(
-            (reviewed_research or {}).get("resources") or []
+        reviewed = reviewed_learning_resource_bundle(
+            card=card,
+            preferred_locale=preferred_locale,
+        )
+        reviewed_resources = _attach_featured_evidence_anchor(
+            list((reviewed or {}).get("resources") or [])
         )
         reviewed_pairs = {
-            category: _select_category_resource_pair(
+            category: _delivery_contract_pair(
                 reviewed_resources,
                 category,
+                preferred_locale,
+                require_dynamic=False,
             )
             for category in CONTENT_CATEGORIES
         }
         reviewed_complete = bool(
-            reviewed_research
+            reviewed
             and MIN_TOTAL_RESEARCH_RESOURCES
             <= len(reviewed_resources)
             <= MAX_TOTAL_RESEARCH_RESOURCES
             and all(
                 len(pair) == 2
-                and {
-                    str(resource.get("kind") or "")
-                    for resource in pair
-                }
+                and {str(resource.get("kind") or "") for resource in pair}
                 == {"article", "video"}
                 for pair in reviewed_pairs.values()
             )
         )
-        if reviewed_complete:
-            research = reviewed_research
-            resources = _attach_featured_evidence_anchor(reviewed_resources)
-            pairs_by_category = reviewed_pairs
-            complete_bundle = True
-            reviewed_fallback_used = True
-            print(
-                json.dumps(
-                    {
-                        "event": "content_research.prepare_reviewed_fallback",
-                        "card_id": card_id,
-                        "locale": str(first.get("preferred_locale") or ""),
-                        "resource_count": len(resources),
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
-    if not complete_bundle:
         print(
             json.dumps(
                 {
@@ -6140,6 +6263,9 @@ async def prepare_feed_research(
                         and research.get("_provider_failure") == "retryable"
                     ),
                     "resource_count": len(resources),
+                    "reviewed_fallback_available": reviewed_complete,
+                    "source_contract_version": DELIVERY_SOURCE_CONTRACT_VERSION,
+                    **dynamic_diagnostics,
                     "slot_counts": {
                         category: {
                             kind: sum(
@@ -6157,40 +6283,60 @@ async def prepare_feed_research(
             ),
             flush=True,
         )
-        retryable = await _mark_prepare_retryable(uid, snapshots)
-        return _prepare_retry_or_previous_payload(retryable)
+        if reviewed_complete:
+            research = reviewed
+            resources = reviewed_resources
+            pairs_by_category = reviewed_pairs
+            complete_bundle = True
+            reviewed_fallback_used = True
+        else:
+            fallback_diagnostics = _delivery_gate_diagnostics(
+                reviewed_resources,
+                preferred_locale,
+                require_dynamic=False,
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "content_research.reviewed_fallback_incomplete",
+                        "card_id": card_id,
+                        "locale": preferred_locale,
+                        "resource_count": len(reviewed_resources),
+                        "source_contract_version": DELIVERY_SOURCE_CONTRACT_VERSION,
+                        **fallback_diagnostics,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            retryable = await _mark_prepare_retryable(uid, snapshots)
+            return _prepare_retry_or_previous_payload(retryable)
 
-    # The live bundle provides the primary decision.  The reviewed pool may
-    # add already-vetted alternatives for the exact same topic, age and
-    # language.  It never replaces a live primary with an unrelated fallback.
+    # Publish one coherent source mode. A provider result uses fresh cited
+    # destinations; a provider outage may use only the exact manually verified
+    # whitelist lane. Legacy reviewed-library resources cannot enter either.
     option_pool = list(resources)
-    if not card.get("is_dynamic_research_card"):
-        reviewed_option_pool = _reviewed_resources_for_context(
-            list(card.get("resources") or []),
-            str(first.get("preferred_locale") or "zh-CN"),
-            card,
-        )
-        seen_option_urls = {str(resource.get("url") or "") for resource in option_pool}
-        option_pool.extend(
-            resource
-            for resource in reviewed_option_pool
-            if str(resource.get("url") or "") not in seen_option_urls
-        )
     option_pool = _attach_featured_evidence_anchor(option_pool)
 
     def build_pair_options(pool: list[dict]) -> dict[str, list[list[dict]]]:
         options: dict[str, list[list[dict]]] = {}
-        used_primary_orgs: set[str] = set()
+        used_category_orgs: set[str] = set()
         for category in CONTENT_CATEGORIES:
             category_options = _category_resource_pair_options(
                 pool,
                 category,
-                excluded_primary_orgs=used_primary_orgs,
+                excluded_primary_orgs=used_category_orgs,
+                preferred_locale=preferred_locale,
+                require_dynamic=not reviewed_fallback_used,
             )
             options[category] = category_options
             if category_options:
-                used_primary_orgs.add(
-                    _resource_parent_org_id(category_options[0][0])
+                used_category_orgs.update(
+                    _resource_parent_org_id(resource)
+                    for pair in category_options
+                    for resource in pair
+                    if _resource_parent_org_id(resource)
                 )
         return options
 
@@ -6248,6 +6394,23 @@ async def prepare_feed_research(
                 break
 
     if any(not options for options in pair_options_by_category.values()):
+        print(
+            json.dumps(
+                {
+                    "event": "content_research.reserve_incomplete",
+                    "card_id": card_id,
+                    "locale": preferred_locale,
+                    "source_contract_version": DELIVERY_SOURCE_CONTRACT_VERSION,
+                    "pair_counts": {
+                        category: len(options)
+                        for category, options in pair_options_by_category.items()
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         retryable = await _mark_prepare_retryable(uid, snapshots)
         return _prepare_retry_or_previous_payload(retryable)
 
@@ -6266,13 +6429,43 @@ async def prepare_feed_research(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Prepared resources could not be persisted",
         )
+    print(
+        json.dumps(
+            {
+                "event": "content_research.package_published",
+                "card_id": card_id,
+                "locale": preferred_locale,
+                "content_set_id": content_set_id,
+                "source_contract_version": DELIVERY_SOURCE_CONTRACT_VERSION,
+                "source_mode": (
+                    "reviewed_whitelist"
+                    if reviewed_fallback_used
+                    else "openai_web_search"
+                ),
+                "lanes": {
+                    category: [
+                        {
+                            "kind": resource.get("kind"),
+                            "parent_org_id": _resource_parent_org_id(resource),
+                            "translation_type": resource.get("translation_type"),
+                        }
+                        for resource in pair_options_by_category[category][0]
+                    ]
+                    for category in CONTENT_CATEGORIES
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     return {
         "resource_readiness": "ready",
         "prepared_content_set_id": content_set_id,
         "recommendation_set_id": content_set_id,
         "publication_state": "published",
         "research_status": (
-            "reviewed_fallback" if reviewed_fallback_used else "ready"
+            "reviewed_whitelist" if reviewed_fallback_used else "ready"
         ),
         "items": _prepare_response_items(prepared),
     }
@@ -6372,7 +6565,15 @@ async def get_card_detail(
             raise HTTPException(404, "recommendation not found")
         if snapshot and snapshot.get("card_id") != card_id:
             raise HTTPException(404, "recommendation not found")
-        snapshot_prepared_pair = prepared_resource_pair(snapshot) if snapshot else None
+        snapshot_source_contract_ready = bool(
+            snapshot
+            and _prepared_snapshot_set_meets_source_contract([snapshot])
+        )
+        snapshot_prepared_pair = (
+            prepared_resource_pair(snapshot)
+            if snapshot_source_contract_ready
+            else None
+        )
         expected_content_set_id = (
             str(snapshot.get("prepared_content_set_id") or "") if snapshot else ""
         )
@@ -6536,16 +6737,10 @@ async def get_card_detail(
                     preferred_locale=preferred_locale,
                     resources=prepared_pair,
                 )
-        elif research_eligible and card.get("resource_pair_complete"):
-            # A strict reviewed pair is already safe to open. Live search is
-            # an optional replacement path, not a gate that can turn a
-            # provider outage into an unopenable detail page.
-            card["resource_readiness"] = "ready"
-            card["research_status"] = "reviewed_fallback"
-            card["prepared_content_set_id"] = None
         elif research_eligible:
             # Web research is deliberately performed by the authenticated
-            # batch-prepare endpoint, never by a detail-page navigation.
+            # batch-prepare endpoint. A static reviewed pair is not the result
+            # of the current conversation and must not bypass publication.
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Prepared resources are not ready",
@@ -6732,7 +6927,11 @@ async def get_card_research(
                 else {}
             ),
         }
-    prepared_pairs = prepared_resource_pairs(snapshot) if snapshot else []
+    prepared_pairs = (
+        prepared_resource_pairs(snapshot)
+        if snapshot and _prepared_snapshot_set_meets_source_contract([snapshot])
+        else []
+    )
     if refresh and prepared_pairs:
         if target_pair_id and not re.fullmatch(r"pair_[a-f0-9]{16}", target_pair_id):
             raise HTTPException(422, "invalid target_pair_id")
@@ -6877,12 +7076,11 @@ async def get_card_research(
         # live search must not blank a verified list, and it must not resurrect
         # the old Taiwan/Traditional-Chinese fallbacks either.
         if selected_content_category in CONTENT_CATEGORIES:
-            reviewed_resources = _reviewed_category_resource_pair(
-                card.get("resources", []),
-                preferred_locale,
-                str(selected_content_category),
-                card,
-            )
+            # Personalized category lanes publish only fresh searched content.
+            # The static library remains available elsewhere, but it cannot be
+            # relabelled as the result of this conversation after a provider
+            # failure.
+            reviewed_resources = []
         else:
             reviewed_resources = _reviewed_resources_for_context(
                 card.get("resources", []),
@@ -6928,9 +7126,10 @@ async def get_card_research(
             "resource_summary": summarize_resource_slots([], preferred_locale),
         }
     if selected_content_category in CONTENT_CATEGORIES:
-        live_pair = _select_category_resource_pair(
+        live_pair = _delivery_contract_pair(
             full_resources,
             str(selected_content_category),
+            preferred_locale,
         )
         live_by_kind = {
             str(resource.get("kind") or ""): resource for resource in live_pair
@@ -6940,14 +7139,8 @@ async def get_card_research(
             and not card.get("is_dynamic_research_card")
             and not refresh
         ):
-            reviewed_pair = _reviewed_category_resource_pair(
-                card.get("resources", []),
-                preferred_locale,
-                str(selected_content_category),
-                card,
-            )
-            for resource in reviewed_pair:
-                live_by_kind.setdefault(str(resource.get("kind") or ""), resource)
+            # Do not repair a fresh category with a fixed old static resource.
+            pass
         resources = [
             live_by_kind[kind]
             for kind in ("article", "video")

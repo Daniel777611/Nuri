@@ -17,6 +17,13 @@ export type PersonalizedResourceStatus =
 
 export type PersonalizedContentCategory = "authority" | "featured" | "case";
 
+export type ResourceLocale = "en" | "zh-CN" | "zh-TW";
+
+export type ResourceTranslationType =
+  | "nuri_guide"
+  | "official_translation"
+  | "original";
+
 export type ResourceReadiness =
   | "ready"
   | "preparing"
@@ -31,6 +38,11 @@ export type PreparedLearningResource = {
   author?: string;
   updated_at?: string;
   language?: string;
+  source_language?: ResourceLocale;
+  display_locale?: ResourceLocale;
+  chinese_guide?: string;
+  translation_type?: ResourceTranslationType;
+  translation_disclaimer?: string;
   spoken_language?: "mandarin" | "english" | "not_applicable" | string;
   estimated_minutes?: number;
   reading_minutes?: number;

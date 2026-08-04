@@ -173,7 +173,7 @@ def test_expired_or_malformed_snapshot_is_rejected():
         snapshot_storage_key("parent-1", "bad-id")
 
 
-def test_version_one_snapshot_remains_readable_during_upgrade():
+def test_version_one_snapshot_is_rejected_after_source_contract_upgrade():
     now = datetime(2026, 8, 1, tzinfo=timezone.utc)
     snapshot = build_snapshot(
         "parent-1",
@@ -192,10 +192,7 @@ def test_version_one_snapshot_remains_readable_during_upgrade():
         secret=TEST_SNAPSHOT_SECRET,
     )
 
-    assert restored is not None
-    assert restored["version"] == 1
-    assert restored["child_profile_fingerprint"] is None
-    assert restored["child_age_context"] == ""
+    assert restored is None
 
 
 def test_prepared_alternates_round_trip_and_switch_without_research():
@@ -684,32 +681,26 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
         "child_age_context": "孩子当前年龄：11个月",
     }
     card = {
-        "id": "learn_sleep_routine",
+        "id": "learn_language_milestones",
         "content_category": "authority",
         "is_conversation_match": True,
         "resource_readiness": "preparing",
+        "recommendation_focus": "语言与沟通",
+        "child_age_context": "孩子当前年龄：11个月",
     }
     snapshot = build_snapshot("parent-prepared", card, context)
+    bundle = main.reviewed_learning_resource_bundle(
+        card={
+            **deepcopy(main.LEARNING_CONTENT_BY_ID["learn_language_milestones"]),
+            **card,
+        },
+        preferred_locale="zh-CN",
+    )
+    assert bundle is not None
     pair = [
-        {
-            "id": "prepared-article",
-            "kind": "article",
-            "content_category": "authority",
-            "locales": ["zh-CN"],
-            "title": "真实准备文章",
-            "publisher": "权威机构",
-            "description": "准备好的文章摘要",
-            "url": "https://example.org/prepared-article",
-        },
-        {
-            "id": "prepared-video",
-            "kind": "video",
-            "content_category": "authority",
-            "locales": ["zh-CN"],
-            "title": "真实准备视频",
-            "publisher": "权威机构",
-            "url": "https://example.org/prepared-video",
-        },
+        resource
+        for resource in bundle["resources"]
+        if resource["content_category"] == "authority"
     ]
     prepared = snapshot_with_prepared_resource_pair(
         snapshot,
@@ -740,7 +731,9 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     assert rebuilt_card["resource_readiness"] == "ready"
     assert rebuilt_card["prepared_content_set_id"] == f"pcs_{'a' * 24}"
     assert rebuilt_card["resources"] == pair
-    assert rebuilt_card["title"] == "真实准备文章"
+    assert rebuilt_card["title"] == next(
+        resource["title"] for resource in pair if resource["kind"] == "article"
+    )
 
     stale_retryable = deepcopy(snapshot)
     stale_retryable["resource_readiness"] = "retryable"

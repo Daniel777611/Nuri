@@ -367,11 +367,7 @@ export default function Home() {
         (card) =>
           Boolean(card.recommendation_id) &&
           (!isReadyHeroCard(card) ||
-            !card.prepared_content_set_id ||
-            Math.max(
-              card.alternate_count || 0,
-              card.alternate_resource_pairs?.length || 0,
-            ) < 1),
+            !card.prepared_content_set_id),
       );
       // Prepare the complete three-lane set together. Sending only the missing
       // lane can produce a different content_set_id and mix two research runs.
@@ -400,11 +396,7 @@ export default function Home() {
               (item) =>
                 item.resource_readiness === "ready" &&
                 item.resource_pair_complete === true &&
-                Boolean(item.prepared_content_set_id) &&
-                Math.max(
-                  item.alternate_count || 0,
-                  item.alternate_resource_pairs?.length || 0,
-                ) >= 1,
+                Boolean(item.prepared_content_set_id),
             ) &&
             preparedSetIds.size === 1;
           if (!completePreparedSet) {

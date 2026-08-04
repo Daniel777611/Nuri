@@ -29,21 +29,25 @@ try:
     from backend.recommendation_feedback import canonical_resource_url
     from backend.content_library import (
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
         resource_parent_org_id,
         source_parent_org_id,
+        source_domains_for_parent_orgs,
     )
 except ImportError:  # pragma: no cover - direct module execution compatibility
     from recommendation_feedback import canonical_resource_url  # type: ignore
     from content_library import (  # type: ignore
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
         resource_parent_org_id,
         source_parent_org_id,
+        source_domains_for_parent_orgs,
     )
 
 CONTENT_CATEGORIES = ("authority", "featured", "case")
@@ -69,7 +73,8 @@ _CACHE_MAX_ITEMS = int(os.getenv("CONTENT_RESEARCH_CACHE_MAX_ITEMS", "128"))
 _RESEARCH_CACHE: "OrderedDict[str, tuple[float, Optional[dict]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
-_RESEARCH_CONTRACT_VERSION = "quality-first-cn-repair-v8"
+_RESEARCH_CONTRACT_VERSION = "source-lanes-localized-authority-v9"
+DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v1"
 
 _FEEDBACK_PREFERENCE_CODES = frozenset(
     {
@@ -241,6 +246,18 @@ _ZH_CN_CREATOR_PLATFORM_HOSTS = frozenset(
     }
 )
 _GENERIC_CHINESE_PUBLISHING_HOSTS = frozenset({"mp.weixin.qq.com"})
+_ZH_CN_PROFESSIONAL_PLATFORM_HOSTS = frozenset(
+    {
+        "dxy.cn",
+        "dxy.com",
+        "drugs.dxy.cn",
+        "m.dxy.com",
+        "xiaoheshare.com",
+        "xiaoheshare.cn",
+        "youlai.cn",
+        "haodf.com",
+    }
+)
 _VIDEO_PATH_MARKERS = ("/video", "/videos", "/watch", "multimedia", "mulit_med")
 _REVIEWED_MANDARIN_VIDEO_URLS = frozenset(
     {
@@ -656,8 +673,19 @@ def _matches_hard_locale_policy(resource: dict, locale: str) -> bool:
         _safe_text(resource.get(field), 180).casefold()
         for field in ("publisher", "trust_note", "recognition")
     )
-    return not any(
+    locale_safe = not any(
         marker.casefold() in source_identity for marker in _TAIWAN_SOURCE_MARKERS
+    )
+    if not locale_safe:
+        return False
+    # A vetted English original can be delivered to a Simplified-Chinese user
+    # only with an explicit NURI guide. Dynamic search is allowed to do this for
+    # authority sources; featured/case exceptions must be exact, manually opened
+    # whitelist entries so an arbitrary English result cannot bypass the locale.
+    return bool(
+        _is_english_authority_original_for_chinese_guide(resource, locale)
+        or _is_reviewed_english_original_for_chinese_guide(resource, locale)
+        or not _resource_declares_english_original(resource)
     )
 
 
@@ -760,6 +788,77 @@ def _is_allowed_authority_resource(resource: dict, locale: str) -> bool:
     )
 
 
+def _resource_declares_english_original(resource: dict) -> bool:
+    language = _safe_text(resource.get("language"), 80).casefold()
+    return bool(
+        str(resource.get("spoken_language") or "") == "english"
+        or any(marker in language for marker in ("english", "英文", "英语", "英語"))
+    )
+
+
+def _is_english_authority_original_for_chinese_guide(
+    resource: dict,
+    locale: str,
+) -> bool:
+    """Recognize a vetted English primary source localized only inside NURI."""
+
+    if (
+        locale != "zh-CN"
+        or str(resource.get("content_category") or "") != "authority"
+        or resource_parent_org_id(resource)
+        not in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS
+        or not _resource_declares_english_original(resource)
+    ):
+        return False
+    if str(resource.get("kind") or "") == "video":
+        return str(resource.get("spoken_language") or "") == "english"
+    return str(resource.get("kind") or "") == "article"
+
+
+def _is_reviewed_english_original_for_chinese_guide(
+    resource: dict,
+    locale: str,
+) -> bool:
+    """Allow exact reviewed English pages with an honestly labelled guide."""
+
+    return bool(
+        locale == "zh-CN"
+        and resource.get("research_source") == "reviewed_whitelist"
+        and str(resource.get("source_language") or "") == "en"
+        and str(resource.get("translation_type") or "") == "nuri_guide"
+        and _safe_text(resource.get("chinese_guide"), 360)
+        and _safe_text(resource.get("translation_disclaimer"), 220)
+        and _resource_declares_english_original(resource)
+    )
+
+
+def _research_allowed_domains(locale: str) -> tuple[str, ...]:
+    """Use the approved source registry as the discovery pool, not only a gate."""
+
+    authority_orgs = (
+        ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS
+        if locale == "zh-CN"
+        else AUTHORITY_SOURCE_PARENT_ORG_IDS
+    )
+    domains = [
+        *source_domains_for_parent_orgs(authority_orgs),
+        *source_domains_for_parent_orgs(FEATURED_SOURCE_PARENT_ORG_IDS),
+    ]
+    if locale == "zh-CN":
+        domains.extend(
+            (
+                *_ZH_CN_CREATOR_PLATFORM_HOSTS,
+                *_ZH_CN_PROFESSIONAL_PLATFORM_HOSTS,
+                *_GENERIC_CHINESE_PUBLISHING_HOSTS,
+            )
+        )
+    elif locale == "zh-TW":
+        domains.extend(("youtube.com", "youtu.be", "parenting.com.tw"))
+    else:
+        domains.extend(("youtube.com", "youtu.be"))
+    return tuple(dict.fromkeys(domain.removeprefix("www.") for domain in domains))[:100]
+
+
 def _is_zh_cn_hospital_resource(resource: dict) -> bool:
     return bool(
         _host_matches(_url_hostname(resource.get("url")), _ZH_CN_TRUSTED_HOSPITAL_HOSTS)
@@ -778,10 +877,23 @@ def _resource_source_category_allowed(
     org_id = resource_parent_org_id(resource)
     if category == "authority":
         return _is_allowed_authority_resource(resource, locale)
-    # Confirmed authority institutions cannot be relabelled as lifestyle
-    # editorial or a family case to bypass authority evidence requirements.
-    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS:
+    # Dynamic results cannot relabel an institution to bypass authority checks.
+    # A manually opened family story published by an authority organization can
+    # still be a case when its first-person evidence is stored on the exact URL.
+    reviewed_case = bool(
+        category == "case"
+        and resource.get("research_source") == "reviewed_whitelist"
+        and _safe_text(resource.get("case_evidence"), 300)
+        and _normalized_url_key(str(resource.get("case_evidence_url") or ""))
+        == _normalized_url_key(str(resource.get("url") or ""))
+    )
+    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS and not reviewed_case:
         return False
+    # Exact manually opened family stories are curated at URL level. They do
+    # not need to imitate a Chinese social-platform publisher name in order to
+    # pass the dynamic creator heuristic below.
+    if reviewed_case:
+        return True
     if locale != "zh-CN":
         return True
     if _is_zh_cn_hospital_resource(resource):
@@ -1741,12 +1853,18 @@ def _normalize_dynamic_resource(
     if not _resource_source_category_allowed(raw, locale, cited_urls):
         invalid("source_category")
         return None
+    english_authority_guide = _is_english_authority_original_for_chinese_guide(
+        raw,
+        locale,
+    )
     if locale in {"zh-CN", "zh-TW"}:
         for field, limit in (
             ("title", 180),
             ("description", 360),
             ("selection_reason", 300),
         ):
+            if field == "title" and english_authority_guide:
+                continue
             if not _CJK_RE.search(_safe_text(raw.get(field), limit)):
                 invalid(f"cjk_{field}")
                 return None
@@ -1754,17 +1872,20 @@ def _normalize_dynamic_resource(
         language_markers = ["中文", "简体", "簡體", "繁体", "繁體", "chinese"]
         if kind == "video":
             language_markers.extend(_MANDARIN_MARKERS)
-        if not any(
+        if not english_authority_guide and not any(
             marker.casefold() in language
             for marker in language_markers
         ) and not _CJK_RE.search(_safe_text(raw.get("page_language_evidence"), 300)):
             invalid("language")
             return None
-    if locale in {"zh-CN", "zh-TW"} and kind == "video" and not _mandarin_video(
-        raw, cited_urls
-    ):
-        invalid("mandarin_video")
-        return None
+    if locale in {"zh-CN", "zh-TW"} and kind == "video":
+        if english_authority_guide:
+            if str(raw.get("spoken_language") or "") != "english":
+                invalid("english_authority_video")
+                return None
+        elif not _mandarin_video(raw, cited_urls):
+            invalid("mandarin_video")
+            return None
     if (
         locale == "en"
         and kind == "video"
@@ -1790,6 +1911,58 @@ def _normalize_dynamic_resource(
         "zh-TW": "繁體中文 · 台灣優先" if kind == "article" else "華語影片 · 台灣優先",
         "en": "英文文章" if kind == "article" else "英文视频",
     }[locale]
+    if english_authority_guide:
+        source_language = "en"
+        translation_type = "nuri_guide"
+        translation_disclaimer = (
+            "外部内容为英文原文；中文内容由 NURI 导读，不是来源方官方译文。"
+        )
+        chinese_guide = _safe_text(raw.get("description"), 360)
+        language_label = "英文原文 · NURI 中文导读"
+    else:
+        source_language = locale
+        translation_type = (
+            "official_translation"
+            if category == "authority"
+            and locale in {"zh-CN", "zh-TW"}
+            and resource_parent_org_id(raw)
+            in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS
+            else "original"
+        )
+        translation_disclaimer = ""
+        chinese_guide = ""
+        language_label = _safe_text(raw.get("language"), 80) or language_fallback
+    source_quality_lane = {
+        "authority": "primary_evidence",
+        "featured": "high_readability",
+        "case": "lived_experience",
+    }[category]
+    commercial_text = " ".join(
+        _safe_text(raw.get(field), 360).casefold()
+        for field in ("title", "description", "selection_reason", "audience_note")
+    )
+    commercial_risk = (
+        "blocked"
+        if any(
+            marker in commercial_text
+            for marker in (
+                "广告",
+                "廣告",
+                "带货",
+                "帶貨",
+                "种草",
+                "種草",
+                "优惠",
+                "優惠",
+                "购买",
+                "購買",
+                "sponsor",
+                "affiliate",
+                "promotion",
+            )
+        )
+        else "clear"
+    )
     return {
         "id": f"{card_id}-web-{index}-{digest}",
         "kind": kind,
@@ -1805,7 +1978,20 @@ def _normalize_dynamic_resource(
         "review_evidence_url": str(
             raw.get("review_evidence_url") or ""
         ).strip(),
-        "language": _safe_text(raw.get("language"), 80) or language_fallback,
+        "language": language_label,
+        "source_language": source_language,
+        "display_locale": locale,
+        "chinese_guide": chinese_guide,
+        "translation_type": translation_type,
+        "translation_disclaimer": translation_disclaimer,
+        "source_quality_lane": source_quality_lane,
+        "delivery_source_contract": DELIVERY_SOURCE_CONTRACT_VERSION,
+        # The Responses web-search citation proves the selected destination was
+        # fetched/indexed during this run. Static library links never receive
+        # this marker and therefore cannot bypass a newly observed 403.
+        "link_health_status": "search_cited",
+        "content_page_type": kind,
+        "commercial_risk": commercial_risk,
         "spoken_language": str(raw.get("spoken_language") or "not_applicable"),
         "spoken_language_evidence": _safe_text(
             raw.get("spoken_language_evidence"), 300
@@ -1833,6 +2019,105 @@ def _normalize_dynamic_resource(
         "case_evidence_url": str(raw.get("case_evidence_url") or "").strip(),
         "research_source": "openai_web_search",
     }
+
+
+def delivery_lane_rejection_reason(
+    resource: dict,
+    locale: str,
+    *,
+    require_dynamic: bool = True,
+) -> str:
+    """Return a stable reason when a candidate cannot enter a published lane."""
+
+    locale = normalize_resource_locale(locale)
+    category = str(resource.get("content_category") or "")
+    kind = str(resource.get("kind") or "")
+    if category not in CONTENT_CATEGORIES or kind not in RESOURCE_KINDS:
+        return "invalid_slot"
+    research_source = str(resource.get("research_source") or "")
+    if require_dynamic and research_source != "openai_web_search":
+        return "not_fresh_research"
+    if not require_dynamic and research_source not in {
+        "openai_web_search",
+        "reviewed_whitelist",
+    }:
+        return "unverified_delivery_source"
+    if resource.get("delivery_source_contract") != DELIVERY_SOURCE_CONTRACT_VERSION:
+        return "old_source_contract"
+    allowed_health = (
+        {"search_cited"}
+        if require_dynamic
+        else {"search_cited", "manual_verified"}
+    )
+    if resource.get("link_health_status") not in allowed_health:
+        return "link_not_search_verified"
+    if resource.get("content_page_type") != kind:
+        return "landing_or_wrong_page_type"
+    path = urlparse(str(resource.get("url") or "")).path.strip("/")
+    if not path:
+        return "landing_or_wrong_page_type"
+    if resource.get("commercial_risk") != "clear":
+        return "commercial_or_ad"
+    if str(resource.get("display_locale") or "") != locale:
+        return "wrong_display_locale"
+    org_id = resource_parent_org_id(resource)
+    if category == "authority":
+        if str(resource.get("source_quality_lane") or "") != "primary_evidence":
+            return "authority_not_primary_evidence"
+        if not _is_allowed_authority_resource(resource, locale):
+            return "authority_not_allowlisted"
+        if locale == "zh-CN":
+            if org_id not in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS:
+                return "authority_not_preferred_english_org"
+            translation_type = str(resource.get("translation_type") or "")
+            if translation_type not in {"nuri_guide", "official_translation"}:
+                return "authority_not_localized"
+            if translation_type == "nuri_guide" and (
+                str(resource.get("source_language") or "") != "en"
+                or not _safe_text(resource.get("chinese_guide"), 360)
+                or not _safe_text(resource.get("translation_disclaimer"), 220)
+            ):
+                return "authority_guide_incomplete"
+        return ""
+    reviewed_case = bool(
+        category == "case"
+        and research_source == "reviewed_whitelist"
+        and _safe_text(resource.get("case_evidence"), 300)
+    )
+    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS and not reviewed_case:
+        return "authority_relabelled"
+    if category == "featured":
+        if str(resource.get("source_quality_lane") or "") != "high_readability":
+            return "featured_not_high_readability"
+        if research_source == "reviewed_whitelist" and not (
+            _resource_source_category_allowed(resource, locale)
+        ):
+            return "featured_source_not_approved"
+        if (
+            locale == "zh-CN"
+            and _resource_declares_english_original(resource)
+            and not _is_reviewed_english_original_for_chinese_guide(resource, locale)
+        ):
+            return "featured_english_guide_incomplete"
+        # Citation/reviewer/creator checks already ran before the normalized
+        # contract marker was attached. Re-running them without the original
+        # cited URL set would incorrectly reject verified DXY-style pages.
+        return ""
+    if str(resource.get("source_quality_lane") or "") != "lived_experience":
+        return "case_not_lived_experience"
+    if research_source == "reviewed_whitelist" and not (
+        _resource_source_category_allowed(resource, locale)
+    ):
+        return "case_source_not_approved"
+    if (
+        locale == "zh-CN"
+        and _resource_declares_english_original(resource)
+        and not _is_reviewed_english_original_for_chinese_guide(resource, locale)
+    ):
+        return "case_english_guide_incomplete"
+    if not _safe_text(resource.get("case_evidence"), 300):
+        return "case_evidence_missing"
+    return ""
 
 
 def _select_complete_resource_set(
@@ -2010,7 +2295,10 @@ def parse_research_candidates(
         if locale in {
             "zh-CN",
             "zh-TW",
-        } and not _has_same_page_chinese_language_evidence(raw, cited_urls):
+        } and not _is_english_authority_original_for_chinese_guide(
+            raw,
+            locale,
+        ) and not _has_same_page_chinese_language_evidence(raw, cited_urls):
             rejected("page_language_evidence")
             continue
         if (
@@ -2308,19 +2596,42 @@ def reviewed_resource_matches_context(
         return True
 
     child_age_months = _context_child_age_months(topic_context)
+    declared_age_range = resource.get("age_range_months")
+    reviewed_stage_match = False
+    if (
+        resource.get("research_source") == "reviewed_whitelist"
+        and isinstance(declared_age_range, (list, tuple))
+        and len(declared_age_range) == 2
+        and child_age_months is not None
+    ):
+        try:
+            reviewed_stage_match = (
+                int(declared_age_range[0])
+                <= child_age_months
+                <= int(declared_age_range[1])
+            )
+        except (TypeError, ValueError):
+            reviewed_stage_match = False
     if child_age_months is not None:
         # Reviewed metadata is intentionally optional for legacy resources, but
         # an explicit destination title is stronger than missing metadata.  A
         # page labelled for another month/year must never be backfilled merely
         # because it came from the reviewed library.
+        title_text = _safe_text(resource.get("title"), 500)
         title_has_age, title_age_match = _explicit_age_status(
-            resource.get("title"),
+            title_text,
             child_age_months,
         )
-        if title_has_age and not title_age_match:
+        # ASHA's official title says "Birth to 1 Year". Treating only the
+        # trailing "1 Year" as a standalone 12-23 month label would exclude
+        # infants even though the source explicitly covers birth onward.
+        if re.search(r"\bbirth\s+to\s+1\s+year\b", title_text, re.IGNORECASE):
+            title_has_age = True
+            title_age_match = 0 <= child_age_months <= 12
+        if title_has_age and not title_age_match and not reviewed_stage_match:
             return False
 
-    age_range = resource.get("age_range_months")
+    age_range = declared_age_range
     focus_tags = resource.get("focus_tags")
     has_age_metadata = isinstance(age_range, (list, tuple)) and len(age_range) == 2
     has_focus_metadata = isinstance(focus_tags, (list, tuple)) and bool(focus_tags)
@@ -2373,10 +2684,11 @@ def _language_policy(locale: str) -> str:
             "Articles and videos must be in English; videos must have English speech."
         )
     return (
-        "文章必须使用简体中文；不得以台湾来源、繁体中文或繁体中文翻译页作为回退。"
-        "视频必须明确是普通话/国语/华语。严禁粤语、广东话或仅有简体字幕的粤语视频。"
-        "权威来源优先国际机构、大学、期刊，以及经过人工审核的北上广深杭儿童医院/妇幼医院官方来源；"
-        "除这份医院精确白名单外，不得把中国大陆政府、官媒或其他公立机构列入 authority。"
+        "featured 与 case 的文章必须使用简体中文，视频必须明确是普通话/国语/华语；"
+        "不得以台湾来源、繁体中文或粤语内容回退。authority 是唯一例外：优先选择 CDC、"
+        "AAP、NIH、Harvard、Stanford、美国大学/儿童医院及国际权威机构的英文原文和英文视频，"
+        "description 与 selection_reason 必须写成简体中文 NURI 导读，原始 title 保持英文，"
+        "外链仍是英文原文，不得冒充来源方官方中文翻译。"
     )
 
 
@@ -2411,10 +2723,11 @@ def _source_priority_policy(locale: str) -> str:
     accounts = "、".join(_ZH_CN_HOSPITAL_PUBLIC_ACCOUNT_DOMAINS)
     return (
         "简体中文优先来源只作为召回与同质量候选的排序先验，绝不能绕过主题、引用、语言和安全门槛。\n"
-        f"- {core_authorities}\n- {us_authority}只有落地页本身提供官方简体中文或已核验普通话视频时才可入选；"
-        "优先 WHO、UNICEF、Head Start、Mayo Clinic、SickKids、RCH、Raising Children、"
-        "MedlinePlus、Cochrane 的官方中文，其次香港 FHS，以及北上广深杭公立儿童医院官网"
-        f"及经医院官网反向确认的公众号：{accounts}。"
+        f"- {core_authorities}\n- {us_authority}本轮 authority 必须优先检索英文一手原文与英文正式视频，"
+        "尤其是 CDC、AAP/HealthyChildren、NIH/MedlinePlus、Harvard、Stanford、Head Start、"
+        "Mayo Clinic、美国儿童医院、WHO、UNICEF 与 Cochrane。中文说明只写入 NURI 导读，"
+        "外链和原始标题保持英文；不得用香港 FHS 或中国医院的旧静态页面替代本轮英文权威检索。"
+        f"若未来使用中国医院来源，只能来自经单页核验的官网或经官网反向确认的公众号：{accounts}。"
         "共享域 mp.weixin.qq.com 不能单独证明权威；公众号名称必须精确匹配，evidence_url 必须是本次引用的对应医院官网认证页。\n"
         f"- featured 可检索这些已登记创作者，但一律不把自述资历当医学权威：{featured}。"
         "丁香医生、丁香妈妈、小荷医典等专业平台只能归入 featured，且必须同页显示可核验作者、审核人和审核依据，或 URL 已逐条审核。"
@@ -2431,11 +2744,12 @@ def _source_priority_policy(locale: str) -> str:
 def _hard_locale_gate(locale: str) -> str:
     return {
         "zh-CN": (
-            "本次是【简体中文结果】。六至九项外部页面必须实际提供简体中文正文或简体中文视频页；"
+            "本次是【简体中文界面】。featured 与 case 外部页面必须实际提供简体中文正文或普通话视频；"
             "台湾来源、繁体中文页面和繁体中文翻译页全部禁止，不能作为找不到简体内容时的回退。"
-            "所有视频的主要口语必须有同页证据明确证明是普通话/国语/华语。"
-            "禁止粤语，禁止用英文资源凑数，禁止翻译英文或繁体标题冒充简体中文资源。"
-            "使用简体中文关键词，覆盖北京、上海、广州、深圳、杭州医院，以及中文创作者和编辑内容。"
+            "authority 是唯一语言例外：必须优先从登记的美国/国际权威机构检索英文原始文章与英文正式视频，"
+            "保留页面原始英文标题，并用简体中文 description/selection_reason 生成 NURI 导读；"
+            "不得翻译标题冒充中文页面，不得称为官方翻译。featured/case 视频仍必须有普通话证据，禁止粤语。"
+            "精选与案例使用简体中文关键词，覆盖登记的专业平台、优质创作者和真实父母内容。"
         ),
         "zh-TW": (
             "本次是【繁體中文结果】。六至九项外部页面必须实际提供繁體中文正文或中文视频页；"
@@ -2504,8 +2818,8 @@ def build_research_prompt(
 - 医疗、安全和发展事实以权威内容为底线；优秀内容与案例只能补充理解和执行，不能取代专业建议。
 - 视频必须链接到可观看的视频页；文章必须链接到可阅读的文章页。
 - title 必须逐字使用页面原始标题，绝不能把英文标题翻译成中文冒充中文资源。
-- 每个中文资源的 page_language_evidence 必须摘录或准确描述该资源落地页上直接可见的中文原文，且必须包含实际汉字；page_language_evidence_url 必须与资源 URL 指向同一规范化页面，并由本次搜索引用。英文资源的这两个字段返回空字符串。不能用搜索摘要、翻译后的标题或其他页面作为语言证据。
-- 对中文视频，spoken_language_evidence 必须写页面上能直接看到的“普通话 / 国语 / 华语 / Mandarin”证据，spoken_language_evidence_url 必须指向该证据页；仅凭中文字幕、地区或模型猜测不算证据。文章的这两个字段返回空字符串。
+- featured/case 中文资源的 page_language_evidence 必须摘录或准确描述落地页直接可见的中文原文，并包含实际汉字；page_language_evidence_url 必须与资源 URL 是同一规范化页面并被本次搜索引用。authority 英文原文的这两个字段返回空字符串，description 和 selection_reason 则写简体中文 NURI 导读。不能用搜索摘要、翻译标题或其他页面冒充语言证据。
+- featured/case 中文视频的 spoken_language_evidence 必须写同页可见的“普通话 / 国语 / 华语 / Mandarin”证据，spoken_language_evidence_url 必须指向该证据页；仅凭中文字幕、地区或模型猜测不算证据。authority 英文正式视频必须把 spoken_language 设为 english，并保持原始英文标题。
 - 小红书视频必须在 video_page_evidence 中写明落地页如何确认这是视频/短视频笔记，video_page_evidence_url 必须是同一条被引用的笔记 URL。其他视频也可填写同页视频证据；文章的这两个字段返回空字符串。
 - 视频 URL 必须直达某一个具体视频播放页，不能返回频道、搜索、播放列表、课程目录或视频归档首页。
 - audience_note 只有在页面能看到明确数据或可核验认可依据时填写，否则返回空字符串。
@@ -2797,7 +3111,9 @@ def _reviewed_resource_matches_policy(
             return False
         if str(resource.get("script_language") or "") == "zh-Hant":
             return False
-        if str(resource.get("kind") or "") == "video":
+        if str(resource.get("kind") or "") == "video" and not (
+            _is_reviewed_english_original_for_chinese_guide(resource, locale)
+        ):
             if str(resource.get("spoken_language_status") or "") != "verified":
                 return False
             url_key = _normalized_url_key(str(resource.get("url") or ""))
@@ -2885,7 +3201,9 @@ def _merge_with_reviewed_resources(
         ):
             continue
         resource = copy.deepcopy(reviewed)
-        resource["research_source"] = "reviewed_library"
+        resource["research_source"] = str(
+            reviewed.get("research_source") or "reviewed_library"
+        )
         candidate_resources.append(resource)
 
     resources = _select_complete_resource_set(
@@ -2919,12 +3237,49 @@ def reviewed_learning_resource_bundle(
     the result stays unavailable instead of filling it with a nearby topic.
     """
 
-    return _merge_with_reviewed_resources(
-        None,
-        card=card,
-        locale=normalize_resource_locale(preferred_locale),
-        excluded_urls=excluded_urls,
+    locale = normalize_resource_locale(preferred_locale)
+    excluded_url_keys = set(_normalized_excluded_url_keys(excluded_urls))
+    topic_context = _structured_research_context(card)
+    candidates: list[dict] = []
+    for reviewed in card.get("resources") or []:
+        # This fallback is intentionally a separate, exact-URL delivery lane.
+        # Legacy reviewed-library items powered the old rigid recommendations
+        # and must never crowd a newly verified pair out of the package.
+        if reviewed.get("research_source") != "reviewed_whitelist":
+            continue
+        url_key = _normalized_url_key(str(reviewed.get("url") or ""))
+        if (
+            not url_key
+            or url_key in excluded_url_keys
+            or not _reviewed_resource_matches_policy(
+                reviewed,
+                locale,
+                topic_context=topic_context,
+            )
+            or delivery_lane_rejection_reason(
+                reviewed,
+                locale,
+                require_dynamic=False,
+            )
+        ):
+            continue
+        candidates.append(copy.deepcopy(reviewed))
+
+    resources = _select_complete_resource_set(
+        candidates,
+        excluded_url_keys=excluded_url_keys,
     )
+    if resources is None:
+        return None
+    return {
+        "query": "",
+        "editor_note": "reviewed whitelist fallback",
+        "resources": resources,
+        "cited_source_count": 0,
+        "dynamic_resource_count": 0,
+        "reviewed_resource_count": len(resources),
+        "research_status": "reviewed_whitelist",
+    }
 
 
 def research_learning_resources(
@@ -2993,6 +3348,9 @@ def research_learning_resources(
         web_search_tool: dict[str, object] = {
             "type": "web_search",
             "search_context_size": "high" if locale in {"zh-CN", "zh-TW"} else "medium",
+            "filters": {
+                "allowed_domains": list(_research_allowed_domains(locale)),
+            },
         }
         if locale == "zh-CN":
             web_search_tool["user_location"] = {

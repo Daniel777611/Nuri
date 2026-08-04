@@ -74,14 +74,32 @@ export function recommendationSourceLabel(
   return cleanText(card.source_label) || cleanText(card.publisher) || "NURI 严选来源";
 }
 
+export function resourceLanguageLabel(
+  resource: Pick<PreparedLearningResource, "language" | "translation_type">,
+): string {
+  if (resource.translation_type === "nuri_guide") {
+    return "英文原文 · NURI 中文导读";
+  }
+  if (resource.translation_type === "official_translation") {
+    return "机构官方中文";
+  }
+  return cleanText(resource.language);
+}
+
 export function recommendationLanguageLabel(
   card: RecommendationPresentationCard,
 ): string {
+  const article = card.resources?.find((resource) => resource.kind === "article");
+  const video = card.resources?.find((resource) => resource.kind === "video");
+  if (
+    article?.translation_type === "nuri_guide" ||
+    video?.translation_type === "nuri_guide"
+  ) {
+    return "英文原文 · NURI 中文导读";
+  }
   const explicit = cleanText(card.language_label);
   if (explicit) return explicit;
 
-  const article = card.resources?.find((resource) => resource.kind === "article");
-  const video = card.resources?.find((resource) => resource.kind === "video");
   const articleLanguage = cleanText(article?.language);
   const spokenLanguage = cleanText(video?.spoken_language);
   if (articleLanguage && spokenLanguage === "mandarin") {

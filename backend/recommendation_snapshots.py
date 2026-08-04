@@ -19,9 +19,13 @@ from typing import Any, Mapping, Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 
-SNAPSHOT_VERSION = 3
-SNAPSHOT_CONTEXT_VERSION = "delivery-package-alternates-v3"
-SUPPORTED_SNAPSHOT_VERSIONS = frozenset({1, 2, SNAPSHOT_VERSION})
+SNAPSHOT_VERSION = 4
+SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v4"
+SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v1"
+# Source semantics changed materially in v4: old ready packages may contain a
+# static HK authority page or the same institutional publisher in every lane.
+# Treat those snapshots as cache entries, not durable user data, and rebuild.
+SUPPORTED_SNAPSHOT_VERSIONS = frozenset({SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90
 PREPARED_CONTENT_TTL_HOURS = 6
 RESOURCE_READINESS_VALUES = frozenset({"preparing", "ready", "retryable"})
@@ -111,6 +115,7 @@ def build_snapshot(
     return {
         "version": SNAPSHOT_VERSION,
         "context_version": SNAPSHOT_CONTEXT_VERSION,
+        "source_contract_version": SNAPSHOT_SOURCE_CONTRACT_VERSION,
         "recommendation_id": rec_id,
         "card_id": card_id,
         "content_category": content_category,
@@ -137,6 +142,7 @@ def _prepared_binding(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "preferred_locale": snapshot.get("preferred_locale") or "",
         "child_profile_fingerprint": snapshot.get("child_profile_fingerprint"),
         "context_created_at": snapshot.get("context_created_at"),
+        "source_contract_version": snapshot.get("source_contract_version"),
     }
 
 
@@ -443,12 +449,12 @@ def parse_snapshot(
         return None
     if expires_at <= (now or _utc_now()).astimezone(timezone.utc):
         return None
-    # Version 1 records remain readable during the deployment transition. They
-    # are still bound to the same account/session and expiration checks; the
-    # current child age is attached at request time before resources are gated.
-    if parsed.get("version") == 1:
-        parsed.setdefault("child_profile_fingerprint", None)
-        parsed.setdefault("child_age_context", "")
+    if (
+        parsed.get("context_version") != SNAPSHOT_CONTEXT_VERSION
+        or parsed.get("source_contract_version")
+        != SNAPSHOT_SOURCE_CONTRACT_VERSION
+    ):
+        return None
     parsed.setdefault("content_category", None)
     parsed.setdefault("preferred_locale", "")
     readiness = str(parsed.get("resource_readiness") or "")

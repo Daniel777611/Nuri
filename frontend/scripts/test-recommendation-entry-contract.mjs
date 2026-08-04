@@ -140,10 +140,10 @@ function testHomeClickNavigatesBeforeBackgroundPreparation() {
     assert.ok(carousel.includes(metadata), `hero cards must expose ${metadata}`);
   }
 
-  assert.match(
+  assert.doesNotMatch(
     home,
     /!card\.prepared_content_set_id[\s\S]{0,180}alternate_count[\s\S]{0,180}< 1/,
-    "reviewed primary pairs must still be prepared to obtain instant backups",
+    "one verified article/video pair must be publishable without waiting for backups",
   );
   assert.match(
     home,
@@ -229,7 +229,76 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
   assert.match(detail, /too_commercial/, "feedback must include an ad-heavy reason");
 }
 
+function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
+  const presentation = loadTypescriptModule(
+    "../src/recommendationPresentation.ts",
+  );
+  const guidedArticle = {
+    id: "cdc-language-guide",
+    kind: "article",
+    title: "Language milestones",
+    publisher: "CDC",
+    language: "简体中文",
+    source_language: "en",
+    display_locale: "zh-CN",
+    translation_type: "nuri_guide",
+    chinese_guide: "NURI 整理的中文导读。",
+  };
+
+  const resourceLabel = presentation.resourceLanguageLabel(guidedArticle);
+  assert.equal(resourceLabel, "英文原文 · NURI 中文导读");
+  assert.doesNotMatch(
+    resourceLabel,
+    /官方翻译/,
+    "a NURI guide must never be presented as an official translation",
+  );
+  assert.equal(
+    presentation.recommendationLanguageLabel({
+      language_label: "机构官方中文",
+      resources: [guidedArticle],
+    }),
+    "英文原文 · NURI 中文导读",
+    "resource translation metadata must override a stale card language label",
+  );
+  assert.equal(
+    presentation.resourceLanguageLabel({
+      language: "简体中文",
+      translation_type: "official_translation",
+    }),
+    "机构官方中文",
+  );
+  assert.equal(
+    presentation.resourceLanguageLabel({ language: "繁体中文" }),
+    "繁体中文",
+    "legacy resources without translation metadata must keep their old label",
+  );
+
+  const detail = read("../app/detail/[id].tsx");
+  assert.match(
+    detail,
+    /不是发布机构的官方翻译；重要结论请以原文为准。/,
+    "the detail page must disclose that a NURI guide is not an official translation",
+  );
+  assert.match(
+    detail,
+    /translation_type === "nuri_guide" && resource\.chinese_guide/,
+    "the Chinese guide must only render for the explicit nuri_guide contract",
+  );
+
+  const api = read("../src/api.ts");
+  for (const field of [
+    "source_language?: ResourceLocale",
+    "display_locale?: ResourceLocale",
+    "chinese_guide?: string",
+    "translation_type?: ResourceTranslationType",
+    "translation_disclaimer?: string",
+  ]) {
+    assert.ok(api.includes(field), `prepared resources must expose ${field}`);
+  }
+}
+
 testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput();
 testHomeClickNavigatesBeforeBackgroundPreparation();
 testDetailPaintsTheGuideWhileExternalLinksStayAtomic();
+testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming();
 console.log("recommendation entry contracts passed");

@@ -1574,6 +1574,7 @@ def test_english_curated_resources_use_reviewed_non_mainland_expert_source(card)
         for resource in card.get("resources", [])
         if resource.get("source_tier") == "curated"
         and "en" in resource.get("locales", [])
+        and resource.get("research_source") != "reviewed_whitelist"
     ]
 
     assert len(resources) == 2
@@ -1612,6 +1613,7 @@ def test_audience_recognition_is_only_claimed_with_visible_evidence():
         for resource in resources_by_id.values()
         if resource.get("source_tier") == "curated"
         and "en" in resource.get("locales", [])
+        and resource.get("research_source") != "reviewed_whitelist"
         and resource["id"] not in {"sleep-rcn-article", "safety-rcn-article"}
     ]
     assert all(
@@ -1626,6 +1628,7 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         resource
         for resource in card.get("resources", [])
         if "zh-CN" in resource.get("locales", [])
+        and resource.get("research_source") != "reviewed_whitelist"
     ]
 
     groups = {

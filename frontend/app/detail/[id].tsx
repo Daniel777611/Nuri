@@ -22,6 +22,8 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   api,
   type PreparedResourcePair,
+  type ResourceLocale,
+  type ResourceTranslationType,
   type RecommendationEventInput,
   type RecommendationEventName,
   type RecommendationFeedbackReason,
@@ -35,6 +37,7 @@ import {
   deliveryCategoryMeta,
   recommendationActionSteps,
   recommendationLanguageLabel,
+  resourceLanguageLabel,
   recommendationSourceLabel,
   recommendationStageLabel,
   recommendationTimeLabel,
@@ -83,6 +86,11 @@ type LearningResource = {
   updated_at?: string;
   estimated_minutes?: number;
   language?: string;
+  source_language?: ResourceLocale;
+  display_locale?: ResourceLocale;
+  chinese_guide?: string;
+  translation_type?: ResourceTranslationType;
+  translation_disclaimer?: string;
   spoken_language?: "mandarin" | "english" | "not_applicable";
   spoken_language_evidence?: string;
   spoken_language_evidence_url?: string;
@@ -941,6 +949,9 @@ export default function Detail() {
         card.resource_readiness === "retryable");
     const activeResourceLocaleLabel =
       RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言";
+    const hasNuriGuidedOriginal = visibleResources.some(
+      (resource) => resource.translation_type === "nuri_guide",
+    );
     const deliveryMeta = deliveryCategoryMeta(activeCategory);
     const sourceLabel = recommendationSourceLabel(card);
     const languageLabel = recommendationLanguageLabel(card);
@@ -1208,7 +1219,10 @@ export default function Detail() {
             ) : null}
             {resourcePairComplete ? (
               <Text style={styles.resourcesIntro}>
-                已自动使用最适合你的{activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。点击具体条目后才会打开外部内容。
+                {hasNuriGuidedOriginal
+                  ? `已按你的${activeResourceLocaleLabel}偏好整理：权威英文原文保留原始链接，并附 NURI 中文导读。`
+                  : `已自动使用最适合你的${activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。`}
+                点击具体条目后才会打开外部内容。
               </Text>
             ) : null}
                 {resourcePairComplete ? visibleResources.map((resource, resourceIndex) => (
@@ -1270,8 +1284,10 @@ export default function Detail() {
                             {resourceBadgeLabel(resource)}
                           </Text>
                         </View>
-                        {resource.language ? (
-                          <Text style={styles.resourceLanguage}>{resource.language}</Text>
+                        {resourceLanguageLabel(resource) ? (
+                          <Text style={styles.resourceLanguage}>
+                            {resourceLanguageLabel(resource)}
+                          </Text>
                         ) : null}
                         {resource.estimated_minutes ? (
                           <Text style={styles.resourceLanguage}>
@@ -1290,6 +1306,18 @@ export default function Detail() {
                       ) : null}
                       {resource.description ? (
                         <Text style={styles.resourceDescription}>{resource.description}</Text>
+                      ) : null}
+                      {resource.translation_type === "nuri_guide" && resource.chinese_guide ? (
+                        <View style={styles.resourceChineseGuide}>
+                          <Text style={styles.resourceChineseGuideTitle}>NURI 中文导读</Text>
+                          <Text style={styles.resourceChineseGuideText}>
+                            {resource.chinese_guide}
+                          </Text>
+                          <Text style={styles.resourceChineseGuideDisclaimer}>
+                            {resource.translation_disclaimer ||
+                              "这是 NURI 对英文原文的中文导读，不是发布机构的官方翻译；重要结论请以原文为准。"}
+                          </Text>
+                        </View>
                       ) : null}
                       {resource.kind === "video" && resource.spoken_language_evidence ? (
                         <Text style={styles.resourceLanguageEvidence}>
@@ -2006,6 +2034,32 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: colors.onSurfaceSecondary,
     marginTop: spacing.sm,
+  },
+  resourceChineseGuide: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: "#F7F5FF",
+    borderWidth: 1,
+    borderColor: "#DED8F8",
+  },
+  resourceChineseGuideTitle: {
+    fontSize: type.sm,
+    lineHeight: 18,
+    color: "#4F4B9C",
+    fontWeight: "700",
+  },
+  resourceChineseGuideText: {
+    fontSize: type.sm,
+    lineHeight: 19,
+    color: colors.onSurfaceSecondary,
+    marginTop: 3,
+  },
+  resourceChineseGuideDisclaimer: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.muted,
+    marginTop: 5,
   },
   resourceLanguageEvidence: {
     fontSize: type.sm,

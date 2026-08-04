@@ -17,6 +17,8 @@ from backend.content_library import LEARNING_CONTENT_BY_ID
 from backend.content_research import CONTENT_CATEGORIES, clear_research_cache
 from backend.tests.test_content_research import (
     _FakeClient,
+    _delivery_ready_parsed_bundle,
+    _delivery_ready_raw_resources,
     _parsed_bundle,
     _raw_resources,
     _response,
@@ -197,15 +199,23 @@ def _assert_atomic_ready(result: dict) -> None:
         } == {item["content_category"]}
 
 
-def test_personalized_feed_exposes_complete_reviewed_pairs_without_waiting_for_provider(
+def test_prepare_request_requires_all_three_editorial_lanes():
+    with pytest.raises(ValueError):
+        main.ResearchPrepareRequest(
+            items=[
+                main.ResearchPrepareItem(
+                    card_id="learn_language_milestones",
+                    recommendation_id=f"rec_{index}",
+                )
+                for index in range(2)
+            ]
+        )
+
+
+def test_personalized_feed_does_not_publish_static_pairs_as_fresh_research(
     monkeypatch,
 ):
-    """A reviewed exact match is immediately clickable even when research is on.
-
-    Live research may later improve the choice, but it must not downgrade six
-    already-reviewed, age/topic/locale-compliant resources to ``preparing`` and
-    make the Home card depend on an external provider before it can be opened.
-    """
+    """Reviewed links cannot impersonate the current conversation's new package."""
 
     uid = "parent-reviewed-ready"
     context = {
@@ -278,27 +288,32 @@ def test_personalized_feed_exposes_complete_reviewed_pairs_without_waiting_for_p
         CONTENT_CATEGORIES
     )
     for item in result["items"]:
-        assert item["resource_readiness"] == "ready"
+        assert item["resource_readiness"] == "preparing"
         assert item["resource_pair_complete"] is True
-        assert len(item["resources"]) == 2
-        assert {resource["kind"] for resource in item["resources"]} == {
-            "article",
-            "video",
-        }
+        assert "resources" not in item
         assert item["prepared_content_set_id"] is None
 
 
-def test_prepare_provider_failure_rejects_single_org_reviewed_set(
+def _assert_reviewed_whitelist_ready(result: dict) -> None:
+    _assert_atomic_ready(result)
+    assert result["research_status"] == "reviewed_whitelist"
+    resources = [
+        resource for item in result["items"] for resource in item["resources"]
+    ]
+    assert len(resources) == 6
+    assert all(
+        resource["research_source"] == "reviewed_whitelist"
+        and resource["link_health_status"] == "manual_verified"
+        and resource["delivery_source_contract"]
+        == main.DELIVERY_SOURCE_CONTRACT_VERSION
+        for resource in resources
+    )
+
+
+def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
     monkeypatch,
 ):
-    """A trusted fallback still cannot violate package-level source diversity.
-
-    The legacy zh-CN language bundle is individually reviewed, but featured and
-    case are both dominated by UNICEF.  When live research is unavailable, a
-    cold request stays retryable instead of publishing three cards that only
-    repackage one institution.  An already-published package is preserved by
-    the separate upgrade path.
-    """
+    """A provider outage publishes only the exact, diverse six-slot whitelist."""
 
     harness = _PrepareHarness(
         monkeypatch,
@@ -315,18 +330,63 @@ def test_prepare_provider_failure_rejects_single_org_reviewed_set(
     result = harness.run()
 
     assert harness.provider_calls == 1
-    _assert_atomic_retryable(result)
+    _assert_reviewed_whitelist_ready(result)
+    organizations = {
+        main._resource_parent_org_id(resource)
+        for item in result["items"]
+        for resource in item["resources"]
+    }
+    assert len(organizations) == 6
+
+
+def test_reviewed_whitelist_ready_card_opens_without_another_provider_call(
+    monkeypatch,
+):
+    """A published fallback pair and the detail endpoint share one ready gate."""
+
+    harness = _PrepareHarness(
+        monkeypatch,
+        card_id="learn_language_milestones",
+        message="我想了解11个月宝宝的语言沟通和轮流互动。",
+        recommendation_focus="语言发育、亲子沟通和轮流互动",
+        child_age_context="11个月",
+    )
+    harness.use_research_results(
+        monkeypatch,
+        {"_provider_failure": "retryable"},
+    )
+    prepared = harness.run()
+    authority = next(
+        item
+        for item in prepared["items"]
+        if item["content_category"] == "authority"
+    )
+
+    detail = asyncio.run(
+        main.get_card_detail(
+            card_id=harness.card_id,
+            recommendation_id=authority["recommendation_id"],
+            prepared_content_set_id=prepared["prepared_content_set_id"],
+            content_category="authority",
+            uid=harness.uid,
+        )
+    )
+
+    assert harness.provider_calls == 1
+    assert detail["resource_readiness"] == "ready"
+    assert detail["resource_pair_complete"] is True
+    assert detail["resources"] == authority["resources"]
 
 
 @pytest.mark.parametrize(
     "recommendation_focus",
     main._TOPIC_SIGNAL_ALIASES["learn_language_milestones"],
 )
-def test_language_reviewed_fallback_never_bypasses_source_diversity(
+def test_language_reviewed_whitelist_covers_every_conversation_focus(
     monkeypatch,
     recommendation_focus,
 ):
-    """A matching focus cannot make a one-organization bundle publishable."""
+    """Every language alias can use the same stage-matched verified source set."""
 
     harness = _PrepareHarness(
         monkeypatch,
@@ -342,7 +402,8 @@ def test_language_reviewed_fallback_never_bypasses_source_diversity(
 
     result = harness.run()
 
-    _assert_atomic_retryable(result)
+    assert harness.provider_calls == 1
+    _assert_reviewed_whitelist_ready(result)
 
 
 def test_prepare_rejects_six_resources_when_one_lane_is_not_article_and_video(
@@ -416,7 +477,7 @@ def test_prepare_can_recover_after_timeout_from_a_cold_serverless_instance(
     """A durable preparing marker must not strand the next cold invocation."""
 
     harness = _PrepareHarness(monkeypatch, persistent=True)
-    complete = _parsed_bundle(include_optional_third=False)
+    complete = _delivery_ready_parsed_bundle()
     harness.use_research_results(
         monkeypatch,
         {"_provider_failure": "retryable"},
@@ -451,7 +512,7 @@ def test_prepare_upgrades_legacy_single_pair_set_before_returning(monkeypatch):
     """A v2 ready set must be expanded instead of trapping clients in retry."""
 
     harness = _PrepareHarness(monkeypatch)
-    bundle = _parsed_bundle(include_optional_third=True)
+    bundle = _delivery_ready_parsed_bundle()
     old_set_id = f"pcs_{'e' * 24}"
     for recommendation_id, snapshot in list(harness.snapshots.items()):
         category = str(snapshot["content_category"])
@@ -493,14 +554,16 @@ def test_immediate_retry_after_incomplete_bundle_bypasses_warm_failure_cache(
     clear_research_cache()
     incomplete_resources = [
         resource
-        for resource in _raw_resources(include_optional_third=False)
+        for resource in _delivery_ready_raw_resources(include_optional_third=False)
         if not (
             resource["content_category"] == "case"
             and resource["kind"] == "video"
         )
     ]
     incomplete = _response(incomplete_resources)
-    complete = _response(_raw_resources(include_optional_third=False))
+    complete = _response(
+        _delivery_ready_raw_resources(include_optional_third=False)
+    )
     provider = _FakeClient((incomplete, incomplete, incomplete, complete))
     harness = _PrepareHarness(monkeypatch)
     monkeypatch.setattr(main, "content_research_oai", provider)

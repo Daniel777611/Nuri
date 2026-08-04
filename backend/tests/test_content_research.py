@@ -32,6 +32,7 @@ from backend.content_research import (  # noqa: E402
     _context_child_age_months,
     _is_evidenced_video_page,
     _resource_source_category_allowed,
+    delivery_lane_rejection_reason,
     _reviewed_resource_matches_policy,
     _resource_matches_topic,
     build_research_prompt,
@@ -216,6 +217,93 @@ def _parsed_bundle(
     return parsed
 
 
+def _delivery_ready_parsed_bundle() -> dict:
+    """Return a zh-CN package with English authority originals plus NURI guides."""
+
+    parsed = _parsed_bundle()
+    authority_articles = iter(
+        (
+            (
+                "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
+                "Centers for Disease Control and Prevention",
+                "Essentials for Parenting Toddlers and Preschoolers",
+            ),
+            (
+                "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
+                "Harvard Center on the Developing Child",
+                "5 Steps for Brain-Building Serve and Return",
+            ),
+        )
+    )
+    for resource in parsed["resources"]:
+        if resource["content_category"] != "authority":
+            continue
+        kind = resource["kind"]
+        if kind == "article":
+            url, publisher, title = next(authority_articles)
+        else:
+            url = "https://developingchild.harvard.edu/resources/videos/how-to-5-steps-for-brain-building-serve-and-return/"
+            publisher = "Harvard Center on the Developing Child"
+            title = "How-to: 5 Steps for Brain-Building Serve and Return"
+        resource.update(
+            {
+                "url": url,
+                "title": title,
+                "publisher": publisher,
+                "source_language": "en",
+                "display_locale": "zh-CN",
+                "language": "英文原文 · NURI 中文导读",
+                "chinese_guide": "这份导读说明如何把权威建议用于当前家庭场景。",
+                "translation_type": "nuri_guide",
+                "translation_disclaimer": "外部内容为英文原文；中文内容由 NURI 导读，不是来源方官方译文。",
+            }
+        )
+    return parsed
+
+
+def _delivery_ready_raw_resources(
+    *, include_optional_third: bool = True
+) -> list[dict]:
+    """Return provider-shaped resources satisfying the v1 source-lane contract."""
+
+    resources = _raw_resources(include_optional_third=include_optional_third)
+    authority_articles = iter(
+        (
+            "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
+            "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
+        )
+    )
+    for resource in resources:
+        if resource["content_category"] != "authority":
+            continue
+        if resource["kind"] == "article":
+            resource["url"] = next(authority_articles)
+            resource["spoken_language"] = "not_applicable"
+            resource["title"] = (
+                "CDC Essentials for Parenting"
+                if "cdc.gov" in resource["url"]
+                else "Harvard 5 Steps for Brain-Building Serve and Return"
+            )
+        else:
+            resource["url"] = (
+                "https://developingchild.harvard.edu/resources/videos/"
+                "how-to-5-steps-for-brain-building-serve-and-return/"
+            )
+            resource["spoken_language"] = "english"
+            resource["spoken_language_evidence"] = "The page identifies English speech."
+            resource["spoken_language_evidence_url"] = resource["url"]
+            resource["video_page_evidence_url"] = resource["url"]
+            resource["evidence_url"] = resource["url"]
+            resource["title"] = "Harvard Serve and Return Video"
+        resource["publisher"] = "CDC or Harvard Center on the Developing Child"
+        resource["language"] = "English"
+        resource["description"] = "这份中文导读解释权威原文与当前家庭问题的关系。"
+        resource["selection_reason"] = "这份英文原文直接回应当前孩子的发展阶段。"
+        resource["page_language_evidence"] = ""
+        resource["page_language_evidence_url"] = ""
+    return resources
+
+
 def test_complete_research_bundle_has_three_categories_and_both_formats():
     parsed = _parsed_bundle()
 
@@ -258,6 +346,106 @@ def test_quality_first_bundle_accepts_two_complete_resources_per_category():
         assert {resource["kind"] for resource in category_resources} == set(
             RESOURCE_KINDS
         )
+
+
+def test_zh_cn_authority_accepts_english_original_with_explicit_nuri_guide():
+    resources = _raw_resources()
+    authority_articles = iter(
+        (
+            "https://www.cdc.gov/parents/essentials/toddlersandpreschoolers/index.html",
+            "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
+        )
+    )
+    for resource in resources:
+        if resource["content_category"] != "authority":
+            continue
+        if resource["kind"] == "article":
+            resource["url"] = next(authority_articles)
+            resource["spoken_language"] = "not_applicable"
+            resource["title"] = (
+                "CDC Essentials for Parenting"
+                if "cdc.gov" in resource["url"]
+                else "Harvard 5 Steps for Brain-Building Serve and Return"
+            )
+        else:
+            resource["url"] = (
+                "https://developingchild.harvard.edu/resources/videos/"
+                "how-to-5-steps-for-brain-building-serve-and-return/"
+            )
+            resource["spoken_language"] = "english"
+            resource["spoken_language_evidence"] = "The page identifies English speech."
+            resource["spoken_language_evidence_url"] = resource["url"]
+            resource["video_page_evidence_url"] = resource["url"]
+            resource["evidence_url"] = resource["url"]
+            resource["title"] = "Harvard Serve and Return Video"
+        resource["publisher"] = "CDC or Harvard Center on the Developing Child"
+        resource["language"] = "English"
+        resource["description"] = "这份中文导读解释权威原文与当前家庭问题的关系。"
+        resource["selection_reason"] = "这份英文原文直接回应当前孩子的发展阶段。"
+        resource["page_language_evidence"] = ""
+        resource["page_language_evidence_url"] = ""
+
+    parsed = parse_research_response(
+        _response(resources),
+        locale="zh-CN",
+        card_id="learn_sleep_routine",
+    )
+
+    assert parsed is not None
+    authority = [
+        resource
+        for resource in parsed["resources"]
+        if resource["content_category"] == "authority"
+    ]
+    assert authority
+    assert all(resource["source_language"] == "en" for resource in authority)
+    assert all(resource["display_locale"] == "zh-CN" for resource in authority)
+    assert all(resource["translation_type"] == "nuri_guide" for resource in authority)
+    assert all(resource["chinese_guide"] for resource in authority)
+    assert all("不是来源方官方译文" in resource["translation_disclaimer"] for resource in authority)
+    assert all(
+        not delivery_lane_rejection_reason(resource, "zh-CN")
+        for resource in authority
+    )
+
+
+def test_delivery_contract_rejects_old_static_hk_authority_and_unhealthy_or_ad_links():
+    old_hk = next(
+        resource
+        for resource in _parsed_bundle()["resources"]
+        if resource["content_category"] == "authority"
+        and resource["kind"] == "video"
+    )
+    assert delivery_lane_rejection_reason(old_hk, "zh-CN") == (
+        "authority_not_preferred_english_org"
+    )
+
+    healthy = _delivery_ready_parsed_bundle()["resources"][0]
+    unreachable = {**healthy, "link_health_status": "http_403"}
+    assert delivery_lane_rejection_reason(unreachable, "zh-CN") == (
+        "link_not_search_verified"
+    )
+    advertisement = {**healthy, "commercial_risk": "blocked"}
+    assert delivery_lane_rejection_reason(advertisement, "zh-CN") == (
+        "commercial_or_ad"
+    )
+
+
+def test_featured_lane_cannot_relabel_or_reuse_an_authority_organization():
+    authority = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["content_category"] == "authority"
+    )
+    relabelled = {
+        **authority,
+        "content_category": "featured",
+        "source_quality_lane": "high_readability",
+    }
+
+    assert delivery_lane_rejection_reason(relabelled, "zh-CN") == (
+        "authority_relabelled"
+    )
 
 
 @pytest.mark.parametrize("optional_category_count", [0, 1, 2, 3])
@@ -2197,7 +2385,7 @@ def test_refresh_forces_new_search_and_excludes_current_reviewed_pair(monkeypatc
 
     def fake_research(_client, **kwargs):
         calls.append(kwargs)
-        return deepcopy(_parsed_bundle("zh-CN", include_optional_third=False))
+        return deepcopy(_delivery_ready_parsed_bundle())
 
     monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
     monkeypatch.setattr(
@@ -3209,7 +3397,7 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
 
     async def research_once(**kwargs):
         provider_calls.append(kwargs)
-        return _parsed_bundle(include_optional_third=False)
+        return _delivery_ready_parsed_bundle()
 
     delivered = []
 
