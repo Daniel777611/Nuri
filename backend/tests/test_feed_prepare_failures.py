@@ -212,10 +212,10 @@ def test_prepare_request_requires_all_three_editorial_lanes():
         )
 
 
-def test_personalized_feed_does_not_publish_static_pairs_as_fresh_research(
+def test_personalized_feed_publishes_reviewed_pairs_during_dynamic_upgrade(
     monkeypatch,
 ):
-    """Reviewed links cannot impersonate the current conversation's new package."""
+    """Reviewed links stay usable while a conversation-specific upgrade runs."""
 
     uid = "parent-reviewed-ready"
     context = {
@@ -288,9 +288,14 @@ def test_personalized_feed_does_not_publish_static_pairs_as_fresh_research(
         CONTENT_CATEGORIES
     )
     for item in result["items"]:
-        assert item["resource_readiness"] == "preparing"
+        assert item["resource_readiness"] == "ready"
         assert item["resource_pair_complete"] is True
-        assert "resources" not in item
+        assert len(item["resources"]) == 2
+        assert {resource["kind"] for resource in item["resources"]} == {
+            "article",
+            "video",
+        }
+        assert item["research_status"] == "reviewed_fallback"
         assert item["prepared_content_set_id"] is None
 
 

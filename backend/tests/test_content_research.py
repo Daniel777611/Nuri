@@ -3277,7 +3277,7 @@ def test_unmatched_virtual_card_is_not_exposed(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
-def test_detail_returns_409_when_prepared_pair_is_not_ready(monkeypatch):
+def test_detail_serves_reviewed_pair_while_dynamic_upgrade_is_not_ready(monkeypatch):
     messages = [
         {
             "id": "message-1",
@@ -3308,12 +3308,22 @@ def test_detail_returns_409_when_prepared_pair_is_not_ready(monkeypatch):
     monkeypatch.setattr(main, "content_research_oai", object())
     monkeypatch.setattr(main, "research_learning_resources", should_not_search)
 
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            main.get_card_detail("learn_sleep_routine", uid="parent-private-id")
+    detail = asyncio.run(
+        main.get_card_detail(
+            "learn_sleep_routine",
+            content_category="authority",
+            uid="parent-private-id",
         )
+    )
 
-    assert error.value.status_code == 409
+    assert detail["resource_readiness"] == "ready"
+    assert detail["resource_pair_complete"] is True
+    assert detail["research_status"] == "reviewed_fallback"
+    assert len(detail["resources"]) == 2
+    assert {resource["kind"] for resource in detail["resources"]} == {
+        "article",
+        "video",
+    }
     assert calls == []
 
 

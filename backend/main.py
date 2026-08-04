@@ -6170,25 +6170,24 @@ async def get_personalized_feed(
                     if item["curation_mode"] == "conversation_web_research"
                     else "reviewed"
                 )
-        if item.get("resource_status") == "research_on_open":
-            # Conversation-matched category cards never publish a reviewed
-            # static pair as if it were the newly researched recommendation.
-            # The previous complete v4 package stays visible client-side until
-            # prepare atomically returns all three fresh lanes.
-            item["resource_readiness"] = "preparing"
-            item.pop("resources", None)
-        elif item.get("resource_pair_complete"):
+        if item.get("resource_pair_complete"):
             item["resource_readiness"] = "ready"
             # Reviewed resources are already policy-, locale- and age-gated.
-            # Returning the strict pair also lets provider-eligible accounts
-            # open immediately while dynamic research remains available as an
-            # explicit refresh. A prepared snapshot still replaces this pair.
+            # Publish the strict pair immediately instead of blocking the home
+            # card on live research. Dynamic preparation can still upgrade all
+            # three lanes atomically, while provider latency or failure never
+            # makes already-reviewed content unavailable to the user.
             item["resources"] = reviewed
             item["research_status"] = (
                 "reviewed_fallback"
                 if item.get("resource_status") == "research_on_open"
                 else "ready"
             )
+        elif item.get("resource_status") == "research_on_open":
+            # A genuinely novel topic has no reviewed pair to fall back to, so
+            # it still waits for the authenticated batch preparation endpoint.
+            item["resource_readiness"] = "preparing"
+            item.pop("resources", None)
         else:
             item["resource_readiness"] = "retryable"
         item["prepared_content_set_id"] = None
@@ -6924,10 +6923,15 @@ async def get_card_detail(
                     preferred_locale=preferred_locale,
                     resources=prepared_pair,
                 )
+        elif research_eligible and card.get("resource_pair_complete"):
+            # The reviewed pair is a safe, locale- and stage-gated baseline.
+            # Serve it immediately while live research remains an optional
+            # refresh; a prepared snapshot replaces it atomically when ready.
+            card["research_status"] = "reviewed_fallback"
+            card["resource_readiness"] = "ready"
+            card["prepared_content_set_id"] = None
         elif research_eligible:
-            # Web research is deliberately performed by the authenticated
-            # batch-prepare endpoint. A static reviewed pair is not the result
-            # of the current conversation and must not bypass publication.
+            # Novel topics without a reviewed pair still require preparation.
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Prepared resources are not ready",
