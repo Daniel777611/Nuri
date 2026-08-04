@@ -11,10 +11,13 @@ from backend import main
 from backend.recommendation_snapshots import (
     build_snapshot,
     prepared_resource_pair,
+    prepared_resource_pairs,
     parse_snapshot,
     recommendation_id,
     serialize_snapshot,
+    snapshot_with_active_resource_pair,
     snapshot_with_prepared_resource_pair,
+    snapshot_with_prepared_resource_pairs,
     snapshot_storage_key,
     snapshot_storage_prefix,
 )
@@ -193,6 +196,64 @@ def test_version_one_snapshot_remains_readable_during_upgrade():
     assert restored["version"] == 1
     assert restored["child_profile_fingerprint"] is None
     assert restored["child_age_context"] == ""
+
+
+def test_prepared_alternates_round_trip_and_switch_without_research():
+    now = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    snapshot = build_snapshot(
+        "parent-alternates",
+        {"id": "learn_sleep_routine", "content_category": "authority"},
+        {
+            "session_id": "session-alternates",
+            "context_created_at": now.isoformat(),
+            "preferred_locale": "zh-CN",
+        },
+        now=now,
+    )
+
+    def pair(suffix: str) -> list[dict]:
+        return [
+            {
+                "id": f"article-{suffix}",
+                "kind": "article",
+                "content_category": "authority",
+                "locales": ["zh-CN"],
+                "url": f"https://example.org/article-{suffix}",
+            },
+            {
+                "id": f"video-{suffix}",
+                "kind": "video",
+                "content_category": "authority",
+                "locales": ["zh-CN"],
+                "url": f"https://example.org/video-{suffix}",
+            },
+        ]
+
+    prepared = snapshot_with_prepared_resource_pairs(
+        snapshot,
+        [pair("one"), pair("two"), pair("three")],
+        content_set_id=f"pcs_{'d' * 24}",
+        now=now,
+    )
+    restored = parse_snapshot(
+        serialize_snapshot(prepared, secret=TEST_SNAPSHOT_SECRET),
+        now=now,
+        secret=TEST_SNAPSHOT_SECRET,
+    )
+    pools = prepared_resource_pairs(restored, now=now)
+
+    assert len(pools) == 3
+    assert prepared_resource_pair(restored, now=now) == pair("one")
+
+    switched = snapshot_with_active_resource_pair(
+        restored,
+        pools[1]["pair_id"],
+        now=now,
+    )
+    switched_pools = prepared_resource_pairs(switched, now=now)
+    assert switched_pools[0]["pair_id"] == pools[1]["pair_id"]
+    assert prepared_resource_pair(switched, now=now) == pair("two")
+    assert switched["prepared_content_set_id"] == f"pcs_{'d' * 24}"
 
 
 class _Result:

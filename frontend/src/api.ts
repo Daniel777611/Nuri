@@ -28,10 +28,22 @@ export type PreparedLearningResource = {
   kind: "article" | "video";
   title: string;
   publisher: string;
+  author?: string;
+  updated_at?: string;
+  language?: string;
+  spoken_language?: "mandarin" | "english" | "not_applicable" | string;
+  estimated_minutes?: number;
+  reading_minutes?: number;
+  duration_minutes?: number;
   description?: string;
   url?: string;
   content_category?: PersonalizedContentCategory;
   [key: string]: unknown;
+};
+
+export type PreparedResourcePair = {
+  pair_id: string;
+  resources: PreparedLearningResource[];
 };
 
 export type PersonalizedFeedItem = {
@@ -44,6 +56,15 @@ export type PersonalizedFeedItem = {
   content_category?: PersonalizedContentCategory;
   content_category_label?: string;
   content_category_eyebrow?: string;
+  content_category_description?: string;
+  delivery_title?: string;
+  source_label?: string;
+  language_label?: string;
+  estimated_time_label?: string;
+  applicable_stage?: string;
+  child_age_context?: string;
+  guide?: string;
+  action_steps?: string[];
   personalization_reason?: string;
   is_conversation_match?: boolean;
   related_session_id?: string | null;
@@ -56,6 +77,9 @@ export type PersonalizedFeedItem = {
   resource_readiness?: ResourceReadiness;
   resource_pair_complete?: boolean;
   prepared_content_set_id?: string | null;
+  active_pair_id?: string | null;
+  alternate_count?: number;
+  alternate_resource_pairs?: PreparedResourcePair[];
   resources?: PreparedLearningResource[];
   research_status?: string;
   curation_mode?: string;
@@ -67,7 +91,10 @@ export type PersonalizedFeedItem = {
 
 export type PersonalizedFeedResponse = {
   items: PersonalizedFeedItem[];
+  pending_items?: PersonalizedFeedItem[];
   personalization_mode: string;
+  recommendation_set_id?: string | null;
+  publication_state?: "ready" | "preparing" | string;
   feed_request_id?: string | null;
   model_version?: string | null;
   matched_topic?: string | null;
@@ -80,15 +107,29 @@ export type PersonalizedFeedResponse = {
 export type PreparedFeedItem = {
   recommendation_id: string;
   content_category: PersonalizedContentCategory;
+  delivery_title?: string;
+  source_label?: string;
+  language_label?: string;
+  estimated_time_label?: string;
+  applicable_stage?: string;
+  child_age_context?: string;
+  guide?: string;
+  action_steps?: string[];
   resource_readiness: ResourceReadiness;
   resource_pair_complete: boolean;
   prepared_content_set_id?: string | null;
+  active_pair_id?: string | null;
+  alternate_count?: number;
+  alternate_resource_pairs?: PreparedResourcePair[];
   resources?: PreparedLearningResource[];
   research_status?: string;
 };
 
 export type PrepareFeedResponse = {
   items: PreparedFeedItem[];
+  recommendation_set_id?: string | null;
+  publication_state?: "ready" | "preparing" | string;
+  upgrade_state?: "ready" | "preparing" | string;
 };
 
 export type RecommendationEventName =
@@ -109,6 +150,8 @@ export type RecommendationFeedbackReason =
   | "repetitive"
   | "wrong_language"
   | "source_not_useful"
+  | "too_long"
+  | "too_commercial"
   | "not_now";
 
 /**
@@ -458,6 +501,7 @@ export const api = {
     recommendationId?: string,
     contentCategory?: PersonalizedContentCategory,
     excludeResourceIds: string[] = [],
+    targetPairId?: string,
   ) => {
     const query = [
       "refresh=true",
@@ -473,6 +517,9 @@ export const api = {
         : "",
       excludeResourceIds.length
         ? `exclude_resource_ids=${encodeURIComponent(excludeResourceIds.slice(0, 20).join(","))}`
+        : "",
+      targetPairId
+        ? `target_pair_id=${encodeURIComponent(targetPairId.slice(0, 160))}`
         : "",
     ].filter(Boolean).join("&");
     return req(

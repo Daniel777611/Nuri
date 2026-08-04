@@ -15,7 +15,12 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend import main  # noqa: E402
-from backend.content_library import LEARNING_CONTENT_BY_ID  # noqa: E402
+from backend.content_library import (  # noqa: E402
+    LEARNING_CONTENT_BY_ID,
+    is_trusted_resource_url,
+    resource_parent_org_id,
+    source_parent_org_id,
+)
 from backend.content_research import (  # noqa: E402
     CONTENT_CATEGORIES,
     MAX_RESOURCES_PER_CATEGORY,
@@ -45,7 +50,7 @@ _URLS_BY_SLOT = {
     ("authority", "video"): ["https://www.fhs.gov.hk/sc_chi/mulit_med/000015.html"],
     ("featured", "article"): [
         "https://raisingchildren.net.au/sleep/featured-guide",
-        "https://parenting.example.com/sleep-practical-guide",
+        "https://www.zerotothree.org/resource/sleep-practical-guide",
     ],
     ("featured", "video"): ["https://www.youtube.com/watch?v=EtfYKMI6At8"],
     ("case", "article"): [
@@ -331,10 +336,23 @@ def test_research_bundle_prevents_one_publisher_from_monopolizing_results():
         "同一个 内容发布者",
         "【同一个内容发布者】",
     )
-    for resource, publisher in zip(
-        resources[: MAX_RESOURCES_PER_PUBLISHER + 1], publisher_variants
+    same_parent_org_urls = (
+        "https://www.cdc.gov/parenting/sleep/article.html",
+        "https://actearly.cdc.gov/parenting/sleep/second-article.html",
+        "https://www.cdc.gov/parenting/videos/sleep-video.html",
+    )
+    for resource, publisher, url in zip(
+        resources[: MAX_RESOURCES_PER_PUBLISHER + 1],
+        publisher_variants,
+        same_parent_org_urls,
     ):
         resource["publisher"] = publisher
+        resource["url"] = url
+        resource["page_language_evidence_url"] = url
+        if resource["kind"] == "video":
+            resource["video_page_evidence_url"] = url
+            resource["spoken_language_evidence_url"] = url
+            resource["evidence_url"] = url
 
     parsed = parse_research_response(
         _response(resources),
@@ -736,7 +754,7 @@ def test_xiaohongshu_video_requires_same_page_video_note_evidence():
     assert rejected is None
 
 
-def test_zh_cn_selection_prefers_reviewed_creator_seed_at_equal_quality():
+def test_zh_cn_creator_name_does_not_bypass_exact_url_review():
     resources = _raw_resources()
     preferred = deepcopy(
         next(
@@ -763,7 +781,7 @@ def test_zh_cn_selection_prefers_reviewed_creator_seed_at_equal_quality():
     )
 
     assert parsed is not None
-    assert preferred_url in {resource["url"] for resource in parsed["resources"]}
+    assert preferred_url not in {resource["url"] for resource in parsed["resources"]}
 
 
 def test_creator_seed_name_does_not_boost_an_arbitrary_host():
@@ -1602,6 +1620,134 @@ def test_zh_cn_featured_source_must_match_reviewed_editorial_or_creator_seed():
     assert not _resource_source_category_allowed(unknown_aggregator, "zh-CN")
     assert _resource_source_category_allowed(reviewed_editorial, "zh-CN")
     assert _resource_source_category_allowed(preferred_creator, "zh-CN")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_org"),
+    [
+        ("https://www.cdc.gov/parents/essentials/", "cdc"),
+        ("https://publications.aap.org/pediatrics/article/1/1/1", "american_academy_of_pediatrics"),
+        ("https://www.unicef.cn/parenting/child-development", "unicef"),
+        ("https://developingchild.harvard.edu/resources/", "harvard_center_developing_child"),
+        ("https://www.mayoclinic.org/healthy-lifestyle/childrens-health", "mayo_clinic"),
+        ("https://www.aboutkidshealth.ca/healthaz", "sickkids_toronto"),
+        ("https://www.rch.org.au/kidsinfo/", "royal_childrens_hospital_melbourne"),
+        ("https://babyedu.sfaa.gov.tw/mooc/index.php", "tw_sfaa_parenting"),
+        ("https://www.fhs.gov.hk/english/health_info/child/", "hk_fhs"),
+    ],
+)
+def test_source_parent_org_is_stable_across_confirmed_domains(url, expected_org):
+    assert source_parent_org_id(url) == expected_org
+
+
+def test_resource_parent_org_ignores_forged_explicit_identity():
+    resource = {
+        "url": "https://unknown.example/article",
+        "publisher": "Unknown publisher",
+        "parent_org_id": "cdc",
+    }
+
+    assert resource_parent_org_id(resource) == "host:unknown.example"
+
+
+def test_social_and_curated_hosts_are_exact_review_only():
+    reviewed_youtube = next(
+        resource["url"]
+        for card in LEARNING_CONTENT_BY_ID.values()
+        for resource in card.get("resources", [])
+        if "youtube.com/watch" in str(resource.get("url") or "")
+    )
+
+    assert is_trusted_resource_url(reviewed_youtube)
+    assert not is_trusted_resource_url(
+        "https://www.youtube.com/watch?v=unreviewed-runtime-candidate"
+    )
+    assert not is_trusted_resource_url(
+        "https://www.parenting.com.tw/article/unreviewed-runtime-candidate"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.cdc.gov/parents/essentials/",
+        "https://www.healthychildren.org/English/ages-stages/Pages/default.aspx",
+        "https://www.who.int/health-topics/child-health",
+        "https://www.unicef.org/parenting/child-development",
+        "https://developingchild.harvard.edu/resources/",
+        "https://earlychildhood.stanford.edu/resource/test",
+        "https://headstart.gov/child-development",
+        "https://www.medlineplus.gov/childdevelopment.html",
+        "https://www.cochrane.org/evidence/child-health",
+        "https://www.zjuch.cn/department/child-health",
+    ],
+)
+def test_confirmed_authority_domains_are_admitted_at_runtime(url):
+    resource = {"content_category": "authority", "kind": "article", "url": url}
+
+    assert _resource_source_category_allowed(resource, "en")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.mama.cn/new-unreviewed-article.html",
+        "https://www.qinbei.com/new-unreviewed-article.html",
+        "https://www.ci123.com/new-unreviewed-article.html",
+        "https://www.babytree.com/new-unreviewed-article.html",
+        "https://www.baobaoshiye.cn/new-unreviewed-article.html",
+    ],
+)
+def test_consumer_portals_require_an_individually_reviewed_url(url):
+    resource = {
+        "content_category": "featured",
+        "kind": "article",
+        "publisher": "parenting portal",
+        "url": url,
+    }
+
+    assert not _resource_source_category_allowed(resource, "zh-CN")
+
+
+def test_professional_platform_never_authority_and_requires_same_page_review():
+    url = "https://dxy.cn/article/runtime-policy-test"
+    base = {
+        "kind": "article",
+        "publisher": "\u4e01\u9999\u533b\u751f",
+        "title": "\u5a74\u5e7c\u513f\u8bed\u8a00\u53d1\u5c55",
+        "url": url,
+    }
+
+    assert not _resource_source_category_allowed(
+        {**base, "content_category": "authority"}, "zh-CN", {url}
+    )
+    assert not _resource_source_category_allowed(
+        {**base, "content_category": "featured"}, "zh-CN", {url}
+    )
+    reviewed = {
+        **base,
+        "content_category": "featured",
+        "author": "Doctor A",
+        "reviewer": "Doctor B",
+        "review_evidence": "\u5ba1\u6838\uff1aDoctor B",
+        "review_evidence_url": url,
+    }
+    assert _resource_source_category_allowed(reviewed, "zh-CN", {url})
+    assert not _resource_source_category_allowed(
+        {**reviewed, "content_category": "case"}, "zh-CN", {url}
+    )
+
+
+def test_prompt_does_not_grant_consumer_portals_whole_site_priority():
+    prompt = build_research_prompt(
+        {"topic": "language development", "title": "language development"},
+        [],
+        "zh-CN",
+    )
+
+    assert "CDC" in prompt and "HealthyChildren" in prompt and "UNICEF" in prompt
+    assert "mama.cn" in prompt and "\u4e0d\u505a\u6574\u7ad9\u53ec\u56de" in prompt
+    assert "\u4e5f\u4f18\u5148\u5988\u5988\u7f51" not in prompt
 
 
 def test_creator_platform_collection_is_not_a_direct_video_page():
@@ -3086,8 +3232,11 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
     )
 
     assert result["resource_readiness"] == "ready"
-    assert len(provider_calls) == 1
-    assert provider_calls[0]["force"] is expected_force
+    # One call prepares the atomic primary set. A second bounded call is
+    # allowed only to prewarm the instant "换一组" alternate required by the
+    # delivery contract; duplicate reserve results terminate immediately.
+    assert 1 <= len(provider_calls) <= 2
+    assert all(call["force"] is expected_force for call in provider_calls)
     assert delivered == []
     assert {item["content_category"] for item in result["items"]} == set(
         CONTENT_CATEGORIES

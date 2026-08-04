@@ -281,6 +281,20 @@ const previewRecommendationId = (
 ) => `preview-rec:${cardId}:${category}`;
 
 const previewContentSetId = (cardId: string) => `preview-pcs:${cardId}`;
+const previewDeliveryMeta = {
+  authority: {
+    title: "宝宝夜醒正常吗？先看月龄节奏和观察重点",
+    stage: "适合当前月龄",
+  },
+  featured: {
+    title: "今晚就能试：把睡前流程缩成三个固定步骤",
+    stage: "适合当前月龄",
+  },
+  case: {
+    title: "一个忙碌家庭怎样逐步稳定宝宝入睡",
+    stage: "相似阶段家庭",
+  },
+} as const;
 let favorites: any[] = [card];
 let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
 let sessions = [
@@ -435,6 +449,18 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         title: article?.title || baseCard.title,
         summary: article?.description || baseCard.summary,
         publisher: article?.publisher || baseCard.publisher,
+        delivery_title: previewDeliveryMeta[category].title,
+        source_label: article?.publisher || baseCard.publisher,
+        language_label: preferredLocale === "zh-CN" ? "简体中文 · 普通话" : "偏好语言",
+        estimated_time_label: "约 8 分钟",
+        applicable_stage: previewDeliveryMeta[category].stage,
+        child_age_context: "孩子当前年龄：当前月龄",
+        guide: baseCard.body || baseCard.summary,
+        action_steps: [
+          "今晚选一个最容易坚持的日常时机",
+          "连续三天用同一顺序回应并观察孩子反应",
+          "只记录一个变化，不追求一次解决全部问题",
+        ],
         content_category: category,
         content_category_label: categoryMeta[category],
         personalization_reason: useConversation
@@ -467,6 +493,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     });
     return {
       items,
+      recommendation_set_id: "preview-recommendation-set",
+      publication_state: "ready",
       personalization_mode: useConversation ? "conversation" : "default_privacy",
       category_mix: { authority: 55, featured: 30, case: 15 },
       initial_content_category: "authority",
@@ -490,11 +518,29 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         resource_readiness: ready ? "ready" : "unavailable",
         resource_pair_complete: ready,
         prepared_content_set_id: ready ? previewContentSetId(item.card_id) : null,
+        active_pair_id: ready ? `preview-pair:${safeCategory}:primary` : null,
+        alternate_count: 0,
+        alternate_resource_pairs: [],
+        delivery_title: previewDeliveryMeta[safeCategory].title,
+        source_label: resources[0]?.publisher,
+        language_label: preferredLocale === "zh-CN" ? "简体中文 · 普通话" : "偏好语言",
+        estimated_time_label: "约 8 分钟",
+        applicable_stage: previewDeliveryMeta[safeCategory].stage,
+        child_age_context: "孩子当前年龄：当前月龄",
+        guide: learningCards.find((card) => card.id === item.card_id)?.body,
+        action_steps: [
+          "选一个最容易坚持的日常时机",
+          "连续三天用同一顺序回应",
+        ],
         resources,
         research_status: ready ? "ready" : "unavailable",
       };
     });
-    return { items };
+    return {
+      items,
+      recommendation_set_id: "preview-recommendation-set",
+      publication_state: "ready",
+    };
   }
   if (routePath.startsWith("/feed/") && routePath.endsWith("/detail")) {
     const contentId = routePath.split("/")[2];
@@ -514,6 +560,21 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       return {
         ...learningCard,
         resources,
+        delivery_title: previewDeliveryMeta[contentCategory].title,
+        source_label: resources[0]?.publisher || learningCard.publisher,
+        language_label: preferredLocale === "zh-CN" ? "简体中文 · 普通话" : "偏好语言",
+        estimated_time_label: "约 8 分钟",
+        applicable_stage: previewDeliveryMeta[contentCategory].stage,
+        child_age_context: "孩子当前年龄：当前月龄",
+        guide: learningCard.body || learningCard.summary,
+        action_steps: [
+          "今晚选一个最容易坚持的日常时机",
+          "连续三天用同一顺序回应并观察孩子反应",
+          "只记录一个变化，不追求一次解决全部问题",
+        ],
+        active_pair_id: `preview-pair:${contentCategory}:primary`,
+        alternate_count: 0,
+        alternate_resource_pairs: [],
         content_category: contentCategory,
         content_category_label: {
           authority: "权威来源",

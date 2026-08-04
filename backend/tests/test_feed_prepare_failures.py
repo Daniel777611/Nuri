@@ -288,16 +288,16 @@ def test_personalized_feed_exposes_complete_reviewed_pairs_without_waiting_for_p
         assert item["prepared_content_set_id"] is None
 
 
-def test_prepare_provider_failure_publishes_complete_reviewed_set_when_all_slots_pass(
+def test_prepare_provider_failure_rejects_single_org_reviewed_set(
     monkeypatch,
 ):
-    """A transient provider outage must not block a fully reviewed exact match.
+    """A trusted fallback still cannot violate package-level source diversity.
 
-    This is the production click path reported by the user: the conversation is
-    about an 11-month-old's language communication, and the reviewed zh-CN
-    library has an age-, language- and topic-matched article/video pair for each
-    editorial lane.  Publishing remains atomic; this fallback is allowed only
-    when all six independently reviewed slots pass the normal hard gates.
+    The legacy zh-CN language bundle is individually reviewed, but featured and
+    case are both dominated by UNICEF.  When live research is unavailable, a
+    cold request stays retryable instead of publishing three cards that only
+    repackage one institution.  An already-published package is preserved by
+    the separate upgrade path.
     """
 
     harness = _PrepareHarness(
@@ -315,18 +315,18 @@ def test_prepare_provider_failure_publishes_complete_reviewed_set_when_all_slots
     result = harness.run()
 
     assert harness.provider_calls == 1
-    _assert_atomic_ready(result)
+    _assert_atomic_retryable(result)
 
 
 @pytest.mark.parametrize(
     "recommendation_focus",
     main._TOPIC_SIGNAL_ALIASES["learn_language_milestones"],
 )
-def test_language_reviewed_fallback_matches_every_production_language_signal(
+def test_language_reviewed_fallback_never_bypasses_source_diversity(
     monkeypatch,
     recommendation_focus,
 ):
-    """Every focus emitted by production ranking keeps all three lanes open."""
+    """A matching focus cannot make a one-organization bundle publishable."""
 
     harness = _PrepareHarness(
         monkeypatch,
@@ -342,7 +342,7 @@ def test_language_reviewed_fallback_matches_every_production_language_signal(
 
     result = harness.run()
 
-    _assert_atomic_ready(result)
+    _assert_atomic_retryable(result)
 
 
 def test_prepare_rejects_six_resources_when_one_lane_is_not_article_and_video(
@@ -431,7 +431,10 @@ def test_prepare_can_recover_after_timeout_from_a_cold_serverless_instance(
     monkeypatch.setattr(main, "_recommendation_snapshots", {})
     recovered = harness.run()
 
-    assert harness.provider_calls == 2
+    # The first retry produces the complete primary bundle. The delivery
+    # contract may make one bounded reserve request to prewarm an instant
+    # alternate; failure of that optional reserve cannot roll back primary.
+    assert harness.provider_calls >= 2
     assert recovered["resource_readiness"] == "ready"
     assert recovered["prepared_content_set_id"].startswith("pcs_")
     assert len({item["prepared_content_set_id"] for item in recovered["items"]}) == 1
@@ -442,6 +445,44 @@ def test_prepare_can_recover_after_timeout_from_a_cold_serverless_instance(
         == {"article", "video"}
         for item in recovered["items"]
     )
+
+
+def test_prepare_upgrades_legacy_single_pair_set_before_returning(monkeypatch):
+    """A v2 ready set must be expanded instead of trapping clients in retry."""
+
+    harness = _PrepareHarness(monkeypatch)
+    bundle = _parsed_bundle(include_optional_third=True)
+    old_set_id = f"pcs_{'e' * 24}"
+    for recommendation_id, snapshot in list(harness.snapshots.items()):
+        category = str(snapshot["content_category"])
+        resources = [
+            resource
+            for resource in bundle["resources"]
+            if resource["content_category"] == category
+        ]
+        old_pair = [
+            next(resource for resource in resources if resource["kind"] == "article"),
+            next(resource for resource in resources if resource["kind"] == "video"),
+        ]
+        legacy = main.snapshot_with_prepared_resource_pair(
+            snapshot,
+            old_pair,
+            content_set_id=old_set_id,
+        )
+        legacy["version"] = 2
+        legacy.pop("prepared_resource_pairs", None)
+        legacy.pop("active_pair_id", None)
+        harness.snapshots[recommendation_id] = legacy
+
+    harness.use_research_results(monkeypatch, bundle)
+    result = harness.run()
+
+    assert harness.provider_calls >= 1
+    assert result["resource_readiness"] == "ready"
+    assert result["prepared_content_set_id"] != old_set_id
+    assert result["publication_state"] == "published"
+    assert all(item["alternate_count"] >= 1 for item in result["items"])
+    assert all(len(item["alternate_resource_pairs"]) >= 1 for item in result["items"])
 
 
 def test_immediate_retry_after_incomplete_bundle_bypasses_warm_failure_cache(
@@ -471,7 +512,9 @@ def test_immediate_retry_after_incomplete_bundle_bypasses_warm_failure_cache(
 
         recovered = harness.run()
 
-        assert len(provider.responses.calls) == 4
+        # The fourth call is the required fresh primary attempt. Additional
+        # calls are bounded reserve preparation for instant alternatives.
+        assert len(provider.responses.calls) >= 4
         assert recovered["resource_readiness"] == "ready"
         assert all(
             item["resource_readiness"] == "ready"

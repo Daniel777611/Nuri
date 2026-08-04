@@ -55,6 +55,16 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
     resource_readiness: "retryable",
     resource_pair_complete: false,
     resources: [],
+    action_steps: ["Try one small step"],
+    alternate_resource_pairs: [
+      {
+        pair_id: "pair_backup",
+        resources: [
+          { id: "a2", kind: "article", title: "Backup article" },
+          { id: "v2", kind: "video", title: "Backup video" },
+        ],
+      },
+    ],
   };
   const preparationItems = [
     {
@@ -65,6 +75,8 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
 
   const key = handoff.storeRecommendationDetailHandoff(card, preparationItems);
   card.title = "mutated after navigation";
+  card.action_steps[0] = "mutated action";
+  card.alternate_resource_pairs[0].resources[0].title = "mutated backup";
   preparationItems[0].card_id = "mutated-card";
   const stored = handoff.getRecommendationDetailHandoff(key);
 
@@ -73,6 +85,11 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
   assert.equal(stored.card.resource_readiness, "retryable");
   assert.equal(stored.card.resource_pair_complete, false);
   assert.equal(stored.card.resources.length, 0);
+  assert.equal(stored.card.action_steps[0], "Try one small step");
+  assert.equal(
+    stored.card.alternate_resource_pairs[0].resources[0].title,
+    "Backup article",
+  );
   assert.equal(stored.preparationItems[0].card_id, "learn_serve_and_return");
 }
 
@@ -104,10 +121,34 @@ function testHomeClickNavigatesBeforeBackgroundPreparation() {
     /disabled=\{cardDisabled\}/,
     "preparing/retryable cards must remain navigable",
   );
+  assert.doesNotMatch(
+    carousel,
+    /scrollEnabled=\{!isRefreshing\}|styles\.refreshingOverlay/,
+    "background preparation must not block or cover the published cards",
+  );
   assert.match(
     carousel,
-    /pointerEvents="none"[\s\S]{0,180}styles\.refreshingOverlay/,
-    "the refresh overlay must never intercept a card click",
+    /pointerEvents="none"[\s\S]{0,180}styles\.backgroundUpdatePill/,
+    "background preparation should be communicated without intercepting taps",
+  );
+  for (const metadata of [
+    "recommendationSourceLabel(card)",
+    "recommendationLanguageLabel(card)",
+    "recommendationTimeLabel(card)",
+    "recommendationStageLabel(card)",
+  ]) {
+    assert.ok(carousel.includes(metadata), `hero cards must expose ${metadata}`);
+  }
+
+  assert.match(
+    home,
+    /!card\.prepared_content_set_id[\s\S]{0,180}alternate_count[\s\S]{0,180}< 1/,
+    "reviewed primary pairs must still be prepared to obtain instant backups",
+  );
+  assert.match(
+    home,
+    /publication_state === "preparing"[\s\S]{0,320}setHeroPublicationState\("preparing"\)/,
+    "an unpublished replacement must leave the previous package on screen",
   );
 }
 
@@ -164,6 +205,28 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
     /isReadyDetail\(current, contentCategory\)[\s\S]{0,120}status !== 404[\s\S]{0,120}status !== 409[\s\S]{0,120}\?\s*current\s*:/,
     "a transient detail GET failure must not erase an already-ready handoff",
   );
+  assert.match(
+    detail,
+    /testID="detail-delivery-summary"/,
+    "detail must disclose source, language, time, stage and readiness",
+  );
+  assert.match(
+    detail,
+    /testID="detail-action-steps"/,
+    "detail must render the prepared small actions",
+  );
+  assert.match(
+    detail,
+    /const \[nextPreparedPair,[\s\S]{0,1000}setCard\([\s\S]{0,1000}getNextResourcePair\(/,
+    "a prepared backup must paint locally before persistence begins",
+  );
+  assert.match(
+    detail,
+    /nextPreparedPair\.pair_id/,
+    "the exact locally selected backup must be persisted by pair id",
+  );
+  assert.match(detail, /too_long/, "feedback must include a too-long reason");
+  assert.match(detail, /too_commercial/, "feedback must include an ad-heavy reason");
 }
 
 testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput();

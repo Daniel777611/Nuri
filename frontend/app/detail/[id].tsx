@@ -21,6 +21,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import {
   api,
+  type PreparedResourcePair,
   type RecommendationEventInput,
   type RecommendationEventName,
   type RecommendationFeedbackReason,
@@ -30,6 +31,14 @@ import {
   getRecommendationDetailHandoff,
   type RecommendationDetailHandoff,
 } from "@/src/recommendationDetailHandoff";
+import {
+  deliveryCategoryMeta,
+  recommendationActionSteps,
+  recommendationLanguageLabel,
+  recommendationSourceLabel,
+  recommendationStageLabel,
+  recommendationTimeLabel,
+} from "@/src/recommendationPresentation";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
@@ -49,6 +58,8 @@ const FEEDBACK_REASONS: {
   { value: "repetitive", label: "内容重复" },
   { value: "wrong_language", label: "中文或语言不好" },
   { value: "source_not_useful", label: "来源不适合" },
+  { value: "too_long", label: "内容太长" },
+  { value: "too_commercial", label: "广告太多" },
   { value: "not_now", label: "现在不需要" },
 ];
 
@@ -68,6 +79,9 @@ type LearningResource = {
   kind: "article" | "video";
   title: string;
   publisher: string;
+  author?: string;
+  updated_at?: string;
+  estimated_minutes?: number;
   language?: string;
   spoken_language?: "mandarin" | "english" | "not_applicable";
   spoken_language_evidence?: string;
@@ -183,6 +197,59 @@ function isReadyDetail(
   );
 }
 
+function preparedAlternatePairs(
+  detail: any,
+  category: ResourceContentCategory,
+): PreparedResourcePair[] {
+  if (!Array.isArray(detail?.alternate_resource_pairs)) return [];
+  return detail.alternate_resource_pairs.filter((pair: PreparedResourcePair) => {
+    if (!pair || typeof pair.pair_id !== "string" || !Array.isArray(pair.resources)) {
+      return false;
+    }
+    if (pair.resources.length !== 2) return false;
+    return (["article", "video"] as const).every((kind) =>
+      pair.resources.some(
+        (resource) =>
+          resource.kind === kind &&
+          resource.content_category === category &&
+          typeof resource.url === "string" &&
+          /^https:\/\//i.test(resource.url),
+      ),
+    );
+  });
+}
+
+function resourceUpdateLabel(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.trim();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")} 更新`;
+}
+
+function resourcePairPresentation(resources: LearningResource[]) {
+  const article = resources.find((resource) => resource.kind === "article");
+  const video = resources.find((resource) => resource.kind === "video");
+  const totalMinutes = resources.reduce((total, resource) => {
+    const minutes = Number(resource.estimated_minutes || 0);
+    return total + (Number.isFinite(minutes) && minutes > 0 ? minutes : 0);
+  }, 0);
+  const languages = [article?.language, video?.language]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim());
+  return {
+    ...(article?.title ? { title: article.title } : {}),
+    ...(article?.publisher
+      ? { publisher: article.publisher, source_label: article.publisher }
+      : {}),
+    ...(article?.description ? { summary: article.description } : {}),
+    language_label: [...new Set(languages)].join(" · ") || undefined,
+    estimated_time_label:
+      totalMinutes > 0 ? `约 ${Math.ceil(totalMinutes)} 分钟` : "约 5–10 分钟",
+  };
+}
+
 function isUsableGuide(detail: any): boolean {
   return Boolean(
     detail &&
@@ -265,6 +332,7 @@ export default function Detail() {
   const dwellStartedAt = useRef<number | null>(null);
   const dwellSent = useRef(false);
   const contentRequestId = useRef(0);
+  const resourceSwitchInFlight = useRef(false);
   const detailIdentity = useRef("");
   const detailViewTracked = useRef(false);
   const dwellContext = useRef<Omit<RecommendationEventInput, "event" | "duration_ms">>({});
@@ -611,7 +679,7 @@ export default function Detail() {
       !card ||
       !id ||
       resourceRefreshState !== "idle" ||
-      !card.refresh_available
+      resourceSwitchInFlight.current
     ) {
       return;
     }
@@ -629,9 +697,87 @@ export default function Detail() {
       : [];
     if (currentResources.length < 2) return;
 
+    const [nextPreparedPair, ...remainingPreparedPairs] = preparedAlternatePairs(
+      card,
+      activeCategory,
+    );
+    if (nextPreparedPair) {
+      const nextResources = nextPreparedPair.resources.map((resource) => ({
+        ...resource,
+        url: String(resource.url || ""),
+      })) as LearningResource[];
+      const nextPresentation = resourcePairPresentation(nextResources);
+      const requestId = ++contentRequestId.current;
+      resourceSwitchInFlight.current = true;
+      setResourceRefreshState("loading");
+      setCard((current: any) =>
+        current
+          ? {
+              ...current,
+              ...nextPresentation,
+              active_pair_id: nextPreparedPair.pair_id,
+              resources: nextResources,
+              alternate_resource_pairs: remainingPreparedPairs,
+              alternate_count: remainingPreparedPairs.length,
+              refresh_available:
+                remainingPreparedPairs.length > 0 || current.refresh_available === true,
+            }
+          : current,
+      );
+      setContentFeedback(null);
+      setFeedbackReason(null);
+      setFeedbackReasonOpen(false);
+      // The visual swap is synchronous. Persist the exact pair in the
+      // background so reopening the detail keeps the user's selection; a
+      // network failure never rolls the visible pair back.
+      showToast("已为你换好一篇文章和一个视频");
+      try {
+        const persisted: any = await api.getNextResourcePair(
+          id as string,
+          sessionId,
+          contextCreatedAt,
+          recommendationId,
+          activeCategory,
+          currentResources.map((resource) => resource.id),
+          nextPreparedPair.pair_id,
+        );
+        if (contentRequestId.current === requestId) {
+          const persistedAlternates = preparedAlternatePairs(
+            persisted,
+            activeCategory,
+          );
+          setCard((current: any) =>
+            current
+              ? {
+                  ...current,
+                  active_pair_id:
+                    persisted?.active_pair_id || nextPreparedPair.pair_id,
+                  alternate_resource_pairs: persistedAlternates,
+                  alternate_count: persistedAlternates.length,
+                  refresh_available: persisted?.has_more !== false,
+                }
+              : current,
+          );
+        }
+      } catch {
+        trackRecommendation("content_refresh", {
+          locale: card?.preferred_locale || undefined,
+          content_category: activeCategory,
+        }).catch(() => {});
+        showToast("内容已切换，但暂时没有同步到其他设备");
+      } finally {
+        resourceSwitchInFlight.current = false;
+        if (contentRequestId.current === requestId) {
+          setResourceRefreshState("idle");
+        }
+      }
+      return;
+    }
+
     // Invalidates an older explicit refresh so it can never overwrite the
     // user's latest requested resource pair.
     const requestId = ++contentRequestId.current;
+    resourceSwitchInFlight.current = true;
     setResourceRefreshState("loading");
     try {
       const result: any = await api.getNextResourcePair(
@@ -661,12 +807,15 @@ export default function Detail() {
         nextArticle &&
         nextVideo
       ) {
+        const nextPair = [nextArticle, nextVideo];
+        const nextPresentation = resourcePairPresentation(nextPair);
         setCard((current: any) =>
           current
             ? {
                 ...current,
                 ...result,
-                resources: [nextArticle, nextVideo],
+                ...nextPresentation,
+                resources: nextPair,
                 refresh_available: result.has_more !== false,
               }
             : current,
@@ -690,6 +839,8 @@ export default function Detail() {
       if (contentRequestId.current !== requestId) return;
       setResourceRefreshState("idle");
       showToast("暂时没能换新内容，请稍后再试");
+    } finally {
+      resourceSwitchInFlight.current = false;
     }
   };
 
@@ -779,6 +930,7 @@ export default function Detail() {
     const visibleResources = (["article", "video"] as const)
       .map((kind) => categoryResources.find((resource) => resource.kind === kind))
       .filter((resource): resource is LearningResource => Boolean(resource));
+    const queuedAlternatePairs = preparedAlternatePairs(card, activeCategory);
     const resourcePairComplete =
       card.resource_readiness === "ready" &&
       card.resource_pair_complete === true &&
@@ -789,6 +941,13 @@ export default function Detail() {
         card.resource_readiness === "retryable");
     const activeResourceLocaleLabel =
       RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言";
+    const deliveryMeta = deliveryCategoryMeta(activeCategory);
+    const sourceLabel = recommendationSourceLabel(card);
+    const languageLabel = recommendationLanguageLabel(card);
+    const estimatedTimeLabel = recommendationTimeLabel(card);
+    const stageLabel = recommendationStageLabel(card);
+    const actionSteps = recommendationActionSteps(card);
+    const guideText = card.guide || card.body;
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -807,13 +966,25 @@ export default function Detail() {
               { color: TAG_FG[card.type] || TAG_FG.tip },
             ]}
           >
-            {card.type_label || "育儿精选"}
+            {deliveryMeta.label}
           </Text>
         </View>
-        <Text style={styles.title}>{card.title}</Text>
-        {card.publisher ? (
-          <Text style={styles.publisher}>内容导读：{card.publisher}</Text>
-        ) : null}
+        <Text style={styles.title}>{card.delivery_title || card.title}</Text>
+        <View style={styles.deliverySummary} testID="detail-delivery-summary">
+          <View style={styles.deliverySourceRow}>
+            <Ionicons name={deliveryMeta.icon} size={16} color="#4F4B9C" />
+            <Text style={styles.deliverySourceText} numberOfLines={2}>
+              来源：{sourceLabel}
+            </Text>
+          </View>
+          <View style={styles.deliveryMetaChips}>
+            {[languageLabel, estimatedTimeLabel, stageLabel, "内容已准备好"].map((label) => (
+              <View key={label} style={styles.deliveryMetaChip}>
+                <Text style={styles.deliveryMetaChipText}>{label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
 
         {card.personalization_reason ? (
           <View style={styles.reasonCard} testID="detail-personalization-reason">
@@ -837,11 +1008,27 @@ export default function Detail() {
         ) : null}
 
         {card.summary ? <Text style={styles.lead}>{card.summary}</Text> : null}
-        {card.body ? (
+        {guideText ? (
           <>
             <Text style={styles.sectionTitle}>NURI 内容导读</Text>
-            <Text style={styles.body}>{card.body}</Text>
+            <Text style={styles.body}>{guideText}</Text>
           </>
+        ) : null}
+
+        {actionSteps.length > 0 ? (
+          <View style={styles.actionsSection} testID="detail-action-steps">
+            <Text style={styles.sectionTitle}>今天可以先做</Text>
+            <View style={styles.actionsCard}>
+              {actionSteps.map((action, index) => (
+                <View key={`${index}:${action}`} style={styles.actionRow}>
+                  <View style={styles.actionNumber}>
+                    <Text style={styles.actionNumberText}>{index + 1}</Text>
+                  </View>
+                  <Text style={styles.actionText}>{action}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
         ) : null}
 
         {resources.length || card.research_status || resourcePreparationPending ? (
@@ -850,7 +1037,9 @@ export default function Detail() {
               <Text style={[styles.sectionTitle, styles.resourcesTitle]}>
                 推荐给你的文章与视频
               </Text>
-              {(card.refresh_available || resourceRefreshState === "exhausted") &&
+              {(card.refresh_available ||
+                queuedAlternatePairs.length > 0 ||
+                resourceRefreshState === "exhausted") &&
               resourcePairComplete ? (
                 <Pressable
                   onPress={refreshResourcePair}
@@ -895,7 +1084,9 @@ export default function Detail() {
                       ? "正在换一组…"
                       : resourceRefreshState === "exhausted"
                         ? "暂无更多"
-                        : "换一组内容"}
+                        : queuedAlternatePairs.length > 0
+                          ? `换一个 · 还有 ${queuedAlternatePairs.length} 组`
+                          : "换一个"}
                   </Text>
                 </Pressable>
               ) : null}
@@ -1082,9 +1273,21 @@ export default function Detail() {
                         {resource.language ? (
                           <Text style={styles.resourceLanguage}>{resource.language}</Text>
                         ) : null}
+                        {resource.estimated_minutes ? (
+                          <Text style={styles.resourceLanguage}>
+                            约 {Math.ceil(resource.estimated_minutes)} 分钟
+                          </Text>
+                        ) : null}
                       </View>
                       <Text style={styles.resourceTitle}>{resource.title}</Text>
                       <Text style={styles.resourcePublisher}>{resource.publisher}</Text>
+                      {resource.author || resource.updated_at ? (
+                        <Text style={styles.resourceByline}>
+                          {[resource.author, resourceUpdateLabel(resource.updated_at)]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </Text>
+                      ) : null}
                       {resource.description ? (
                         <Text style={styles.resourceDescription}>{resource.description}</Text>
                       ) : null}
@@ -1430,6 +1633,46 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
+  deliverySummary: {
+    marginTop: spacing.md,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: "#D8D2F2",
+    borderRadius: radius.md,
+    backgroundColor: "#F7F5FF",
+  },
+  deliverySourceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  deliverySourceText: {
+    flex: 1,
+    fontSize: type.sm,
+    lineHeight: 19,
+    color: colors.onSurfaceSecondary,
+    fontWeight: "700",
+  },
+  deliveryMetaChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  deliveryMetaChip: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E1F2",
+  },
+  deliveryMetaChipText: {
+    fontSize: 11,
+    color: "#4F4B9C",
+    fontWeight: "600",
+  },
   reasonCard: {
     flexDirection: "row",
     gap: spacing.sm,
@@ -1471,6 +1714,39 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   body: { fontSize: type.lg, color: colors.onSurfaceSecondary, lineHeight: 27 },
+  actionsSection: { marginTop: spacing.xl },
+  actionsCard: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: "#F0F6F3",
+    borderWidth: 1,
+    borderColor: "#D8E8DF",
+  },
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+  },
+  actionNumber: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#DDECE4",
+  },
+  actionNumberText: {
+    color: "#2F6F4D",
+    fontSize: type.sm,
+    fontWeight: "800",
+  },
+  actionText: {
+    flex: 1,
+    fontSize: type.base,
+    lineHeight: 22,
+    color: colors.onSurfaceSecondary,
+  },
   resourcesSection: { marginTop: spacing.xl },
   resourcesTitleRow: {
     minHeight: 44,
@@ -1719,6 +1995,12 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   resourcePublisher: { fontSize: type.sm, color: colors.muted, marginTop: 3 },
+  resourceByline: {
+    fontSize: 11,
+    lineHeight: 17,
+    color: colors.muted,
+    marginTop: 2,
+  },
   resourceDescription: {
     fontSize: type.sm,
     lineHeight: 18,

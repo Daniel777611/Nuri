@@ -55,8 +55,11 @@ try:
     from backend.content_library import (
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
+        US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
+        resource_parent_org_id as policy_resource_parent_org_id,
+        source_parent_org_id,
     )
     from backend.content_research import (
         CONTENT_CATEGORIES,
@@ -73,8 +76,11 @@ try:
         carry_prepared_resource_state,
         parse_snapshot,
         prepared_resource_pair,
+        prepared_resource_pairs,
         serialize_snapshot,
+        snapshot_with_active_resource_pair,
         snapshot_with_prepared_resource_pair,
+        snapshot_with_prepared_resource_pairs,
         snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
@@ -95,8 +101,11 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
+        US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
+        resource_parent_org_id as policy_resource_parent_org_id,
+        source_parent_org_id,
     )
     from content_research import (  # type: ignore
         CONTENT_CATEGORIES,
@@ -113,8 +122,11 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         carry_prepared_resource_state,
         parse_snapshot,
         prepared_resource_pair,
+        prepared_resource_pairs,
         serialize_snapshot,
+        snapshot_with_active_resource_pair,
         snapshot_with_prepared_resource_pair,
+        snapshot_with_prepared_resource_pairs,
         snapshot_with_resource_readiness,
         snapshot_storage_key,
         snapshot_storage_prefix,
@@ -679,6 +691,7 @@ def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
     """Expose a prepared, binding-validated pair on its matching home card."""
 
     pair = prepared_resource_pair(snapshot)
+    pair_pool = prepared_resource_pairs(snapshot)
     readiness = str(snapshot.get("resource_readiness") or "")
     if pair:
         article = next(resource for resource in pair if resource.get("kind") == "article")
@@ -690,10 +703,14 @@ def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
             str(snapshot.get("preferred_locale") or "zh-CN"),
         )
         card["resources"] = pair
+        card["active_pair_id"] = pair_pool[0]["pair_id"] if pair_pool else None
+        card["alternate_resource_pairs"] = pair_pool[1:]
+        card["alternate_count"] = max(0, len(pair_pool) - 1)
         card["title"] = article.get("title") or card.get("title")
         card["summary"] = article.get("description") or card.get("summary")
         card["publisher"] = article.get("publisher") or card.get("publisher")
         card["headline_source"] = "prepared_article"
+        _decorate_delivery_card(card, pair)
         return
     if card.get("resource_readiness") == "ready" and card.get("resource_pair_complete"):
         card["prepared_content_set_id"] = None
@@ -1666,6 +1683,8 @@ class RecommendationEventIn(BaseModel):
             "wrong_language",
             "source_not_useful",
             "not_now",
+            "too_long",
+            "too_commercial",
         ]
     ] = None
 
@@ -4979,6 +4998,213 @@ _CATEGORY_CARD_META = {
 }
 
 
+_DELIVERY_ACTION_STEPS = {
+    "authority": [
+        "先看与孩子当前阶段对应的观察点",
+        "用一周时间记录最常出现的行为和变化",
+        "如果持续担心，带着记录咨询儿科或儿童发展专业人员",
+    ],
+    "featured": [
+        "今天选择一个本来就会发生的日常场景",
+        "照着内容示范练习五分钟，不额外增加复杂任务",
+        "观察孩子的回应，明天只调整一个小地方",
+    ],
+    "case": [
+        "先找出案例与你家处境最相似的一点",
+        "只借鉴一个低风险做法试一周",
+        "根据孩子反应调整，不把单个家庭经验当作诊断或保证",
+    ],
+}
+
+
+def _resource_parent_org_id(resource: dict) -> str:
+    """Return a stable organization key for package-level diversity."""
+
+    # Never trust an externally supplied ``parent_org_id``. The shared source
+    # policy derives identity from registered destination/evidence domains,
+    # then reviewed publisher aliases or a deterministic host/creator fallback.
+    return policy_resource_parent_org_id(resource)
+
+
+def _resource_with_delivery_metadata(resource: dict) -> dict:
+    """Add bounded presentation metadata without inventing source facts."""
+
+    value = dict(resource)
+    value["parent_org_id"] = _resource_parent_org_id(value)
+    value.setdefault("author", "")
+    value.setdefault("updated_at", "")
+    if not isinstance(value.get("estimated_minutes"), int):
+        value["estimated_minutes"] = 4 if value.get("kind") == "article" else 5
+    return value
+
+
+def _attach_featured_evidence_anchor(resources: list[dict]) -> list[dict]:
+    """Bind every featured item to the vetted authority lane in its package."""
+
+    normalized = [_resource_with_delivery_metadata(resource) for resource in resources]
+    authority_article = next(
+        (
+            resource
+            for resource in normalized
+            if resource.get("content_category") == "authority"
+            and resource.get("kind") == "article"
+        ),
+        None,
+    )
+    if not authority_article:
+        return normalized
+    anchor = {
+        "title": str(authority_article.get("title") or "")[:180],
+        "publisher": str(authority_article.get("publisher") or "")[:140],
+        "url": str(authority_article.get("url") or ""),
+        "source_tier": "authority",
+    }
+    for resource in normalized:
+        if resource.get("content_category") == "featured":
+            resource["evidence_anchor"] = dict(anchor)
+    return normalized
+
+
+def _category_resource_pair_options(
+    resources: list[dict],
+    content_category: str,
+    *,
+    excluded_primary_orgs: Optional[set[str]] = None,
+    max_pairs: int = 3,
+) -> list[list[dict]]:
+    """Build a primary pair and instant alternatives from a validated pool."""
+
+    matching = [
+        _resource_with_delivery_metadata(resource)
+        for resource in resources
+        if str(resource.get("content_category") or "") == content_category
+    ]
+    articles = [resource for resource in matching if resource.get("kind") == "article"]
+    videos = [resource for resource in matching if resource.get("kind") == "video"]
+    if content_category == "authority":
+        articles.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
+        videos.sort(key=lambda resource: 0 if _is_us_authority_resource(resource) else 1)
+    candidates: list[list[dict]] = []
+    seen: set[tuple[str, str]] = set()
+    for article in articles:
+        for video in videos:
+            signature = (
+                str(article.get("url") or ""),
+                str(video.get("url") or ""),
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            candidates.append([article, video])
+    excluded = excluded_primary_orgs or set()
+    candidates.sort(
+        key=lambda pair: (
+            _resource_parent_org_id(pair[0]) in excluded,
+            pair[0].get("research_source") != "openai_web_search",
+            pair[1].get("research_source") != "openai_web_search",
+        )
+    )
+    if not candidates:
+        return []
+    # Pick a strong primary, then maximize *both* format changes.  With two
+    # articles and two videos this yields A1+V1, A2+V2 before A1+V2, so a
+    # parent asking for another group does not immediately see half the same
+    # content again.  Only a genuinely sparse pool is allowed to reuse one
+    # side of the pair.
+    selected = [candidates.pop(0)]
+    used_article_urls = {str(selected[0][0].get("url") or "")}
+    used_video_urls = {str(selected[0][1].get("url") or "")}
+    while candidates and len(selected) < max(1, max_pairs):
+        candidates.sort(
+            key=lambda pair: (
+                str(pair[0].get("url") or "") not in used_article_urls
+                and str(pair[1].get("url") or "") not in used_video_urls,
+                str(pair[0].get("url") or "") not in used_article_urls,
+                str(pair[1].get("url") or "") not in used_video_urls,
+                pair[0].get("research_source") == "openai_web_search",
+                pair[1].get("research_source") == "openai_web_search",
+            ),
+            reverse=True,
+        )
+        chosen = candidates.pop(0)
+        selected.append(chosen)
+        used_article_urls.add(str(chosen[0].get("url") or ""))
+        used_video_urls.add(str(chosen[1].get("url") or ""))
+    return selected
+
+
+def _compact_stage_label(card: dict) -> str:
+    raw = str(card.get("child_age_context") or "").strip()
+    if "：" in raw:
+        raw = raw.split("：", 1)[1]
+    return raw[:80] or "当前发展阶段"
+
+
+def _delivery_title(card: dict, content_category: str, resources: list[dict]) -> str:
+    locale = str(card.get("preferred_locale") or "zh-CN")
+    article = next(
+        (resource for resource in resources if resource.get("kind") == "article"),
+        {},
+    )
+    topic = str(card.get("topic_label") or card.get("topic") or "这个问题").strip()
+    if locale == "en":
+        source_title = str(article.get("title") or topic).strip()
+        prefixes = {
+            "authority": "What the evidence says",
+            "featured": "A practical method to try today",
+            "case": "How a similar family approached it",
+        }
+        return f"{prefixes[content_category]}: {source_title}"[:180]
+    stage = _compact_stage_label(card)
+    templates = {
+        "authority": f"{stage}的“{topic}”：哪些进展值得观察",
+        "featured": f"今天就能做：把“{topic}”变成一个日常小练习",
+        "case": f"相似家庭如何一步步面对“{topic}”",
+    }
+    return templates[content_category][:180]
+
+
+def _decorate_delivery_card(card: dict, resources: list[dict]) -> None:
+    """Apply the user-facing learning-capsule contract to one card."""
+
+    category = str(card.get("content_category") or "")
+    if category not in CONTENT_CATEGORIES:
+        return
+    pair = [_resource_with_delivery_metadata(resource) for resource in resources]
+    article = next((resource for resource in pair if resource.get("kind") == "article"), {})
+    video = next((resource for resource in pair if resource.get("kind") == "video"), {})
+    card["delivery_title"] = _delivery_title(card, category, pair)
+    card["source_label"] = str(article.get("publisher") or card.get("publisher") or "")
+    article_language = str(article.get("language") or "").strip()
+    video_language = str(video.get("language") or "").strip()
+    card["language_label"] = " · ".join(
+        value for value in (article_language, video_language) if value
+    )[:120]
+    estimated_minutes = sum(
+        int(resource.get("estimated_minutes") or 0) for resource in pair
+    )
+    card["estimated_time_label"] = (
+        f"约 {estimated_minutes} 分钟" if estimated_minutes else "约 5–10 分钟"
+    )
+    card["applicable_stage"] = _compact_stage_label(card)
+    focus = str(
+        card.get("recommendation_focus")
+        or card.get("topic_label")
+        or card.get("topic")
+        or "这个问题"
+    ).strip()
+    category_intro = {
+        "authority": "先用权威依据判断当前阶段值得观察什么，再决定是否需要进一步咨询。",
+        "featured": "这组内容把可靠结论转成今天就能尝试的做法，并优先照顾你的现实时间限制。",
+        "case": "这个真实家庭案例用于理解过程和调整方法，不代表普遍效果或医学建议。",
+    }[category]
+    card["guide"] = (
+        f"这组内容围绕你最近提到的“{focus[:80]}”，并结合"
+        f"{_compact_stage_label(card)}筛选。{category_intro}"
+    )[:300]
+    card["action_steps"] = list(_DELIVERY_ACTION_STEPS[category])
+
+
 def _resource_blueprint(
     content_category: Optional[str] = None,
 ) -> dict[str, list[str]]:
@@ -5022,17 +5248,6 @@ def _select_category_resource_pair(
     return pair
 
 
-_US_AUTHORITY_DOMAIN_ROOTS = frozenset(
-    {
-        "cdc.gov",
-        "nih.gov",
-        "aap.org",
-        "aappublications.org",
-        "pediatrics.org",
-        "healthychildren.org",
-        "mayoclinic.org",
-    }
-)
 _YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 )
@@ -5070,11 +5285,7 @@ def _is_direct_us_authority_url(url: object) -> bool:
     host = _safe_https_hostname(url)
     if not host or host in _YOUTUBE_HOSTS:
         return False
-    return bool(
-        host.endswith(".gov")
-        or host.endswith(".edu")
-        or any(host == root or host.endswith(f".{root}") for root in _US_AUTHORITY_DOMAIN_ROOTS)
-    )
+    return source_parent_org_id(url) in US_AUTHORITY_SOURCE_PARENT_ORG_IDS
 
 
 def _is_us_authority_resource(resource: dict) -> bool:
@@ -5139,6 +5350,7 @@ def _category_feed_card(
     """Present one ranked topic as a clearly labelled editorial-lane card."""
 
     card = dict(base_card)
+    card["preferred_locale"] = locale
     meta = _CATEGORY_CARD_META[content_category]
     library_resources = LEARNING_CONTENT_BY_ID.get(
         str(base_card.get("id") or ""), {}
@@ -5188,6 +5400,7 @@ def _category_feed_card(
         card["summary"] = article.get("description") or card.get("summary")
         card["publisher"] = article.get("publisher") or card.get("publisher")
         card["headline_source"] = "reviewed_article"
+    _decorate_delivery_card(card, pair)
     return card
 
 
@@ -5339,6 +5552,7 @@ def _prepare_response_items(snapshots: list[dict]) -> list[dict]:
     items: list[dict] = []
     for snapshot in snapshots:
         pair = prepared_resource_pair(snapshot)
+        pair_pool = prepared_resource_pairs(snapshot)
         readiness = "ready" if pair else str(
             snapshot.get("resource_readiness") or "retryable"
         )
@@ -5354,6 +5568,9 @@ def _prepare_response_items(snapshots: list[dict]) -> list[dict]:
                 snapshot.get("prepared_content_set_id") if pair else None
             ),
             "resources": pair or [],
+            "active_pair_id": pair_pool[0]["pair_id"] if pair_pool else None,
+            "alternate_resource_pairs": pair_pool[1:],
+            "alternate_count": max(0, len(pair_pool) - 1),
             "research_status": "ready" if pair else readiness,
         }
         if pair:
@@ -5362,8 +5579,44 @@ def _prepare_response_items(snapshots: list[dict]) -> list[dict]:
             )
             item["title"] = article.get("title")
             item["publisher"] = article.get("publisher")
+            item["source_label"] = article.get("publisher")
+            item["child_age_context"] = snapshot.get("child_age_context") or ""
+            item["preferred_locale"] = (
+                snapshot.get("preferred_locale") or "zh-CN"
+            )
+            item["topic_label"] = snapshot.get("recommendation_focus") or "这个问题"
+            item["recommendation_focus"] = snapshot.get("recommendation_focus") or ""
+            _decorate_delivery_card(item, pair)
         items.append(item)
     return items
+
+
+def _prepare_retry_or_previous_payload(snapshots: list[dict]) -> dict:
+    """Keep a complete previous set published while its upgrade is retryable."""
+
+    pairs = [prepared_resource_pair(snapshot) for snapshot in snapshots]
+    set_ids = {
+        str(snapshot.get("prepared_content_set_id") or "")
+        for snapshot, pair in zip(snapshots, pairs)
+        if pair
+    }
+    if all(pairs) and len(set_ids) == 1:
+        previous_set_id = next(iter(set_ids))
+        return {
+            "resource_readiness": "ready",
+            "prepared_content_set_id": previous_set_id,
+            "recommendation_set_id": previous_set_id,
+            "publication_state": "published",
+            "upgrade_state": "preparing",
+            "items": _prepare_response_items(snapshots),
+        }
+    return {
+        "resource_readiness": "retryable",
+        "prepared_content_set_id": None,
+        "recommendation_set_id": None,
+        "publication_state": "preparing",
+        "items": _prepare_response_items(snapshots),
+    }
 
 
 async def _mark_prepare_retryable(uid: str, snapshots: list[dict]) -> list[dict]:
@@ -5687,10 +5940,17 @@ async def prepare_feed_research(
         for snapshot, pair in zip(snapshots, ready_pairs)
         if pair
     }
-    if all(ready_pairs) and len(ready_set_ids) == 1:
+    ready_pair_pools = [prepared_resource_pairs(snapshot) for snapshot in snapshots]
+    if (
+        all(ready_pairs)
+        and len(ready_set_ids) == 1
+        and all(len(pair_pool) >= 2 for pair_pool in ready_pair_pools)
+    ):
         return {
             "resource_readiness": "ready",
             "prepared_content_set_id": next(iter(ready_set_ids)),
+            "recommendation_set_id": next(iter(ready_set_ids)),
+            "publication_state": "published",
             "items": _prepare_response_items(snapshots),
         }
 
@@ -5712,10 +5972,19 @@ async def prepare_feed_research(
         for snapshot, pair in zip(snapshots, persisted_ready_pairs)
         if pair
     }
-    if all(persisted_ready_pairs) and len(persisted_ready_ids) == 1:
+    persisted_pair_pools = [
+        prepared_resource_pairs(snapshot) for snapshot in snapshots
+    ]
+    if (
+        all(persisted_ready_pairs)
+        and len(persisted_ready_ids) == 1
+        and all(len(pair_pool) >= 2 for pair_pool in persisted_pair_pools)
+    ):
         return {
             "resource_readiness": "ready",
             "prepared_content_set_id": next(iter(persisted_ready_ids)),
+            "recommendation_set_id": next(iter(persisted_ready_ids)),
+            "publication_state": "published",
             "items": _prepare_response_items(snapshots),
         }
     first = snapshots[0]
@@ -5742,11 +6011,7 @@ async def prepare_feed_research(
         or not content_research_oai
     ):
         retryable = await _mark_prepare_retryable(uid, snapshots)
-        return {
-            "resource_readiness": "retryable",
-            "prepared_content_set_id": None,
-            "items": _prepare_response_items(retryable),
-        }
+        return _prepare_retry_or_previous_payload(retryable)
 
     behavior_events = await _db_get_recommendation_events(uid)
     ranked, _ = _rank_learning_content(
@@ -5764,11 +6029,7 @@ async def prepare_feed_research(
         card = _restore_dynamic_research_card_from_snapshot(first, include_detail=True)
     if not card:
         retryable = await _mark_prepare_retryable(uid, snapshots)
-        return {
-            "resource_readiness": "retryable",
-            "prepared_content_set_id": None,
-            "items": _prepare_response_items(retryable),
-        }
+        return _prepare_retry_or_previous_payload(retryable)
     if context.get("child_age_context"):
         card["child_age_context"] = context["child_age_context"]
     for field in (
@@ -5793,7 +6054,9 @@ async def prepare_feed_research(
         # already returned above without reaching this provider boundary.
         force=True,
     )
-    resources = list((research or {}).get("resources") or [])
+    resources = _attach_featured_evidence_anchor(
+        list((research or {}).get("resources") or [])
+    )
     pairs_by_category = {
         category: _select_category_resource_pair(resources, category)
         for category in CONTENT_CATEGORIES
@@ -5847,7 +6110,7 @@ async def prepare_feed_research(
         )
         if reviewed_complete:
             research = reviewed_research
-            resources = reviewed_resources
+            resources = _attach_featured_evidence_anchor(reviewed_resources)
             pairs_by_category = reviewed_pairs
             complete_bundle = True
             reviewed_fallback_used = True
@@ -5895,17 +6158,104 @@ async def prepare_feed_research(
             flush=True,
         )
         retryable = await _mark_prepare_retryable(uid, snapshots)
-        return {
-            "resource_readiness": "retryable",
-            "prepared_content_set_id": None,
-            "items": _prepare_response_items(retryable),
-        }
+        return _prepare_retry_or_previous_payload(retryable)
 
-    content_set_id = _prepared_content_set_id(snapshots, resources)
+    # The live bundle provides the primary decision.  The reviewed pool may
+    # add already-vetted alternatives for the exact same topic, age and
+    # language.  It never replaces a live primary with an unrelated fallback.
+    option_pool = list(resources)
+    if not card.get("is_dynamic_research_card"):
+        reviewed_option_pool = _reviewed_resources_for_context(
+            list(card.get("resources") or []),
+            str(first.get("preferred_locale") or "zh-CN"),
+            card,
+        )
+        seen_option_urls = {str(resource.get("url") or "") for resource in option_pool}
+        option_pool.extend(
+            resource
+            for resource in reviewed_option_pool
+            if str(resource.get("url") or "") not in seen_option_urls
+        )
+    option_pool = _attach_featured_evidence_anchor(option_pool)
+
+    def build_pair_options(pool: list[dict]) -> dict[str, list[list[dict]]]:
+        options: dict[str, list[list[dict]]] = {}
+        used_primary_orgs: set[str] = set()
+        for category in CONTENT_CATEGORIES:
+            category_options = _category_resource_pair_options(
+                pool,
+                category,
+                excluded_primary_orgs=used_primary_orgs,
+            )
+            options[category] = category_options
+            if category_options:
+                used_primary_orgs.add(
+                    _resource_parent_org_id(category_options[0][0])
+                )
+        return options
+
+    pair_options_by_category = build_pair_options(option_pool)
+
+    # A novel topic has no reviewed alternates.  Search up to two bounded
+    # reserve bundles in the background so "换一个" normally remains an
+    # in-memory/snapshot switch instead of another user-visible wait.
+    if (
+        not reviewed_fallback_used
+        and any(len(options) < 2 for options in pair_options_by_category.values())
+    ):
+        excluded_option_urls = [
+            str(resource.get("url") or "") for resource in option_pool
+        ]
+        for _reserve_attempt in range(2):
+            try:
+                reserve = await _research_card_detail_resources(
+                    card=card,
+                    context=context,
+                    uid=uid,
+                    force=True,
+                    extra_excluded_urls=excluded_option_urls,
+                )
+            except Exception as exc:
+                # Reserve preparation is best effort.  It must never roll back
+                # the already complete primary six-slot bundle.
+                print(
+                    f"[warn] reserve content preparation stopped: {type(exc).__name__}"
+                )
+                break
+            reserve_resources = list((reserve or {}).get("resources") or [])
+            if not reserve_resources:
+                break
+            known_urls = {
+                str(resource.get("url") or "") for resource in option_pool
+            }
+            additions = [
+                resource
+                for resource in reserve_resources
+                if str(resource.get("url") or "") not in known_urls
+            ]
+            if not additions:
+                break
+            option_pool.extend(additions)
+            excluded_option_urls.extend(
+                str(resource.get("url") or "") for resource in additions
+            )
+            option_pool = _attach_featured_evidence_anchor(option_pool)
+            pair_options_by_category = build_pair_options(option_pool)
+            if all(
+                len(options) >= 2
+                for options in pair_options_by_category.values()
+            ):
+                break
+
+    if any(not options for options in pair_options_by_category.values()):
+        retryable = await _mark_prepare_retryable(uid, snapshots)
+        return _prepare_retry_or_previous_payload(retryable)
+
+    content_set_id = _prepared_content_set_id(snapshots, option_pool)
     prepared = [
-        snapshot_with_prepared_resource_pair(
+        snapshot_with_prepared_resource_pairs(
             snapshot,
-            pairs_by_category[str(snapshot["content_category"])],
+            pair_options_by_category[str(snapshot["content_category"])],
             content_set_id=content_set_id,
         )
         for snapshot in snapshots
@@ -5919,6 +6269,8 @@ async def prepare_feed_research(
     return {
         "resource_readiness": "ready",
         "prepared_content_set_id": content_set_id,
+        "recommendation_set_id": content_set_id,
+        "publication_state": "published",
         "research_status": (
             "reviewed_fallback" if reviewed_fallback_used else "ready"
         ),
@@ -6155,6 +6507,7 @@ async def get_card_detail(
         )
         prepared_pair = snapshot_prepared_pair
         if prepared_pair:
+            pair_pool = prepared_resource_pairs(snapshot)
             card["resources"] = prepared_pair
             card["resource_pair_complete"] = True
             card["resource_readiness"] = "ready"
@@ -6162,6 +6515,9 @@ async def get_card_detail(
             card["prepared_content_set_id"] = snapshot.get(
                 "prepared_content_set_id"
             )
+            card["active_pair_id"] = pair_pool[0]["pair_id"] if pair_pool else None
+            card["alternate_resource_pairs"] = pair_pool[1:]
+            card["alternate_count"] = max(0, len(pair_pool) - 1)
             article = next(
                 resource
                 for resource in prepared_pair
@@ -6242,6 +6598,7 @@ async def get_card_detail(
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale
         )
+        _decorate_delivery_card(card, card["resources"])
         return card
 
     gen_cards = await _db_get_gen_cards()
@@ -6269,6 +6626,7 @@ async def get_card_research(
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     refresh: bool = False,
     exclude_resource_ids: Optional[str] = None,
+    target_pair_id: Optional[str] = None,
     uid: str = Depends(_req_uid),
 ):
     """Return a complete conversation-aware 6–9 item bundle or a safe fallback."""
@@ -6374,6 +6732,64 @@ async def get_card_research(
                 else {}
             ),
         }
+    prepared_pairs = prepared_resource_pairs(snapshot) if snapshot else []
+    if refresh and prepared_pairs:
+        if target_pair_id and not re.fullmatch(r"pair_[a-f0-9]{16}", target_pair_id):
+            raise HTTPException(422, "invalid target_pair_id")
+        selected_pair_id = target_pair_id or (
+            prepared_pairs[1]["pair_id"] if len(prepared_pairs) > 1 else ""
+        )
+        if selected_pair_id:
+            try:
+                switched = snapshot_with_active_resource_pair(
+                    snapshot,
+                    selected_pair_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(404, "prepared resource pair not found") from exc
+            if not await _db_persist_recommendation_snapshots(uid, [switched]):
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "Prepared resources could not be persisted",
+                )
+            switched_pairs = prepared_resource_pairs(switched)
+            active_resources = prepared_resource_pair(switched) or []
+            await _db_append_recommendation_events(
+                uid,
+                [
+                    _new_recommendation_event(
+                        event="content_refresh",
+                        card_id=card_id,
+                        recommendation_id=recommendation_id,
+                        content_category=str(selected_content_category or ""),
+                        locale=str(context.get("preferred_locale") or "zh-CN"),
+                    )
+                ],
+            )
+            await _record_resource_delivery(
+                uid=uid,
+                card_id=card_id,
+                recommendation_id=recommendation_id,
+                content_category=selected_content_category,
+                preferred_locale=str(context.get("preferred_locale") or "zh-CN"),
+                resources=active_resources,
+            )
+            return {
+                "resources": active_resources,
+                "content_set_id": switched.get("prepared_content_set_id"),
+                "prepared_content_set_id": switched.get("prepared_content_set_id"),
+                "active_pair_id": switched_pairs[0]["pair_id"],
+                "alternate_resource_pairs": switched_pairs[1:],
+                "alternate_count": max(0, len(switched_pairs) - 1),
+                "research_status": "ready",
+                "refresh_status": "switched_prepared",
+                "has_more": len(switched_pairs) > 1,
+                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_summary": summarize_resource_slots(
+                    active_resources,
+                    str(context.get("preferred_locale") or "zh-CN"),
+                ),
+            }
     if not context.get("external_research_allowed"):
         return {
             "research_status": "consent_required",

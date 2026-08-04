@@ -137,11 +137,23 @@ function mergePreparedCard(card: HeroCard, prepared: PreparedFeedItem | undefine
   return {
     ...card,
     title: pair.article.title,
+    delivery_title: prepared.delivery_title || card.delivery_title,
     publisher: pair.article.publisher,
+    source_label: prepared.source_label || card.source_label || pair.article.publisher,
+    language_label: prepared.language_label || card.language_label,
+    estimated_time_label:
+      prepared.estimated_time_label || card.estimated_time_label,
+    applicable_stage: prepared.applicable_stage || card.applicable_stage,
+    child_age_context: prepared.child_age_context || card.child_age_context,
+    guide: prepared.guide || card.guide,
+    action_steps: prepared.action_steps || card.action_steps,
     summary: pair.article.description || card.summary,
     resource_readiness: "ready",
     resource_pair_complete: true,
     prepared_content_set_id: prepared.prepared_content_set_id || null,
+    active_pair_id: prepared.active_pair_id || null,
+    alternate_count: prepared.alternate_count || 0,
+    alternate_resource_pairs: prepared.alternate_resource_pairs || [],
     resources: [pair.article, pair.video],
     research_status: prepared.research_status,
     resource_summary: {
@@ -220,6 +232,8 @@ export default function Home() {
   const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
   const [heroFeedState, setHeroFeedState] = useState<HeroFeedState>("loading");
   const [heroFeedRefreshing, setHeroFeedRefreshing] = useState(false);
+  const [heroPublicationState, setHeroPublicationState] =
+    useState<"idle" | "preparing">("idle");
   const [heroFeedMeta, setHeroFeedMeta] = useState<HeroFeedMeta>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
@@ -234,6 +248,7 @@ export default function Home() {
   const openingNuriChat = useRef(false);
   const preparationRetryAttempt = useRef(0);
   const preparationRetrySet = useRef("");
+  const publicationPollInFlight = useRef(false);
 
   const showToast = useCallback((m: string) => {
     setToastMsg(m);
@@ -278,6 +293,7 @@ export default function Home() {
       setHeroFeedRefreshing(true);
     } else {
       setHeroFeedRefreshing(false);
+      setHeroPublicationState("idle");
       heroCardsPresent.current = false;
       setHeroCards([]);
       setHeroFeedState("loading");
@@ -295,6 +311,17 @@ export default function Home() {
         return;
       }
       const items = Array.isArray(response?.items) ? response.items : [];
+      if (preserveExisting && response.publication_state === "preparing") {
+        // The server keeps returning the last published package while it builds
+        // the next complete three-lane set. Never replace or block that old
+        // package; a focus-aware poll below atomically picks up the new one.
+        setHeroFeedRefreshing(true);
+        setHeroPublicationState("preparing");
+        if (activeFeedRefresh.current === clientRefresh) {
+          activeFeedRefresh.current = null;
+        }
+        return;
+      }
       const categoryOrder = { authority: 0, featured: 1, case: 2 } as const;
       const validItems = items
         .filter(
@@ -337,7 +364,14 @@ export default function Home() {
       }
 
       const needsPreparation = candidateCards.some(
-        (card) => !isReadyHeroCard(card) && Boolean(card.recommendation_id),
+        (card) =>
+          Boolean(card.recommendation_id) &&
+          (!isReadyHeroCard(card) ||
+            !card.prepared_content_set_id ||
+            Math.max(
+              card.alternate_count || 0,
+              card.alternate_resource_pairs?.length || 0,
+            ) < 1),
       );
       // Prepare the complete three-lane set together. Sending only the missing
       // lane can produce a different content_set_id and mix two research runs.
@@ -366,10 +400,21 @@ export default function Home() {
               (item) =>
                 item.resource_readiness === "ready" &&
                 item.resource_pair_complete === true &&
-                Boolean(item.prepared_content_set_id),
+                Boolean(item.prepared_content_set_id) &&
+                Math.max(
+                  item.alternate_count || 0,
+                  item.alternate_resource_pairs?.length || 0,
+                ) >= 1,
             ) &&
             preparedSetIds.size === 1;
           if (!completePreparedSet) {
+            if (
+              preserveExisting &&
+              (prepared?.publication_state === "preparing" ||
+                prepared?.upgrade_state === "preparing")
+            ) {
+              setHeroPublicationState("preparing");
+            }
             console.warn("[home-feed] preparation response incomplete", {
               requestedCount: cardsToPrepare.length,
               receivedCount: preparedItems.length,
@@ -440,6 +485,7 @@ export default function Home() {
         activeFeedRefresh.current = null;
       }
       setHeroFeedRefreshing(false);
+      setHeroPublicationState("idle");
     } catch (error) {
       const status =
         error && typeof error === "object" && "status" in error
@@ -462,6 +508,21 @@ export default function Home() {
       }
       if (requestId === heroRequest.current) {
         setHeroFeedRefreshing(false);
+        if (
+          preserveExisting &&
+          heroCardsPresent.current &&
+          (status === undefined ||
+            status === 408 ||
+            status === 409 ||
+            status === 425 ||
+            status === 429 ||
+            status >= 500)
+        ) {
+          // A warm refresh always keeps the last published package usable.
+          // Retry in the background even when /feed/personalized itself does
+          // not expose publication_state (older deployments omit that field).
+          setHeroPublicationState("preparing");
+        }
         if (!preserveExisting) {
           setHeroCards([]);
           setHeroFeedState("curated");
@@ -471,6 +532,25 @@ export default function Home() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (
+      heroPublicationState !== "preparing" ||
+      !isHomeFocused ||
+      !heroCardsPresent.current
+    ) {
+      return;
+    }
+    const poll = () => {
+      if (publicationPollInFlight.current) return;
+      publicationPollInFlight.current = true;
+      void loadPersonalizedFeed({ preserveExisting: true }).finally(() => {
+        publicationPollInFlight.current = false;
+      });
+    };
+    const timer = setInterval(poll, 5000);
+    return () => clearInterval(timer);
+  }, [heroPublicationState, isHomeFocused, loadPersonalizedFeed]);
 
   useEffect(() => {
     const recommendationSetKey = heroCards
@@ -749,7 +829,11 @@ export default function Home() {
         <HeroCarousel
           width={carouselWidth}
           cards={heroCards}
-          feedState={heroFeedRefreshing ? "refreshing" : heroFeedState}
+          feedState={
+            heroFeedRefreshing || heroPublicationState === "preparing"
+              ? "refreshing"
+              : heroFeedState
+          }
           onCardPress={openHeroCard}
           onCardVisible={trackHeroImpression}
           visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}

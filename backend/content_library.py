@@ -5,7 +5,219 @@ research path.  Dynamic resources are validated separately and never mutate
 this reviewed library.
 """
 
+import re
 from urllib.parse import urlparse
+
+
+# Runtime source policy shared by dynamic research and delivery packaging.
+# Entries are intentionally institution-scoped. Consumer portals and social
+# platforms never appear here: those require an individually reviewed URL or
+# the stronger creator/case checks in ``content_research``.
+SOURCE_PARENT_ORG_DOMAINS = (
+    ("harvard_center_developing_child", ("developingchild.harvard.edu",)),
+    ("stanford_center_early_childhood", ("earlychildhood.stanford.edu", "med.stanford.edu")),
+    ("american_academy_of_pediatrics", ("healthychildren.org", "aap.org", "aappublications.org", "pediatrics.org")),
+    ("cdc", ("cdc.gov",)),
+    ("nih_hhs", ("nih.gov",)),
+    ("medlineplus", ("medlineplus.gov",)),
+    ("world_health_organization", ("who.int",)),
+    ("unicef", ("unicef.org", "unicef.cn")),
+    ("us_head_start", ("headstart.gov",)),
+    ("mayo_clinic", ("mayoclinic.org",)),
+    ("sickkids_toronto", ("aboutkidshealth.ca", "sickkids.ca")),
+    ("royal_childrens_hospital_melbourne", ("rch.org.au",)),
+    ("british_columbia_healthlinkbc", ("healthlinkbc.ca",)),
+    ("raising_children_network", ("raisingchildren.net.au",)),
+    ("cochrane", ("cochrane.org",)),
+    ("nhs_england", ("nhs.uk",)),
+    ("nemours_childrens_health", ("kidshealth.org",)),
+    ("zero_to_three", ("zerotothree.org",)),
+    ("child_mind_institute", ("childmind.org",)),
+    ("seattle_childrens", ("seattlechildrens.org",)),
+    ("pathways_foundation", ("pathways.org",)),
+    ("understood_org", ("understood.org",)),
+    ("sesame_workshop", ("sesameworkshop.org",)),
+    ("asha", ("asha.org",)),
+    ("childrens_hospital_of_philadelphia", ("chop.edu",)),
+    ("jama_network", ("jamanetwork.com",)),
+    ("bmj", ("bmj.com",)),
+    ("lancet", ("thelancet.com",)),
+    ("nature_portfolio", ("nature.com",)),
+    ("elsevier_sciencedirect", ("sciencedirect.com",)),
+    ("springer_nature", ("springer.com",)),
+    ("university_of_washington", ("washington.edu", "uw.edu")),
+    ("university_of_michigan", ("umich.edu",)),
+    ("yale_university", ("yale.edu",)),
+    ("university_of_california_berkeley", ("berkeley.edu",)),
+    ("university_of_oxford", ("ox.ac.uk",)),
+    ("university_of_cambridge", ("cam.ac.uk",)),
+    ("university_college_london", ("ucl.ac.uk",)),
+    ("university_of_toronto", ("utoronto.ca",)),
+    ("university_of_british_columbia", ("ubc.ca",)),
+    ("university_of_sydney", ("sydney.edu.au",)),
+    ("university_of_melbourne", ("unimelb.edu.au",)),
+    ("university_of_hong_kong", ("hku.hk",)),
+    ("chinese_university_hong_kong", ("cuhk.edu.hk",)),
+    ("tw_sfaa_parenting", ("sfaa.gov.tw",)),
+    ("tw_hpa", ("hpa.gov.tw",)),
+    ("tw_mohw", ("mohw.gov.tw",)),
+    ("tw_moe_familyedu", ("familyedu.moe.gov.tw",)),
+    ("ntuh", ("ntuh.gov.tw",)),
+    ("taipei_veterans", ("vghtpe.gov.tw",)),
+    ("taiwan_pediatric_association", ("pediatr.org.tw",)),
+    ("hk_fhs", ("fhs.gov.hk",)),
+    ("hk_education_bureau", ("parent.edu.hk",)),
+    ("hk_hospital_authority", ("ha.org.hk",)),
+    ("capital_childrens_medical_center", ("shouer.com.cn",)),
+    ("beijing_childrens", ("bch.com.cn", "bch-yl.54doctor.net")),
+    ("fudan_childrens", ("ch.shmu.edu.cn",)),
+    ("shanghai_childrens", ("shchildren.com.cn",)),
+    ("shanghai_childrens_medical_center", ("scmc.com.cn",)),
+    ("guangzhou_women_children", ("gzfezx.com", "gzfezx.net", "wjw.gz.gov.cn")),
+    ("shenzhen_childrens", ("szkid.com.cn",)),
+    ("shenzhen_mch", ("szmch.net.cn",)),
+    ("zhejiang_childrens", ("zjuch.cn", "ncrcch.org.cn")),
+    ("scmc_guizhou", ("scmcgz.cn",)),
+    ("new_york_state_health", ("health.ny.gov",)),
+)
+
+AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
+    {
+        org_id
+        for org_id, _domains in SOURCE_PARENT_ORG_DOMAINS
+        if org_id
+        not in {
+            "raising_children_network",
+            "nemours_childrens_health",
+            "zero_to_three",
+            "child_mind_institute",
+            "pathways_foundation",
+            "understood_org",
+            "sesame_workshop",
+        }
+    }
+)
+
+US_AUTHORITY_SOURCE_PARENT_ORG_IDS = frozenset(
+    {
+        "american_academy_of_pediatrics",
+        "cdc",
+        "nih_hhs",
+        "medlineplus",
+        "harvard_center_developing_child",
+        "stanford_center_early_childhood",
+        "us_head_start",
+        "mayo_clinic",
+        "asha",
+        "childrens_hospital_of_philadelphia",
+        "seattle_childrens",
+        "jama_network",
+        "university_of_washington",
+        "university_of_michigan",
+        "yale_university",
+        "university_of_california_berkeley",
+        "new_york_state_health",
+    }
+)
+
+FEATURED_SOURCE_PARENT_ORG_IDS = frozenset(
+    {
+        "raising_children_network",
+        "nemours_childrens_health",
+        "zero_to_three",
+        "child_mind_institute",
+        "pathways_foundation",
+        "understood_org",
+        "sesame_workshop",
+    }
+)
+
+_PARENT_ORG_PUBLISHER_ALIASES = (
+    ("american_academy_of_pediatrics", ("american academy of pediatrics", "美国儿科学会", "美國兒科學會", "aap")),
+    ("cdc", ("centers for disease control", "美国疾病控制与预防中心", "美國疾病管制與預防中心", "cdc")),
+    ("unicef", ("unicef", "联合国儿童基金会", "聯合國兒童基金會")),
+    ("world_health_organization", ("world health organization", "世界卫生组织", "世界衛生組織", "who")),
+    ("harvard_center_developing_child", ("harvard center on the developing child", "哈佛大学儿童发展中心", "哈佛大學兒童發展中心")),
+    ("raising_children_network", ("raising children network",)),
+    ("mayo_clinic", ("mayo clinic", "妙佑医疗", "妙佑醫療")),
+    ("sickkids_toronto", ("sickkids", "aboutkidshealth")),
+    ("royal_childrens_hospital_melbourne", ("royal children's hospital", "royal childrens hospital")),
+    ("tw_sfaa_parenting", ("育儿亲职网", "育兒親職網", "社会及家庭署", "社會及家庭署")),
+    ("tw_hpa", ("国民健康署", "國民健康署")),
+    ("tw_mohw", ("台湾卫生福利部", "臺灣衛生福利部", "台灣衛生福利部")),
+    ("hk_fhs", ("家庭健康服务", "家庭健康服務", "family health service")),
+)
+
+
+def _source_hostname(url: object) -> str:
+    try:
+        parsed = urlparse(str(url or ""))
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+    ):
+        return ""
+    hostname = parsed.hostname.casefold().rstrip(".")
+    return hostname[4:] if hostname.startswith("www.") else hostname
+
+
+def source_parent_org_id(url: object) -> str:
+    """Map a reviewed institution domain or subdomain to one stable org id."""
+
+    hostname = _source_hostname(url)
+    if not hostname:
+        return ""
+    for org_id, domains in SOURCE_PARENT_ORG_DOMAINS:
+        if any(hostname == domain or hostname.endswith(f".{domain}") for domain in domains):
+            return org_id
+    return ""
+
+
+def resource_parent_org_id(resource: dict) -> str:
+    """Resolve one source identity across languages, subdomains and video hosts."""
+
+    for field in (
+        "url",
+        "evidence_url",
+        "authority_evidence_url",
+        "publisher_evidence_url",
+        "source_evidence_url",
+    ):
+        if org_id := source_parent_org_id(resource.get(field)):
+            return org_id
+    publisher = re.sub(
+        r"\s+", " ", str(resource.get("publisher") or "").casefold()
+    ).strip()
+    for org_id, aliases in _PARENT_ORG_PUBLISHER_ALIASES:
+        if any(alias.casefold() in publisher for alias in aliases):
+            return org_id
+    publisher_key = re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", publisher)[:120]
+    hostname = _source_hostname(resource.get("url"))
+    social_hosts = {
+        "youtube.com",
+        "youtu.be",
+        "bilibili.com",
+        "douyin.com",
+        "iesdouyin.com",
+        "kuaishou.com",
+        "xiaohongshu.com",
+        "weibo.com",
+    }
+    if hostname in social_hosts or any(
+        hostname.endswith(f".{host}") for host in social_hosts
+    ):
+        # A shared platform is not an organization. The visible, validated
+        # creator/publisher identity is the only safe deterministic fallback.
+        return f"publisher:{publisher_key}" if publisher_key else ""
+    if hostname:
+        return f"host:{hostname}"
+    return f"publisher:{publisher_key}" if publisher_key else ""
 
 TAIWAN_AUTHORITY_RESOURCE_HOSTS = frozenset(
     {
@@ -46,15 +258,11 @@ TRUSTED_RESOURCE_HOSTS = frozenset(
         "developingchild.harvard.edu",
         "asha.org",
         "www.asha.org",
-        "youtube.com",
-        "www.youtube.com",
-        "youtu.be",
         "fhs.gov.hk",
         "www.fhs.gov.hk",
         "raisingchildren.net.au",
         "www.raisingchildren.net.au",
         *TAIWAN_AUTHORITY_RESOURCE_HOSTS,
-        *TAIWAN_CURATED_RESOURCE_HOSTS,
     }
 )
 
@@ -82,6 +290,17 @@ SUPPORTED_RESOURCE_LOCALES = frozenset({"zh-CN", "zh-TW", "en", "es"})
 CONTENT_CATEGORIES = ("authority", "featured", "case")
 
 
+def is_reviewed_exact_resource_url(url: str) -> bool:
+    """Return whether this exact destination, not merely its host, was reviewed."""
+
+    try:
+        parsed = urlparse(url)
+    except (TypeError, ValueError):
+        return False
+    normalized_url = parsed._replace(fragment="").geturl().rstrip("/")
+    return parsed.scheme == "https" and normalized_url in REVIEWED_EXACT_RESOURCE_URLS
+
+
 def is_trusted_resource_url(url: str) -> bool:
     """Return True only for reviewed HTTPS publisher domains."""
 
@@ -92,7 +311,8 @@ def is_trusted_resource_url(url: str) -> bool:
     normalized_url = parsed._replace(fragment="").geturl().rstrip("/")
     return parsed.scheme == "https" and (
         (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
-        or normalized_url in REVIEWED_EXACT_RESOURCE_URLS
+        or is_reviewed_exact_resource_url(normalized_url)
+        or normalized_url in globals().get("REVIEWED_LIBRARY_RESOURCE_URLS", ())
     )
 
 
@@ -2199,6 +2419,10 @@ def _with_resource_curation_metadata(resource: dict) -> dict:
         else {}
     )
     merged = {**defaults, **resource}
+    if org_id := resource_parent_org_id(merged):
+        # Domain/evidence mapping wins over mutable publisher spelling so the
+        # same institution keeps one identity across languages and subdomains.
+        merged["parent_org_id"] = org_id
     if not merged.get("content_category"):
         merged["content_category"] = (
             "featured" if merged.get("source_tier") == "curated" else "authority"
@@ -2253,6 +2477,18 @@ for _card in LEARNING_CONTENT_CARDS:
             *_REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.get(_card["id"], []),
         ]
     ]
+
+
+# Creator/social-platform and curated editorial hosts are not trusted as whole
+# sites. Every URL already stored in the reviewed fallback library is admitted
+# individually; a newly discovered page on the same host must pass dynamic
+# validation or be added through an explicit review.
+REVIEWED_LIBRARY_RESOURCE_URLS = frozenset(
+    str(resource.get("url") or "").split("#", 1)[0].rstrip("/")
+    for card in LEARNING_CONTENT_CARDS
+    for resource in card.get("resources", [])
+    if str(resource.get("url") or "").startswith("https://")
+)
 
 
 LEARNING_CONTENT_BY_ID = {card["id"]: card for card in LEARNING_CONTENT_CARDS}

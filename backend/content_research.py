@@ -27,10 +27,24 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 try:
     from backend.recommendation_feedback import canonical_resource_url
-    from backend.content_library import is_trusted_resource_url
+    from backend.content_library import (
+        AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_SOURCE_PARENT_ORG_IDS,
+        is_reviewed_exact_resource_url,
+        is_trusted_resource_url,
+        resource_parent_org_id,
+        source_parent_org_id,
+    )
 except ImportError:  # pragma: no cover - direct module execution compatibility
     from recommendation_feedback import canonical_resource_url  # type: ignore
-    from content_library import is_trusted_resource_url  # type: ignore
+    from content_library import (  # type: ignore
+        AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_SOURCE_PARENT_ORG_IDS,
+        is_reviewed_exact_resource_url,
+        is_trusted_resource_url,
+        resource_parent_org_id,
+        source_parent_org_id,
+    )
 
 CONTENT_CATEGORIES = ("authority", "featured", "case")
 RESOURCE_KINDS = ("article", "video")
@@ -55,7 +69,7 @@ _CACHE_MAX_ITEMS = int(os.getenv("CONTENT_RESEARCH_CACHE_MAX_ITEMS", "128"))
 _RESEARCH_CACHE: "OrderedDict[str, tuple[float, Optional[dict]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
-_RESEARCH_CONTRACT_VERSION = "quality-first-cn-repair-v7"
+_RESEARCH_CONTRACT_VERSION = "quality-first-cn-repair-v8"
 
 _FEEDBACK_PREFERENCE_CODES = frozenset(
     {
@@ -64,6 +78,8 @@ _FEEDBACK_PREFERENCE_CODES = frozenset(
         "already_seen",
         "source_not_useful",
         "not_now",
+        "too_long",
+        "too_commercial",
     }
 )
 
@@ -186,15 +202,30 @@ _ZH_CN_CASE_PUBLISHER_SEEDS = (
     "一颗金豆子",
     "奶爸小虹哥",
 )
-_ZH_CN_PREFERRED_EDITORIAL_HOSTS = frozenset(
+_ZH_CN_RESTRICTED_CONSUMER_PORTAL_HOSTS = frozenset(
     {
-        "nicomama.com",
         "mama.cn",
         "qinbei.com",
         "ci123.com",
         "babytree.com",
         "baobaoshiye.cn",
     }
+)
+_ZH_CN_PROFESSIONAL_PLATFORM_MARKERS = (
+    "丁香医生",
+    "丁香醫生",
+    "丁香妈妈",
+    "丁香媽媽",
+    "小荷医典",
+    "小荷醫典",
+    "中国医药信息查询平台",
+    "中國醫藥信息查詢平台",
+    "腾讯医典",
+    "騰訊醫典",
+    "怡禾",
+    "卓正医疗",
+    "卓正醫療",
+    "好大夫",
 )
 _ZH_CN_CREATOR_PLATFORM_HOSTS = frozenset(
     {
@@ -387,52 +418,6 @@ _CASE_MARKERS = (
     "my child",
 )
 
-_AUTHORITY_HOSTS = frozenset(
-    {
-        "aap.org",
-        "asha.org",
-        "bmj.com",
-        "cdc.gov",
-        "developingchild.harvard.edu",
-        "harvard.edu",
-        "healthychildren.org",
-        "chop.edu",
-        "stanford.edu",
-        "yale.edu",
-        "berkeley.edu",
-        "umich.edu",
-        "ox.ac.uk",
-        "cam.ac.uk",
-        "ucl.ac.uk",
-        "utoronto.ca",
-        "ubc.ca",
-        "sydney.edu.au",
-        "unimelb.edu.au",
-        "hku.hk",
-        "cuhk.edu.hk",
-        "ntu.edu.tw",
-        "ntuh.gov.tw",
-        "jamanetwork.com",
-        "nature.com",
-        "ncbi.nlm.nih.gov",
-        "pediatrics.aappublications.org",
-        "pubmed.ncbi.nlm.nih.gov",
-        "sciencedirect.com",
-        "springer.com",
-        "thelancet.com",
-        "unicef.org",
-        "who.int",
-        *_ZH_CN_TRUSTED_HOSPITAL_HOSTS,
-    }
-)
-_AUTHORITY_SUFFIXES = (
-    ".gov",
-    ".gov.au",
-    ".gov.hk",
-    ".gov.tw",
-)
-
-
 def _safe_text(value: object, limit: int = 500) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
@@ -620,6 +605,8 @@ def _feedback_preference_guidance(values: Optional[Iterable[object]]) -> str:
         "already_seen": "避开同主题的泛化内容和旧 URL，提供此前未展示的新资源。",
         "source_not_useful": "更换独立发布者，避免继续依赖相同来源。",
         "not_now": "这是时机反馈，不改变内容检索、来源或排序要求。",
+        "too_long": "优先简短、结构清晰的文章与短视频，降低学习时间成本。",
+        "too_commercial": "降低商业推广性来源权重，优先无商业导向的权威或经验内容。",
     }
     return "；".join(f"{code}: {guidance[code]}" for code in preferences)
 
@@ -633,6 +620,8 @@ def _normalized_text_key(value: object) -> str:
 def _publisher_identity(resource: dict) -> str:
     """Identify a publisher without treating a hosting platform as the publisher."""
 
+    if org_id := resource_parent_org_id(resource):
+        return f"org:{org_id}"
     return f"name:{_normalized_text_key(resource.get('publisher'))}"
 
 
@@ -679,6 +668,45 @@ def _publisher_matches_seed(resource: dict, seeds: Iterable[str]) -> bool:
     )
 
 
+def _is_zh_cn_professional_platform_resource(resource: dict) -> bool:
+    visible_identity = " ".join(
+        _safe_text(resource.get(field), 220).casefold()
+        for field in ("title", "publisher")
+    )
+    return any(
+        marker.casefold() in visible_identity
+        for marker in _ZH_CN_PROFESSIONAL_PLATFORM_MARKERS
+    )
+
+
+def _professional_platform_has_verified_review(
+    resource: dict,
+    cited_urls: Optional[set[str]] = None,
+) -> bool:
+    """Require same-page author/reviewer proof for non-exact professional pages."""
+
+    if is_reviewed_exact_resource_url(str(resource.get("url") or "")):
+        return True
+    if str(resource.get("content_category") or "") != "featured":
+        return False
+    author = _safe_text(resource.get("author"), 140)
+    reviewer = _safe_text(resource.get("reviewer"), 140)
+    review_evidence = _safe_text(resource.get("review_evidence"), 300)
+    resource_key = _normalized_url_key(str(resource.get("url") or ""))
+    evidence_key = _normalized_url_key(
+        str(resource.get("review_evidence_url") or "")
+    )
+    return bool(
+        author
+        and reviewer
+        and _normalized_text_key(author) != _normalized_text_key(reviewer)
+        and any(marker in review_evidence for marker in ("审核", "審核", "审校", "審校"))
+        and resource_key
+        and evidence_key == resource_key
+        and evidence_key in (cited_urls or set())
+    )
+
+
 def _verified_hospital_public_account_domains(resource: dict) -> tuple[str, ...]:
     """Return official domains that verify a known hospital public account.
 
@@ -710,17 +738,20 @@ def _is_mainland_china_host(url: str) -> bool:
 
 
 def _is_allowed_authority_source(url: str, locale: str) -> bool:
-    """Allow global authorities plus a narrow, reviewed zh-CN hospital list."""
+    """Allow only institution domains present in the confirmed source policy."""
 
-    if not _is_authority_host(url):
-        return False
-    if locale != "zh-CN" or not _is_mainland_china_host(url):
-        return True
-    return _host_matches(_url_hostname(url), _ZH_CN_TRUSTED_HOSPITAL_HOSTS)
+    del locale
+    return source_parent_org_id(url) in AUTHORITY_SOURCE_PARENT_ORG_IDS
 
 
 def _is_allowed_authority_resource(resource: dict, locale: str) -> bool:
     if _is_allowed_authority_source(str(resource.get("url") or ""), locale):
+        return True
+    if resource.get("kind") == "video" and _is_allowed_authority_source(
+        str(resource.get("evidence_url") or ""), locale
+    ):
+        # Citation and video-specific evidence checks run later; this only
+        # permits an official institution video hosted on a shared platform.
         return True
     return bool(
         locale == "zh-CN"
@@ -736,21 +767,46 @@ def _is_zh_cn_hospital_resource(resource: dict) -> bool:
     )
 
 
-def _resource_source_category_allowed(resource: dict, locale: str) -> bool:
-    """Keep hospitals in authority and creator/editorial seeds out of it."""
+def _resource_source_category_allowed(
+    resource: dict,
+    locale: str,
+    cited_urls: Optional[set[str]] = None,
+) -> bool:
+    """Keep institutions, professional platforms and creators in their lanes."""
 
-    if locale != "zh-CN":
-        return True
     category = str(resource.get("content_category") or "")
-    if _is_zh_cn_hospital_resource(resource):
-        return category == "authority"
+    org_id = resource_parent_org_id(resource)
     if category == "authority":
         return _is_allowed_authority_resource(resource, locale)
+    # Confirmed authority institutions cannot be relabelled as lifestyle
+    # editorial or a family case to bypass authority evidence requirements.
+    if org_id in AUTHORITY_SOURCE_PARENT_ORG_IDS:
+        return False
+    if locale != "zh-CN":
+        return True
+    if _is_zh_cn_hospital_resource(resource):
+        return category == "authority"
     if category == "featured":
         hostname = _url_hostname(resource.get("url"))
+        visible_identity = " ".join(
+            _safe_text(resource.get(field), 220).casefold()
+            for field in ("title", "publisher")
+        )
+        if _host_matches(hostname, _ZH_CN_RESTRICTED_CONSUMER_PORTAL_HOSTS):
+            return is_reviewed_exact_resource_url(str(resource.get("url") or ""))
+        if _is_zh_cn_professional_platform_resource(resource):
+            return _professional_platform_has_verified_review(resource, cited_urls)
+        if org_id in FEATURED_SOURCE_PARENT_ORG_IDS:
+            return True
         return bool(
-            _host_matches(hostname, _ZH_CN_PREFERRED_EDITORIAL_HOSTS)
-            or _publisher_matches_seed(resource, _ZH_CN_FEATURED_PUBLISHER_SEEDS)
+            _publisher_matches_seed(resource, _ZH_CN_FEATURED_PUBLISHER_SEEDS)
+            and (
+                is_reviewed_exact_resource_url(str(resource.get("url") or ""))
+                or (
+                    resource.get("kind") == "video"
+                    and _host_matches(hostname, _ZH_CN_CREATOR_PLATFORM_HOSTS)
+                )
+            )
         )
     if category == "case":
         # A generated ``case_evidence`` sentence is not sufficient to turn a
@@ -763,6 +819,8 @@ def _resource_source_category_allowed(resource: dict, locale: str) -> bool:
             _safe_text(resource.get(field), 220).casefold()
             for field in ("title", "publisher")
         )
+        if _is_zh_cn_professional_platform_resource(resource):
+            return False
         if any(
             marker in visible_identity
             for marker in (
@@ -793,19 +851,7 @@ def _resource_source_category_allowed(resource: dict, locale: str) -> bool:
 
 
 def _is_authority_host(url: str) -> bool:
-    if not _is_public_https_url(url):
-        return False
-    hostname = (urlparse(url).hostname or "").lower()
-    hostname = hostname[4:] if hostname.startswith("www.") else hostname
-    if any(
-        hostname == authority or hostname.endswith(f".{authority}")
-        for authority in _AUTHORITY_HOSTS
-    ):
-        return True
-    return any(
-        hostname == suffix.lstrip(".") or hostname.endswith(suffix)
-        for suffix in _AUTHORITY_SUFFIXES
-    )
+    return source_parent_org_id(url) in AUTHORITY_SOURCE_PARENT_ORG_IDS
 
 
 def _is_direct_video_url(url: str) -> bool:
@@ -880,9 +926,9 @@ def _zh_cn_source_priority(resource: dict) -> int:
         and _publisher_matches_seed(resource, _ZH_CN_CASE_PUBLISHER_SEEDS)
     ):
         score += 8
-    if category in {"featured", "case"} and _host_matches(
-        hostname, _ZH_CN_PREFERRED_EDITORIAL_HOSTS
-    ):
+    if category == "featured" and resource_parent_org_id(
+        resource
+    ) in FEATURED_SOURCE_PARENT_ORG_IDS:
         score += 4
     if resource.get("kind") == "video" and _is_preferred_short_video_url(
         resource.get("url")
@@ -1692,7 +1738,7 @@ def _normalize_dynamic_resource(
     ):
         invalid("authority_source")
         return None
-    if not _resource_source_category_allowed(raw, locale):
+    if not _resource_source_category_allowed(raw, locale, cited_urls):
         invalid("source_category")
         return None
     if locale in {"zh-CN", "zh-TW"}:
@@ -1752,6 +1798,13 @@ def _normalize_dynamic_resource(
         "selection_basis": selection_basis,
         "title": _safe_text(raw.get("title"), 180),
         "publisher": _safe_text(raw.get("publisher"), 140),
+        "parent_org_id": resource_parent_org_id(raw),
+        "author": _safe_text(raw.get("author"), 140),
+        "reviewer": _safe_text(raw.get("reviewer"), 140),
+        "review_evidence": _safe_text(raw.get("review_evidence"), 300),
+        "review_evidence_url": str(
+            raw.get("review_evidence_url") or ""
+        ).strip(),
         "language": _safe_text(raw.get("language"), 80) or language_fallback,
         "spoken_language": str(raw.get("spoken_language") or "not_applicable"),
         "spoken_language_evidence": _safe_text(
@@ -1970,7 +2023,7 @@ def parse_research_candidates(
             # as authority preserves the trustworthy page without weakening
             # featured/case provenance.
             raw = {**raw, "content_category": "authority"}
-        if not _resource_source_category_allowed(raw, locale):
+        if not _resource_source_category_allowed(raw, locale, cited_urls):
             rejected("source_category")
             continue
         if (
@@ -2091,6 +2144,10 @@ _RESOURCE_SCHEMA = {
         "kind": {"type": "string", "enum": list(RESOURCE_KINDS)},
         "title": {"type": "string"},
         "publisher": {"type": "string"},
+        "author": {"type": "string"},
+        "reviewer": {"type": "string"},
+        "review_evidence": {"type": "string"},
+        "review_evidence_url": {"type": "string"},
         "language": {"type": "string"},
         "spoken_language": {
             "type": "string",
@@ -2117,6 +2174,10 @@ _RESOURCE_SCHEMA = {
         "kind",
         "title",
         "publisher",
+        "author",
+        "reviewer",
+        "review_evidence",
+        "review_evidence_url",
         "language",
         "spoken_language",
         "spoken_language_evidence",
@@ -2320,33 +2381,45 @@ def _language_policy(locale: str) -> str:
 
 
 def _source_priority_policy(locale: str) -> str:
+    core_authorities = (
+        "authority 只从确认机构召回：CDC、AAP/HealthyChildren、NIH/MedlinePlus、WHO、UNICEF、"
+        "Harvard Center on the Developing Child、Stanford、Head Start、Mayo Clinic、"
+        "SickKids、Royal Children's Hospital Melbourne、HealthLinkBC、Cochrane，"
+        "以及已登记的大学、儿童医院、政府儿童健康机构与专业医学组织。"
+        "专业内容平台、门户、社交账号和创作者绝不能标为 authority。"
+    )
     us_authority = (
-        "authority 必须优先检索美国 CDC、NIH、AAP/HealthyChildren、美国大学及大学医院、"
-        "Mayo Clinic 与同行评议期刊的原始页面和官方视频。若存在同时通过语言、月龄、"
-        "主题、引用与可访问性门槛的美国权威候选，authority 的文章或视频至少一项必须来自该候选；"
-        "不得为了美国来源标签放宽任何门槛，也不得翻译标题或正文冒充用户偏好语言。"
+        "在语言、月龄、主题、引用和可访问性门槛都通过时，优先 CDC、AAP/HealthyChildren、"
+        "NIH/MedlinePlus、Harvard、Stanford、Head Start、Mayo Clinic 和美国儿童医院；"
+        "不得为了美国来源标签放宽任何门槛。"
     )
     if locale == "en":
         return (
-            f"{us_authority}\n"
-            "其余候选按主题精确度、证据质量、可访问性、格式与来源多样性排序。"
+            f"{core_authorities}\n- {us_authority}\n"
+            "- featured 优先 Raising Children Network、KidsHealth、ZERO TO THREE、"
+            "Child Mind Institute、Pathways、Understood 与 Sesame Workshop。\n"
+            "- 其余候选按主题精确度、证据质量、可访问性、格式与机构多样性排序。"
         )
     if locale == "zh-TW":
         return (
-            f"{us_authority}\n"
-            "繁體中文 authority 仍以臺灣政府、臺灣大學與大學醫院、兒科或心理專業組織為主要來源；"
-            "美國機構只有在落地頁本身提供繁體中文或可核驗華語影片時才可入選。"
+            f"{core_authorities}\n- {us_authority}\n"
+            "- 繁體中文 authority 優先臺灣衛福部社會及家庭署、國民健康署、臺大醫院、"
+            "臺灣兒科醫學會，以及香港 FHS；英文機構只有在落地頁本身提供繁體中文或可核驗華語影片時才可入選。"
         )
     featured = "、".join(_ZH_CN_FEATURED_PUBLISHER_SEEDS)
     cases = "、".join(_ZH_CN_CASE_PUBLISHER_SEEDS)
     accounts = "、".join(_ZH_CN_HOSPITAL_PUBLIC_ACCOUNT_DOMAINS)
     return (
         "简体中文优先来源只作为召回与同质量候选的排序先验，绝不能绕过主题、引用、语言和安全门槛。\n"
-        f"- {us_authority}若美国权威页面没有合格简体中文版本，再优先国际机构，以及北上广深杭医院官网"
+        f"- {core_authorities}\n- {us_authority}只有落地页本身提供官方简体中文或已核验普通话视频时才可入选；"
+        "优先 WHO、UNICEF、Head Start、Mayo Clinic、SickKids、RCH、Raising Children、"
+        "MedlinePlus、Cochrane 的官方中文，其次香港 FHS，以及北上广深杭公立儿童医院官网"
         f"及经医院官网反向确认的公众号：{accounts}。"
         "共享域 mp.weixin.qq.com 不能单独证明权威；公众号名称必须精确匹配，evidence_url 必须是本次引用的对应医院官网认证页。\n"
-        f"- featured 优先检索这些创作者，但一律不把自述资历当医学权威：{featured}。"
-        "也优先妈妈网、亲贝网、育儿网、宝宝树、中国孕婴童网中与当前问题直接相关、署名和来源清楚的优质内容。\n"
+        f"- featured 可检索这些已登记创作者，但一律不把自述资历当医学权威：{featured}。"
+        "丁香医生、丁香妈妈、小荷医典等专业平台只能归入 featured，且必须同页显示可核验作者、审核人和审核依据，或 URL 已逐条审核。"
+        "妈妈网 (mama.cn)、亲贝网 (qinbei.com)、育儿网 (ci123.com)、宝宝树 (babytree.com)、"
+        "中国孕婴童网 (baobaoshiye.cn) 不做整站召回；只有逐条审核的 exact URL 可以进入。\n"
         f"- case 优先真实家庭经历与父亲视角：{cases}。必须明确是亲历内容，不代表医疗建议。\n"
         "- 视频优先普通话短视频：30秒至5分钟最佳，最长不超过10分钟；优先抖音、快手、小红书具体视频页或 YouTube Shorts。"
         "不接受账号主页、搜索页、合集页；小红书 explore 页面必须有同页证据证明它确实是视频笔记。\n"
@@ -2427,7 +2500,7 @@ def build_research_prompt(
 - child_age_context 非空时，先判断内容明确面向的年龄/发展阶段，再判断主题；每个结果都必须适合这个阶段。对婴幼儿发展、睡眠、喂养、语言、行为与安全内容，页面标题、正文或同页证据必须能支持其年龄适配性；找不到合龄内容时宁可缺项，不得用面向胎儿、明显更小或更大年龄段、或只有泛泛“育儿”描述的页面补位。
 - 内容要直接回应结构化主题中的具体困扰，不能只与大主题泛泛相关。
 - 每项的 title、description 与 selection_reason 都要体现它回应的具体问题；不能用“儿童发展”“育儿建议”等宽泛内容凑数。
-- 所有 URL 与原始标题必须互不重复；同一发布者最多出现两项，因此六至九项至少覆盖三至五个独立发布者。
+- 所有 URL 与原始标题必须互不重复；同一 parent organization 的多语言页面、子域、公众号和视频频道视为同一发布者，同一机构最多出现两项，因此六至九项至少覆盖三至五个独立机构/创作者。
 - 医疗、安全和发展事实以权威内容为底线；优秀内容与案例只能补充理解和执行，不能取代专业建议。
 - 视频必须链接到可观看的视频页；文章必须链接到可阅读的文章页。
 - title 必须逐字使用页面原始标题，绝不能把英文标题翻译成中文冒充中文资源。
@@ -2436,6 +2509,7 @@ def build_research_prompt(
 - 小红书视频必须在 video_page_evidence 中写明落地页如何确认这是视频/短视频笔记，video_page_evidence_url 必须是同一条被引用的笔记 URL。其他视频也可填写同页视频证据；文章的这两个字段返回空字符串。
 - 视频 URL 必须直达某一个具体视频播放页，不能返回频道、搜索、播放列表、课程目录或视频归档首页。
 - audience_note 只有在页面能看到明确数据或可核验认可依据时填写，否则返回空字符串。
+- 丁香医生、丁香妈妈、小荷医典等专业平台只能作为 featured。若 URL 未在逐条审核清单中，author、reviewer、review_evidence、review_evidence_url 必须填写同一正文页直接显示的作者、审核人和“审核/审校”证据；review_evidence_url 必须与资源 URL 是同一规范化页面并由本次搜索引用。其他来源这四个字段返回空字符串。
 - 每个视频的 evidence_url 必须是本次搜索实际核验过的机构主页、频道资料或创作者资历依据；视频没有独立且可引用的依据时，不要选择该视频。普通文章返回空字符串；仅当 authority 文章来自医院官方公众号等共享发布平台时，evidence_url 填医院官网对公众号名称的认证页。
 - featured/case 视频若播放页本身直接显示发布者身份，可将 evidence_url 留空并由已引用的播放页自证；若填写 evidence_url，则该 URL 必须由本次搜索引用，绝不能填写未引用的频道页或个人主页。
 - 新发现的站外 authority 视频，其 evidence_url 必须是权威机构域名下直接标识该视频的具体视频页，不能用机构首页或无关文章借用权威性。
@@ -2640,6 +2714,7 @@ recommendation_focus 可能含语音转写错字；结合 topic、title、summar
 - featured/case 视频的发布者若已在被引用播放页直接显示，可将 evidence_url 留空；一旦填写 evidence_url，它必须是本次搜索引用过的真实资历或机构页面。
 - article 必须直达可阅读正文。中文页面必须用同一被引用 URL 的可见中文正文作为 page_language_evidence；不得翻译标题或搜索摘要冒充页面语言。
 - title 使用落地页原始标题；selection_reason 必须明确连接结构化主题和孩子年龄阶段。不得泄露或猜测身份信息。
+- 专业平台不得归入 authority；未逐条审核的专业平台内容只有在同一正文页显示作者、独立审核人及审核证据时才能归入 featured。author、reviewer、review_evidence、review_evidence_url 四个字段必须完整，且证据 URL 必须由本次搜索引用。
 
 来源优先策略：
 {_source_priority_policy(locale)}

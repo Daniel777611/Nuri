@@ -362,6 +362,8 @@ def card_behavior_signal(
                 "repetitive",
                 "wrong_language",
                 "source_not_useful",
+                "too_long",
+                "too_commercial",
             }:
                 # These describe the delivered resource set, not the parent's
                 # interest in the conversation topic.  They should trigger a

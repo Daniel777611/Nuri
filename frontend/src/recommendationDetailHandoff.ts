@@ -22,7 +22,15 @@ export function storeRecommendationDetailHandoff(
   const key = recommendationDetailHandoffKey(card);
   handoffs.delete(key);
   handoffs.set(key, {
-    card: { ...card, resources: card.resources ? [...card.resources] : [] },
+    card: {
+      ...card,
+      resources: card.resources ? card.resources.map((resource) => ({ ...resource })) : [],
+      alternate_resource_pairs: card.alternate_resource_pairs?.map((pair) => ({
+        ...pair,
+        resources: pair.resources.map((resource) => ({ ...resource })),
+      })),
+      action_steps: card.action_steps ? [...card.action_steps] : [],
+    },
     preparationItems: preparationItems.map((item) => ({ ...item })),
     createdAt: Date.now(),
   });

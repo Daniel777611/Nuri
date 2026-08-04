@@ -19,15 +19,16 @@ from typing import Any, Mapping, Optional
 from cryptography.fernet import Fernet, InvalidToken
 
 
-SNAPSHOT_VERSION = 2
-SNAPSHOT_CONTEXT_VERSION = "multi-session-intent-child-age-v2"
-SUPPORTED_SNAPSHOT_VERSIONS = frozenset({1, SNAPSHOT_VERSION})
+SNAPSHOT_VERSION = 3
+SNAPSHOT_CONTEXT_VERSION = "delivery-package-alternates-v3"
+SUPPORTED_SNAPSHOT_VERSIONS = frozenset({1, 2, SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90
 PREPARED_CONTENT_TTL_HOURS = 6
 RESOURCE_READINESS_VALUES = frozenset({"preparing", "ready", "retryable"})
 
 _RECOMMENDATION_ID = re.compile(r"^rec_[a-f0-9]{24}$")
 _PREPARED_CONTENT_SET_ID = re.compile(r"^pcs_[a-f0-9]{24}$")
+_PREPARED_PAIR_ID = re.compile(r"^pair_[a-f0-9]{16}$")
 _SERIALIZED_PREFIX = "fernet:v1:"
 
 
@@ -143,6 +144,8 @@ def _clear_prepared_content(snapshot: dict[str, Any]) -> None:
     for field in (
         "prepared_binding",
         "prepared_resources",
+        "prepared_resource_pairs",
+        "active_pair_id",
         "prepared_content_set_id",
         "prepared_at",
         "prepared_expires_at",
@@ -150,32 +153,12 @@ def _clear_prepared_content(snapshot: dict[str, Any]) -> None:
         snapshot.pop(field, None)
 
 
-def prepared_resource_pair(
+def _validated_resource_pair(
     snapshot: Mapping[str, Any],
-    *,
-    now: Optional[datetime] = None,
+    resources: object,
 ) -> Optional[list[dict[str, Any]]]:
-    """Return a still-valid article/video pair bound to this exact snapshot."""
+    """Validate one article/video pair against the frozen recommendation."""
 
-    if snapshot.get("resource_readiness") != "ready":
-        return None
-    if snapshot.get("prepared_binding") != _prepared_binding(snapshot):
-        return None
-    if not _PREPARED_CONTENT_SET_ID.fullmatch(
-        str(snapshot.get("prepared_content_set_id") or "")
-    ):
-        return None
-    try:
-        expires_at = datetime.fromisoformat(
-            str(snapshot.get("prepared_expires_at") or "")
-        )
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-    if expires_at <= (now or _utc_now()).astimezone(timezone.utc):
-        return None
-    resources = snapshot.get("prepared_resources")
     if not isinstance(resources, list) or len(resources) != 2:
         return None
     pair: list[dict[str, Any]] = []
@@ -202,6 +185,76 @@ def prepared_resource_pair(
     return pair if kinds == {"article", "video"} else None
 
 
+def prepared_resource_pairs(
+    snapshot: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> list[dict[str, Any]]:
+    """Return every valid prepared pair, with the active pair first.
+
+    Version-two snapshots stored only ``prepared_resources``. They are exposed
+    as a one-pair pool so links created before this deployment remain valid.
+    """
+
+    if snapshot.get("resource_readiness") != "ready":
+        return []
+    if snapshot.get("prepared_binding") != _prepared_binding(snapshot):
+        return []
+    if not _PREPARED_CONTENT_SET_ID.fullmatch(
+        str(snapshot.get("prepared_content_set_id") or "")
+    ):
+        return []
+    try:
+        expires_at = datetime.fromisoformat(
+            str(snapshot.get("prepared_expires_at") or "")
+        )
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return []
+    if expires_at <= (now or _utc_now()).astimezone(timezone.utc):
+        return []
+
+    raw_pairs = snapshot.get("prepared_resource_pairs")
+    if not isinstance(raw_pairs, list):
+        legacy = _validated_resource_pair(snapshot, snapshot.get("prepared_resources"))
+        return (
+            [{"pair_id": "pair_0000000000000000", "resources": legacy}]
+            if legacy
+            else []
+        )
+
+    valid: list[dict[str, Any]] = []
+    seen_pair_ids: set[str] = set()
+    for raw in raw_pairs[:6]:
+        if not isinstance(raw, dict):
+            continue
+        pair_id = str(raw.get("pair_id") or "")
+        resources = _validated_resource_pair(snapshot, raw.get("resources"))
+        if (
+            not _PREPARED_PAIR_ID.fullmatch(pair_id)
+            or pair_id in seen_pair_ids
+            or not resources
+        ):
+            continue
+        seen_pair_ids.add(pair_id)
+        valid.append({"pair_id": pair_id, "resources": resources})
+    active_pair_id = str(snapshot.get("active_pair_id") or "")
+    valid.sort(key=lambda pair: pair["pair_id"] != active_pair_id)
+    return valid
+
+
+def prepared_resource_pair(
+    snapshot: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Return a still-valid article/video pair bound to this exact snapshot."""
+
+    pairs = prepared_resource_pairs(snapshot, now=now)
+    return copy.deepcopy(pairs[0]["resources"]) if pairs else None
+
+
 def snapshot_with_resource_readiness(
     snapshot: Mapping[str, Any],
     readiness: str,
@@ -226,14 +279,52 @@ def snapshot_with_prepared_resource_pair(
 ) -> dict[str, Any]:
     """Attach one encrypted-at-rest pair to its immutable recommendation."""
 
+    return snapshot_with_prepared_resource_pairs(
+        snapshot,
+        [resources],
+        content_set_id=content_set_id,
+        now=now,
+    )
+
+
+def snapshot_with_prepared_resource_pairs(
+    snapshot: Mapping[str, Any],
+    resource_pairs: list[list[dict[str, Any]]],
+    *,
+    content_set_id: str,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Attach a primary pair plus bounded, instant-switch alternatives."""
+
     prepared_at = (now or _utc_now()).astimezone(timezone.utc)
     updated = copy.deepcopy(dict(snapshot))
+    normalized_pairs: list[dict[str, Any]] = []
+    seen_signatures: set[str] = set()
+    for resources in resource_pairs[:3]:
+        valid = _validated_resource_pair(updated, resources)
+        if not valid:
+            continue
+        signature = "\n".join(
+            sorted(str(resource.get("url") or "") for resource in valid)
+        )
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        pair_id = f"pair_{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]}"
+        normalized_pairs.append({"pair_id": pair_id, "resources": valid})
+    if not normalized_pairs:
+        raise ValueError("invalid prepared resource pair")
+    active_pair_id = normalized_pairs[0]["pair_id"]
     updated.update(
         {
             "resource_readiness": "ready",
             "resource_readiness_updated_at": prepared_at.isoformat(),
             "prepared_binding": _prepared_binding(updated),
-            "prepared_resources": copy.deepcopy(resources),
+            # Keep the legacy active field so older app versions can still
+            # open a newly prepared recommendation.
+            "prepared_resources": copy.deepcopy(normalized_pairs[0]["resources"]),
+            "prepared_resource_pairs": normalized_pairs,
+            "active_pair_id": active_pair_id,
             "prepared_content_set_id": str(content_set_id),
             "prepared_at": prepared_at.isoformat(),
             "prepared_expires_at": (
@@ -243,6 +334,24 @@ def snapshot_with_prepared_resource_pair(
     )
     if not content_set_id or prepared_resource_pair(updated, now=prepared_at) is None:
         raise ValueError("invalid prepared resource pair")
+    return updated
+
+
+def snapshot_with_active_resource_pair(
+    snapshot: Mapping[str, Any],
+    pair_id: str,
+    *,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Switch to a prevalidated pair without doing network research."""
+
+    updated = copy.deepcopy(dict(snapshot))
+    pairs = prepared_resource_pairs(updated, now=now)
+    selected = next((pair for pair in pairs if pair["pair_id"] == pair_id), None)
+    if not selected:
+        raise ValueError("prepared resource pair not found")
+    updated["active_pair_id"] = pair_id
+    updated["prepared_resources"] = copy.deepcopy(selected["resources"])
     return updated
 
 
@@ -267,6 +376,8 @@ def carry_prepared_resource_state(
         "resource_readiness_updated_at",
         "prepared_binding",
         "prepared_resources",
+        "prepared_resource_pairs",
+        "active_pair_id",
         "prepared_content_set_id",
         "prepared_at",
         "prepared_expires_at",
