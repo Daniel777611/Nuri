@@ -43,3 +43,9 @@ yarn-error.*
 app-example
 
 .tools/
+
+# Playwright E2E artifacts and authenticated browser state
+playwright-report/
+test-results/
+.auth/
+*.storage-state.json

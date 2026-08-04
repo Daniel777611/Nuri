@@ -17,11 +17,11 @@
 // matcher and the lint rule `emergent(kebab-case-testid-prop)`.
 
 export const LOGIN = {
-	emailInput: 'login-email-input',
-	passwordInput: 'login-password-input',
-	submitButton: 'login-submit-button',
+	emailInput: 'login-email',
+	passwordInput: 'login-password',
+	submitButton: 'login-submit-btn',
 	forgotPasswordLink: 'login-forgot-password-link',
-	registerLink: 'login-register-link',
+	registerLink: 'login-go-register',
 };
 
 export const REGISTER = {
