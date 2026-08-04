@@ -2523,7 +2523,7 @@ _REVIEWED_DELIVERY_RESOURCES_BY_CARD_ID = {
                 "description": "按 7–12 个月整理听力、手势、声音模仿与轮流交流信号，并给家长日常互动方法。",
                 "trust_note": "美国言语语言听力专业协会的分龄原始资料。",
                 "recognition": "专业协会 · 7–12 个月沟通里程碑",
-                "selection_reason": "与 11 个月宝宝的回应名字、模仿音节和来回发声直接对应。",
+                "selection_reason": "与 7–12 个月宝宝的回应名字、模仿音节和来回发声直接对应。",
                 "age_range_months": [7, 12],
                 "focus_tags": ["语言", "沟通", "模仿音节", "回应名字"],
                 "url": "https://www.asha.org/public/developmental-milestones/communication-milestones-birth-to-1-year/",

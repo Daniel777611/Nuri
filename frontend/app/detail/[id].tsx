@@ -1220,7 +1220,7 @@ export default function Detail() {
             {resourcePairComplete ? (
               <Text style={styles.resourcesIntro}>
                 {hasNuriGuidedOriginal
-                  ? `已按你的${activeResourceLocaleLabel}偏好整理：权威英文原文保留原始链接，并附 NURI 中文导读。`
+                  ? `已按你的${activeResourceLocaleLabel}偏好整理：英文原文保留原始链接，并附 NURI 中文导读。`
                   : `已自动使用最适合你的${activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。`}
                 点击具体条目后才会打开外部内容。
               </Text>
