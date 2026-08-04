@@ -342,6 +342,41 @@ def test_prepare_provider_failure_publishes_diverse_reviewed_whitelist(
     )
     assert authority_article["translation_type"] == "official_translation"
     assert authority_article["display_locale"] == "zh-CN"
+    authority_video = next(
+        resource
+        for resource in resources
+        if resource["content_category"] == "authority"
+        and resource["kind"] == "video"
+    )
+    assert authority_video["id"] == (
+        "language-sfaa-7-12-authority-video-zh-cn-v1"
+    )
+    assert authority_video["content_substance_status"] == "verified"
+    featured_article = next(
+        resource
+        for resource in resources
+        if resource["content_category"] == "featured"
+        and resource["kind"] == "article"
+    )
+    featured_video = next(
+        resource
+        for resource in resources
+        if resource["content_category"] == "featured"
+        and resource["kind"] == "video"
+    )
+    assert featured_article["id"] == (
+        "language-dxy-six-ways-featured-article-zh-cn-v1"
+    )
+    assert featured_article["publisher"] == "丁香妈妈"
+    assert featured_article["featured_readability_status"] == "verified"
+    assert featured_video["id"] == "language-huang-featured-video-zh-cn-v1"
+    assert featured_video["content_substance_status"] == "verified"
+    assert featured_video["featured_readability_status"] == "verified"
+    assert all(
+        "UNICEF" not in str(resource.get("publisher") or "").upper()
+        for resource in resources
+        if resource["content_category"] == "featured"
+    )
     assert all(
         resource.get("source_language") == "zh-CN"
         for resource in resources

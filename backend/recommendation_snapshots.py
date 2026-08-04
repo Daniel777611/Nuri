@@ -20,10 +20,10 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 SNAPSHOT_VERSION = 5
-SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v5-localized-first"
-SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v2-localized-first"
-# Source semantics changed materially in v5: old ready packages may put an
-# English original/video ahead of an available Chinese edition for zh-CN.
+SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v6-content-quality-first"
+SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
+# Source semantics changed materially in v6: old ready packages may use an
+# institutional campaign clip or low-readability publisher in the wrong lane.
 # Treat those snapshots as cache entries, not durable user data, and rebuild.
 SUPPORTED_SNAPSHOT_VERSIONS = frozenset({SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90

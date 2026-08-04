@@ -167,6 +167,14 @@ FEATURED_SOURCE_PARENT_ORG_IDS = frozenset(
     }
 )
 
+# Lane-specific exclusions protect the product promise even when a publisher
+# is trustworthy in another context. UNICEF remains an approved authority
+# article source, but its current Chinese videos are campaign-style assets and
+# its parenting pages are not the high-readability editorial experience the
+# featured lane is meant to provide.
+FEATURED_FORBIDDEN_PARENT_ORG_IDS = frozenset({"unicef"})
+AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS = frozenset({"unicef"})
+
 
 def source_domains_for_parent_orgs(parent_org_ids: set[str] | frozenset[str]) -> tuple[str, ...]:
     """Return deterministic discovery domains for an approved organization set."""
@@ -341,6 +349,10 @@ REVIEWED_EXACT_RESOURCE_URLS = frozenset(
         "https://www.ptt.cc/bbs/BabyMother/M.1427736608.A.7D6.html",
         "https://www.youtube.com/watch?v=vcjbqp3K-fM",
         "https://www.bilibili.com/video/BV1BH4y1U7yg",
+        "https://m.dxy.com/article/7223",
+        "https://www.youtube.com/watch?v=yzRi9GlSptM",
+        "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5",
+        "https://babyedu.sfaa.gov.tw/info/10000094",
         "https://y.dxy.cn/hospital/879/925528.html",
     }
 )
@@ -1275,43 +1287,52 @@ _LOCALIZED_RESOURCES_BY_CARD_ID = {
     ],
     "learn_serve_and_return_reviewed": [
         {
-            "id": "connection-unicef-featured-article-zh-cn",
+            "id": "connection-dxy-featured-article-zh-cn-v1",
             "kind": "article",
             "content_category": "featured",
             "source_tier": "curated",
             "selection_basis": "expert_and_audience",
-            "title": "通过游戏促进宝宝大脑发育",
-            "publisher": "联合国儿童基金会",
+            "title": "孩子在学说话时，当爸当妈的一定得做到这六点",
+            "publisher": "丁香妈妈",
             "language": "简体中文",
             "locales": ["zh-CN"],
-            "source_region": "INTL",
+            "source_region": "CN",
             "script_language": "zh-Hans",
-            "description": "把“你来我往”的回应式互动放进喂食、换衣、洗澡和游戏等日常时刻。",
-            "trust_note": "联合国儿童基金会育儿内容，由儿童发展专家解释亲子游戏与大脑发育。",
-            "recognition": "国际儿童机构 · 简体中文专业导读",
-            "selection_reason": "讲解清楚、场景具体，忙碌家长也能立刻挑一个日常片段开始练习。",
-            "url": "https://www.unicef.cn/parenting-site/3-ways-parents-can-make-their-babies-smarter",
+            "age_range_months": [6, 36],
+            "focus_tags": ["回应式互动", "来回交流", "语言输入", "共同注意"],
+            "description": "把回应宝宝、顺着注意力说话和日常语言输入拆成六个具体家庭做法，适合忙碌家长直接尝试。",
+            "trust_note": "丁香妈妈的逐条审核文章；公开页面可直接阅读，方法具体且不把单一表现当作诊断。",
+            "recognition": "高可读中文育儿内容 · 六点行动清单",
+            "selection_reason": "用喂饭、洗澡和玩耍等日常场景解释来回互动，比机构导读更容易读完和执行。",
+            "featured_readability_status": "verified",
+            "featured_readability_evidence": "短段落、六点清单和具体家庭场景兼具，页面无需登录即可阅读。",
+            "url": "https://m.dxy.com/article/7223",
         },
         {
-            "id": "connection-unicef-featured-video-zh-cn",
+            "id": "connection-huang-featured-video-zh-cn-v1",
             "kind": "video",
             "content_category": "featured",
             "source_tier": "curated",
             "selection_basis": "expert_and_audience",
-            "title": "观察孩子的需求，并给予积极的回应",
-            "publisher": "联合国儿童基金会",
-            "language": "普通话视频 · 简体中文",
-            "locales": ["zh-CN"],
-            "source_region": "INTL",
-            "script_language": "zh-Hans",
+            "title": "影响孩子语言发展的2件事，你我都能做到！【KIT系列 EP03】",
+            "publisher": "黄瑽宁医师健康讲堂",
+            "language": "普通话视频 · 台湾",
+            "locales": ["zh-CN", "zh-TW"],
+            "source_region": "TW",
+            "script_language": "zh-Hant",
             "spoken_language": "mandarin",
             "spoken_language_status": "verified",
-            "language_evidence": "联合国儿童基金会简体中文发布页及普通话养育照护视频。",
-            "description": "用短片说明如何观察婴幼儿的动作、声音与表情，并及时作出积极回应。",
-            "trust_note": "联合国儿童基金会养育照护系列视频；普通话与简体中文页面均已核验。",
-            "recognition": "国际儿童机构 · 普通话短视频",
-            "selection_reason": "短、直观，能先看到回应式陪伴在真实照护动作中是什么样子。",
-            "url": "https://www.unicef.cn/videos/how-to-responsive-care",
+            "language_evidence": "已核验为黄瑽宁医师连续国语/普通话讲解，并带有可读中文字幕。",
+            "description": "儿科医师完整解释高质量语言输入与亲子回应如何影响孩子的沟通发展，并给出日常可执行做法。",
+            "trust_note": "儿科医师主题讲解；主体是育儿知识，不是品牌广告或机构形象宣传。",
+            "recognition": "专业育儿创作者 · 约 45 万次观看（2026-08 核验）",
+            "selection_reason": "主题准确、讲解完整且有具体方法，不因约八分钟时长而被较短但空泛的宣传片取代。",
+            "content_substance_status": "verified",
+            "content_substance_evidence": "围绕语言输入与亲子回应连续讲解，并给出可执行的家庭互动方式。",
+            "featured_readability_status": "verified",
+            "featured_readability_evidence": "医师口语讲解、具体例子和清晰主题结构兼具。",
+            "evidence_url": "https://www.youtube.com/watch?v=yzRi9GlSptM",
+            "url": "https://www.youtube.com/watch?v=yzRi9GlSptM",
         },
         {
             "id": "connection-zhang-qin-case-article-zh-cn",
@@ -2043,70 +2064,80 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
                 "url": "https://www.fhs.gov.hk/sc_chi/health_info/child/15697.html",
             },
             {
-                "id": "language-unicef-responsive-authority-video-zh-cn",
+                "id": "language-sfaa-7-12-authority-video-zh-cn-v1",
                 "kind": "video",
                 "content_category": "authority",
                 "source_tier": "authority",
                 "selection_basis": "official",
-                "title": "观察孩子的需求，并给予积极的回应",
-                "publisher": "联合国儿童基金会",
-                "language": "普通话视频 · 简体中文",
-                "locales": ["zh-CN"],
-                "source_region": "INTL",
-                "script_language": "zh-Hans",
-                "age_range_months": [0, 36],
-                "focus_tags": ["语言", "沟通", "声音", "回应式互动"],
+                "title": "7-12个月宝宝语言发展的亲子游戏",
+                "publisher": "台湾卫生福利部社会及家庭署 · 育儿亲职网",
+                "language": "普通话视频 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [7, 12],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "语言互动游戏", "模仿声音"],
                 "spoken_language": "mandarin",
                 "spoken_language_status": "verified",
-                "language_evidence": "联合国儿童基金会简体中文发布页及普通话养育照护视频已核验。",
-                "description": "示范怎样观察婴幼儿的动作、声音和表情，并及时回应这些沟通信号。",
-                "trust_note": "联合国儿童基金会养育照护系列官方普通话视频。",
-                "recognition": "国际儿童机构 · 普通话官方视频",
-                "selection_reason": "把还不会说话时的声音、动作和表情也视为沟通，适合对照当前互动。",
-                "url": "https://www.unicef.cn/videos/how-to-responsive-care",
+                "language_evidence": "育儿亲职网课程页已核验为非台湾台语版，直接观看内容使用国语/普通话。",
+                "description": "围绕 7—12 月龄牙牙学语，完整讲解怎样通过模仿声音、有声书、故事书和亲子互动游戏支持语言发展。",
+                "trust_note": "台湾卫生福利部社会及家庭署官方 0—2 岁育儿课程；页面可直接观看，无需先报名。",
+                "recognition": "政府育儿课程 · 7—12 月龄专题",
+                "selection_reason": "年龄与当前宝宝精确匹配，内容是一堂具体的语言互动课程，不是机构宣传片。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "课程页列出牙牙学语、声音模仿、语言互动游戏、有声书与故事书等具体教学内容。",
+                "evidence_url": "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5",
+                "url": "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5",
             },
             {
-                "id": "language-unicef-baby-talk-featured-article-zh-cn",
+                "id": "language-dxy-six-ways-featured-article-zh-cn-v1",
                 "kind": "article",
                 "content_category": "featured",
                 "source_tier": "curated",
                 "selection_basis": "expert_and_audience",
-                "title": "如何与宝宝交流：把日常时刻变成语言练习",
-                "publisher": "联合国儿童基金会 · 西悉尼大学 MARCS 婴儿研究实验室",
+                "title": "孩子在学说话时，当爸当妈的一定得做到这六点",
+                "publisher": "丁香妈妈",
                 "language": "简体中文",
                 "locales": ["zh-CN"],
-                "source_region": "INTL",
+                "source_region": "CN",
                 "script_language": "zh-Hans",
-                "age_range_months": [0, 12],
-                "focus_tags": ["语言", "沟通", "儿向语", "日常互动"],
-                "description": "婴儿语言习得研究者解释儿向语，并给出喂食、洗澡、玩耍和看图说话时可直接使用的方法。",
-                "trust_note": "联合国儿童基金会发布，由西悉尼大学婴儿语言研究实验室负责人讲解。",
-                "recognition": "大学婴儿语言研究者 · 简体中文专业导读",
-                "selection_reason": "既解释宝宝为何会关注这种说话方式，也能立刻放进每天已经在做的照护场景。",
-                "url": "https://www.unicef.cn/parenting-site/how-talk-your-baby",
+                "age_range_months": [6, 36],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "日常互动", "语言输入"],
+                "description": "把语言输入拆成六个家庭场景，说明怎样回应宝宝的声音、顺着注意力说话，并把洗澡、吃饭和玩耍变成自然交流。",
+                "trust_note": "丁香妈妈的逐条审核文章；页面公开可读，重点是家庭可以马上使用的方法，不把单一月龄表现当作诊断。",
+                "recognition": "高可读中文育儿内容 · 六点行动清单",
+                "selection_reason": "比机构资料更像家长真正会读完的实用文章，又能与权威里程碑信息相互校验。",
+                "featured_readability_status": "verified",
+                "featured_readability_evidence": "短段落、六点清单和具体家庭场景兼具，页面无需登录即可阅读。",
+                "url": "https://m.dxy.com/article/7223",
             },
             {
-                "id": "language-unicef-play-featured-video-zh-cn",
+                "id": "language-huang-featured-video-zh-cn-v1",
                 "kind": "video",
                 "content_category": "featured",
                 "source_tier": "curated",
                 "selection_basis": "expert_and_audience",
-                "title": "陪伴孩子、鼓励孩子玩耍",
-                "publisher": "联合国儿童基金会",
-                "language": "普通话视频 · 简体中文",
-                "locales": ["zh-CN"],
-                "source_region": "INTL",
-                "script_language": "zh-Hans",
+                "title": "影响孩子语言发展的2件事，你我都能做到！【KIT系列 EP03】",
+                "publisher": "黄瑽宁医师健康讲堂",
+                "language": "普通话视频 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
                 "age_range_months": [0, 36],
-                "focus_tags": ["语言", "沟通", "亲子游戏", "日常互动"],
+                "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "语言输入", "亲子回应"],
                 "spoken_language": "mandarin",
                 "spoken_language_status": "verified",
-                "language_evidence": "联合国儿童基金会简体中文发布页及普通话养育照护视频已核验。",
-                "description": "用生活中随手可得的素材陪孩子玩，在来回互动中创造发声、模仿和共同注意的机会。",
-                "trust_note": "联合国儿童基金会养育照护系列官方普通话视频。",
-                "recognition": "国际儿童机构 · 普通话实操短片",
-                "selection_reason": "短而具体，适合从一个日常游戏开始增加有回应的语言互动。",
-                "url": "https://www.unicef.cn/videos/how-to-guide-your-children-to-learn-through-play",
+                "language_evidence": "已核验为黄瑽宁医师连续国语/普通话讲解，并带有可读中文字幕。",
+                "description": "儿科医师用约八分钟解释影响语言发展的两个关键条件，并给出家长在日常对话和回应中能马上调整的做法。",
+                "trust_note": "儿科医师的完整主题讲解；视频主体是育儿知识，不是品牌广告或机构形象宣传。",
+                "recognition": "专业育儿创作者 · 约 45 万次观看（2026-08 核验）",
+                "selection_reason": "优先选择内容完整、主题准确且讲得清楚的视频；八分钟时长不会因为不是超短视频而被降级。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "视频围绕语言输入与亲子回应展开连续讲解，并给出可执行的家庭互动方式。",
+                "featured_readability_status": "verified",
+                "featured_readability_evidence": "医师口语讲解、具体例子和清晰主题结构兼具。",
+                "evidence_url": "https://www.youtube.com/watch?v=yzRi9GlSptM",
+                "url": "https://www.youtube.com/watch?v=yzRi9GlSptM",
             },
             {
                 "id": "language-zheng-featured-video-zh-cn-v1",
@@ -2216,6 +2247,34 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
 _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     {
         "learn_development_milestones": [
+            {
+                "id": "development-sfaa-0-2-authority-video-zh-cn-v1",
+                "kind": "video",
+                "content_category": "authority",
+                "source_tier": "authority",
+                "selection_basis": "official",
+                "title": "0-2岁宝宝发展历程：动作、语言与互动重点",
+                "publisher": "台湾卫生福利部社会及家庭署 · 育儿亲职网",
+                "parent_org_id": "tw_sfaa_parenting",
+                "language": "普通话课程 · 台湾",
+                "locales": ["zh-CN", "zh-TW"],
+                "source_region": "TW",
+                "script_language": "zh-Hant",
+                "age_range_months": [0, 24],
+                "focus_tags": ["关键期", "发展里程碑", "语言", "亲子互动"],
+                "spoken_language": "mandarin",
+                "spoken_language_status": "verified",
+                "language_evidence": "课程页默认提供国语版，并按婴幼儿阶段讲解动作、语言和互动发展。",
+                "spoken_language_evidence": "已核验为国语亲职课程，不是宣传片或粤语音轨。",
+                "spoken_language_evidence_url": "https://babyedu.sfaa.gov.tw/info/10000094",
+                "description": "按 0 至 2 岁发展阶段讲解动作、语言、认知与亲子互动，帮助家长观察进展并选择合适活动。",
+                "trust_note": "台湾中央主管机关官方亲职课程；用于发展观察和家庭活动，不替代个别儿童评估。",
+                "recognition": "政府官方亲职课程 · 国语版",
+                "selection_reason": "内容完整覆盖当前月龄的发展重点，并提供可观察、可实践的亲子互动方法。",
+                "content_substance_status": "verified",
+                "content_substance_evidence": "课程分阶段说明多项发展表现和家庭互动方法，具有连续实质教学内容。",
+                "url": "https://babyedu.sfaa.gov.tw/info/10000094",
+            },
             {
                 "id": "development-mama-cn-featured-article",
                 "kind": "article",
@@ -2551,7 +2610,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     }
 )
 
-_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v2-localized-first"
+_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
 _NURI_GUIDE_DISCLAIMER = (
     "外部内容为英文原文；中文内容由 NURI 导读，不是发布机构的官方翻译；"
     "重要结论请以原文为准。"
@@ -2656,7 +2715,21 @@ def _reviewed_localized_delivery_resource(resource: dict) -> dict:
     # Explicit resource metadata is allowed to refine the automatic labels,
     # but it may not turn an English page into a Chinese one.
     value["display_locale"] = "zh-CN"
-    value["locales"] = ["zh-CN"]
+    # These reviewed Chinese destinations are valid zh-CN fallbacks, while a
+    # Traditional-Chinese/Taiwan original must also remain discoverable for a
+    # user whose explicit interface preference is zh-TW.
+    value["locales"] = list(
+        dict.fromkeys(
+            [
+                "zh-CN",
+                *(
+                    ["zh-TW"]
+                    if "zh-TW" in set(resource.get("locales") or [])
+                    else []
+                ),
+            ]
+        )
+    )
     value.setdefault(
         "translation_type",
         "official_translation" if official_translation else "original",

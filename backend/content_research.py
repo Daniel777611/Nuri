@@ -28,8 +28,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 try:
     from backend.recommendation_feedback import canonical_resource_url
     from backend.content_library import (
+        AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
@@ -40,8 +42,10 @@ try:
 except ImportError:  # pragma: no cover - direct module execution compatibility
     from recommendation_feedback import canonical_resource_url  # type: ignore
     from content_library import (  # type: ignore
+        AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
         AUTHORITY_SOURCE_PARENT_ORG_IDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
@@ -77,8 +81,8 @@ _CACHE_MAX_ITEMS = int(os.getenv("CONTENT_RESEARCH_CACHE_MAX_ITEMS", "128"))
 _RESEARCH_CACHE: "OrderedDict[str, tuple[float, Optional[dict]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
-_RESEARCH_CONTRACT_VERSION = "source-lanes-v2-localized-first"
-DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v2-localized-first"
+_RESEARCH_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
+DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v3-content-quality-first"
 
 _FEEDBACK_PREFERENCE_CODES = frozenset(
     {
@@ -949,7 +953,20 @@ def _resource_source_category_allowed(
     """Keep institutions, professional platforms and creators in their lanes."""
 
     category = str(resource.get("content_category") or "")
+    kind = str(resource.get("kind") or "")
     org_id = resource_parent_org_id(resource)
+    # Lane membership is editorial, not a generic trust score. UNICEF remains
+    # a valid primary-information publisher, but its parent-facing pages are
+    # too institutional for the high-readability lane, and its short campaign
+    # videos have repeatedly resolved to promotion rather than useful teaching.
+    if category == "featured" and org_id in FEATURED_FORBIDDEN_PARENT_ORG_IDS:
+        return False
+    if (
+        category == "authority"
+        and kind == "video"
+        and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
+    ):
+        return False
     if category == "authority":
         return _is_allowed_authority_resource(resource, locale)
     # Dynamic results cannot relabel an institution to bypass authority checks.
@@ -1118,6 +1135,12 @@ def _zh_cn_source_priority(resource: dict) -> int:
     source_language = str(resource.get("source_language") or "").casefold()
     kind = str(resource.get("kind") or "")
     spoken_language = str(resource.get("spoken_language") or "").casefold()
+    substance_status = str(
+        resource.get("content_substance_status") or ""
+    ).casefold()
+    readability_status = str(
+        resource.get("featured_readability_status") or ""
+    ).casefold()
 
     # The ordering is deliberate and large enough to dominate weaker source
     # tie-breakers below: official Chinese edition, reviewed Chinese original,
@@ -1142,6 +1165,15 @@ def _zh_cn_source_priority(resource: dict) -> int:
         else:
             # English/Cantonese/unknown audio cannot enter zh-CN delivery.
             score -= 1000
+        if substance_status == "verified":
+            score += 40
+        elif substance_status in {"ad_like", "rejected"}:
+            score -= 1000
+    if category == "featured":
+        if readability_status == "verified":
+            score += 40
+        elif readability_status == "rejected":
+            score -= 1000
     if category == "authority" and _is_zh_cn_hospital_resource(resource):
         score += 10
     elif (
@@ -1160,10 +1192,9 @@ def _zh_cn_source_priority(resource: dict) -> int:
         resource
     ) in FEATURED_SOURCE_PARENT_ORG_IDS:
         score += 4
-    if kind == "video" and _is_preferred_short_video_url(
-        resource.get("url")
-    ):
-        score += 3
+    # Duration is deliberately not scored here. A concise, substantive video
+    # is welcome, but a short campaign clip must never outrank a complete and
+    # accurate explanation merely because its URL is a Shorts-style page.
     commercial_text = " ".join(
         _safe_text(resource.get(field), 360)
         for field in ("title", "description", "selection_reason")
@@ -2198,6 +2229,16 @@ def delivery_lane_rejection_reason(
         allowed_commercial_risks.add("creator_self_promo")
     if resource.get("commercial_risk") not in allowed_commercial_risks:
         return "commercial_or_ad"
+    if kind == "video" and str(
+        resource.get("content_substance_status") or ""
+    ).casefold() in {"ad_like", "rejected"}:
+        return "video_not_substantive"
+    if (
+        category == "featured"
+        and str(resource.get("featured_readability_status") or "").casefold()
+        == "rejected"
+    ):
+        return "featured_not_readable"
     if str(resource.get("display_locale") or "") != locale:
         return "wrong_display_locale"
     if locale == "zh-CN" and kind == "video":
@@ -2211,6 +2252,14 @@ def delivery_lane_rejection_reason(
         ):
             return "video_language_not_verified"
     org_id = resource_parent_org_id(resource)
+    if category == "featured" and org_id in FEATURED_FORBIDDEN_PARENT_ORG_IDS:
+        return "featured_publisher_not_readable_lane"
+    if (
+        category == "authority"
+        and kind == "video"
+        and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
+    ):
+        return "authority_video_promotion_only_source"
     if category == "authority":
         if str(resource.get("source_quality_lane") or "") != "primary_evidence":
             return "authority_not_primary_evidence"
@@ -2377,11 +2426,11 @@ def _select_complete_resource_set(
         category_options.sort(
             key=lambda choice: (
                 len(choice),
+                sum(_zh_cn_source_priority(item) for item in choice),
                 sum(
                     item.get("research_source") == "openai_web_search"
                     for item in choice
                 ),
-                sum(_zh_cn_source_priority(item) for item in choice),
             ),
             reverse=True,
         )
@@ -2940,8 +2989,10 @@ def _source_priority_policy(locale: str) -> str:
         "妈妈网 (mama.cn)、亲贝网 (qinbei.com)、育儿网 (ci123.com)、宝宝树 (babytree.com)、"
         "中国孕婴童网 (baobaoshiye.cn) 不做整站召回；只有逐条审核的 exact URL 可以进入。\n"
         f"- case 优先真实家庭经历与父亲视角：{cases}。必须明确是亲历内容，不代表医疗建议。\n"
-        "- 视频优先普通话短视频：30秒至5分钟最佳，最长不超过10分钟；优先抖音、快手、小红书具体视频页或 YouTube Shorts。"
-        "不接受账号主页、搜索页、合集页；小红书 explore 页面必须有同页证据证明它确实是视频笔记。\n"
+        "- 视频先看主题与月龄是否准确、内容是否有实质、讲解或示范是否完整；至少要有三个具体知识点，或一段能让家长照着做的完整示范。"
+        "宣传片、机构形象片、品牌活动回顾、预告片和只有口号没有方法的视频一律淘汰。只有内容质量相同时，才偏好更容易看完的 4 至 15 分钟视频；"
+        "优质长视频可以保留并标出关键章节，短本身不加分。优先链接具体视频播放页，不接受账号主页、搜索页、合集页；"
+        "抖音、快手、小红书和 YouTube 都可以召回，但平台热度不能降低内容门槛；小红书 explore 页面必须有同页证据证明它确实是视频笔记。\n"
         "- 母婴好物、产品测评、广告植入、营养补充剂和带货内容具有商业风险：不得承载诊疗、剂量、发育或营养结论；"
         "只有在商业关系透明且能由独立 authority 交叉核验时，才可作为生活经验候选。"
     )
@@ -3407,6 +3458,14 @@ def _merge_with_reviewed_resources(
             category = resource_content_category(reviewed)
             kind = str(reviewed.get("kind") or "")
             slot = (category, kind)
+            reviewed_quality_anchor = bool(
+                str(reviewed.get("content_substance_status") or "").casefold()
+                == "verified"
+                or str(
+                    reviewed.get("featured_readability_status") or ""
+                ).casefold()
+                == "verified"
+            )
             is_localized_candidate = (
                 kind == "article"
                 and str(reviewed.get("translation_type") or "") != "nuri_guide"
@@ -3416,7 +3475,7 @@ def _merge_with_reviewed_resources(
                 == "mandarin"
             )
             if (
-                slot in localized_slots
+                (slot in localized_slots and not reviewed_quality_anchor)
                 or not is_localized_candidate
                 or category not in CONTENT_CATEGORIES
                 or kind not in RESOURCE_KINDS

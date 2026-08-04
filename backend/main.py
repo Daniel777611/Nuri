@@ -53,9 +53,11 @@ from starlette.background import BackgroundTask
 
 try:
     from backend.content_library import (
+        AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
@@ -104,9 +106,11 @@ try:
     )
 except ImportError:  # Supports `python backend/main.py` during local debugging.
     from content_library import (  # type: ignore
+        AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS,
         LEARNING_CONTENT_BY_ID,
         LEARNING_CONTENT_CARDS,
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         is_trusted_resource_url,
         order_learning_resources,
@@ -5081,6 +5085,12 @@ def _delivery_locale_priority(resource: dict, preferred_locale: Optional[str]) -
         return 90
     if translation_type == "official_translation" and display_locale == "zh-CN":
         return 0
+    # For a Simplified-Chinese account, verified Mandarin is the actual video
+    # language requirement. A Taiwan Mandarin explanation should not be pushed
+    # below a lower-quality mainland clip solely because its metadata uses
+    # Traditional Chinese; the visible region/script label is still retained.
+    if kind == "video" and display_locale == "zh-CN":
+        return 1
     if display_locale == "zh-CN" and (
         source_language in {"zh", "zh-cn", "chinese", "mandarin"}
         or content_locale in {"zh", "zh-cn", "chinese", "mandarin"}
@@ -5108,8 +5118,26 @@ def _delivery_resource_sort_key(
     resource: dict,
     preferred_locale: Optional[str],
     content_category: str,
-) -> tuple[int, int, int]:
-    """Sort first by language fitness, then by source authority and freshness."""
+) -> tuple[int, int, int, int]:
+    """Sort by language, editorial quality, authority, then freshness."""
+
+    quality_priority = 0
+    substance_status = str(
+        resource.get("content_substance_status") or ""
+    ).casefold()
+    readability_status = str(
+        resource.get("featured_readability_status") or ""
+    ).casefold()
+    if str(resource.get("kind") or "") == "video":
+        if substance_status in {"ad_like", "rejected"}:
+            quality_priority = 90
+        elif substance_status != "verified":
+            quality_priority = 1
+    if content_category == "featured":
+        if readability_status == "rejected":
+            quality_priority = 90
+        elif readability_status != "verified":
+            quality_priority = max(quality_priority, 1)
 
     authority_priority = 0
     if content_category == "authority":
@@ -5121,6 +5149,7 @@ def _delivery_resource_sort_key(
             authority_priority = 2
     return (
         _delivery_locale_priority(resource, preferred_locale),
+        quality_priority,
         authority_priority,
         0 if resource.get("research_source") == "openai_web_search" else 1,
     )
@@ -5312,16 +5341,19 @@ def _category_resource_pair_options(
             # it must never force a Chinese user onto an English or less-local
             # destination merely to avoid reusing an institution.
             sum(
-                _resource_parent_org_id(resource)
-                in (excluded_primary_orgs or set())
-                for resource in pair
-            ),
-            sum(
                 _delivery_resource_sort_key(
                     resource,
                     preferred_locale,
                     content_category,
                 )[1]
+                for resource in pair
+            ),
+            # Source diversity matters only after both resources satisfy the
+            # strongest editorial-quality tier. A different publisher cannot
+            # compensate for an ad-like video or a hard-to-read article.
+            sum(
+                _resource_parent_org_id(resource)
+                in (excluded_primary_orgs or set())
                 for resource in pair
             ),
             pair[0].get("research_source") != "openai_web_search",
@@ -5463,6 +5495,7 @@ def _select_category_resource_pair(
         resource
         for resource in resources
         if str(resource.get("content_category") or "") == content_category
+        and _reviewed_editorial_quality_allowed(resource)
     ]
     # Language fitness is the first ordering axis.  Among equally localized
     # authority items, prefer verified U.S. public-health, pediatric and
@@ -5483,6 +5516,31 @@ def _select_category_resource_pair(
         if selected:
             pair.append(selected)
     return pair
+
+
+def _reviewed_editorial_quality_allowed(resource: dict) -> bool:
+    """Apply lane-quality exclusions before a reviewed pair reaches the UI."""
+
+    category = str(resource.get("content_category") or "")
+    kind = str(resource.get("kind") or "")
+    org_id = _resource_parent_org_id(resource)
+    if category == "featured" and org_id in FEATURED_FORBIDDEN_PARENT_ORG_IDS:
+        return False
+    if (
+        category == "authority"
+        and kind == "video"
+        and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
+    ):
+        return False
+    if kind == "video" and str(
+        resource.get("content_substance_status") or ""
+    ).casefold() in {"ad_like", "rejected"}:
+        return False
+    return not (
+        category == "featured"
+        and str(resource.get("featured_readability_status") or "").casefold()
+        == "rejected"
+    )
 
 
 _YOUTUBE_HOSTS = frozenset(
@@ -5656,6 +5714,15 @@ def _resource_matches_preferred_locale(resource: dict, locale: str) -> bool:
     if locale not in locales:
         return False
     if locale != "zh-CN":
+        return True
+    if (
+        str(resource.get("kind") or "") == "video"
+        and str(resource.get("spoken_language") or "").casefold()
+        in {"mandarin", "putonghua", "chinese", "国语", "普通话", "华语"}
+    ):
+        # Spoken Mandarin is the hard boundary for zh-CN video delivery. Keep
+        # the Taiwan/Traditional label visible, but do not discard a stronger
+        # Mandarin explanation because its publishing metadata is zh-Hant.
         return True
     if str(resource.get("source_region") or "").upper() == "TW":
         return False

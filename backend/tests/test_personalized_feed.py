@@ -1628,35 +1628,49 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         resource
         for resource in card.get("resources", [])
         if "zh-CN" in resource.get("locales", [])
-        and resource.get("research_source") != "reviewed_whitelist"
     ]
 
     groups = {
         (resource["content_category"], resource["kind"]) for resource in resources
     }
-    assert len(resources) == 6
-    assert groups == {
+    assert len(resources) >= 6
+    assert groups >= {
         (category, kind)
         for category in ("authority", "featured", "case")
         for kind in ("article", "video")
     }
+    primary_pairs = {
+        category: main._select_category_resource_pair(resources, category, "zh-CN")
+        for category in ("authority", "featured", "case")
+    }
+    assert all(
+        {resource["kind"] for resource in pair} == {"article", "video"}
+        for pair in primary_pairs.values()
+    )
     authority_article = next(
         resource
-        for resource in resources
-        if (resource["content_category"], resource["kind"])
-        == ("authority", "article")
+        for resource in primary_pairs["authority"]
+        if resource["kind"] == "article"
     )
-    videos = [resource for resource in resources if resource["kind"] == "video"]
+    videos = [
+        resource
+        for pair in primary_pairs.values()
+        for resource in pair
+        if resource["kind"] == "video"
+    ]
 
     # Authority articles remain from reviewed institutions outside mainland
     # government sources. The milestone card uses Mayo's exact 10-12 month
     # Simplified-Chinese guide; older cards retain the Hong Kong health service.
-    if card["id"] == "learn_development_milestones":
+    if card["id"] in {
+        "learn_development_milestones",
+        "learn_language_milestones",
+    }:
         assert urlparse(authority_article["url"]).hostname == "www.mayoclinic.org"
         assert "/zh-hans/" in urlparse(authority_article["url"]).path
         assert "Mayo Clinic" in authority_article["publisher"]
-        assert all(resource.get("source_region") != "TW" for resource in resources)
-        assert all(resource.get("script_language") != "zh-Hant" for resource in resources)
+        assert authority_article.get("source_region") == "US"
+        assert authority_article.get("script_language") == "zh-Hans"
     else:
         assert urlparse(authority_article["url"]).hostname == "www.fhs.gov.hk"
         assert urlparse(authority_article["url"]).path.startswith("/sc_chi/")
@@ -1687,14 +1701,26 @@ def test_traditional_resources_are_taiwan_authority_first(card):
     groups = {
         (resource["content_category"], resource["kind"]) for resource in resources
     }
-    assert len(resources) == 6
-    assert groups == {
+    assert len(resources) >= 6
+    assert groups >= {
         (category, kind)
         for category in ("authority", "featured", "case")
         for kind in ("article", "video")
     }
+    primary_pairs = {
+        category: main._select_category_resource_pair(resources, category, "zh-TW")
+        for category in ("authority", "featured", "case")
+    }
+    assert all(
+        {resource["kind"] for resource in pair} == {"article", "video"}
+        for pair in primary_pairs.values()
+    )
+    resources = [resource for pair in primary_pairs.values() for resource in pair]
     assert all(resource["source_region"] == "TW" for resource in resources)
-    assert all("台灣" in resource["language"] for resource in resources)
+    assert all(
+        any(label in resource["language"] for label in ("台灣", "台湾"))
+        for resource in resources
+    )
     authority_resources = [
         resource
         for resource in resources

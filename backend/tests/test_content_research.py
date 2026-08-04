@@ -249,12 +249,12 @@ def _delivery_ready_parsed_bundle() -> dict:
             language = "机构官方简体中文"
             spoken_language = "not_applicable"
         else:
-            url = "https://www.unicef.cn/videos/how-to-responsive-care"
-            publisher = "联合国儿童基金会"
-            title = "观察孩子的需求，并给予积极的回应"
-            source_language = "zh-CN"
+            url = "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5"
+            publisher = "台湾卫生福利部社会及家庭署 · 育儿亲职网"
+            title = "7-12个月宝宝语言发展的亲子游戏"
+            source_language = "zh-TW"
             translation_type = "original"
-            language = "普通话视频 · 简体中文"
+            language = "普通话视频 · 台湾"
             spoken_language = "mandarin"
         resource.update(
             {
@@ -540,6 +540,68 @@ def test_zh_cn_reviewed_chinese_article_displaces_complete_dynamic_english_guide
     )
 
 
+def test_verified_quality_anchors_beat_complete_but_unverified_dynamic_slots():
+    """Fresh search cannot displace reviewed readability and substance anchors."""
+
+    card = deepcopy(LEARNING_CONTENT_BY_ID["learn_language_milestones"])
+    reviewed = reviewed_learning_resource_bundle(
+        card=card,
+        preferred_locale="zh-CN",
+    )
+    assert reviewed is not None
+    candidates = deepcopy(reviewed["resources"])
+    anchor_ids = {
+        "language-sfaa-7-12-authority-video-zh-cn-v1",
+        "language-dxy-six-ways-featured-article-zh-cn-v1",
+        "language-huang-featured-video-zh-cn-v1",
+    }
+    for resource in candidates:
+        if resource["id"] not in anchor_ids:
+            continue
+        resource["id"] = f"dynamic-unverified-{resource['id']}"
+        resource["url"] = f"{resource['url']}&dynamic=1" if "?" in resource["url"] else (
+            f"{resource['url']}?dynamic=1"
+        )
+        resource["research_source"] = "openai_web_search"
+        resource.pop("content_substance_status", None)
+        resource.pop("content_substance_evidence", None)
+        resource.pop("featured_readability_status", None)
+        resource.pop("featured_readability_evidence", None)
+
+    merged = _merge_with_reviewed_resources(
+        {
+            "query": "language milestones",
+            "editor_note": "",
+            "resources": candidates,
+            "cited_source_count": 6,
+            "dynamic_resource_count": 6,
+        },
+        card=card,
+        locale="zh-CN",
+    )
+
+    assert merged is not None
+    authority = main._category_resource_pair_options(
+        merged["resources"],
+        "authority",
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )[0]
+    featured = main._category_resource_pair_options(
+        merged["resources"],
+        "featured",
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )[0]
+    assert {resource["id"] for resource in authority} >= {
+        "language-sfaa-7-12-authority-video-zh-cn-v1"
+    }
+    assert {resource["id"] for resource in featured} == {
+        "language-dxy-six-ways-featured-article-zh-cn-v1",
+        "language-huang-featured-video-zh-cn-v1",
+    }
+
+
 def test_serve_and_return_static_zh_cn_pairs_do_not_lead_with_english():
     """Legacy Chinese library entries must outrank reviewed English guides."""
 
@@ -600,6 +662,113 @@ def test_delivery_contract_accepts_localized_hk_authority_but_rejects_unhealthy_
     assert delivery_lane_rejection_reason(advertisement, "zh-CN") == (
         "commercial_or_ad"
     )
+
+
+def test_unicef_cannot_fill_featured_or_authority_video_delivery_lanes():
+    """A trusted institution can still be the wrong UX source for a lane."""
+
+    article = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["kind"] == "article"
+    )
+    video = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["kind"] == "video"
+    )
+    featured = {
+        **article,
+        "content_category": "featured",
+        "source_quality_lane": "high_readability",
+        "url": "https://www.unicef.cn/parenting-site/how-talk-your-baby",
+    }
+    authority_video = {
+        **video,
+        "content_category": "authority",
+        "source_quality_lane": "primary_evidence",
+        "url": "https://www.unicef.cn/videos/how-to-responsive-care",
+    }
+
+    assert delivery_lane_rejection_reason(featured, "zh-CN") == (
+        "featured_publisher_not_readable_lane"
+    )
+    assert delivery_lane_rejection_reason(authority_video, "zh-CN") == (
+        "authority_video_promotion_only_source"
+    )
+
+
+def test_video_marked_ad_like_is_rejected_before_delivery():
+    video = next(
+        resource
+        for resource in _delivery_ready_parsed_bundle()["resources"]
+        if resource["kind"] == "video"
+    )
+
+    assert delivery_lane_rejection_reason(
+        {**video, "content_substance_status": "ad_like"},
+        "zh-CN",
+    ) == "video_not_substantive"
+
+
+def test_substantive_video_outranks_shorter_unverified_video(monkeypatch):
+    """Short is a tie-breaker at most; useful content wins the primary pair."""
+
+    monkeypatch.setattr(
+        main,
+        "delivery_lane_rejection_reason",
+        lambda *_args, **_kwargs: "",
+    )
+    article = _localization_candidate("featured", "article", "chinese_original")
+    short_video = {
+        **_localization_candidate("featured", "video", "chinese_original"),
+        "id": "short-but-unverified",
+        "url": "https://www.youtube.com/shorts/short-but-shallow",
+    }
+    substantive_video = {
+        **_localization_candidate("featured", "video", "chinese_original"),
+        "id": "complete-eight-minute-explanation",
+        "url": "https://www.youtube.com/watch?v=complete-explanation",
+        "content_substance_status": "verified",
+        "featured_readability_status": "verified",
+    }
+
+    options = main._category_resource_pair_options(
+        [article, short_video, substantive_video],
+        "featured",
+        preferred_locale="zh-CN",
+        require_dynamic=False,
+    )
+
+    assert options
+    assert next(
+        resource for resource in options[0] if resource["kind"] == "video"
+    )["id"] == "complete-eight-minute-explanation"
+
+
+def test_reviewed_language_card_uses_readable_featured_and_substantive_mandarin_video():
+    """The home-card preview and prepared detail must agree on the best pair."""
+
+    resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+    authority = main._reviewed_category_resource_pair(
+        resources,
+        "zh-CN",
+        "authority",
+    )
+    featured = main._reviewed_category_resource_pair(
+        resources,
+        "zh-CN",
+        "featured",
+    )
+
+    assert [resource["id"] for resource in authority] == [
+        "language-mayo-official-translation-article-zh-cn-v1",
+        "language-sfaa-7-12-authority-video-zh-cn-v1",
+    ]
+    assert [resource["id"] for resource in featured] == [
+        "language-dxy-six-ways-featured-article-zh-cn-v1",
+        "language-huang-featured-video-zh-cn-v1",
+    ]
 
 
 def test_reviewed_featured_creator_self_promo_requires_exact_whitelist_review():
@@ -1197,7 +1366,7 @@ def test_creator_seed_name_does_not_boost_an_arbitrary_host():
     assert spoofed_url not in {resource["url"] for resource in parsed["resources"]}
 
 
-def test_zh_cn_prompt_contains_tiered_sources_short_video_and_commercial_guardrails():
+def test_zh_cn_prompt_contains_tiered_sources_content_quality_and_commercial_guardrails():
     prompt = build_research_prompt(
         {
             "id": "learn_sleep_routine",
@@ -1215,7 +1384,10 @@ def test_zh_cn_prompt_contains_tiered_sources_short_video_and_commercial_guardra
     assert "一颗金豆子" in prompt
     assert "奶爸小虹哥" in prompt
     assert "抖音、快手、小红书" in prompt
-    assert "最长不超过10分钟" in prompt
+    assert "至少要有三个具体知识点" in prompt
+    assert "宣传片、机构形象片" in prompt
+    assert "短本身不加分" in prompt
+    assert "最长不超过10分钟" not in prompt
     assert "商业风险" in prompt
     assert "一律不把自述资历当医学权威" in prompt
     assert "台湾来源、繁体中文页面和繁体中文翻译页全部禁止" in prompt
@@ -3333,8 +3505,17 @@ def test_research_endpoint_returns_fallback_when_provider_fails(
     assert research["fallback_reason"] == "no_complete_verified_bundle"
     assert all(
         "zh-CN" in (resource.get("locales") or [])
-        and resource.get("source_region") != "TW"
         for resource in research["resources"]
+    )
+    assert all(
+        resource.get("source_region") != "TW"
+        for resource in research["resources"]
+        if resource.get("kind") == "article"
+    )
+    assert all(
+        resource.get("spoken_language") == "mandarin"
+        for resource in research["resources"]
+        if resource.get("kind") == "video"
     )
 
 
