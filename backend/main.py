@@ -5813,6 +5813,12 @@ def _reviewed_resources_for_context(
             resource
             for resource in resources
             if is_trusted_resource_url(str(resource.get("url") or ""))
+            and not (
+                str(resource.get("content_category") or "") == "case"
+                and str(resource.get("kind") or "") == "article"
+                and case_article_reader_experience_status(resource.get("url"))
+                == "rejected"
+            )
             and _resource_matches_preferred_locale(resource, locale)
             and (
                 topic_context is None

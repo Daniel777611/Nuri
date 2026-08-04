@@ -780,6 +780,18 @@ def test_legacy_text_board_case_article_is_never_user_facing():
     assert main._reviewed_editorial_quality_allowed(mama_case) is True
 
 
+def test_default_and_uncategorized_reviewed_paths_also_exclude_legacy_case_pages():
+    resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+
+    visible = main._reviewed_resources_for_context(resources, "zh-CN")
+
+    assert any(
+        resource["id"] == "language-mama-parent-response-case-article-zh-cn-v1"
+        for resource in visible
+    )
+    assert all("ptt.cc" not in str(resource.get("url") or "") for resource in visible)
+
+
 @pytest.mark.parametrize("child_age_months", [9, 11])
 def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
     child_age_months,
