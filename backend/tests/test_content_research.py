@@ -18,12 +18,14 @@ from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     CASE_FORBIDDEN_PARENT_ORG_IDS,
     LEARNING_CONTENT_BY_ID,
+    case_article_reader_experience_status,
     is_trusted_resource_url,
     resource_parent_org_id,
     source_parent_org_id,
 )
 from backend.content_research import (  # noqa: E402
     CONTENT_CATEGORIES,
+    DELIVERY_SOURCE_CONTRACT_VERSION,
     MAX_RESOURCES_PER_CATEGORY,
     MAX_TOTAL_RESEARCH_RESOURCES,
     MIN_RESOURCES_PER_CATEGORY,
@@ -741,6 +743,43 @@ def test_unicef_campaign_story_cannot_fill_parent_case_lane():
     )
 
 
+def test_legacy_text_board_case_article_is_never_user_facing():
+    resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
+    ptt_case = next(
+        resource
+        for resource in resources
+        if resource["id"]
+        == "language-ptt-turntaking-parent-case-article-zh-cn-v1"
+    )
+    mama_case = next(
+        resource
+        for resource in resources
+        if resource["id"] == "language-mama-parent-response-case-article-zh-cn-v1"
+    )
+
+    assert case_article_reader_experience_status(ptt_case["url"]) == "rejected"
+    ptt_delivery_candidate = {
+        **ptt_case,
+        "research_source": "reviewed_whitelist",
+        "delivery_source_contract": DELIVERY_SOURCE_CONTRACT_VERSION,
+        "link_health_status": "manual_verified",
+        "content_page_type": "article",
+        "commercial_risk": "clear",
+        "display_locale": "zh-CN",
+    }
+    assert delivery_lane_rejection_reason(
+        ptt_delivery_candidate,
+        "zh-CN",
+        require_dynamic=False,
+    ) == (
+        "case_article_poor_reader_experience"
+    )
+    assert main._reviewed_editorial_quality_allowed(ptt_case) is False
+    assert case_article_reader_experience_status(mama_case["url"]) == "verified"
+    assert mama_case["case_reader_experience_status"] == "verified"
+    assert main._reviewed_editorial_quality_allowed(mama_case) is True
+
+
 @pytest.mark.parametrize("child_age_months", [9, 11])
 def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
     child_age_months,
@@ -761,7 +800,7 @@ def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
     )
 
     assert [resource["id"] for resource in pair] == [
-        "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+        "language-mama-parent-response-case-article-zh-cn-v1",
         "language-yayas-parent-sign-case-video-zh-cn-v1",
     ]
     assert {resource["kind"] for resource in pair} == {"article", "video"}
@@ -785,7 +824,7 @@ def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
             "宝宝重复音节、回应名字，也想练习轮流发声和语言沟通",
             9,
             [
-                "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+                "language-mama-parent-response-case-article-zh-cn-v1",
                 "language-yayas-parent-sign-case-video-zh-cn-v1",
             ],
         ),
@@ -794,7 +833,7 @@ def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
             "寶寶重複音節、回應名字，也想練習輪流發聲和語言溝通",
             11,
             [
-                "language-ptt-turntaking-parent-case-article-zh-cn-v1",
+                "language-mama-parent-response-case-article-zh-cn-v1",
                 "language-yayas-parent-sign-case-video-zh-cn-v1",
             ],
         ),
@@ -844,6 +883,11 @@ def test_reviewed_bundle_keeps_parent_case_ready_across_stage_and_chinese_locale
         "case",
         preferred_locale,
     )
+    if card_id == "learn_language_milestones" and preferred_locale == "zh-TW":
+        expected_case_ids = [
+            "language-mombaby-parent-case-article-zh-cn-v1",
+            "language-yayas-parent-sign-case-video-zh-cn-v1",
+        ]
     assert [resource["id"] for resource in pair] == expected_case_ids
     assert all(resource.get("case_process_status") == "verified" for resource in pair)
     video = next(resource for resource in pair if resource["kind"] == "video")

@@ -181,6 +181,26 @@ AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS = frozenset({"unicef"})
 # family creators with a concrete process a similar family can inspect.
 CASE_FORBIDDEN_PARENT_ORG_IDS = frozenset(AUTHORITY_SOURCE_PARENT_ORG_IDS)
 
+# A source may contain a useful first-person account and still be a poor
+# product destination.  Legacy text-board pages are retained only as research
+# evidence; they must never be opened as the user-facing case article.  Modern
+# parenting/editorial and creator platforms receive a positive reader-
+# experience signal, but still have to pass the separate lived-experience,
+# relevance, language and commercial-risk gates.
+CASE_ARTICLE_BLOCKED_USER_FACING_HOSTS = frozenset({"ptt.cc"})
+CASE_ARTICLE_PREFERRED_USER_FACING_HOSTS = frozenset(
+    {
+        "babytree.com",
+        "mama.cn",
+        "mombaby.com.tw",
+        "mamibuy.com.tw",
+        "mamilove.com.tw",
+        "parenting.com.tw",
+        "mommycarry.com",
+        "xiaohongshu.com",
+    }
+)
+
 
 def source_domains_for_parent_orgs(parent_org_ids: set[str] | frozenset[str]) -> tuple[str, ...]:
     """Return deterministic discovery domains for an approved organization set."""
@@ -230,6 +250,25 @@ def _source_hostname(url: object) -> str:
         return ""
     hostname = parsed.hostname.casefold().rstrip(".")
     return hostname[4:] if hostname.startswith("www.") else hostname
+
+
+def case_article_reader_experience_status(url: object) -> str:
+    """Classify whether a case article is suitable as an external destination."""
+
+    hostname = _source_hostname(url)
+    if not hostname:
+        return "unverified"
+    if any(
+        hostname == blocked or hostname.endswith(f".{blocked}")
+        for blocked in CASE_ARTICLE_BLOCKED_USER_FACING_HOSTS
+    ):
+        return "rejected"
+    if any(
+        hostname == preferred or hostname.endswith(f".{preferred}")
+        for preferred in CASE_ARTICLE_PREFERRED_USER_FACING_HOSTS
+    ):
+        return "verified"
+    return "unverified"
 
 
 def source_parent_org_id(url: object) -> str:
@@ -357,6 +396,7 @@ REVIEWED_EXACT_RESOURCE_URLS = frozenset(
         "https://www.bilibili.com/video/BV1BH4y1U7yg",
         "https://m.dxy.com/article/7223",
         "https://www.youtube.com/watch?v=yzRi9GlSptM",
+        "https://m.mama.cn/q/topic/101307595",
         "https://babyedu.sfaa.gov.tw/info/10000150?lang=Big5",
         "https://babyedu.sfaa.gov.tw/info/10000094",
         "https://www.mombaby.com.tw/articles/9920801",
@@ -2226,6 +2266,36 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
                 "url": "https://www.bilibili.com/video/BV1BH4y1U7yg",
             },
             {
+                "id": "language-mama-parent-response-case-article-zh-cn-v1",
+                "kind": "article",
+                "content_category": "case",
+                "source_tier": "curated",
+                "selection_basis": "lived_experience",
+                "title": "二胎妈妈的调整：每天留 15 分钟认真回应宝宝",
+                "publisher": "妈妈网孕育社区 · 王美宝的妈妈",
+                "language": "简体中文",
+                "locales": ["zh-CN"],
+                "source_region": "CN",
+                "script_language": "zh-Hans",
+                "age_range_months": [8, 12],
+                "focus_tags": [
+                    *_LANGUAGE_MILESTONE_FOCUS_TAGS,
+                    "咿呀发声",
+                    "轮流回应",
+                    "忙碌家长",
+                    "高质量陪伴",
+                ],
+                "description": "一位二胎妈妈回顾自己过去只顾喂奶换尿布的困境，后来改为每天留出 15 分钟聊天，在宝宝咿呀发声时认真接话，并把洗澡和玩积木变成来回互动。",
+                "trust_note": "公开第一人称父母经历；正文没有产品植入。作者记录的是自家调整与观察，不能据此推断陪伴方式与孩子后续表现之间存在医学因果关系。",
+                "recognition": "同阶段二胎妈妈 · 页面标注宝宝 9 个月 15 天 · 真实社区讨论",
+                "selection_reason": "与当前连续音节、回应式交流和忙碌家长怎样挤出有效陪伴时间直接对应；能够看到家长发现问题、调整日常做法和回看结果的完整过程。",
+                "case_process_status": "verified",
+                "case_process_evidence": "作者先比较养育大宝时只处理吃喝拉撒的做法，再说明二宝阶段怎样固定 15 分钟聊天、回应咿呀声、在洗澡与积木游戏中形成来回互动，并记录后续观察。",
+                "case_evidence": "真实二胎妈妈说明原先做法带来的困扰，列出三项后来实际尝试的方法和家庭反馈；相关推荐中的商业内容不属于本案例正文。",
+                "case_evidence_url": "https://m.mama.cn/q/topic/101307595",
+                "url": "https://m.mama.cn/q/topic/101307595",
+            },
+            {
                 "id": "language-ptt-turntaking-parent-case-article-zh-cn-v1",
                 "kind": "article",
                 "content_category": "case",
@@ -2266,7 +2336,7 @@ _REVIEWED_LANGUAGE_MILESTONES_ZH_CN_RESOURCES = [
                 "locales": ["zh-CN", "zh-TW"],
                 "source_region": "TW",
                 "script_language": "zh-Hant",
-                "age_range_months": [6, 10],
+                "age_range_months": [6, 12],
                 "focus_tags": [*_LANGUAGE_MILESTONE_FOCUS_TAGS, "轮流对话", "忙碌家长"],
                 "description": "一位妈妈写下自己做家事、喂饭和照顾宝宝时怎样持续说旁白、回应发声，并把宝宝听不懂的“胖星语”当成来回交流。",
                 "trust_note": "公开第一人称育儿经历；作者把家庭做法与发展资料并列，不把自己孩子的表现当作所有宝宝的标准。",
@@ -2808,7 +2878,7 @@ _REVIEWED_CHINESE_FALLBACK_RESOURCES_BY_CARD_ID.update(
     }
 )
 
-_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
+_DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v5-case-reader-experience"
 _NURI_GUIDE_DISCLAIMER = (
     "外部内容为英文原文；中文内容由 NURI 导读，不是发布机构的官方翻译；"
     "重要结论请以原文为准。"
@@ -2928,6 +2998,19 @@ def _reviewed_localized_delivery_resource(resource: dict) -> dict:
             ]
         )
     )
+    if category == "case" and kind == "article":
+        reader_status = case_article_reader_experience_status(value.get("url"))
+        value.setdefault("case_reader_experience_status", reader_status)
+        value.setdefault(
+            "case_reader_experience_evidence",
+            (
+                "已核验为现代育儿或创作者内容页，正文可直接阅读。"
+                if reader_status == "verified"
+                else "旧式论坛文字页仅可作为研究证据，不作为用户外链。"
+                if reader_status == "rejected"
+                else "尚未完成用户可见页面体验审核。"
+            ),
+        )
     value.setdefault(
         "translation_type",
         "official_translation" if official_translation else "original",

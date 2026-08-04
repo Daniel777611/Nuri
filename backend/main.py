@@ -60,6 +60,7 @@ try:
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        case_article_reader_experience_status,
         is_trusted_resource_url,
         order_learning_resources,
         resource_parent_org_id as policy_resource_parent_org_id,
@@ -114,6 +115,7 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         US_AUTHORITY_SOURCE_PARENT_ORG_IDS,
+        case_article_reader_experience_status,
         is_trusted_resource_url,
         order_learning_resources,
         resource_parent_org_id as policy_resource_parent_org_id,
@@ -5133,6 +5135,10 @@ def _delivery_resource_sort_key(
     case_process_status = str(
         resource.get("case_process_status") or ""
     ).casefold()
+    case_reader_status = str(
+        resource.get("case_reader_experience_status")
+        or case_article_reader_experience_status(resource.get("url"))
+    ).casefold()
     if str(resource.get("kind") or "") == "video":
         if substance_status in {"ad_like", "rejected"}:
             quality_priority = 90
@@ -5148,6 +5154,11 @@ def _delivery_resource_sort_key(
             quality_priority = 90
         elif case_process_status != "verified":
             quality_priority = max(quality_priority, 1)
+        if str(resource.get("kind") or "") == "article":
+            if case_reader_status == "rejected":
+                quality_priority = 90
+            elif case_reader_status != "verified":
+                quality_priority = max(quality_priority, 1)
 
     authority_priority = 0
     if content_category == "authority":
@@ -5543,6 +5554,12 @@ def _reviewed_editorial_quality_allowed(resource: dict) -> bool:
     ):
         return False
     if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
+        return False
+    if (
+        category == "case"
+        and kind == "article"
+        and case_article_reader_experience_status(resource.get("url")) == "rejected"
+    ):
         return False
     if category == "case":
         case_process_status = str(

@@ -34,6 +34,7 @@ try:
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
+        case_article_reader_experience_status,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
         resource_parent_org_id,
@@ -49,6 +50,7 @@ except ImportError:  # pragma: no cover - direct module execution compatibility
         ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS,
         FEATURED_FORBIDDEN_PARENT_ORG_IDS,
         FEATURED_SOURCE_PARENT_ORG_IDS,
+        case_article_reader_experience_status,
         is_reviewed_exact_resource_url,
         is_trusted_resource_url,
         resource_parent_org_id,
@@ -83,8 +85,8 @@ _CACHE_MAX_ITEMS = int(os.getenv("CONTENT_RESEARCH_CACHE_MAX_ITEMS", "128"))
 _RESEARCH_CACHE: "OrderedDict[str, tuple[float, Optional[dict]]]" = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 _INFLIGHT: dict[str, threading.Event] = {}
-_RESEARCH_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
-DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
+_RESEARCH_CONTRACT_VERSION = "source-lanes-v5-case-reader-experience"
+DELIVERY_SOURCE_CONTRACT_VERSION = "source-lanes-v5-case-reader-experience"
 
 _FEEDBACK_PREFERENCE_CODES = frozenset(
     {
@@ -1013,6 +1015,12 @@ def _resource_source_category_allowed(
         return False
     if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
         return False
+    if (
+        category == "case"
+        and kind == "article"
+        and case_article_reader_experience_status(resource.get("url")) == "rejected"
+    ):
+        return False
     if category == "authority":
         return _is_allowed_authority_resource(resource, locale)
     # A hospital explainer or professional-platform post is not a parent case,
@@ -1196,6 +1204,10 @@ def _zh_cn_source_priority(resource: dict) -> int:
     case_process_status = str(
         resource.get("case_process_status") or ""
     ).casefold()
+    case_reader_status = str(
+        resource.get("case_reader_experience_status")
+        or case_article_reader_experience_status(resource.get("url"))
+    ).casefold()
 
     # The ordering is deliberate and large enough to dominate weaker source
     # tie-breakers below: official Chinese edition, reviewed Chinese original,
@@ -1234,6 +1246,11 @@ def _zh_cn_source_priority(resource: dict) -> int:
             score += 50
         elif case_process_status in {"promotion_only", "rejected"}:
             score -= 1000
+        if kind == "article":
+            if case_reader_status == "verified":
+                score += 80
+            elif case_reader_status == "rejected":
+                score -= 1000
     if category == "authority" and _is_zh_cn_hospital_resource(resource):
         score += 10
     elif (
@@ -2258,6 +2275,22 @@ def _normalize_dynamic_resource(
             if category == "case" and _case_evidence_has_practical_process(raw)
             else ""
         ),
+        "case_reader_experience_status": (
+            case_article_reader_experience_status(url)
+            if category == "case" and kind == "article"
+            else ""
+        ),
+        "case_reader_experience_evidence": (
+            "具体内容页位于现代育儿或创作者平台，可直接阅读正文。"
+            if category == "case"
+            and kind == "article"
+            and case_article_reader_experience_status(url) == "verified"
+            else "旧式论坛页面不作为用户可见的案例文章。"
+            if category == "case"
+            and kind == "article"
+            and case_article_reader_experience_status(url) == "rejected"
+            else ""
+        ),
         "content_substance_status": (
             "verified"
             if category == "case"
@@ -2376,6 +2409,13 @@ def delivery_lane_rejection_reason(
         return "authority_video_promotion_only_source"
     if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
         return "case_institutional_campaign_source"
+    if category == "case" and kind == "article":
+        case_reader_status = str(
+            resource.get("case_reader_experience_status")
+            or case_article_reader_experience_status(resource.get("url"))
+        ).casefold()
+        if case_reader_status == "rejected":
+            return "case_article_poor_reader_experience"
     if category == "authority":
         if str(resource.get("source_quality_lane") or "") != "primary_evidence":
             return "authority_not_primary_evidence"
@@ -3127,8 +3167,8 @@ def _source_priority_policy(locale: str) -> str:
         "丁香医生、丁香妈妈、小荷医典等专业平台只能归入 featured，且必须同页显示可核验作者、审核人和审核依据，或 URL 已逐条审核。"
         "妈妈网 (mama.cn)、亲贝网 (qinbei.com)、育儿网 (ci123.com)、宝宝树 (babytree.com)、"
         "中国孕婴童网 (baobaoshiye.cn) 不做整站召回；只有逐条审核的 exact URL 可以进入。\n"
-        f"- case 优先真实家庭经历与父亲视角：{cases}。优先小红书具体公开笔记、YouTube/Bilibili"
-        "优秀父母创作者和可公开直达的第一人称家长文章；搜索页、账号主页和机构公益片不能进入。"
+        f"- case 优先真实家庭经历与父亲视角：{cases}。优先小红书具体公开笔记、宝宝树/妈妈宝宝等现代育儿网站、YouTube/Bilibili"
+        "优秀父母创作者和可公开直达的第一人称家长文章；旧式 BBS/论坛文字页、搜索页、账号主页和机构公益片不能进入用户可见结果。"
         "必须同时写清相似家庭遇到的具体问题、父母尝试或调整了什么、以及结果/取舍/反思，"
         "不能只给萌娃画面、里程碑讲解或一句‘真实家庭’标签。个人经验不代表医疗建议。\n"
         "- 视频先看主题与月龄是否准确、内容是否有实质、讲解或示范是否完整；至少要有三个具体知识点，或一段能让家长照着做的完整示范。"

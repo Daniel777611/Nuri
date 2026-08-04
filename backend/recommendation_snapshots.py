@@ -20,10 +20,11 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 SNAPSHOT_VERSION = 5
-SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v7-parent-case-value"
-SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v4-parent-case-value"
-# Source semantics changed materially in v7: old ready packages may use an
-# institutional campaign clip or an explainer relabelled as a parent case.
+SNAPSHOT_CONTEXT_VERSION = "delivery-source-lanes-v8-case-reader-experience"
+SNAPSHOT_SOURCE_CONTRACT_VERSION = "source-lanes-v5-case-reader-experience"
+# Source semantics changed materially in v8: old ready packages may expose a
+# legacy text-board page even when its first-person account passed the case
+# evidence checks. Rebuild them with the user-facing reader-experience gate.
 # Treat those snapshots as cache entries, not durable user data, and rebuild.
 SUPPORTED_SNAPSHOT_VERSIONS = frozenset({SNAPSHOT_VERSION})
 SNAPSHOT_TTL_DAYS = 90
