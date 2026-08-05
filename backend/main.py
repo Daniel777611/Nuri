@@ -2049,7 +2049,13 @@ cited（你在正文里引用了哪几条来源）：
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
 # 更早的重要信息依赖 memory_ctx（user_memories，每轮都在后台持续提炼）保留，
 # 而不是逐字重放整段历史。
-_HISTORY_WINDOW = 40
+# Turns of raw history resent with every call. Halved from 40 after the logs
+# showed prompt tokens running 15x completion — 8,206 against 554 per turn —
+# because every call replays the window in full and NURI's replies are long.
+# The window overlaps with what user_memories exists to do: distil the older
+# conversation so it need not be replayed verbatim. Twenty turns still reaches
+# well past anything the parent is still holding in mind.
+_HISTORY_WINDOW = int(os.getenv("CHAT_HISTORY_WINDOW", "20"))
 
 _NURI_RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -2112,8 +2118,11 @@ def _nuri_messages(
     """Assemble the system prompt and history window. Shared by the blocking and
     streaming reply paths so the two can't drift apart."""
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
-    if internal_ctx:
-        system += f"\n\n{internal_ctx}"
+    # Ordered most stable first, most per-turn last. OpenAI caches the longest
+    # identical prefix across calls, so a block that changes every turn placed
+    # early truncates the cache to whatever precedes it. style and profile
+    # barely move; internal_ctx is retrieved per question and sources are
+    # fetched fresh, so both belong at the end.
     if style_ctx:
         system += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
     if profile_ctx:
@@ -2122,6 +2131,8 @@ def _nuri_messages(
         system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
     if card_ctx:
         system += f"\n\n本次对话相关内容：\n{card_ctx}"
+    if internal_ctx:
+        system += f"\n\n{internal_ctx}"
     if sources_ctx:
         # Last, and after the internal rules on purpose: external pages are the
         # weakest tier of context NURI has, and the block itself says so.
@@ -2936,11 +2947,38 @@ async def _upsert_memories(
         except Exception as e:
             print(f"[warn] _upsert_memories key={key}: {e}")
 
+#: A parent message shorter than this rarely carries a durable fact. "嗯"、
+#: "好的"、"谢谢" are the common case, and running an extraction over them is a
+#: model call spent to be told there is nothing to remember.
+MEMORY_MIN_USER_CHARS = int(os.getenv("MEMORY_MIN_USER_CHARS", "12"))
+
+
+def _worth_extracting(history: list[dict]) -> bool:
+    """Whether this turn plausibly contains something to remember.
+
+    Extraction used to run on every single turn. It is a background task so it
+    never cost latency, but it did cost a model call each time — including for
+    acknowledgements and thanks, which by definition state nothing new.
+    """
+    latest = next(
+        (m for m in reversed(history) if m.get("role") == "user" and (m.get("text") or "").strip()),
+        None,
+    )
+    if not latest:
+        return False
+    text = (latest.get("text") or "").strip()
+    if text == "[图片]":
+        return False
+    return len(text) >= MEMORY_MIN_USER_CHARS
+
+
 async def _extract_and_upsert_memories(
     history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
 ) -> None:
     """Runs as a fire-and-forget background task so memory extraction never adds
     latency to the chat reply (or task update) the user is waiting on."""
+    if not _worth_extracting(history):
+        return
     try:
         memories = await anyio.to_thread.run_sync(lambda: _extract_memories_sync(history))
         await _upsert_memories(memories, user_id=user_id, child_id=None, source_type=source_type, source_id=source_id)
