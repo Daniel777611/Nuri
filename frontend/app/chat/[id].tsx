@@ -18,6 +18,7 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
+import * as WebBrowser from "expo-web-browser";
 import Toast from "@/src/components/Toast";
 import { api, isStreamUnsupported } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
@@ -38,7 +39,97 @@ type Msg = {
   image_base64?: string | null;
   quick_replies?: string[];
   transition?: any;
+  sources?: Source[];
 };
+
+// Built server-side from the search results the backend fetched, indexed by the
+// citation numbers the model emitted — the model never writes a URL, so a link
+// here can't be invented.
+type Source = {
+  n: number;
+  title: string;
+  url: string;
+  site_name: string;
+  lang: "en" | "zh";
+  tier: "authority" | "good" | "neutral";
+};
+
+// ── Sub-component: inline markup ────────────────────────────────────────────
+// The model writes two things a plain <Text> renders as literal characters:
+// **bold** headings, which is how alternative approaches get their titles, and
+// [1] citation markers. Both are handled in one pass so a heading containing a
+// citation doesn't need either rule to know about the other.
+//
+// Segments are nested <Text>, not <Pressable> or <View>: anything else breaks
+// wrapping mid-paragraph.
+const MARKUP_RE = /(\*\*[^*\n]+\*\*)|(\[\d{1,2}\])/g;
+
+function RichText({ text, sources }: { text: string; sources: Source[] }) {
+  const byIndex = new Map(sources.map((s) => [s.n, s]));
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  MARKUP_RE.lastIndex = 0;
+  while ((match = MARKUP_RE.exec(text)) !== null) {
+    const token = match[0];
+    const isBold = token.startsWith("**");
+    // A citation number with no matching source stays literal: the model
+    // occasionally writes [1] as list punctuation, and a dead tap target
+    // would be worse than leaving it alone.
+    const source = isBold ? undefined : byIndex.get(Number(token.slice(1, -1)));
+    if (!isBold && !source) continue;
+
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    parts.push(
+      isBold ? (
+        <Text key={`b${match.index}`} style={styles.bold}>
+          {token.slice(2, -2)}
+        </Text>
+      ) : (
+        <Text
+          key={`c${match.index}`}
+          style={styles.citationMark}
+          onPress={() => WebBrowser.openBrowserAsync(source!.url).catch(() => {})}
+        >
+          {` ${source!.n} `}
+        </Text>
+      ),
+    );
+    cursor = match.index + token.length;
+  }
+  if (!parts.length) return <>{text}</>;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
+// ── Sub-component: cited sources ────────────────────────────────────────────
+// Numbered to match the [1] [2] markers in the reply. Authority sources are
+// marked because the institution is the trust signal — "AAP" tells a parent
+// something that "healthychildren.org" does not.
+function SourceChips({ sources }: { sources: Source[] }) {
+  return (
+    <View style={styles.sources}>
+      <Text style={styles.sourcesLabel}>参考来源</Text>
+      <View style={styles.sourceRow}>
+        {sources.map((s) => (
+          <Pressable
+            key={`${s.n}-${s.url}`}
+            onPress={() => WebBrowser.openBrowserAsync(s.url).catch(() => {})}
+            style={[styles.sourceChip, s.tier === "authority" && styles.sourceChipAuthority]}
+            testID={`source-${s.n}`}
+          >
+            <Text style={styles.sourceIndex}>{s.n}</Text>
+            <Text style={styles.sourceName} numberOfLines={1}>
+              {s.site_name}
+            </Text>
+            {s.lang === "en" ? <Text style={styles.sourceLang}>EN</Text> : null}
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
 
 // ── Sub-component: avatar ────────────────────────────────────────────────────
 function NuriAvatar({ size = 34 }: { size?: number }) {
@@ -440,9 +531,14 @@ function MessageBubble({
         ) : null}
         {msg.text ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
-            {msg.text}
+            {isAI ? (
+              <RichText text={msg.text} sources={msg.sources ?? []} />
+            ) : (
+              msg.text
+            )}
           </Text>
         ) : null}
+        {isAI && msg.sources?.length ? <SourceChips sources={msg.sources} /> : null}
       </View>
     </View>
   );
@@ -570,6 +666,43 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.surfaceTertiary,
   },
+
+  bold: { fontWeight: "700" },
+  // Sits inline in a sentence, so it has to read as a marker rather than as a
+  // word: small, tinted, and padded enough to be tappable without pushing the
+  // surrounding line height around.
+  citationMark: {
+    color: colors.brand,
+    fontSize: 11,
+    fontWeight: "700",
+    backgroundColor: "#EFEBFD",
+  },
+  sources: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(58,47,90,0.10)",
+  },
+  sourcesLabel: { fontSize: 11, color: colors.muted, marginBottom: 6 },
+  sourceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  sourceChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    maxWidth: "100%",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: "#FFFFFF",
+    borderColor: colors.border,
+    borderWidth: 1,
+  },
+  // Institutional sources are visually distinct: for a parenting question the
+  // publisher is most of the signal.
+  sourceChipAuthority: { borderColor: colors.brand, backgroundColor: "#F4F1FE" },
+  sourceIndex: { fontSize: 10, fontWeight: "700", color: colors.brand },
+  sourceName: { fontSize: 11, color: colors.onSurface, flexShrink: 1 },
+  sourceLang: { fontSize: 9, color: colors.muted, fontWeight: "700" },
 
   typingBubble: { paddingVertical: spacing.md },
   dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },
