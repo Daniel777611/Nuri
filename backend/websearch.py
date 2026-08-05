@@ -293,6 +293,18 @@ def rules_from_rows(rows: Iterable[dict]) -> DomainRules:
     return DomainRules(tiers=tiers, names=names, langs=langs)
 
 
+def cached_domain_rules() -> DomainRules:
+    """The last-loaded rules, without touching the database.
+
+    For synchronous callers on hot validation paths — content_library's
+    trust check runs inside per-candidate gates and cannot await. The cache is
+    warmed at startup and refreshed by load_domain_rules() on the chat path, so
+    in practice it is populated; when it isn't, callers get empty rules and fall
+    back to whatever they used before this table existed.
+    """
+    return _rules_cache if _rules_cache is not None else EMPTY_RULES
+
+
 def clear_rules_cache() -> None:
     """Drop the cached table. Call after an admin edit so a bad source stops
     being cited immediately rather than up to the TTL later."""

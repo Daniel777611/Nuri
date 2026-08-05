@@ -153,6 +153,27 @@ insert into public.source_domains (domain, tier, lang, site_name, note) values
   ('shchildren.com.cn', 'authority', 'zh', '上海儿童医学中心',  '')
 on conflict (domain) do nothing;
 
+-- Merged in from content_library.TRUSTED_RESOURCE_HOSTS, the parallel
+-- whitelist the recommendation pipeline grew. Both now read this table:
+-- is_trusted_resource_url() consults it and treats `blocked` here as a veto,
+-- so a publisher retired in one place is retired for both rather than
+-- surviving in whichever list nobody remembered to edit.
+--
+-- Every one is a government body, public hospital or academic centre, so they
+-- all land at authority. The Taiwanese hospital newsletters are the reason the
+-- Chinese authority tier was thin: they publish parent-facing material that
+-- the mainland sources here mostly don't.
+insert into public.source_domains (domain, tier, lang, site_name, note) values
+  ('asha.org',                    'authority', 'en',  'ASHA',        'American Speech-Language-Hearing Association'),
+  ('developingchild.harvard.edu', 'authority', 'en',  'Harvard CDC', 'Center on the Developing Child'),
+  ('babyedu.sfaa.gov.tw',         'authority', 'zh',  '台灣育兒親職網', '衛福部社家署'),
+  ('wellbeing.mohw.gov.tw',       'authority', 'zh',  '台灣衛福部',    ''),
+  ('hch.gov.tw',                  'authority', 'zh',  '台灣部立醫院',  ''),
+  ('cmuh.org.tw',                 'authority', 'zh',  '中國醫藥大學附設醫院', ''),
+  ('epaper.ntuh.gov.tw',          'authority', 'zh',  '台大醫院',      '健康電子報'),
+  ('wd.vghtpe.gov.tw',            'authority', 'zh',  '台北榮總',      '')
+on conflict (domain) do nothing;
+
 -- ── Pending a call from the team ─────────────────────────────────────────────
 -- Left unseeded on purpose. Each has a genuinely wide quality spread, and
 -- picking a tier is a product judgement rather than an engineering one:

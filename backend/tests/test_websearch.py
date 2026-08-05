@@ -351,3 +351,51 @@ def test_prompt_block_numbers_sources_and_states_the_citation_rules():
     assert "不要自己写 URL" in block
     assert "不得推翻内部知识库" in block
     assert "点名机构" in block
+
+
+# ── Shared trust surface ─────────────────────────────────────────────────────
+# content_library gates published recommendation content and reads the same
+# table through cached_domain_rules(). These pin the contract between them.
+
+def test_cached_rules_are_empty_before_anything_loads(monkeypatch):
+    """The sync accessor must never reach for the database. Callers on hot
+    validation paths fall back to their own list when it returns empty."""
+    import backend.websearch as w
+
+    monkeypatch.setattr(w, "_rules_cache", None)
+    assert w.cached_domain_rules().tiers == {}
+
+
+def test_blocked_in_the_table_vetoes_the_python_whitelist(monkeypatch):
+    """One source of truth is worth little if retiring a publisher means
+    knowing which of two lists to remove it from."""
+    import backend.websearch as w
+    from backend.content_library import TRUSTED_RESOURCE_HOSTS, is_trusted_resource_url
+
+    host = next(h for h in TRUSTED_RESOURCE_HOSTS if not h.startswith("www."))
+    monkeypatch.setattr(w, "_rules_cache", rules_from_rows([
+        {"domain": host, "tier": "blocked", "lang": "en", "site_name": ""},
+    ]))
+    assert not is_trusted_resource_url(f"https://{host}/anything")
+
+
+def test_table_authority_grants_trust_without_a_deploy(monkeypatch):
+    import backend.websearch as w
+    from backend.content_library import is_trusted_resource_url
+
+    monkeypatch.setattr(w, "_rules_cache", rules_from_rows([
+        {"domain": "newly-added.example", "tier": "authority", "lang": "en", "site_name": "X"},
+    ]))
+    assert is_trusted_resource_url("https://newly-added.example/page")
+
+
+def test_neutral_is_not_an_endorsement(monkeypatch):
+    """Nobody has judged the domain, which is not the same as vouching for it
+    on a path that gates published content."""
+    import backend.websearch as w
+    from backend.content_library import is_trusted_resource_url
+
+    monkeypatch.setattr(w, "_rules_cache", rules_from_rows([
+        {"domain": "unjudged.example", "tier": "neutral", "lang": "en", "site_name": ""},
+    ]))
+    assert not is_trusted_resource_url("https://unjudged.example/page")

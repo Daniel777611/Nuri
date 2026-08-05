@@ -423,16 +423,54 @@ def is_reviewed_exact_resource_url(url: str) -> bool:
     return parsed.scheme == "https" and normalized_url in REVIEWED_EXACT_RESOURCE_URLS
 
 
+def _source_domain_tier(host: str) -> str:
+    """This host's tier in source_domains, or "neutral" when unknown.
+
+    Imported lazily and defensively: content_library is imported by main.py at
+    module scope, and a hard dependency here would turn any websearch import
+    problem into a failure to start the app at all.
+    """
+    if not host:
+        return "neutral"
+    try:
+        from .websearch import cached_domain_rules
+
+        return cached_domain_rules().tier_of(host)
+    except Exception:
+        return "neutral"
+
+
 def is_trusted_resource_url(url: str) -> bool:
-    """Return True only for reviewed HTTPS publisher domains."""
+    """Return True only for reviewed HTTPS publisher domains.
+
+    Consults source_domains in addition to the frozenset above, so the two
+    whitelists this project grew — one in Python for the home feed, one in the
+    database for chat citations — no longer drift apart. Ops can add a
+    publisher without a deploy, and a domain retired in one place is retired
+    for both.
+
+    `blocked` in the table is a veto, overriding even the frozenset: a single
+    source of truth is worth little if removing something requires knowing
+    which of two lists to remove it from. Only `authority` and `good` grant
+    trust; `neutral` means nobody has judged the domain, which is not the same
+    as vouching for it on a path that gates published content.
+    """
 
     try:
         parsed = urlparse(url)
     except (TypeError, ValueError):
         return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
     normalized_url = parsed._replace(fragment="").geturl().rstrip("/")
-    return parsed.scheme == "https" and (
-        (parsed.hostname or "").lower() in TRUSTED_RESOURCE_HOSTS
+
+    tier = _source_domain_tier(host)
+    if tier == "blocked":
+        return False
+    return (
+        tier in ("authority", "good")
+        or host in TRUSTED_RESOURCE_HOSTS
         or is_reviewed_exact_resource_url(normalized_url)
         or normalized_url in globals().get("REVIEWED_LIBRARY_RESOURCE_URLS", ())
     )
