@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from backend import main  # noqa: E402
+from backend.router import TurnRoute  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -371,7 +372,13 @@ def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypat
     monkeypatch.setattr(main, "oai", object())
 
     async def reply_context(*_args, **_kwargs):
-        return "", "", "", "", ""
+        # A _ReplyContext, not a bare tuple: the block now also carries the
+        # turn's route and any sources fetched for it, and the reply paths read
+        # those by name.
+        return main._ReplyContext(
+            card="", memory="", profile="", style="", internal="",
+            sources="", route=TurnRoute(), search_results=[],
+        )
 
     monkeypatch.setattr(main, "_reply_context", reply_context)
     monkeypatch.setattr(

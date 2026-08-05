@@ -48,6 +48,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import AsyncOpenAI, OpenAI
+
+from backend.router import TurnRoute, route_metrics, route_turn
+from backend.websearch import (
+    get_provider as get_search_provider,
+    load_domain_rules,
+    search_sources,
+    sources_prompt_block,
+)
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.background import BackgroundTask
 
@@ -2029,7 +2037,13 @@ suggest_tasks 和 task_proposals：
   · scope：today（今天做一次）或 week（本周持续）
   · task_type：interaction（亲子互动）、observation（发展观察）、care（照顾陪伴）或 selfcare（家长自我照顾）
   · description：一句具体、可衡量、低负担的说明
-  · steps：1-3条可以直接照做的步骤"""
+  · steps：1-3条可以直接照做的步骤
+
+cited（你在正文里引用了哪几条来源）：
+- 只填系统给你的来源清单里的编号，例如 [1] [3] 就填 [1, 3]
+- 正文里标了几号，这里就填几号，两边必须一致
+- 没有来源清单、或者没有一条真的用得上，就填 []
+- 你永远不需要、也绝对不要自己写出网址"""
 
 # 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
@@ -2071,8 +2085,13 @@ _NURI_RESPONSE_FORMAT = {
                         "additionalProperties": False,
                     },
                 },
+                # Indices into the numbered source list in the prompt — never
+                # URLs. The model physically cannot invent a link it was not
+                # given, which is the one guarantee worth designing the schema
+                # around for a parenting product.
+                "cited": {"type": "array", "items": {"type": "integer"}},
             },
-            "required": ["text", "quick_replies", "suggest_tasks", "task_proposals"],
+            "required": ["text", "quick_replies", "suggest_tasks", "task_proposals", "cited"],
             "additionalProperties": False,
         },
     },
@@ -2088,6 +2107,7 @@ _NURI_FALLBACK = {
 def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "",
 ) -> list[dict]:
     """Assemble the system prompt and history window. Shared by the blocking and
     streaming reply paths so the two can't drift apart."""
@@ -2102,6 +2122,10 @@ def _nuri_messages(
         system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
     if card_ctx:
         system += f"\n\n本次对话相关内容：\n{card_ctx}"
+    if sources_ctx:
+        # Last, and after the internal rules on purpose: external pages are the
+        # weakest tier of context NURI has, and the block itself says so.
+        system += f"\n\n{sources_ctx}"
     msgs = [{"role": "system", "content": system}]
     for m in history[-_HISTORY_WINDOW:]:
         role = "user" if m["role"] == "user" else "assistant"
@@ -2316,11 +2340,13 @@ def _parse_nuri_reply(raw: str) -> dict:
         "quick_replies": data.get("quick_replies", [])[:3],
         "suggest_tasks": bool(data.get("suggest_tasks", False)),
         "task_proposals": _normalize_task_proposals(data.get("task_proposals")),
+        "cited": [n for n in (data.get("cited") or []) if isinstance(n, int)],
     }
 
 def _nuri_reply_sync(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "",
     metrics: Optional["_TurnMetrics"] = None,
 ) -> dict:
     if not oai:
@@ -2330,7 +2356,8 @@ def _nuri_reply_sync(
             "suggest_tasks": False,
             "task_proposals": [],
         }
-    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -2421,6 +2448,7 @@ def _partial_json_string(buf: str, key: str) -> str:
 async def _nuri_reply_stream(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "",
     metrics: Optional["_TurnMetrics"] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
@@ -2432,7 +2460,8 @@ async def _nuri_reply_stream(
             "task_proposals": [],
         }
         return
-    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx)
+    msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -8029,6 +8058,7 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
     step = session.get("step", 0)
     transition = None
     quick_replies: list = []
+    sources: list = []
     if step < len(script):
         nxt = script[step]
         ai_text = nxt["text"]
@@ -8055,26 +8085,84 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
     return ai_text, quick_replies, transition
 
 
+class _ReplyContext(NamedTuple):
+    """Everything assembled before the reply model is called. A NamedTuple
+    rather than a bare tuple because it now carries eight things, and
+    positional unpacking of eight was one refactor away from a silent mix-up."""
+    card: str
+    memory: str
+    profile: str
+    style: str
+    internal: str
+    sources: str                       # rendered allow-list, "" when not searching
+    route: "TurnRoute"
+    search_results: list               # SearchResult objects behind `sources`
+
+
+async def _route_and_search(
+    turn: _Turn, profile_ctx: str, metrics: Optional["_TurnMetrics"],
+) -> tuple["TurnRoute", list]:
+    """Decide what this turn needs from the outside, then fetch it.
+
+    Serial by nature — the search can't start until the router has produced a
+    query — but the pair runs concurrently with the other context blocks, so
+    only the part that isn't hidden behind them lands on first-token latency.
+
+    Distinct from content_research.py, which prepares the home feed's cards
+    ahead of time. This one runs inside the turn and feeds the reply's
+    citations; the two share the source_domains trust table but nothing else.
+
+    Both halves already degrade to "nothing" on failure, so this needs no error
+    handling of its own.
+    """
+    started = time.perf_counter()
+    route = await route_turn(
+        turn.msgs, client=aoai, child_context=profile_ctx,
+    )
+    if metrics:
+        metrics.mark("route_ms", started)
+        metrics.set(**route_metrics(route))
+    if not route.needs_search:
+        return route, []
+
+    started = time.perf_counter()
+    results = await search_sources(
+        route.search_query, zh_query=route.search_query_zh,
+        scope=route.search_scope, is_medical=route.is_medical,
+        sb=_get_supabase(),
+    )
+    if metrics:
+        metrics.mark("search_ms", started)
+        metrics.set(search_hits=len(results), search_provider=get_search_provider().name)
+    return route, results
+
+
 async def _reply_context(
     turn: _Turn, body: "UserMessageIn", metrics: Optional["_TurnMetrics"] = None,
-) -> tuple:
-    """Gather the five prompt context blocks. The four I/O-bound ones run
-    concurrently rather than as serial round trips before the reply starts."""
+) -> _ReplyContext:
+    """Gather the prompt context blocks. The I/O-bound ones run concurrently
+    rather than as serial round trips before the reply starts."""
     started = time.perf_counter()
-    gen_cards, memory_ctx, style_ctx, internal_ctx = await asyncio.gather(
+    profile_ctx = _profile_ctx(turn.context_hints, turn.context_hints.get("children"))
+    gen_cards, memory_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
         _db_get_gen_cards(),
         _get_memory_context(turn.owner_uid),
         _get_style_rules_ctx(),
         anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
+        _route_and_search(turn, profile_ctx, metrics),
     )
+    route, results = routed
     if metrics:
         metrics.mark("context_ms", started)
-    return (
-        _card_ctx(turn.session.get("source_card_id") or "", gen_cards),
-        memory_ctx,
-        _profile_ctx(turn.context_hints, turn.context_hints.get("children")),
-        style_ctx,
-        internal_ctx,
+    return _ReplyContext(
+        card=_card_ctx(turn.session.get("source_card_id") or "", gen_cards),
+        memory=memory_ctx,
+        profile=profile_ctx,
+        style=style_ctx,
+        internal=internal_ctx,
+        sources=sources_prompt_block(results),
+        route=route,
+        search_results=results,
     )
 
 
@@ -8130,21 +8218,59 @@ async def _task_suggestion(
     } if task_list else None
 
 
+def _cited_sources(
+    cited: Optional[list], results: list, metrics: Optional["_TurnMetrics"] = None,
+) -> list[dict]:
+    """Turn the model's citation indices into the links the app renders.
+
+    The model only ever emits numbers, so the URLs here come from the search
+    results this backend fetched — a hallucinated link is not merely discouraged
+    but unrepresentable. Out-of-range indices are dropped rather than clamped;
+    guessing which source was meant would defeat the point.
+    """
+    out, seen = [], set()
+    for n in cited or []:
+        if not isinstance(n, int) or not (1 <= n <= len(results)) or n in seen:
+            continue
+        seen.add(n)
+        r = results[n - 1]
+        out.append({
+            "n": n, "title": r.title, "url": r.url,
+            "site_name": r.site_name, "lang": r.lang, "tier": r.tier,
+        })
+    if metrics:
+        metrics.set(cited_sources=len(out))
+    return out
+
+
 async def _persist_ai_turn(
     session_id: str, turn: _Turn, ai_text: str,
-    quick_replies: list, transition: Optional[dict],
+    quick_replies: list, transition: Optional[dict], sources: Optional[list] = None,
 ) -> dict:
     sb = _get_supabase()
     ai_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": ai_text,
-        "quick_replies": quick_replies, "transition": transition, "created_at": _now(),
+        "quick_replies": quick_replies, "transition": transition,
+        "sources": sources or [], "created_at": _now(),
     }
     if sb:
         try:
             await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(ai_msg).execute())
         except Exception as e:
             print(f"[warn] post_message ai_msg insert: {e}")
+            # `sources` arrives with message_sources_migration.sql. Deploying
+            # ahead of that migration would otherwise stop every AI reply from
+            # being saved at all, which is far worse than losing the links —
+            # so drop the new column and keep the message.
+            legacy = {k: v for k, v in ai_msg.items() if k != "sources"}
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_messages").insert(legacy).execute()
+                )
+                print("[warn] saved without `sources`; run message_sources_migration.sql")
+            except Exception as e2:
+                print(f"[warn] ai_msg insert retry failed: {e2}")
     else:
         turn.msgs.append(ai_msg)
     return ai_msg
@@ -8165,21 +8291,23 @@ async def post_message(
     if turn.fix_text:
         ai_text = await _fix_reply(turn.msgs, turn.fix_text)
     elif oai:
-        ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
+        rc = await _reply_context(turn, body, metrics)
         reply = await anyio.to_thread.run_sync(
             lambda: _nuri_reply_sync(
-                turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
+                turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                rc.internal, rc.sources, metrics,
             )
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
+        sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
         transition = await _task_suggestion(
             reply, turn.msgs, body.text or "", ai_text, metrics
         )
     else:
         ai_text, quick_replies, transition = await _scripted_reply(turn.session, session_id)
 
-    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
 
     # Logged after the reply is built, and only for real model turns — a #fix
     # command or the canned script isn't a generation worth measuring.
@@ -8219,15 +8347,17 @@ async def post_message_stream(
     async def events():
         transition = None
         quick_replies: list = []
+        sources: list = []
         try:
             if turn.fix_text:
                 ai_text = await _fix_reply(turn.msgs, turn.fix_text)
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
-                ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx = await _reply_context(turn, body, metrics)
+                rc = await _reply_context(turn, body, metrics)
                 reply = None
                 async for kind, value in _nuri_reply_stream(
-                    turn.msgs, ctx, memory_ctx, profile_ctx, style_ctx, internal_ctx, metrics
+                    turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                    rc.internal, rc.sources, metrics,
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})
@@ -8236,6 +8366,7 @@ async def post_message_stream(
                 reply = reply or dict(_NURI_FALLBACK)
                 ai_text = reply["text"]
                 quick_replies = reply.get("quick_replies", [])
+                sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
                 # The primary reply normally already carries proposals. If it
                 # does not, the fallback call still runs only after the text is
                 # visible, so it cannot delay the parent's first token.
@@ -8248,7 +8379,7 @@ async def post_message_stream(
                 )
                 yield _sse({"type": "delta", "text": ai_text})
 
-            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition)
+            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
             yield _sse({
                 "type": "done",
                 "user_message": turn.user_msg,
