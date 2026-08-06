@@ -3,10 +3,12 @@ import { useRouter } from "expo-router";
 import { View, ActivityIndicator } from "react-native";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { useT } from "@/src/i18n";
 import { colors } from "@/src/theme";
 
 export default function Index() {
   const router = useRouter();
+  const { setLocale } = useT();
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -38,6 +40,9 @@ export default function Index() {
           return;
         }
 
+        // Adopt the account's saved UI language before the first screen paints,
+        // so a fresh install doesn't open in the wrong one.
+        if (me?.language) await setLocale(me.language);
         const onboarded = !!me?.onboarding_completed;
         await auth.setOnboarded(onboarded);
         router.replace(onboarded ? "/(tabs)" : "/onboarding");
@@ -45,7 +50,7 @@ export default function Index() {
         setChecking(false);
       }
     })();
-  }, [router]);
+  }, [router, setLocale]);
 
   return (
     <View

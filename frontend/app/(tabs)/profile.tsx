@@ -15,17 +15,14 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { completedAgeMonths } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
+import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-const LANGUAGES = [
-  { value: "zh-CN", label: "简中" },
-  { value: "zh-TW", label: "繁中" },
-  { value: "en", label: "English" },
-] as const;
 const FIGMA_FRAME_WIDTH = 402;
 
 export default function Profile() {
   const router = useRouter();
+  const { t, locale, setLocale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const [children, setChildren] = useState<any[]>([]);
@@ -69,14 +66,19 @@ export default function Profile() {
   const updatePrivacy = async (patch: any) => {
     if (privacyUnavailable) return;
     const previous = privacy;
-    const next = { ...privacy, ...patch };
+    // `locale` — not `privacy.language` — is what the parent is looking at, so
+    // toggling an unrelated switch can't push a stale language back up and undo
+    // their choice.
+    const next = { ...privacy, language: locale, ...patch };
     setPrivacy(next);
+    if (patch.language) await setLocale(patch.language);
     try {
       await api.setPrivacy(next);
     } catch {
       // Do not leave a privacy toggle visually enabled/disabled when the
       // persisted setting did not actually save.
       setPrivacy(previous);
+      if (patch.language) await setLocale(locale);
     }
   };
 
@@ -84,13 +86,14 @@ export default function Profile() {
     await api.wipe();
     await auth.clearToken();
     setConfirmWipe(false);
-    router.replace("/register");
+    router.replace("/login");
   };
 
   const logout = async () => {
     await auth.clearToken();
-    // 统一回到已按 Figma 更新的注册入口；已有账号可从该页进入登录。
-    router.replace("/register");
+    // Signed-out users land on login, matching app/index.tsx. Sending them to
+    // register is what had testers typing their credentials into the signup form.
+    router.replace("/login");
   };
 
   return (
@@ -107,19 +110,19 @@ export default function Profile() {
           testID="profile-back-btn"
         >
           <Ionicons name="chevron-back" size={24} color={colors.onSurface} />
-          <Text style={{ fontSize: type.lg, fontWeight: "700", color: colors.onSurface }}>返回</Text>
+          <Text style={{ fontSize: type.lg, fontWeight: "700", color: colors.onSurface }}>{t("返回")}</Text>
         </Pressable>
         <View style={styles.header}>
           <View style={styles.avatar}>
             <Ionicons name="person-outline" size={26} color={colors.brand} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.name}>家长</Text>
-            <Text style={styles.sub}>育儿AI · 北美华人版</Text>
+            <Text style={styles.name}>{t("家长")}</Text>
+            <Text style={styles.sub}>{t("育儿AI · 北美华人版")}</Text>
           </View>
         </View>
 
-        <Section title="孩子信息">
+        <Section title={t("孩子信息")}>
           {children.map((c) => (
             <Pressable
               key={c.id}
@@ -146,15 +149,15 @@ export default function Profile() {
             testID="profile-add-child"
           >
             <Ionicons name="add-circle-outline" size={18} color={colors.brand} />
-            <Text style={styles.addRowText}>添加孩子</Text>
+            <Text style={styles.addRowText}>{t("添加孩子")}</Text>
           </Pressable>
         </Section>
 
-        <Section title="我的收藏">
+        <Section title={t("我的收藏")}>
           {favorites.length === 0 ? (
             <View style={{ padding: spacing.md }}>
               <Text style={{ color: colors.muted, fontSize: 14 }}>
-                还没有收藏。在首页或详情页点击 ★ 即可收藏。
+                {t("还没有收藏。在首页或详情页点击 ★ 即可收藏。")}
               </Text>
             </View>
           ) : (
@@ -180,7 +183,7 @@ export default function Profile() {
           )}
         </Section>
 
-        <Section title="隐私设置">
+        <Section title={t("隐私设置")}>
           <View style={styles.policy} testID="privacy-policy-card">
             <Ionicons
               name="shield-checkmark-outline"
@@ -246,29 +249,33 @@ export default function Profile() {
             testID="privacy-wipe-btn"
           >
             <Ionicons name="trash-outline" size={16} color={colors.error} />
-            <Text style={styles.dangerText}>删除我的所有数据</Text>
+            <Text style={styles.dangerText}>{t("删除我的所有数据")}</Text>
           </Pressable>
         </Section>
 
-        <Section title="账户">
+        <Section title={t("账户")}>
           <View style={styles.langRow}>
-            <Text style={styles.langLabel}>语言偏好</Text>
+            <Text style={styles.langLabel}>{t("语言偏好")}</Text>
             <View style={styles.languageOptions}>
-              {LANGUAGES.map((language) => {
-                const active = (privacy.language === "zh" ? "zh-CN" : privacy.language) === language.value;
+              {LOCALES.map((value) => {
+                // Compared against the live locale, not the stored setting:
+                // the rendered language is what the parent is actually seeing.
+                const active = locale === value;
                 return (
                   <Pressable
-                    key={language.value}
-                    onPress={() => updatePrivacy({ language: language.value })}
+                    key={value}
+                    onPress={() => updatePrivacy({ language: value })}
                     disabled={privacyUnavailable}
                     style={[
                       styles.languageOption,
                       active && styles.languageOptionActive,
                       privacyUnavailable && styles.disabledControl,
                     ]}
-                    testID={`profile-language-${language.value}`}
+                    testID={`profile-language-${value}`}
                   >
-                    <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>{language.label}</Text>
+                    <Text style={[styles.languageOptionText, active && styles.languageOptionTextActive]}>
+                      {LOCALE_LABELS[value]}
+                    </Text>
                   </Pressable>
                 );
               })}
