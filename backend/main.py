@@ -50,9 +50,11 @@ from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
+from backend import locales, memstore, runtime, stores
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
 from backend.nuri_core import knowledge_store as core_knowledge_store
 from backend.nuri_core import outcome as core_outcome
+from backend.nuri_core import outcome_store as core_outcome_store
 from backend.nuri_core import provenance as core_provenance
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
@@ -220,10 +222,20 @@ from backend.runtime import (  # noqa: E402
     content_research_limiter,
     content_research_oai,
     elapsed_ms as _ms,
-    get_supabase as _get_supabase,
     now as _now,
     oai,
 )
+
+def _get_supabase():
+    """The Supabase handle, resolved through the runtime module every call.
+
+    A wrapper rather than `get_supabase as _get_supabase`, because the import
+    form binds the function object: patching `runtime.get_supabase` would then
+    reach every store module and silently miss this one, which is the worst
+    possible half. One seam, and it is `backend.runtime.get_supabase`.
+    """
+    return runtime.get_supabase()
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -256,46 +268,16 @@ app.add_middleware(
 )
 
 # ── In-memory stores ─────────────────────────────────────────────────────────
-_users_email: dict[str, dict] = {}     # email -> user doc
-_users_id:    dict[str, dict] = {}     # id    -> user doc
-_children:    list[dict]      = []
-_sessions:    dict[str, dict] = {}     # session_id -> session doc
-_messages:    dict[str, list] = {}     # session_id -> [msg, ...]
-_tasks:       list[dict]      = []
-_favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
-_collections: dict[str, list] = {}     # uid_or_anon -> [{id, name, created_at}]
-_fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|None}
-_analytics:   list[dict]      = []
-_privacy:     dict[str, dict] = {}     # uid_or_singleton -> settings
-_recommendation_snapshots: dict[tuple[str, str], dict] = {}
-_recommendation_events: dict[str, list[dict]] = {}
-_recommendation_event_locks: dict[str, asyncio.Lock] = {}
-_recommendation_events_table_available: Optional[bool] = None
-_feed_gen_mode: str           = "ai"  # fallback when Supabase is unavailable
+# The Supabase-unavailable fallbacks live in backend/memstore.py. Reached
+# through the module rather than bound to local names: a local binding is
+# captured at import, so a test that swaps memstore.privacy would leave this
+# file reading the original dict while the store layer wrote to the new one —
+# a monkeypatch that silently stops applying, which is worse than one that
+# fails loudly.
 
-_SUPPORTED_PREFERRED_LOCALES = frozenset({"zh-CN", "zh-TW", "en"})
-
-
-def _normalize_preferred_locale(value: object) -> str:
-    if value == "zh":
-        return "zh-CN"
-    if isinstance(value, str) and value in _SUPPORTED_PREFERRED_LOCALES:
-        return value
-    return "zh-CN"
-
-
-def _with_requested_preferred_locale(
-    context: dict,
-    requested_locale: Optional[str],
-) -> dict:
-    """Apply a one-request resource locale without mutating saved privacy."""
-
-    effective_locale = (
-        requested_locale
-        if requested_locale in _SUPPORTED_PREFERRED_LOCALES
-        else _normalize_preferred_locale(context.get("preferred_locale"))
-    )
-    return {**context, "preferred_locale": effective_locale}
+_SUPPORTED_PREFERRED_LOCALES = locales.SUPPORTED_PREFERRED_LOCALES
+_normalize_preferred_locale = locales.normalize_preferred_locale
+_with_requested_preferred_locale = locales.with_requested_preferred_locale
 
 
 _DEFAULT_PRIVACY = {
@@ -360,1099 +342,39 @@ def _to_public(doc: dict) -> dict:
 
 # ── Supabase persistence helpers ──────────────────────────────────────────────
 
-async def _db_get_gen_cards() -> list[dict]:
-    sb = _get_supabase()
-    if not sb:
-        return []
-    try:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("feed_cards").select("*").order("created_at", desc=True).limit(50).execute()
-        )
-        return res.data or []
-    except Exception as e:
-        print(f"[warn] _db_get_gen_cards: {e}")
-        return []
+# The generic persistence layer moved to backend/stores.py, and the
+# recommendation-engagement stream — the second half of 4 结果学习模型 — to
+# backend/nuri_core/outcome_store.py. Aliased for the routes below.
+_db_get_gen_cards = stores.get_gen_cards
+_db_save_gen_cards = stores.save_gen_cards
+_db_get_feed_mode = stores.get_feed_mode
+_db_set_feed_mode = stores.set_feed_mode
+_DEFAULT_PRIVACY = stores.DEFAULT_PRIVACY
+_PRIVACY_STORAGE_UNAVAILABLE = stores.PRIVACY_STORAGE_UNAVAILABLE
+_normalized_privacy_settings = stores.normalized_privacy_settings
+_privacy_storage_key = stores.privacy_storage_key
+_db_get_privacy = stores.get_privacy
+_db_set_privacy = stores.set_privacy
+_db_delete_privacy = stores.delete_privacy
+_db_persist_recommendation_snapshots = stores.persist_snapshots
+_db_get_recommendation_snapshot = stores.get_snapshot
+_db_get_recommendation_snapshot_persistent = stores.get_snapshot_persistent
+_db_delete_recommendation_snapshots = stores.delete_snapshots
+_db_list_fav_ids = stores.list_fav_ids
+_db_toggle_fav = stores.toggle_fav
+_db_save_fav = stores.save_fav
+_db_list_collections = stores.list_collections
+_db_create_collection = stores.create_collection
+_db_rename_collection = stores.rename_collection
+_db_delete_collection = stores.delete_collection
+
+_db_get_recommendation_events = core_outcome_store.get_events
+_db_append_recommendation_events = core_outcome_store.append_events
+_db_delete_recommendation_events = core_outcome_store.delete_events
+_new_recommendation_event = core_outcome_store.new_event
 
-async def _db_save_gen_cards(cards: list[dict]):
-    sb = _get_supabase()
-    if not sb or not cards:
-        return
-    # Replace previous batch — delete all stored gen cards first
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("feed_cards").delete().eq("source", "ai").execute()
-        )
-    except Exception as e:
-        print(f"[warn] _db_save_gen_cards delete: {e}")
-    rows = [
-        {
-            "id": card["id"], "type": card["type"], "type_label": card["type_label"],
-            "cta": card.get("cta", "问问AI →"), "title": card["title"],
-            "summary": card.get("summary", ""), "body": card.get("body", ""),
-            "tags": card.get("tags", []), "hook_line": card.get("hook_line", ""),
-            "image_url": card.get("image_url", ""), "keywords": card.get("keywords", []),
-            "source": card.get("source", "ai"), "created_at": _now(),
-        }
-        for card in cards
-    ]
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("feed_cards").insert(rows).execute()
-        )
-    except Exception as e:
-        print(f"[warn] _db_save_gen_cards insert: {e}")
 
-async def _db_get_feed_mode() -> str:
-    sb = _get_supabase()
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings").select("value").eq("key", "feed_gen_mode").maybe_single().execute()
-            )
-            if res.data:
-                return str(res.data.get("value", "ai"))
-        except Exception as e:
-            print(f"[warn] _db_get_feed_mode: {e}")
-    return _feed_gen_mode
 
-async def _db_set_feed_mode(mode: str):
-    global _feed_gen_mode
-    _feed_gen_mode = mode
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings").upsert(
-                    {"key": "feed_gen_mode", "value": mode, "updated_at": _now()},
-                    on_conflict="key"
-                ).execute()
-            )
-        except Exception as e:
-            print(f"[warn] _db_set_feed_mode: {e}")
-
-
-def _normalized_privacy_settings(value: object) -> dict:
-    settings = dict(_DEFAULT_PRIVACY)
-    if not isinstance(value, dict):
-        return settings
-    for key in (
-        "allow_history_training",
-        "allow_external_content_research",
-        "daily_push",
-        "anonymous_community_share",
-    ):
-        if isinstance(value.get(key), bool):
-            settings[key] = value[key]
-    settings["language"] = _normalize_preferred_locale(value.get("language"))
-    return settings
-
-
-def _privacy_storage_key(uid: str) -> str:
-    # app_settings predates per-user preferences and may be visible to broader
-    # database roles in older installations. Do not place a raw user ID in it.
-    digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()
-    return f"user_privacy:{digest}"
-
-
-async def _db_get_privacy(uid: Optional[str], fail_closed: bool = False) -> dict:
-    """Load per-user privacy settings from the existing app_settings table.
-
-    Namespaced keys avoid a new migration while still surviving Vercel cold
-    starts. If storage is temporarily unavailable and no warm cache exists,
-    conversation personalization fails closed.
-    """
-
-    key = uid or "singleton"
-    cached = _privacy.get(key)
-    sb = _get_supabase()
-    if sb and uid:
-        try:
-            result = await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings")
-                .select("value")
-                .eq("key", _privacy_storage_key(uid))
-                .limit(1)
-                .execute()
-            )
-            rows = list(getattr(result, "data", None) or [])
-            if rows:
-                stored_value = rows[0].get("value")
-                if isinstance(stored_value, str):
-                    stored_value = json.loads(stored_value)
-                settings = _normalized_privacy_settings(stored_value)
-                _privacy[key] = settings
-                return settings
-
-            # A successful query with no row means this user has never changed
-            # the default.  It is not a storage failure and must not be
-            # presented as an explicit privacy opt-out.  The database is the
-            # source of truth, so also replace any stale process-local value.
-            settings = dict(_DEFAULT_PRIVACY)
-            _privacy[key] = settings
-            return settings
-        except Exception as exc:
-            print(f"[warn] _db_get_privacy: {exc}")
-            if fail_closed:
-                return {
-                    **_DEFAULT_PRIVACY,
-                    "allow_history_training": False,
-                    _PRIVACY_STORAGE_UNAVAILABLE: True,
-                }
-    elif uid and fail_closed:
-        return {
-            **_DEFAULT_PRIVACY,
-            "allow_history_training": False,
-            _PRIVACY_STORAGE_UNAVAILABLE: True,
-        }
-    return _normalized_privacy_settings(cached)
-
-
-async def _db_set_privacy(uid: Optional[str], settings: dict) -> dict:
-    key = uid or "singleton"
-    normalized = _normalized_privacy_settings(settings)
-    previous = _privacy.get(key)
-    _privacy[key] = normalized
-    sb = _get_supabase()
-    if uid and not sb:
-        if previous is None:
-            _privacy.pop(key, None)
-        else:
-            _privacy[key] = previous
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Privacy settings could not be saved",
-        )
-    if sb and uid:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings").upsert(
-                    {
-                        "key": _privacy_storage_key(uid),
-                        "value": json.dumps(normalized, ensure_ascii=False),
-                        "updated_at": _now(),
-                    },
-                    on_conflict="key",
-                ).execute()
-            )
-        except Exception as exc:
-            if previous is None:
-                _privacy.pop(key, None)
-            else:
-                _privacy[key] = previous
-            print(f"[warn] _db_set_privacy: {exc}")
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Privacy settings could not be saved",
-            ) from exc
-    return normalized
-
-
-async def _db_delete_privacy(uid: str) -> None:
-    _privacy.pop(uid, None)
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Privacy settings could not be deleted",
-        )
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .delete()
-            .eq("key", _privacy_storage_key(uid))
-            .execute()
-        )
-    except Exception as exc:
-        print(f"[warn] _db_delete_privacy: {exc}")
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Privacy settings could not be deleted",
-        ) from exc
-
-
-async def _db_persist_recommendation_snapshots(
-    uid: str,
-    snapshots: list[dict],
-) -> bool:
-    """Atomically persist encrypted recommendation snapshots when storage exists."""
-
-    if not snapshots:
-        return True
-    sb = _get_supabase()
-    if not sb or not RECOMMENDATION_SNAPSHOT_SECRET:
-        return False
-    ready_snapshots = [
-        snapshot for snapshot in snapshots if prepared_resource_pair(snapshot)
-    ]
-    nonready_snapshots = [
-        snapshot for snapshot in snapshots if not prepared_resource_pair(snapshot)
-    ]
-
-    def rows_for(values: list[dict]) -> list[dict]:
-        return [
-            {
-                "key": snapshot_storage_key(uid, snapshot["recommendation_id"]),
-                "value": serialize_snapshot(
-                    snapshot,
-                    secret=RECOMMENDATION_SNAPSHOT_SECRET,
-                ),
-                "updated_at": _now(),
-            }
-            for snapshot in values
-        ]
-
-    try:
-        if nonready_snapshots:
-            nonready_rows = rows_for(nonready_snapshots)
-            # DO NOTHING on conflict is the monotonicity boundary. An old
-            # preparing/retryable/feed write can create a snapshot, but can
-            # never replace a complete pair published by a newer invocation.
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings")
-                .upsert(
-                    nonready_rows,
-                    on_conflict="key",
-                    ignore_duplicates=True,
-                )
-                .execute()
-            )
-        if ready_snapshots:
-            ready_rows = rows_for(ready_snapshots)
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("app_settings")
-                .upsert(ready_rows, on_conflict="key")
-                .execute()
-            )
-    except Exception as exc:
-        print(f"[warn] recommendation snapshot persistence failed: {exc}")
-        return False
-
-    for snapshot in ready_snapshots:
-        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
-    # Resolve insert-vs-conflict from durable storage before caching or exposing
-    # a non-ready snapshot. Only a complete durable pair is allowed to replace
-    # the caller's state. If storage still says ``preparing``, a provider
-    # failure in this invocation must remain ``retryable`` in the response so
-    # the client can schedule another attempt.
-    for snapshot in nonready_snapshots:
-        current = await _db_get_recommendation_snapshot_persistent(
-            uid,
-            snapshot["recommendation_id"],
-        )
-        if current and prepared_resource_pair(current):
-            snapshot.clear()
-            snapshot.update(current)
-        _recommendation_snapshots[(uid, snapshot["recommendation_id"])] = snapshot
-    return True
-
-
-
-async def _db_get_recommendation_snapshot(
-    uid: str,
-    recommendation_id: Optional[str],
-) -> Optional[dict]:
-    if not recommendation_id:
-        return None
-    try:
-        snapshot_storage_key(uid, recommendation_id)
-    except ValueError:
-        return None
-
-    cached = parse_snapshot(_recommendation_snapshots.get((uid, recommendation_id)))
-    try:
-        snapshot = await _db_get_recommendation_snapshot_persistent(
-            uid,
-            recommendation_id,
-        )
-    except HTTPException:
-        if cached:
-            return cached
-        raise
-    if snapshot:
-        _recommendation_snapshots[(uid, recommendation_id)] = snapshot
-        return snapshot
-    return cached
-
-
-async def _db_get_recommendation_snapshot_persistent(
-    uid: str,
-    recommendation_id: Optional[str],
-) -> Optional[dict]:
-    """Read storage directly so stale process state cannot downgrade ready data."""
-
-    if not recommendation_id:
-        return None
-    try:
-        key = snapshot_storage_key(uid, recommendation_id)
-    except ValueError:
-        return None
-    sb = _get_supabase()
-    if not sb:
-        return None
-    try:
-        result = await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .select("value")
-            .eq("key", key)
-            .limit(1)
-            .execute()
-        )
-        rows = list(getattr(result, "data", None) or [])
-        snapshot = (
-            parse_snapshot(
-                rows[0].get("value"),
-                secret=RECOMMENDATION_SNAPSHOT_SECRET,
-            )
-            if rows and RECOMMENDATION_SNAPSHOT_SECRET
-            else None
-        )
-        return snapshot
-    except Exception as exc:
-        print(f"[warn] recommendation snapshot lookup failed: {exc}")
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Recommendation context is temporarily unavailable",
-        ) from exc
-
-
-async def _db_delete_recommendation_snapshots(uid: str) -> None:
-    for cache_key in [key for key in _recommendation_snapshots if key[0] == uid]:
-        _recommendation_snapshots.pop(cache_key, None)
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Recommendation history could not be deleted",
-        )
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .delete()
-            .like("key", f"{snapshot_storage_prefix(uid)}%")
-            .execute()
-        )
-    except Exception as exc:
-        print(f"[warn] recommendation snapshot delete failed: {exc}")
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Recommendation history could not be deleted",
-        ) from exc
-
-
-_RECOMMENDATION_EVENTS_TABLE = "recommendation_events"
-_RECOMMENDATION_EVENTS_LIMIT = MAX_EVENTS_PER_USER
-_RECOMMENDATION_EVENTS_CLEANUP_PAGE = 1000
-_RECOMMENDATION_EVENTS_DELETE_BATCH = 50
-
-
-def _recommendation_events_table_missing(exc: Exception) -> bool:
-    """Recognise the PostgREST/Postgres errors emitted before migration.
-
-    Only an absent table activates the legacy JSON fallback. Other database
-    failures must not silently resume read/modify/write persistence, because
-    doing so would reintroduce cross-instance lost updates.
-    """
-
-    code = str(getattr(exc, "code", "") or "").upper()
-    details = " ".join(
-        str(value)
-        for value in (
-            exc,
-            getattr(exc, "message", ""),
-            getattr(exc, "details", ""),
-        )
-    ).casefold()
-    if code in {"42P01", "PGRST205"}:
-        return True
-    return "recommendation_events" in details and any(
-        marker in details
-        for marker in (
-            "does not exist",
-            "could not find",
-            "schema cache",
-            "undefined table",
-            "undefined_table",
-        )
-    )
-
-
-def _recommendation_event_row(uid: str, event: dict) -> dict:
-    """Map a normalized signal to one append-only database row."""
-
-    metadata = {
-        key: value
-        for key, value in event.items()
-        if key not in {"event_id", "event", "card_id", "occurred_at"}
-    }
-    return {
-        "user_id": uid,
-        "event_id": str(event["event_id"]),
-        "event_type": str(event["event"]),
-        "card_id": str(event["card_id"]),
-        "occurred_at": str(event["occurred_at"]),
-        "event_data": metadata,
-    }
-
-
-def _recommendation_event_setting_prefix(uid: str) -> str:
-    """Return the non-identifying per-event fallback key prefix."""
-
-    user_digest = hashlib.sha256(uid.encode("utf-8")).hexdigest()
-    return f"recommendation_event:v2:{user_digest}:"
-
-
-def _recommendation_event_setting_key(uid: str, event_id: str) -> str:
-    event_digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()
-    return f"{_recommendation_event_setting_prefix(uid)}{event_digest}"
-
-
-def _recommendation_event_setting_rows(uid: str, events: list[dict]) -> list[dict]:
-    """Map events to independently upsertable app_settings rows."""
-
-    return [
-        {
-            "key": _recommendation_event_setting_key(uid, str(event["event_id"])),
-            "value": json.dumps(event, ensure_ascii=False),
-            "updated_at": str(event["occurred_at"]),
-        }
-        for event in events
-    ]
-
-
-def _recommendation_event_retention_cutoff() -> str:
-    """Return the UTC cutoff shared by logical and physical retention."""
-
-    return (
-        datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
-    ).isoformat()
-
-
-async def _db_cleanup_recommendation_event_table(sb: object, uid: str) -> None:
-    """Physically enforce age and count retention in the migrated row table.
-
-    The stale delete is handled entirely by PostgREST.  Overflow is paged from
-    the first row beyond the newest bounded history and removed in batches;
-    repeatedly reading from the same offset also handles histories larger than
-    PostgREST's normal 1,000-row response cap.
-    """
-
-    cutoff = _recommendation_event_retention_cutoff()
-    await anyio.to_thread.run_sync(
-        lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-        .delete()
-        .eq("user_id", uid)
-        .lt("occurred_at", cutoff)
-        .execute()
-    )
-    while True:
-        result = await anyio.to_thread.run_sync(
-            lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-            .select("event_id")
-            .eq("user_id", uid)
-            .order("occurred_at", desc=True)
-            .range(
-                _RECOMMENDATION_EVENTS_LIMIT,
-                _RECOMMENDATION_EVENTS_LIMIT
-                + _RECOMMENDATION_EVENTS_CLEANUP_PAGE
-                - 1,
-            )
-            .execute()
-        )
-        event_ids = [
-            str(row.get("event_id"))
-            for row in list(getattr(result, "data", None) or [])
-            if isinstance(row, dict) and row.get("event_id")
-        ]
-        if not event_ids:
-            return
-        for start in range(0, len(event_ids), _RECOMMENDATION_EVENTS_DELETE_BATCH):
-            batch = event_ids[start : start + _RECOMMENDATION_EVENTS_DELETE_BATCH]
-            await anyio.to_thread.run_sync(
-                lambda batch=batch: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-                .delete()
-                .eq("user_id", uid)
-                .in_("event_id", batch)
-                .execute()
-            )
-
-
-async def _db_cleanup_recommendation_event_settings(sb: object, uid: str) -> None:
-    """Physically enforce retention for migration-free atomic v2 rows."""
-
-    prefix = _recommendation_event_setting_prefix(uid)
-    cutoff = _recommendation_event_retention_cutoff()
-    await anyio.to_thread.run_sync(
-        lambda: sb.table("app_settings")
-        .delete()
-        .like("key", f"{prefix}%")
-        .lt("updated_at", cutoff)
-        .execute()
-    )
-    while True:
-        result = await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .select("key")
-            .like("key", f"{prefix}%")
-            .order("updated_at", desc=True)
-            .range(
-                _RECOMMENDATION_EVENTS_LIMIT,
-                _RECOMMENDATION_EVENTS_LIMIT
-                + _RECOMMENDATION_EVENTS_CLEANUP_PAGE
-                - 1,
-            )
-            .execute()
-        )
-        keys = [
-            str(row.get("key"))
-            for row in list(getattr(result, "data", None) or [])
-            if isinstance(row, dict) and row.get("key")
-        ]
-        if not keys:
-            break
-        for start in range(0, len(keys), _RECOMMENDATION_EVENTS_DELETE_BATCH):
-            batch = keys[start : start + _RECOMMENDATION_EVENTS_DELETE_BATCH]
-            await anyio.to_thread.run_sync(
-                lambda batch=batch: sb.table("app_settings")
-                .delete()
-                .like("key", f"{prefix}%")
-                .in_("key", batch)
-                .execute()
-            )
-
-    # v1 is no longer appended, so compacting its single legacy JSON value
-    # cannot race with a writer.  Keep it only for rollout compatibility while
-    # enforcing the same physical age/count boundary as both append-only paths.
-    legacy_key = event_storage_key(uid)
-    legacy_result = await anyio.to_thread.run_sync(
-        lambda: sb.table("app_settings")
-        .select("value")
-        .eq("key", legacy_key)
-        .limit(1)
-        .execute()
-    )
-    legacy_rows = list(getattr(legacy_result, "data", None) or [])
-    if not legacy_rows:
-        return
-    legacy: object = (
-        legacy_rows[0].get("value")
-        if isinstance(legacy_rows[0], dict)
-        else None
-    )
-    if isinstance(legacy, str):
-        try:
-            legacy = json.loads(legacy)
-        except (TypeError, ValueError):
-            legacy = []
-    retained = prune_events(legacy)
-    if retained == legacy:
-        return
-    if not retained:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .delete()
-            .eq("key", legacy_key)
-            .execute()
-        )
-        return
-    await anyio.to_thread.run_sync(
-        lambda: sb.table("app_settings")
-        .upsert(
-            {
-                "key": legacy_key,
-                "value": json.dumps(retained, ensure_ascii=False),
-                "updated_at": _now(),
-            },
-            on_conflict="key",
-        )
-        .execute()
-    )
-
-
-async def _db_cleanup_recommendation_events_best_effort(
-    sb: object,
-    uid: str,
-    *,
-    include_row_table: bool,
-) -> None:
-    """Run retention without changing the success of an already-stored event."""
-
-    if include_row_table:
-        try:
-            await _db_cleanup_recommendation_event_table(sb, uid)
-        except Exception as exc:
-            print(
-                "[warn] recommendation event row retention cleanup failed: "
-                f"{type(exc).__name__}"
-            )
-    # Clean rollout fallback rows even after the table becomes available so an
-    # environment cannot retain old v2 rows forever following its migration.
-    try:
-        await _db_cleanup_recommendation_event_settings(sb, uid)
-    except Exception as exc:
-        print(
-            "[warn] settings recommendation event retention cleanup failed: "
-            f"{type(exc).__name__}"
-        )
-
-
-def _recommendation_event_from_row(row: object) -> Optional[dict]:
-    """Restore and revalidate a signal loaded from the row table."""
-
-    if not isinstance(row, dict):
-        return None
-    metadata: object = row.get("event_data")
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except (TypeError, ValueError):
-            metadata = {}
-    payload = dict(metadata) if isinstance(metadata, dict) else {}
-    event_type = row.get("event_type")
-    payload.update(
-        {
-            "event_id": row.get("event_id"),
-            "event": event_type,
-            "card_id": row.get("card_id"),
-        }
-    )
-    occurred_at = row.get("occurred_at")
-    if isinstance(occurred_at, datetime):
-        occurred_at = occurred_at.isoformat()
-    if not isinstance(occurred_at, str):
-        return None
-    return normalize_event(
-        payload,
-        occurred_at=occurred_at,
-        trusted_resource_url=event_type == "resource_delivered",
-    )
-
-
-async def _db_get_recommendation_events_settings(
-    uid: str,
-    *,
-    cached: Optional[list[dict]] = None,
-) -> list[dict]:
-    """Read atomic per-event settings plus the read-only legacy JSON value."""
-
-    sb = _get_supabase()
-    if not sb:
-        return prune_events(cached or [])
-    try:
-        per_event_result = await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .select("value")
-            .like("key", f"{_recommendation_event_setting_prefix(uid)}%")
-            .order("updated_at", desc=True)
-            .limit(_RECOMMENDATION_EVENTS_LIMIT)
-            .execute()
-        )
-        legacy_result = await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .select("value")
-            .eq("key", event_storage_key(uid))
-            .limit(1)
-            .execute()
-        )
-        per_event_rows = list(getattr(per_event_result, "data", None) or [])
-        stored_events: list[object] = []
-        for row in per_event_rows:
-            stored: object = row.get("value") if isinstance(row, dict) else None
-            if isinstance(stored, str):
-                try:
-                    stored = json.loads(stored)
-                except (TypeError, ValueError):
-                    continue
-            stored_events.append(stored)
-
-        # v1 was one mutable JSON array. It remains read-only so an in-flight
-        # migration cannot lose old learning signals, but all new writes use a
-        # unique v2 key per event.
-        legacy_rows = list(getattr(legacy_result, "data", None) or [])
-        legacy: object = legacy_rows[0].get("value") if legacy_rows else []
-        if isinstance(legacy, str):
-            try:
-                legacy = json.loads(legacy)
-            except (TypeError, ValueError):
-                legacy = []
-        if isinstance(legacy, list):
-            stored_events.extend(legacy)
-        return prune_events(stored_events)
-    except Exception as exc:
-        print(f"[warn] settings recommendation event lookup failed: {type(exc).__name__}")
-        return prune_events(cached or [])
-
-
-async def _db_get_recommendation_events(uid: str) -> list[dict]:
-    """Load bounded, privacy-safe recommendation behaviour for one user."""
-
-    global _recommendation_events_table_available
-    cached = _recommendation_events.get(uid)
-    sb = _get_supabase()
-    if not sb:
-        return prune_events(cached or [])
-    if _recommendation_events_table_available is False:
-        events = await _db_get_recommendation_events_settings(uid, cached=cached)
-        _recommendation_events[uid] = events
-        return events
-    try:
-        result = await anyio.to_thread.run_sync(
-            lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-            .select("event_id,event_type,card_id,occurred_at,event_data")
-            .eq("user_id", uid)
-            .order("occurred_at", desc=True)
-            .limit(_RECOMMENDATION_EVENTS_LIMIT)
-            .execute()
-        )
-        rows = list(getattr(result, "data", None) or [])
-        row_events = [
-            event for row in rows if (event := _recommendation_event_from_row(row))
-        ]
-        # Continue reading rollout rows after the table appears. This closes the
-        # deployment window where one instance has already discovered the new
-        # table while another has just written an atomic v2 settings row.
-        settings_events = await _db_get_recommendation_events_settings(uid)
-        events = prune_events(
-            [*row_events, *settings_events]
-        )
-        _recommendation_events_table_available = True
-        _recommendation_events[uid] = events
-        return events
-    except Exception as exc:
-        if _recommendation_events_table_missing(exc):
-            _recommendation_events_table_available = False
-            events = await _db_get_recommendation_events_settings(uid, cached=cached)
-            _recommendation_events[uid] = events
-            return events
-        # Feedback may refine a recommendation but must never make the home feed
-        # unavailable. A warm process can still use its bounded local copy.
-        print(f"[warn] recommendation event lookup failed: {type(exc).__name__}")
-        return prune_events(cached or [])
-
-
-async def _db_append_recommendation_events(
-    uid: str,
-    payloads: list[dict],
-) -> tuple[list[dict], bool]:
-    """Atomically append idempotent event rows across backend instances."""
-
-    global _recommendation_events_table_available
-    if not payloads:
-        return await _db_get_recommendation_events(uid), True
-    lock = _recommendation_event_locks.setdefault(uid, asyncio.Lock())
-    async with lock:
-        existing = await _db_get_recommendation_events(uid)
-        known_ids = {
-            str(item.get("event_id") or "")
-            for item in existing
-            if item.get("event_id")
-        }
-        merged = list(existing)
-        prepared: list[dict] = []
-        for payload in payloads:
-            item = dict(payload)
-            event_id = str(item.get("event_id") or uuid.uuid4())[:80]
-            item["event_id"] = event_id
-            if event_id and event_id in known_ids:
-                continue
-            merged.append(item)
-            prepared.append(item)
-            if event_id:
-                known_ids.add(event_id)
-        merged = prune_events(merged)
-        _recommendation_events[uid] = merged
-
-        if not prepared:
-            return merged, True
-
-        sb = _get_supabase()
-        if not sb:
-            return merged, False
-        if _recommendation_events_table_available is False:
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("app_settings").upsert(
-                        _recommendation_event_setting_rows(uid, prepared),
-                        on_conflict="key",
-                        ignore_duplicates=True,
-                    ).execute()
-                )
-                await _db_cleanup_recommendation_events_best_effort(
-                    sb,
-                    uid,
-                    include_row_table=False,
-                )
-                stored = await _db_get_recommendation_events_settings(
-                    uid,
-                    cached=merged,
-                )
-                _recommendation_events[uid] = stored
-                return stored, True
-            except Exception as settings_exc:
-                print(
-                    "[warn] settings recommendation event persistence failed: "
-                    f"{type(settings_exc).__name__}"
-                )
-                return merged, False
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-                .upsert(
-                    [_recommendation_event_row(uid, event) for event in prepared],
-                    on_conflict="user_id,event_id",
-                    ignore_duplicates=True,
-                )
-                .execute()
-            )
-            _recommendation_events_table_available = True
-            await _db_cleanup_recommendation_events_best_effort(
-                sb,
-                uid,
-                include_row_table=True,
-            )
-            # Re-read so this process immediately sees events appended by other
-            # instances between its initial read and atomic insert.
-            return await _db_get_recommendation_events(uid), True
-        except Exception as exc:
-            if _recommendation_events_table_missing(exc):
-                _recommendation_events_table_available = False
-                # The migration-free fallback still appends atomically: every
-                # event owns a unique app_settings key. Never rewrite the old
-                # per-user JSON array, which could lose concurrent events.
-                try:
-                    await anyio.to_thread.run_sync(
-                        lambda: sb.table("app_settings").upsert(
-                            _recommendation_event_setting_rows(uid, prepared),
-                            on_conflict="key",
-                            ignore_duplicates=True,
-                        ).execute()
-                    )
-                    await _db_cleanup_recommendation_events_best_effort(
-                        sb,
-                        uid,
-                        include_row_table=False,
-                    )
-                    stored = await _db_get_recommendation_events_settings(
-                        uid,
-                        cached=merged,
-                    )
-                    _recommendation_events[uid] = stored
-                    return stored, True
-                except Exception as settings_exc:
-                    print(
-                        "[warn] settings recommendation event persistence failed: "
-                        f"{type(settings_exc).__name__}"
-                    )
-                    return merged, False
-            print(f"[warn] recommendation event persistence failed: {type(exc).__name__}")
-            return merged, False
-
-
-async def _db_delete_recommendation_events(uid: str) -> None:
-    global _recommendation_events_table_available
-    _recommendation_events.pop(uid, None)
-    _recommendation_event_locks.pop(uid, None)
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Recommendation feedback could not be deleted",
-        )
-    if _recommendation_events_table_available is not False:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table(_RECOMMENDATION_EVENTS_TABLE)
-                .delete()
-                .eq("user_id", uid)
-                .execute()
-            )
-            _recommendation_events_table_available = True
-        except Exception as exc:
-            if _recommendation_events_table_missing(exc):
-                _recommendation_events_table_available = False
-            else:
-                print(f"[warn] recommendation event delete failed: {exc}")
-                raise HTTPException(
-                    status.HTTP_503_SERVICE_UNAVAILABLE,
-                    "Recommendation feedback could not be deleted",
-                ) from exc
-
-    # Delete both the atomic v2 fallback rows and read-only v1 compatibility
-    # value. Once every environment has the new table these remain harmless
-    # no-ops and guarantee privacy erasure of rollout data.
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .delete()
-            .like("key", f"{_recommendation_event_setting_prefix(uid)}%")
-            .execute()
-        )
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("app_settings")
-            .delete()
-            .eq("key", event_storage_key(uid))
-            .execute()
-        )
-    except Exception as exc:
-        print(f"[warn] settings recommendation event delete failed: {exc}")
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Recommendation feedback could not be deleted",
-        ) from exc
-
-
-def _new_recommendation_event(
-    *,
-    event: str,
-    card_id: str,
-    trusted_resource_url: bool = False,
-    **payload: object,
-) -> dict:
-    occurred_at = _now()
-    normalized = normalize_event(
-        {
-            "event_id": str(uuid.uuid4()),
-            "event": event,
-            "card_id": card_id,
-            **payload,
-        },
-        occurred_at=occurred_at,
-        trusted_resource_url=trusted_resource_url,
-    )
-    if not normalized:  # All server-created callers use the allowlist.
-        raise ValueError("invalid recommendation event")
-    return normalized
-
-
-async def _db_list_fav_ids(uid: str) -> set:
-    sb = _get_supabase()
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("favorites").select("card_id").eq("user_id", uid).execute()
-            )
-            return {r["card_id"] for r in (res.data or [])}
-        except Exception as e:
-            print(f"[warn] _db_list_fav_ids: {e}")
-    return _favorites.get(uid, set())
-
-async def _db_toggle_fav(uid: str, card_id: str) -> bool:
-    sb = _get_supabase()
-    if sb:
-        try:
-            existing = await anyio.to_thread.run_sync(
-                lambda: sb.table("favorites").select("id").eq("user_id", uid).eq("card_id", card_id).execute()
-            )
-            if existing.data:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("favorites").delete().eq("user_id", uid).eq("card_id", card_id).execute()
-                )
-                return False
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("favorites").insert({"user_id": uid, "card_id": card_id}).execute()
-            )
-            return True
-        except Exception as e:
-            print(f"[warn] _db_toggle_fav: {e}")
-    # fallback
-    _favorites.setdefault(uid, set())
-    if card_id in _favorites[uid]:
-        _favorites[uid].discard(card_id)
-        return False
-    _favorites[uid].add(card_id)
-    return True
-
-async def _db_list_collections(uid: str) -> list:
-    sb = _get_supabase()
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("collections").select("id,name,created_at").eq("user_id", uid).order("created_at").execute()
-            )
-            return res.data or []
-        except Exception as e:
-            print(f"[warn] _db_list_collections: {e}")
-    return _collections.get(uid, [])
-
-async def _db_create_collection(uid: str, name: str) -> dict:
-    now = _now()
-    sb = _get_supabase()
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("collections").insert({"user_id": uid, "name": name}).execute()
-            )
-            return res.data[0]
-        except Exception as e:
-            print(f"[warn] _db_create_collection: {e}")
-    col = {"id": str(uuid.uuid4()), "name": name, "created_at": now}
-    _collections.setdefault(uid, []).append(col)
-    return col
-
-async def _db_rename_collection(uid: str, col_id: str, name: str) -> bool:
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("collections").update({"name": name}).eq("id", col_id).eq("user_id", uid).execute()
-            )
-            return True
-        except Exception as e:
-            print(f"[warn] _db_rename_collection: {e}")
-    for col in _collections.get(uid, []):
-        if col["id"] == col_id:
-            col["name"] = name
-            return True
-    return False
-
-async def _db_delete_collection(uid: str, col_id: str) -> bool:
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("collections").delete().eq("id", col_id).eq("user_id", uid).execute()
-            )
-            return True
-        except Exception as e:
-            print(f"[warn] _db_delete_collection: {e}")
-    cols = _collections.get(uid, [])
-    _collections[uid] = [c for c in cols if c["id"] != col_id]
-    return True
-
-async def _db_save_fav(uid: str, card_id: str, collection_id: str) -> bool:
-    """Save card to collection. If already in that collection, removes it (toggle). Returns saved state."""
-    sb = _get_supabase()
-    if sb:
-        try:
-            existing = await anyio.to_thread.run_sync(
-                lambda: sb.table("favorites").select("id,collection_id").eq("user_id", uid).eq("card_id", card_id).execute()
-            )
-            if existing.data:
-                row = existing.data[0]
-                if row.get("collection_id") == collection_id:
-                    await anyio.to_thread.run_sync(
-                        lambda: sb.table("favorites").delete().eq("user_id", uid).eq("card_id", card_id).execute()
-                    )
-                    return False
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("favorites").update({"collection_id": collection_id}).eq("user_id", uid).eq("card_id", card_id).execute()
-                )
-                return True
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("favorites").insert({"user_id": uid, "card_id": card_id, "collection_id": collection_id}).execute()
-            )
-            return True
-        except Exception as e:
-            print(f"[warn] _db_save_fav: {e}")
-    # fallback in-memory
-    _favorites.setdefault(uid, set())
-    _fav_cols.setdefault(uid, {})
-    if card_id in _favorites[uid] and _fav_cols[uid].get(card_id) == collection_id:
-        _favorites[uid].discard(card_id)
-        _fav_cols[uid].pop(card_id, None)
-        return False
-    _favorites[uid].add(card_id)
-    _fav_cols[uid][card_id] = collection_id
-    return True
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 ParentRole = Literal["mom", "dad", "grandparent", "other"]
@@ -2196,7 +1118,7 @@ async def list_children(uid: Optional[str] = Depends(_opt_uid)):
             return res.data or []
         except Exception as e:
             print(f"[warn] listChildren Supabase error: {e}")
-    return [c for c in _children if not uid or c.get("user_id") == uid]
+    return [c for c in memstore.children if not uid or c.get("user_id") == uid]
 
 @api.post("/children", status_code=201)
 async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
@@ -2208,7 +1130,7 @@ async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
         await anyio.to_thread.run_sync(lambda: sb.table("children").insert(child).execute())
         await _invalidate_child_recommendations(uid)
         return child
-    _children.append(child)
+    memstore.children.append(child)
     await _invalidate_child_recommendations(uid)
     return child
 
@@ -2228,16 +1150,15 @@ async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = De
             await _invalidate_child_recommendations(uid)
             return res.data[0]
         raise HTTPException(404, "child not found")
-    for i, c in enumerate(_children):
+    for i, c in enumerate(memstore.children):
         if c["id"] == child_id and (not uid or c.get("user_id") == uid):
-            _children[i] = {**c, **updates}
+            memstore.children[i] = {**c, **updates}
             await _invalidate_child_recommendations(uid)
-            return _children[i]
+            return memstore.children[i]
     raise HTTPException(404, "child not found")
 
 @api.delete("/children/{child_id}")
 async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
-    global _children
     sb = _get_supabase()
     if sb and uid:
         await anyio.to_thread.run_sync(
@@ -2245,8 +1166,8 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
         )
         await _invalidate_child_recommendations(uid)
         return {"ok": True}
-    _children = [c for c in _children
-                 if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
+    memstore.children[:] = [c for c in memstore.children
+                    if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
     await _invalidate_child_recommendations(uid)
     return {"ok": True}
 
@@ -2320,7 +1241,7 @@ def _recent_main_chat_from_memory(
 
     sessions = [
         session
-        for session in _sessions.values()
+        for session in memstore.sessions.values()
         if session.get("user_id") == uid and not session.get("source_card_id")
     ]
     if not sessions:
@@ -2330,7 +1251,7 @@ def _recent_main_chat_from_memory(
     all_user_messages = [
         {**message, "session_id": message.get("session_id") or session_id}
         for session_id in session_ids
-        for message in _messages.get(session_id, [])
+        for message in memstore.messages.get(session_id, [])
         if message.get("role") == "user" and str(message.get("text") or "").strip()
     ]
     last_user_message = max(
@@ -2355,7 +1276,7 @@ def _recent_main_chat_from_memory(
         session = preferred_session
         preferred_messages = [
             message
-            for message in _messages.get(session["id"], [])
+            for message in memstore.messages.get(session["id"], [])
             if not through_created_at
             or str(message.get("created_at") or "") <= through_created_at
         ]
@@ -2380,7 +1301,7 @@ def _recent_main_chat_from_memory(
     all_current_messages = sorted(
         [
             message
-            for message in _messages.get(session["id"], [])
+            for message in memstore.messages.get(session["id"], [])
             if not through_created_at
             or str(message.get("created_at") or "") <= through_created_at
         ],
@@ -5772,7 +4693,7 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
         return pool[:body.count]
     keywords = list(body.keywords or [])
     if not keywords and body.session_id and oai:
-        msgs = _messages.get(body.session_id, [])
+        msgs = memstore.messages.get(body.session_id, [])
         user_texts = [m.get("text", "") for m in msgs if m.get("role") == "user" and m.get("text")]
         if user_texts:
             combined = " ".join(user_texts[-5:])
@@ -6520,11 +5441,11 @@ async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
             ids = set(col_map.keys())
         except Exception as e:
             print(f"[warn] list_favorites: {e}")
-            ids = _favorites.get(key, set())
-            col_map = _fav_cols.get(key, {})
+            ids = memstore.favorites.get(key, set())
+            col_map = memstore.fav_cols.get(key, {})
     else:
-        ids = _favorites.get(key, set())
-        col_map = _fav_cols.get(key, {})
+        ids = memstore.favorites.get(key, set())
+        col_map = memstore.fav_cols.get(key, {})
     gen_cards = await _db_get_gen_cards()
     by_id = {
         c["id"]: c
@@ -6547,7 +5468,7 @@ async def save_favorite(body: FavSave, uid: Optional[str] = Depends(_opt_uid)):
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @api.post("/analytics")
 async def track_event(ev: AnalyticsIn):
-    _analytics.append({**ev.dict(), "ts": _now()})
+    memstore.analytics.append({**ev.dict(), "ts": _now()})
     return {"ok": True}
 
 
@@ -6638,7 +5559,7 @@ def _main_chat_preview_payload(
 def _main_chat_preview_from_memory(uid: str) -> dict:
     sessions = [
         session
-        for session in _sessions.values()
+        for session in memstore.sessions.values()
         if session.get("user_id") == uid and not session.get("source_card_id")
     ]
     if not sessions:
@@ -6651,7 +5572,7 @@ def _main_chat_preview_from_memory(uid: str) -> dict:
             "session_id": message.get("session_id") or session_id,
         }
         for session_id in session_ids
-        for message in _messages.get(session_id, [])
+        for message in memstore.messages.get(session_id, [])
     ]
     last_user_message = max(
         (message for message in all_messages if message.get("role") == "user"),
@@ -6667,7 +5588,7 @@ def _main_chat_preview_from_memory(uid: str) -> dict:
     else:
         session = max(sessions, key=_chat_activity_key)
 
-    session_messages = _messages.get(session["id"], [])
+    session_messages = memstore.messages.get(session["id"], [])
     last_message = max(session_messages, key=_chat_activity_key, default=None)
     return _main_chat_preview_payload(session, last_message, last_user_message)
 
@@ -6765,11 +5686,11 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
             await anyio.to_thread.run_sync(lambda: sb.table("chat_sessions").insert(session).execute())
         except Exception as e:
             print(f"[warn] start_session insert error: {e}")
-            _sessions[session["id"]] = session
-            _messages[session["id"]] = []
+            memstore.sessions[session["id"]] = session
+            memstore.messages[session["id"]] = []
     else:
-        _sessions[session["id"]] = session
-        _messages[session["id"]] = []
+        memstore.sessions[session["id"]] = session
+        memstore.messages[session["id"]] = []
 
     # Fetch profile info for a personalised greeting and ongoing context
     profile, children = await _load_profile(uid)
@@ -6819,7 +5740,7 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         except Exception as e:
             print(f"[warn] start_session msg insert error: {e}")
     else:
-        _messages[session["id"]].append(first_msg)
+        memstore.messages[session["id"]].append(first_msg)
 
     return session
 
@@ -6838,7 +5759,7 @@ async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
             return res.data or []
         except Exception as e:
             print(f"[warn] list_sessions error: {e}")
-    sessions = list(_sessions.values())
+    sessions = list(memstore.sessions.values())
     if uid:
         sessions = [s for s in sessions if s.get("user_id") == uid]
     return sorted(sessions, key=lambda s: s["created_at"], reverse=True)
@@ -6856,8 +5777,8 @@ async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)
             return
         except Exception as e:
             print(f"[warn] delete_session error: {e}")
-    _sessions.pop(session_id, None)
-    _messages.pop(session_id, None)
+    memstore.sessions.pop(session_id, None)
+    memstore.messages.pop(session_id, None)
 
 @api.get("/chat/sessions/{session_id}/messages")
 async def get_messages(session_id: str):
@@ -6874,7 +5795,7 @@ async def get_messages(session_id: str):
             return res.data or []
         except Exception as e:
             print(f"[warn] get_messages error: {e}")
-    return _messages.get(session_id, [])
+    return memstore.messages.get(session_id, [])
 
 class _Turn(NamedTuple):
     """Everything established about a chat turn before the AI reply is produced.
@@ -6901,7 +5822,7 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         except Exception as e:
             print(f"[warn] post_message load session: {e}")
     if not session:
-        session = _sessions.get(session_id)
+        session = memstore.sessions.get(session_id)
     if not session:
         raise HTTPException(404, "session not found")
 
@@ -6943,7 +5864,7 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         except Exception as e:
             print(f"[warn] post_message msgs load: {e}")
     if not msgs:
-        msgs = _messages.setdefault(session_id, [])
+        msgs = memstore.messages.setdefault(session_id, [])
         msgs.append(user_msg)
 
     # "#fix <反馈>" is an internal command for reviewers to correct the AI's
@@ -6990,8 +5911,8 @@ async def _maybe_set_title(
                     )
                 except Exception:
                     pass
-            elif session_id in _sessions:
-                _sessions[session_id]["title"] = new_title
+            elif session_id in memstore.sessions:
+                memstore.sessions[session_id]["title"] = new_title
 
 async def _fix_reply(msgs: list, fix_text: str, uid: Optional[str] = None) -> str:
     """Handle a reviewer's `#fix` correction: distil it into a reusable style
@@ -7586,7 +6507,7 @@ async def list_tasks(scope: Optional[str] = None, uid: str = Depends(_req_uid)):
             return res.data or []
         except Exception as e:
             print(f"[warn] list_tasks error: {e}")
-    tasks = [t for t in _tasks if t.get("user_id") == uid]
+    tasks = [t for t in memstore.tasks if t.get("user_id") == uid]
     if scope in ("today", "week"):
         tasks = [t for t in tasks if t["scope"] == scope]
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
@@ -7652,10 +6573,10 @@ async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
                 "Task could not be saved",
             ) from e
     if is_suggestion:
-        existing = next((item for item in _tasks if item["id"] == task_id), None)
+        existing = next((item for item in memstore.tasks if item["id"] == task_id), None)
         if existing:
             return existing
-    _tasks.append(task)
+    memstore.tasks.append(task)
     return task
 
 @api.patch("/tasks/{task_id}")
@@ -7705,7 +6626,7 @@ async def update_task(
             raise
         except Exception as e:
             print(f"[warn] update_task error: {e}")
-    for t in _tasks:
+    for t in memstore.tasks:
         if t["id"] != task_id:
             continue
         if body.done is not None:
@@ -7737,8 +6658,7 @@ async def delete_task(task_id: str, uid: Optional[str] = Depends(_opt_uid)):
             return
         except Exception as e:
             print(f"[warn] delete_task error: {e}")
-    global _tasks
-    _tasks = [t for t in _tasks if t["id"] != task_id]
+    memstore.tasks[:] = [t for t in memstore.tasks if t["id"] != task_id]
 
 @api.post("/tasks/clear-completed")
 async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
@@ -7754,9 +6674,8 @@ async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
             return {"ok": True}
         except Exception as e:
             print(f"[warn] clear_completed_tasks error: {e}")
-    global _tasks
-    _tasks = [
-        t for t in _tasks
+    memstore.tasks[:] = [
+        t for t in memstore.tasks
         if not (t.get("user_id", uid) == uid and t.get("done") and not t.get("is_favorited"))
     ]
     return {"ok": True}
@@ -7764,7 +6683,7 @@ async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
 @api.get("/tasks/insights")
 async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
     sb = _get_supabase()
-    source: list = _tasks
+    source: list = memstore.tasks
     if sb and uid:
         try:
             res = await anyio.to_thread.run_sync(
@@ -7816,7 +6735,6 @@ async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_op
 
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
-    global _children, _tasks
     if uid:
         # Keep an explicit opt-out tombstone instead of deleting the privacy
         # row.  If any later deletion fails, history must remain disabled rather
@@ -7833,17 +6751,17 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         )
         await _db_delete_recommendation_snapshots(uid)
         await _db_delete_recommendation_events(uid)
-        _children = [c for c in _children if c.get("user_id") != uid]
-        _tasks    = [t for t in _tasks    if t.get("user_id") != uid]
-        for sid in [s for s, d in _sessions.items() if d.get("user_id") == uid]:
-            _sessions.pop(sid, None); _messages.pop(sid, None)
-        _favorites.pop(uid, None)
+        memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
+        memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
+        for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:
+            memstore.sessions.pop(sid, None); memstore.messages.pop(sid, None)
+        memstore.favorites.pop(uid, None)
     else:
-        _children.clear(); _tasks.clear()
-        _sessions.clear(); _messages.clear()
-        _favorites.clear(); _analytics.clear(); _privacy.clear()
-        _recommendation_snapshots.clear()
-        _recommendation_events.clear(); _recommendation_event_locks.clear()
+        memstore.children.clear(); memstore.tasks.clear()
+        memstore.sessions.clear(); memstore.messages.clear()
+        memstore.favorites.clear(); memstore.analytics.clear(); memstore.privacy.clear()
+        memstore.recommendation_snapshots.clear()
+        memstore.recommendation_events.clear(); memstore.recommendation_event_locks.clear()
     return {"ok": True}
 
 # ── Mount /api router ─────────────────────────────────────────────────────────

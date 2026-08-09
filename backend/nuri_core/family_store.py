@@ -28,9 +28,9 @@ from typing import Optional
 
 import anyio
 
+from backend import runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
-    get_supabase,
     now,
     oai,
 )
@@ -224,7 +224,7 @@ async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
     set than profile_ctx reads, so answers the parent had given were silently
     dropped in chat while showing up in the intro message.
     """
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not user_id or not sb:
         return {}, []
     async def _user():
@@ -258,7 +258,7 @@ async def save_normalized_input(
     child_id: Optional[str] = None,
 ) -> None:
     """Log every user turn through one canonical shape before it reaches the router/LLM."""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return
     row = {
@@ -373,7 +373,7 @@ async def upsert_memories(
     """Write by (user_id, child_id, category, key); only replace value/confidence
     when the new read is at least as confident, so a low-confidence guess can't
     clobber an already-confirmed fact."""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb or not memories:
         return
     now = now()
@@ -476,7 +476,7 @@ async def upsert_follow_ups(
     """One open follow-up per topic. A parent who mentions 托嬰 across four turns
     should be asked once, not four times — the partial unique index enforces it,
     and this refreshes the existing row rather than failing on the conflict."""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb or not items:
         return
     now = now()
@@ -524,7 +524,7 @@ async def get_follow_up_context(user_id: Optional[str], limit: int = 3) -> str:
     """
     if not user_id:
         return ""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return ""
     try:
@@ -554,7 +554,7 @@ async def take_due_follow_up(user_id: str) -> Optional[dict]:
     once — sleep, solids, daycare, a check-up — and a digest of all five is a
     to-do list rather than someone remembering to ask after you.
     """
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return None
     cutoff = (datetime.now(timezone.utc) - timedelta(days=FOLLOW_UP_EXPIRE_DAYS)).isoformat()
@@ -578,7 +578,7 @@ async def take_due_follow_up(user_id: str) -> Optional[dict]:
 
 
 async def mark_follow_up_asked(follow_up_id: str) -> None:
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return
     try:
@@ -597,7 +597,7 @@ async def get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
     so the prompt reads as a stable profile block rather than a flat dump."""
     if not user_id:
         return ""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return ""
     try:

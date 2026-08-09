@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import memstore, runtime  # noqa: E402
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     LEARNING_CONTENT_CARDS,
@@ -58,9 +59,9 @@ def _run_personalized(
     count=4,
     research_client=None,
 ):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(memstore, "messages", messages)
     # Keep deterministic ranking tests independent of developer-machine API
     # credentials. Tests for open-topic research opt in with a sentinel client.
     monkeypatch.setattr(main, "content_research_oai", research_client)
@@ -256,7 +257,7 @@ def test_supabase_long_current_chat_keeps_substantive_cross_session_goal(monkeyp
         ]
     )
     supabase = _ChatSupabase(sessions, messages)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
     monkeypatch.setattr(main, "content_research_oai", None)
 
     async def verified_privacy(_uid, fail_closed=False):
@@ -292,7 +293,7 @@ def test_supabase_missing_requested_session_does_not_fall_through(monkeypatch):
             "session_id": "different-main",
         }
     ]
-    monkeypatch.setattr(main, "_get_supabase", lambda: _ChatSupabase(sessions, messages))
+    monkeypatch.setattr(runtime, "get_supabase", lambda: _ChatSupabase(sessions, messages))
 
     async def verified_privacy(_uid, fail_closed=False):
         del fail_closed
@@ -324,9 +325,9 @@ def test_memory_missing_requested_session_does_not_fall_through(monkeypatch):
             )
         ]
     }
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(memstore, "messages", messages)
 
     async def verified_privacy(_uid, fail_closed=False):
         del fail_closed
@@ -859,8 +860,8 @@ def test_memory_context_honors_preferred_session_for_followup_binding(monkeypatc
             )
         ],
     }
-    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(memstore, "messages", messages)
 
     context = main._recent_main_chat_from_memory(
         "parent-1", preferred_session_id="preferred-chat"
@@ -912,8 +913,8 @@ def test_memory_context_aggregates_only_same_users_recent_main_chats(monkeypatch
             )
         ],
     }
-    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(memstore, "messages", messages)
 
     context = main._recent_main_chat_from_memory("parent-1")
 
@@ -1227,8 +1228,8 @@ def test_long_single_session_keeps_busy_parent_and_key_period_as_top_two(
         )
     sessions = [_session("long-main", "parent-1")]
     messages = {"long-main": session_messages}
-    monkeypatch.setattr(main, "_sessions", {"long-main": sessions[0]})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(memstore, "sessions", {"long-main": sessions[0]})
+    monkeypatch.setattr(memstore, "messages", messages)
 
     context = main._recent_main_chat_from_memory("parent-1", limit=12)
     payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
@@ -1888,7 +1889,7 @@ def test_english_learning_resources_follow_group_order():
 
 
 def test_learning_detail_returns_resources_and_unknown_id_is_404(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
 
     detail = asyncio.run(main.get_card_detail("learn_sleep_routine", uid=None))
 
@@ -2022,8 +2023,8 @@ def test_missing_privacy_row_defaults_to_history_personalization_enabled(
             assert name == "app_settings"
             return EmptyPrivacyTable()
 
-    monkeypatch.setattr(main, "_get_supabase", lambda: EmptyPrivacySupabase())
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: EmptyPrivacySupabase())
+    monkeypatch.setattr(memstore, "privacy", {})
 
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
 
@@ -2033,8 +2034,8 @@ def test_missing_privacy_row_defaults_to_history_personalization_enabled(
 
 def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
     supabase = _PrivacySupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "privacy", {})
 
     saved = asyncio.run(
         main._db_set_privacy(
@@ -2056,7 +2057,7 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
     )
 
     # Simulate a Vercel cold start: process memory is empty, Supabase remains.
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(memstore, "privacy", {})
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
     assert loaded["allow_history_training"] is False
     assert loaded["language"] == "zh-TW"
@@ -2076,8 +2077,8 @@ def test_privacy_model_accepts_supported_resource_locales(locale):
 
 
 def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "privacy", {})
     payload = {
         "allow_history_training": True,
         "allow_external_content_research": True,
@@ -2105,8 +2106,8 @@ def test_privacy_lookup_fails_closed_when_storage_is_unavailable(monkeypatch):
         def table(self, _name):
             raise RuntimeError("temporary outage")
 
-    monkeypatch.setattr(main, "_get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
+    monkeypatch.setattr(memstore, "privacy", {})
 
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
 
@@ -2114,8 +2115,8 @@ def test_privacy_lookup_fails_closed_when_storage_is_unavailable(monkeypatch):
 
 
 def test_privacy_lookup_fails_closed_when_client_is_unconfigured(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
 
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
 
@@ -2128,8 +2129,8 @@ def test_privacy_lookup_does_not_trust_warm_cache_during_storage_failure(monkeyp
         def table(self, _name):
             raise RuntimeError("temporary outage")
 
-    monkeypatch.setattr(main, "_get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(main, "_privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
+    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
 
     loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
 
@@ -2142,8 +2143,8 @@ def test_privacy_storage_failure_uses_unavailable_feed_not_opt_out_copy(monkeypa
         def table(self, _name):
             raise RuntimeError("temporary outage")
 
-    monkeypatch.setattr(main, "_get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(main, "_privacy", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
+    monkeypatch.setattr(memstore, "privacy", {})
 
     payload = asyncio.run(main.get_personalized_feed(count=4, uid="parent-1"))
 
@@ -2170,8 +2171,8 @@ def test_failed_privacy_write_restores_the_previous_cached_setting(monkeypatch):
             return BrokenTable()
 
     previous = {**main._DEFAULT_PRIVACY, "allow_history_training": False}
-    monkeypatch.setattr(main, "_get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(main, "_privacy", {"parent-1": previous})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
+    monkeypatch.setattr(memstore, "privacy", {"parent-1": previous})
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
@@ -2182,4 +2183,4 @@ def test_failed_privacy_write_restores_the_previous_cached_setting(monkeypatch):
         )
 
     assert exc_info.value.status_code == 503
-    assert main._privacy["parent-1"]["allow_history_training"] is False
+    assert memstore.privacy["parent-1"]["allow_history_training"] is False

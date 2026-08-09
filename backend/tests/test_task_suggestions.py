@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import memstore, runtime  # noqa: E402
 from backend import main  # noqa: E402
 from backend.router import TurnRoute  # noqa: E402
 
@@ -339,10 +340,9 @@ def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypat
         "transition": {"kind": "task_suggestion", "tasks": [_proposal("旧任务")]},
         "created_at": "2026-06-01T00:00:00+00:00",
     }
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
     monkeypatch.setattr(
-        main,
-        "_sessions",
+        memstore, "sessions",
         {
             session_id: {
                 "id": session_id,
@@ -354,8 +354,7 @@ def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypat
         },
     )
     monkeypatch.setattr(
-        main,
-        "_messages",
+        memstore, "messages",
         {
             session_id: [
                 {
@@ -419,8 +418,8 @@ def test_database_failure_does_not_return_a_fake_saved_task(monkeypatch):
             return BrokenTable()
 
     memory_tasks = []
-    monkeypatch.setattr(main, "_get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(main, "_tasks", memory_tasks)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
+    monkeypatch.setattr(memstore, "tasks", memory_tasks)
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -450,8 +449,8 @@ def test_task_creation_requires_authentication():
 
 def test_task_proposal_accept_is_idempotent_without_database(monkeypatch):
     memory_tasks = []
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_tasks", memory_tasks)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "tasks", memory_tasks)
     body = main.TaskCreate(
         title="固定睡前顺序",
         scope="week",

@@ -26,11 +26,11 @@ from typing import Optional
 import anyio
 
 from backend.nuri_core import knowledge_store
+from backend import runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
     OPENAI_TASKS_TIMEOUT_S,
     aoai,
-    get_supabase,
     now,
     oai,
 )
@@ -630,7 +630,7 @@ FIX_KEYWORD = "#fix"
 async def is_fix_reviewer(uid: Optional[str]) -> bool:
     if not uid:
         return False
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return False
     try:
@@ -687,7 +687,7 @@ def distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
 async def get_style_rules_ctx(limit: int = 50) -> str:
     """Fetch the active, accumulated style rules for injection into every
     reply — this is what makes a #fix correction 'stick' going forward."""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         return ""
     try:

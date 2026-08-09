@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend import memstore, runtime  # noqa: E402
 from backend import main
 from backend.recommendation_snapshots import (
     build_snapshot,
@@ -338,8 +339,8 @@ def test_category_card_feed_and_details_keep_category_delivery_contract(
     monkeypatch,
 ):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     monkeypatch.setattr(main, "content_research_oai", None)
     context = {
         "state": "ready",
@@ -632,8 +633,8 @@ def test_profile_only_category_feed_loads_events_and_attaches_age_before_cards(
 
 def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     context = {
         "state": "ready",
         "session_id": "main-session",
@@ -670,7 +671,7 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
 
     # Simulate a Vercel cold start: process-local cache disappears while the
     # existing app_settings row remains available.
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     restored = asyncio.run(main._db_get_recommendation_snapshot("parent-1", rec_id))
     assert restored["personalization_reason"] == "冻结后的具体推荐理由"
 
@@ -695,8 +696,8 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
 
 def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     context = {
         "state": "ready",
         "session_id": "session-prepared",
@@ -740,7 +741,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     assert asyncio.run(
         main._db_persist_recommendation_snapshots("parent-prepared", [prepared])
     )
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     restored = asyncio.run(
         main._db_get_recommendation_snapshot(
             "parent-prepared",
@@ -773,7 +774,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
         )
     )
     assert prepared_resource_pair(stale_retryable) == pair
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     still_ready = asyncio.run(
         main._db_get_recommendation_snapshot(
             "parent-prepared",
@@ -787,8 +788,8 @@ def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic
     monkeypatch,
 ):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     snapshot = build_snapshot(
         "parent-retryable",
         {
@@ -821,7 +822,7 @@ def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic
     # A cold process still sees the durable in-flight marker. The retryable
     # response is invocation-local and cannot downgrade a concurrently ready
     # row in another Vercel instance.
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     durable = asyncio.run(
         main._db_get_recommendation_snapshot(
             "parent-retryable",
@@ -833,8 +834,8 @@ def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic
 
 def test_persistent_ready_snapshot_wins_over_stale_process_cache(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     uid = "parent-cross-instance"
     snapshot = build_snapshot(
         uid,
@@ -874,7 +875,7 @@ def test_persistent_ready_snapshot_wins_over_stale_process_cache(monkeypatch):
     assert asyncio.run(main._db_persist_recommendation_snapshots(uid, [ready]))
     # Simulate another warm function instance whose process cache still holds
     # the pre-generation state while durable storage already contains ready.
-    main._recommendation_snapshots[(uid, snapshot["recommendation_id"])] = preparing
+    memstore.recommendation_snapshots[(uid, snapshot["recommendation_id"])] = preparing
 
     restored = asyncio.run(
         main._db_get_recommendation_snapshot(uid, snapshot["recommendation_id"])
@@ -886,8 +887,8 @@ def test_persistent_ready_snapshot_wins_over_stale_process_cache(monkeypatch):
 
 def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     monkeypatch.setattr(main, "content_research_oai", None)
     context = {
         "state": "ready",
@@ -970,8 +971,8 @@ def test_explicit_missing_recommendation_id_fails_closed(monkeypatch):
 
 def test_recommendation_id_is_user_bound_in_persistent_lookup(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     card = {
         "id": "learn_language_milestones",
         "is_conversation_match": True,
@@ -983,7 +984,7 @@ def test_recommendation_id_is_user_bound_in_persistent_lookup(monkeypatch):
     }
     asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
     rec_id = card["recommendation_id"]
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
 
     assert asyncio.run(
         main._db_get_recommendation_snapshot("parent-2", rec_id)
@@ -992,8 +993,8 @@ def test_recommendation_id_is_user_bound_in_persistent_lookup(monkeypatch):
 
 def test_snapshot_privacy_delete_removes_cache_and_persistent_rows(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     card = {"id": "learn_sleep_routine", "is_conversation_match": True}
     context = {
         "session_id": "session-1",
@@ -1021,8 +1022,8 @@ def test_snapshot_privacy_delete_removes_cache_and_persistent_rows(monkeypatch):
 
 def test_snapshot_privacy_delete_failure_is_fail_closed(monkeypatch):
     supabase = _SettingsSupabase(fail_delete=True)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     snapshot = build_snapshot(
         "parent-1",
         {"id": "learn_sleep_routine"},
@@ -1040,7 +1041,7 @@ def test_snapshot_privacy_delete_failure_is_fail_closed(monkeypatch):
 
 
 def test_snapshot_delete_without_database_returns_503(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
 
     with pytest.raises(Exception) as error:
         asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
@@ -1049,13 +1050,12 @@ def test_snapshot_delete_without_database_returns_503(monkeypatch):
 
 
 def test_authenticated_privacy_update_without_database_returns_503(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
     monkeypatch.setattr(
-        main,
-        "_privacy",
+        memstore, "privacy",
         {"parent-1": main._normalized_privacy_settings({})},
     )
-    previous = dict(main._privacy["parent-1"])
+    previous = dict(memstore.privacy["parent-1"])
 
     with pytest.raises(Exception) as error:
         asyncio.run(
@@ -1066,14 +1066,14 @@ def test_authenticated_privacy_update_without_database_returns_503(monkeypatch):
         )
 
     assert getattr(error.value, "status_code", None) == 503
-    assert main._privacy["parent-1"] == previous
+    assert memstore.privacy["parent-1"] == previous
 
 
 def test_wipe_keeps_history_opt_out_when_snapshot_delete_fails(monkeypatch):
     supabase = _SettingsSupabase(fail_delete=True)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_privacy", {})
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "privacy", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
 
     with pytest.raises(Exception) as error:
         asyncio.run(main.wipe_all(uid="parent-1"))
@@ -1081,7 +1081,7 @@ def test_wipe_keeps_history_opt_out_when_snapshot_delete_fails(monkeypatch):
     assert getattr(error.value, "status_code", None) == 503
     privacy_value = supabase.store[main._privacy_storage_key("parent-1")]
     assert json.loads(privacy_value)["allow_history_training"] is False
-    assert main._privacy["parent-1"]["allow_history_training"] is False
+    assert memstore.privacy["parent-1"]["allow_history_training"] is False
 
 
 def test_snapshot_cannot_restore_context_when_history_privacy_is_off(monkeypatch):
@@ -1164,8 +1164,8 @@ def test_snapshot_cannot_bind_to_a_different_resolved_session(monkeypatch):
 
 def test_disabling_history_invalidates_old_recommendation_link(monkeypatch):
     supabase = _SettingsSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     card = {"id": "learn_sleep_routine", "is_conversation_match": True}
     context = {
         "session_id": "session-1",
@@ -1191,8 +1191,8 @@ def test_disabling_history_invalidates_old_recommendation_link(monkeypatch):
 
 
 def test_unpersisted_feed_card_uses_legacy_context_only(monkeypatch):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     card = {
         "id": "learn_language_milestones",
         "is_conversation_match": True,

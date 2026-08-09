@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import memstore  # noqa: E402
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
     CASE_FORBIDDEN_PARENT_ORG_IDS,
@@ -2862,7 +2863,7 @@ def test_detail_request_locale_override_returns_only_traditional_resources_witho
         card["is_conversation_match"] = True
         return [card], True
 
-    monkeypatch.setattr(main, "_privacy", {"parent-locale": saved_privacy})
+    monkeypatch.setattr(memstore, "privacy", {"parent-locale": saved_privacy})
     monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
     monkeypatch.setattr(
         main,
@@ -2891,7 +2892,7 @@ def test_detail_request_locale_override_returns_only_traditional_resources_witho
     assert detail["resource_summary"]["preferred_locale"] == "zh-TW"
     assert original_context["preferred_locale"] == "zh-CN"
     assert saved_privacy == {"language": "zh-CN"}
-    assert main._privacy["parent-locale"] == {"language": "zh-CN"}
+    assert memstore.privacy["parent-locale"] == {"language": "zh-CN"}
 
 
 def test_research_request_locale_override_uses_english_provider_and_summary(

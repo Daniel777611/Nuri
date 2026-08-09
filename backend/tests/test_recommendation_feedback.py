@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend import memstore, runtime  # noqa: E402
+from backend.nuri_core import outcome_store  # noqa: E402
 from backend import main
 from backend.recommendation_feedback import (
     canonical_resource_url,
@@ -315,8 +317,8 @@ def test_not_relevant_suppresses_exact_static_card():
 
 
 def test_authenticated_event_endpoint_persists_only_bounded_metadata(monkeypatch):
-    main._recommendation_events.clear()
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    memstore.recommendation_events.clear()
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
     async def enabled_privacy(*_args, **_kwargs):
         return {"allow_history_training": True}
 
@@ -342,7 +344,7 @@ def test_authenticated_event_endpoint_persists_only_bounded_metadata(monkeypatch
 
     assert result["accepted"] is True
     assert result["persisted"] is False
-    stored = main._recommendation_events["parent-feedback-test"]
+    stored = memstore.recommendation_events["parent-feedback-test"]
     assert stored == [
         {
             "event_id": "client-event-123",
@@ -361,8 +363,8 @@ def test_authenticated_event_endpoint_persists_only_bounded_metadata(monkeypatch
 
 
 def test_not_relevant_endpoint_requires_a_specific_reason(monkeypatch):
-    main._recommendation_events.clear()
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+    memstore.recommendation_events.clear()
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
 
     async def enabled_privacy(*_args, **_kwargs):
         return {"allow_history_training": True}
@@ -585,10 +587,10 @@ def _storage_event(event_id, event="card_open", *, occurred_at=None):
 
 def test_recommendation_event_table_appends_deduplicates_and_deletes(monkeypatch):
     supabase = _RecommendationStoreSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
     uid = "parent-row-events"
     first = _storage_event("row-event-0001")
     second = _storage_event("row-event-0002", event="helpful")
@@ -604,7 +606,7 @@ def test_recommendation_event_table_appends_deduplicates_and_deletes(monkeypatch
     }
 
     # A cold instance rehydrates from independent rows, not a mutable JSON list.
-    monkeypatch.setattr(main, "_recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_events", {})
     loaded = asyncio.run(main._db_get_recommendation_events(uid))
     assert {event["event_id"] for event in loaded} == {
         "row-event-0001",
@@ -617,10 +619,10 @@ def test_recommendation_event_table_appends_deduplicates_and_deletes(monkeypatch
 
 def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
     supabase = _RecommendationStoreSupabase(row_table_available=False)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
     uid = "parent-settings-events"
     first = _storage_event("setting-event-0001")
     second = _storage_event("setting-event-0002", event="helpful")
@@ -635,14 +637,14 @@ def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
 
     asyncio.run(main._db_append_recommendation_events(uid, [first]))
     # Simulate another Vercel instance with no process-local event cache.
-    monkeypatch.setattr(main, "_recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_events", {})
     asyncio.run(main._db_append_recommendation_events(uid, [second, first]))
 
     # The first missing-table response is cached for this warm instance; all
     # later reads and writes go straight to atomic per-event setting rows.
     assert supabase.table_calls.get("recommendation_events") == 1
 
-    prefix = main._recommendation_event_setting_prefix(uid)
+    prefix = outcome_store.event_setting_prefix(uid)
     per_event_keys = {
         key for key in supabase.settings if key.startswith(prefix)
     }
@@ -650,7 +652,7 @@ def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
     # The old whole-list key is read for rollout compatibility, never rewritten.
     assert supabase.settings[legacy_key]["value"] == legacy_value
 
-    monkeypatch.setattr(main, "_recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_events", {})
     loaded = asyncio.run(main._db_get_recommendation_events(uid))
     assert {event["event_id"] for event in loaded} == {
         "setting-event-0001",
@@ -665,10 +667,10 @@ def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
 
 def test_row_table_physically_removes_expired_and_overflow_events(monkeypatch):
     supabase = _RecommendationStoreSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
     uid = "parent-row-retention"
     now = datetime.now(timezone.utc)
 
@@ -684,7 +686,7 @@ def test_row_table_physically_removes_expired_and_overflow_events(monkeypatch):
         occurred_at=(now - timedelta(days=121)).isoformat(),
     )
     for event in [*existing, expired]:
-        row = main._recommendation_event_row(uid, event)
+        row = outcome_store.event_row(uid, event)
         supabase.event_rows[(uid, event["event_id"])] = row
 
     newest = _storage_event(
@@ -708,10 +710,10 @@ def test_row_table_physically_removes_expired_and_overflow_events(monkeypatch):
 
 def test_settings_v2_physically_removes_expired_and_overflow_events(monkeypatch):
     supabase = _RecommendationStoreSupabase(row_table_available=False)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
     uid = "parent-settings-retention"
     now = datetime.now(timezone.utc)
 
@@ -726,7 +728,7 @@ def test_settings_v2_physically_removes_expired_and_overflow_events(monkeypatch)
         "expired-setting-event",
         occurred_at=(now - timedelta(days=121)).isoformat(),
     )
-    for row in main._recommendation_event_setting_rows(
+    for row in outcome_store.event_setting_rows(
         uid,
         [*existing, expired],
     ):
@@ -758,7 +760,7 @@ def test_settings_v2_physically_removes_expired_and_overflow_events(monkeypatch)
     )
 
     assert persisted is True
-    prefix = main._recommendation_event_setting_prefix(uid)
+    prefix = outcome_store.event_setting_prefix(uid)
     stored_rows = [
         row
         for key, row in supabase.settings.items()
@@ -778,10 +780,10 @@ def test_settings_v2_physically_removes_expired_and_overflow_events(monkeypatch)
 
 def test_settings_cleanup_deletes_empty_legacy_v1_value(monkeypatch):
     supabase = _RecommendationStoreSupabase(row_table_available=False)
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
     uid = "parent-empty-legacy-retention"
     expired = _storage_event(
         "only-expired-legacy-event",
@@ -807,17 +809,17 @@ def test_settings_cleanup_deletes_empty_legacy_v1_value(monkeypatch):
 
 def test_cleanup_failure_keeps_successfully_written_event(monkeypatch, capsys):
     supabase = _RecommendationStoreSupabase()
-    monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "_recommendation_events", {})
-    monkeypatch.setattr(main, "_recommendation_event_locks", {})
-    monkeypatch.setattr(main, "_recommendation_events_table_available", None)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+    monkeypatch.setattr(memstore, "recommendation_events", {})
+    monkeypatch.setattr(memstore, "recommendation_event_locks", {})
+    monkeypatch.setattr(outcome_store, "_table_available", None)
 
     async def fail_cleanup(_sb, _uid):
         raise RuntimeError("cleanup unavailable")
 
     monkeypatch.setattr(
-        main,
-        "_db_cleanup_recommendation_event_table",
+        outcome_store,
+        "cleanup_event_table",
         fail_cleanup,
     )
     uid = "parent-cleanup-failure"

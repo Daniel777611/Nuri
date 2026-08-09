@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import memstore, runtime  # noqa: E402
 from backend import main  # noqa: E402
 
 
@@ -19,9 +20,9 @@ def test_preview_requires_a_valid_parent_token():
 
 
 def _run_preview(monkeypatch, sessions, messages, uid="parent-1"):
-    monkeypatch.setattr(main, "_get_supabase", lambda: None)
-    monkeypatch.setattr(main, "_sessions", {item["id"]: item for item in sessions})
-    monkeypatch.setattr(main, "_messages", messages)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
+    monkeypatch.setattr(memstore, "messages", messages)
     return asyncio.run(main.get_main_chat_preview(uid))
 
 

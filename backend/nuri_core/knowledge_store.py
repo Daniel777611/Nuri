@@ -30,6 +30,7 @@ from typing import List, Optional
 # out of main.py.
 from fastapi import HTTPException
 
+from backend import runtime
 from backend.runtime import (
     EMBED_DIM,
     INTERNAL_MIN_SIMILARITY,
@@ -39,7 +40,6 @@ from backend.runtime import (
     PdfReader,
     VECTOR_NAMESPACE,
     VECTOR_TABLE,
-    get_supabase,
     oai,
 )
 
@@ -76,7 +76,7 @@ def embed_one(text: str) -> List[float]:
     return resp.data[0].embedding
 
 def is_indexed(doc_id: str, namespace: str = VECTOR_NAMESPACE):
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     res = (
@@ -91,7 +91,7 @@ def is_indexed(doc_id: str, namespace: str = VECTOR_NAMESPACE):
     return total > 0, total or None
 
 def upsert_doc(doc_id: str, chunks: List[str], namespace: str = VECTOR_NAMESPACE, extra_metadata: Optional[dict] = None) -> int:
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
     vecs_data = embed_batch(chunks)
@@ -113,7 +113,7 @@ def upsert_doc(doc_id: str, chunks: List[str], namespace: str = VECTOR_NAMESPACE
     return len(chunks)
 
 def retrieve(question: str, top_k: int, doc_id: Optional[str]):
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
 
@@ -155,7 +155,7 @@ def retrieve_internal(question: str, top_k: int = INTERNAL_TOP_K):
     internal doc is eligible. Matches below INTERNAL_MIN_SIMILARITY are
     dropped so an off-topic message doesn't drag in unrelated internal
     guidance mislabeled as mandatory."""
-    sb = get_supabase()
+    sb = runtime.get_supabase()
     if not sb or not oai:
         return [], []
     qv = embed_one(question)

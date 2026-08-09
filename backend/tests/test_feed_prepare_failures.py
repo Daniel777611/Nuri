@@ -12,6 +12,7 @@ from copy import deepcopy
 
 import pytest
 
+from backend import memstore, runtime  # noqa: E402
 from backend import main
 from backend.content_library import LEARNING_CONTENT_BY_ID
 from backend.content_research import CONTENT_CATEGORIES, clear_research_cache
@@ -121,8 +122,8 @@ class _PrepareHarness:
         if persistent:
             supabase = _SettingsSupabase()
             monkeypatch.setattr(main, "RECOMMENDATION_SNAPSHOT_SECRET", TEST_SNAPSHOT_SECRET)
-            monkeypatch.setattr(main, "_get_supabase", lambda: supabase)
-            monkeypatch.setattr(main, "_recommendation_snapshots", {})
+            monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
+            monkeypatch.setattr(memstore, "recommendation_snapshots", {})
             assert asyncio.run(
                 main._db_persist_recommendation_snapshots(
                     self.uid, list(self.snapshots.values())
@@ -564,7 +565,7 @@ def test_prepare_can_recover_after_timeout_from_a_cold_serverless_instance(
 
     # Vercel may route the next retry to a new process with an empty local
     # cache.  The encrypted app_settings snapshots are the only surviving state.
-    monkeypatch.setattr(main, "_recommendation_snapshots", {})
+    monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     recovered = harness.run()
 
     # The first retry produces the complete primary bundle. The delivery
