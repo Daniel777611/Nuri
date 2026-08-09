@@ -27,6 +27,9 @@ import time
 from dataclasses import replace
 from typing import Optional
 
+import anyio
+
+from backend.nuri_core import family_store
 from backend.nuri_core.contracts import FamilyState
 from backend.nuri_core.ports import CorePorts
 
@@ -172,3 +175,37 @@ async def enrich(
     )
     _cache[uid] = (state.fingerprint, enriched, time.monotonic() + ttl_s)
     return enriched
+
+
+async def extract_and_upsert_memories(
+    history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
+) -> None:
+    """Learn what this turn revealed about the family, and drop the cache.
+
+    Runs as a fire-and-forget background task so extraction never adds latency
+    to the chat reply (or task update) the user is waiting on.
+
+    It lives here rather than in family_store because of the last line: the
+    cache belongs to this module, and a write that leaves a stale entry behind
+    is how a parent ends up telling NURI the same thing twice. Keeping the
+    invalidation in the same function as the write is the only arrangement
+    where that cannot be forgotten.
+    """
+    if not family_store.worth_extracting(history):
+        return
+    try:
+        extracted = await anyio.to_thread.run_sync(
+            lambda: family_store.extract_memories_sync(history)
+        )
+        memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
+        await family_store.upsert_memories(
+            memories, user_id=user_id, child_id=None,
+            source_type=source_type, source_id=source_id,
+        )
+        if isinstance(extracted, dict):
+            await family_store.upsert_follow_ups(
+                extracted.get("follow_ups", []), user_id=user_id, source_id=source_id,
+            )
+        invalidate(user_id)
+    except Exception as e:
+        print(f"[warn] family: extract_and_upsert_memories: {e}")

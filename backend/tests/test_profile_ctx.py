@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import backend.main as main_module  # noqa: E402
+from backend.nuri_core import family_store  # noqa: E402
 from backend.main import (  # noqa: E402
     ChildCreate,
     _age_label,
@@ -78,7 +78,9 @@ def test_age_label_treats_short_month_end_as_anniversary(
         def today(cls):
             return cls(today.year, today.month, today.day)
 
-    monkeypatch.setattr(main_module, "date", FixedDate)
+    # Patched on the module that owns the arithmetic — the age helpers moved to
+    # nuri_core.family_store, and backend.main only re-exports them.
+    monkeypatch.setattr(family_store, "date", FixedDate)
     assert _age_label(birth_date) == expected
 
 

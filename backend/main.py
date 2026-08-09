@@ -35,23 +35,22 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 import asyncio, io, json, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
-from pathlib import Path
 from typing import List, Literal, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import anyio
 import bcrypt
 import jwt
-from dotenv import load_dotenv
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from openai import AsyncOpenAI, OpenAI
 
 from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_context
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
+from backend.nuri_core import family_store as core_family_store
+from backend.nuri_core import knowledge_store as core_knowledge_store
 from backend.nuri_core import outcome as core_outcome
 from backend.nuri_core import provenance as core_provenance
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
@@ -175,126 +174,57 @@ except ImportError:  # Supports `python backend/main.py` during local debugging.
         weighted_category_for_window,
     )
 
-load_dotenv()
 
-# ── Optional Supabase/pgvector RAG dependencies ──────────────────────────────
-try:
-    from supabase import Client, create_client
-    _SUPABASE_OK = True
-except ImportError:
-    Client = None
-    create_client = None
-    _SUPABASE_OK = False
-
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-
-# ── Env ──────────────────────────────────────────────────────────────────────
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
-SUPABASE_URL     = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_KEY     = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_ANON_KEY")
-VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
-FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
-VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
-# Internal knowledge base: NURI-authored guidance treated as mandatory rules,
-# distinct from VECTOR_NAMESPACE (external reference books). Ingested via
-# backend/scripts/ingest_internal_docs.py, not the /admin/books flow.
-INTERNAL_NAMESPACE      = os.getenv("INTERNAL_VECTOR_NAMESPACE", "internal")
-INTERNAL_TOP_K          = int(os.getenv("INTERNAL_TOP_K", "3"))
-INTERNAL_MIN_SIMILARITY = float(os.getenv("INTERNAL_MIN_SIMILARITY", "0.5"))
-JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
-RECOMMENDATION_SNAPSHOT_SECRET = (
-    os.getenv("RECOMMENDATION_SNAPSHOT_SECRET") or SUPABASE_SERVICE_ROLE_KEY
+# ── Runtime ──────────────────────────────────────────────────────────────────
+# Configuration, the OpenAI clients and the Supabase handle live in
+# backend/runtime.py so that modules other than this one can reach them without
+# importing a file that builds a FastAPI app at import time. Re-exported here
+# because a great deal of code — and several tests — still reads them off
+# `backend.main`.
+from backend.runtime import (  # noqa: E402
+    ADMIN_KEY,
+    APP_URL,
+    Client,
+    EMBED_DIM,
+    FRONTEND_DIST,
+    INTERNAL_MIN_SIMILARITY,
+    INTERNAL_NAMESPACE,
+    INTERNAL_TOP_K,
+    JWT_ALG,
+    JWT_EXP_MIN,
+    JWT_SECRET,
+    OPENAI_API_KEY,
+    OPENAI_CONTENT_RESEARCH_CONCURRENCY,
+    OPENAI_CONTENT_RESEARCH_MODEL,
+    OPENAI_CONTENT_RESEARCH_TIMEOUT_S,
+    OPENAI_FAST_TIMEOUT_S,
+    OPENAI_MAX_RETRIES,
+    OPENAI_TASKS_TIMEOUT_S,
+    OPENAI_TIMEOUT_S,
+    PdfReader,
+    RECOMMENDATION_SNAPSHOT_SECRET,
+    SMTP_FROM,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USER,
+    SUPABASE_KEY,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+    THREAD_LIMIT,
+    VECTOR_NAMESPACE,
+    VECTOR_TABLE,
+    _SUPABASE_OK,
+    aoai,
+    content_research_limiter,
+    content_research_oai,
+    elapsed_ms as _ms,
+    get_supabase as _get_supabase,
+    now as _now,
+    oai,
 )
-ADMIN_KEY        = os.getenv("ADMIN_KEY", "")
-JWT_ALG          = "HS256"
-JWT_EXP_MIN      = int(os.getenv("JWT_EXPIRES_MINUTES", "10080"))  # 7 days
-EMBED_DIM        = 1024
-APP_URL          = os.getenv("APP_URL", "https://family-growth-ktm1oyan2-ordashlabs.vercel.app")
-SMTP_HOST        = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER        = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM        = os.getenv("SMTP_FROM", "")
-
-# The SDK defaults (timeout=600s, max_retries=2) let a single stalled call hold
-# a worker thread for ~30 minutes, which starves the shared thread pool and
-# freezes the whole app.
-#
-# These ceilings are sized against the Vercel function's maxDuration (see
-# vercel.json) so a pathological turn is cut short by us, with a usable error,
-# rather than by the platform mid-response. They are ceilings for stalls, not
-# expected timings — a normal turn returns in a few seconds.
-OPENAI_TIMEOUT_S       = float(os.getenv("OPENAI_TIMEOUT_S", "45"))   # main chat reply
-OPENAI_FAST_TIMEOUT_S  = float(os.getenv("OPENAI_FAST_TIMEOUT_S", "15"))  # titles, embeddings, #fix
-OPENAI_TASKS_TIMEOUT_S = float(os.getenv("OPENAI_TASKS_TIMEOUT_S", "25"))  # task suggestions
-# One preparation request performs at most three sequential Responses calls
-# (the initial bundle plus two bounded repair passes).  The browser waits 110s
-# for the whole request, so an individual 100s SDK timeout could leave the UI
-# waiting on work that may legally run for almost five minutes.  Keep the
-# provider-call ceiling at 30s even when an older Vercel environment still has
-# the former 100s value; three calls plus persistence remain inside the client
-# budget and well below the function maxDuration.
-OPENAI_CONTENT_RESEARCH_TIMEOUT_S = max(
-    5.0,
-    min(float(os.getenv("OPENAI_CONTENT_RESEARCH_TIMEOUT_S", "30")), 30.0),
-)
-OPENAI_CONTENT_RESEARCH_MODEL = os.getenv(
-    "OPENAI_CONTENT_RESEARCH_MODEL", "gpt-5.4-mini"
-)
-OPENAI_CONTENT_RESEARCH_CONCURRENCY = int(
-    os.getenv("OPENAI_CONTENT_RESEARCH_CONCURRENCY", "2")
-)
-OPENAI_MAX_RETRIES     = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
-
-oai = (
-    OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_S, max_retries=OPENAI_MAX_RETRIES)
-    if OPENAI_API_KEY else None
-)
-# Used by the streaming chat path. Being natively async, it holds no worker
-# thread for the length of the call, unlike the blocking client above.
-aoai = (
-    AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_S, max_retries=OPENAI_MAX_RETRIES)
-    if OPENAI_API_KEY else None
-)
-content_research_oai = (
-    OpenAI(
-        api_key=OPENAI_API_KEY,
-        timeout=OPENAI_CONTENT_RESEARCH_TIMEOUT_S,
-        max_retries=0,
-    )
-    if OPENAI_API_KEY
-    else None
-)
-content_research_limiter = anyio.CapacityLimiter(
-    max(1, OPENAI_CONTENT_RESEARCH_CONCURRENCY)
-)
-
-supabase_client = None
-
-def _get_supabase() -> Optional["Client"]:
-    global supabase_client
-    if supabase_client is not None:
-        return supabase_client
-    if not (_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY and create_client):
-        return None
-    try:
-        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        return supabase_client
-    except Exception as e:
-        print(f"[warn] Supabase init skipped: {e}")
-    return None
 
 # ── App ───────────────────────────────────────────────────────────────────────
-# Every blocking call (Supabase queries and OpenAI alike) shares anyio's
-# process-wide thread limiter, which defaults to 40. A handful of in-flight LLM
-# calls would otherwise hold every token and stall unrelated DB queries, so a
-# slow model turn reads as a total app freeze.
-THREAD_LIMIT = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
-
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_LIMIT
@@ -426,9 +356,6 @@ def _to_public(doc: dict) -> dict:
         "onboarding_completed": bool(doc.get("onboarding_completed", False)),
     })
     return base
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 # ── Supabase persistence helpers ──────────────────────────────────────────────
 
@@ -2587,226 +2514,41 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
             return f"标题：{c['title']}\n摘要：{c['summary']}\n{body}{resource_ctx}"
     return ""
 
-# ── Input normalization & long-term memory ───────────────────────────────────
-_MEMORY_CATEGORY_LABELS = {
-    "preference": "家庭偏好",
-    "constraint": "约束条件",
-    "concern": "家长关注点",
-    "child_state": "孩子当前状态",
-    "fact": "其他信息",
-}
+# ── 1 家庭模型 ────────────────────────────────────────────────────────────────
+# Identity, stage, memories, follow-ups and the normalized input log now live in
+# backend/nuri_core/family_store.py, with the state assembly and its cache in
+# family.py. Aliased under their old private names because the routes below,
+# the ports wiring and several tests all still call them that; the aliases go
+# once those move out of this file too.
+_MEMORY_CATEGORY_LABELS = core_family_store.MEMORY_CATEGORY_LABELS
+_PARENT_ROLE_LABELS = core_family_store.PARENT_ROLE_LABELS
+_CONCERN_LABELS = core_family_store.CONCERN_LABELS
+_HELP_PREF_LABELS = core_family_store.HELP_PREF_LABELS
+_INFO_SOURCE_LABELS = core_family_store.INFO_SOURCE_LABELS
+_GENDER_LABELS = core_family_store.GENDER_LABELS
+_PROFILE_FIELDS = core_family_store.PROFILE_FIELDS
+MEMORY_MIN_USER_CHARS = core_family_store.MEMORY_MIN_USER_CHARS
+FOLLOW_UP_INTERVALS = core_family_store.FOLLOW_UP_INTERVALS
+FOLLOW_UP_DEFAULT_DAYS = core_family_store.FOLLOW_UP_DEFAULT_DAYS
+FOLLOW_UP_EXPIRE_DAYS = core_family_store.FOLLOW_UP_EXPIRE_DAYS
 
-_PARENT_ROLE_LABELS = {
-    "mom": "妈妈", "dad": "爸爸", "grandparent": "祖父母/外祖父母", "other": "其他家庭照顾者",
-}
-_CONCERN_LABELS = {
-    "sleep": "睡眠", "food": "饮食", "emotion": "情绪", "development": "发展",
-    "parenting": "教养方式", "health": "健康", "childcare": "托育",
-    "family": "家庭关系", "unknown": "还不确定", "other": "其他",
-}
-# Onboarding asks the parent how they want to be answered, so these map to
-# instructions rather than to descriptions.
-_HELP_PREF_LABELS = {
-    "research": "希望看到专业研究和知识依据，可以适度引用理论",
-    "experience": "希望听到真实家长的经验分享，多用具体情境而不是理论",
-    "analysis": "希望一步一步分析原因，先讲清楚为什么再给做法",
-    "actionable": "希望直接拿到可执行的方法，少铺垫",
-}
-_INFO_SOURCE_LABELS = {
-    "research": "专业研究／论文", "expert": "医师或专家",
-    "parents": "其他家长经验", "all": "都会参考",
-}
-_GENDER_LABELS = {"boy": "男孩", "girl": "女孩"}
-
-
-def _age_in_months(birth_date: str) -> Optional[int]:
-    """Completed months since a birth date, or None if it can't be read.
-
-    Split out from _age_label because the four-model pipeline needs the number,
-    not the label: directive conditions are written as month ranges, and
-    parsing "2岁3个月" back into one would be absurd.
-    """
-    try:
-        born = date.fromisoformat(str(birth_date)[:10])
-    except (ValueError, TypeError):
-        return None
-    today = date.today()
-    months = (today.year - born.year) * 12 + (today.month - born.month)
-    # Treat the last day of a shorter month as the completed monthly
-    # anniversary for birthdays on the 29th-31st. This keeps Jan 31 -> Feb 28
-    # and leap-day birthdays aligned with ordinary calendar-age expectations.
-    next_month = today.replace(day=28) + timedelta(days=4)
-    current_month_last_day = (next_month - timedelta(days=next_month.day)).day
-    anniversary_day = min(born.day, current_month_last_day)
-    if today.day < anniversary_day:
-        months -= 1
-    return months if months >= 0 else None
-
-
-def _age_label(birth_date: str) -> str:
-    """Render a birth date as an age NURI can reason about. Advice for a
-    6-month-old and a 6-year-old share almost nothing, so this is the single
-    most load-bearing fact in the profile."""
-    months = _age_in_months(birth_date)
-    if months is None:
-        return ""
-    if months < 24:
-        return f"{months}个月" if months else "未满1个月"
-    years, rest = divmod(months, 12)
-    return f"{years}岁{rest}个月" if rest else f"{years}岁"
-
-
-def _safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
-    """Return age-only family context plus an opaque profile version.
-
-    Exact birthdays and child names stay inside NURI.  External content
-    research only needs the completed age label, while the fingerprint makes a
-    saved recommendation stale as soon as the underlying child profile (or a
-    monthly age boundary) changes.
-    """
-
-    ages: list[str] = []
-    fingerprint_rows: list[str] = []
-    for child in children:
-        birth_date = str(child.get("birth_date") or "")[:10]
-        age = _age_label(birth_date)
-        if age:
-            ages.append(age)
-        if birth_date:
-            fingerprint_rows.append(
-                "|".join(
-                    (
-                        birth_date,
-                        str(child.get("gender") or ""),
-                        age,
-                    )
-                )
-            )
-    fingerprint_material = "\n".join(sorted(fingerprint_rows)) or "no-children"
-    return {
-        "child_age_context": (
-            f"孩子当前年龄：{'、'.join(ages[:3])}" if ages else ""
-        ),
-        "child_profile_fingerprint": hashlib.sha256(
-            fingerprint_material.encode("utf-8")
-        ).hexdigest()[:24],
-    }
-
-
-async def _attach_child_recommendation_context(uid: str, context: dict) -> dict:
-    """Attach safe child-stage and questionnaire recommendation context.
-
-    Exact birthdays, names and free-form profile fields never enter this
-    structure.  The two questionnaire values are fixed enum-like codes used
-    only to calculate an explainable content-category prior.
-    """
-
-    profile, children = await _load_profile(uid)
-    context.update(_safe_child_recommendation_context(children))
-    context["help_preference"] = str(profile.get("help_preference") or "")
-    context["info_source"] = str(profile.get("info_source") or "")
-    return context
-
-
-def _profile_ctx(row: dict, children: Optional[list] = None) -> str:
-    """Turn the onboarding answers into a prompt block, so NURI knows who it's
-    talking to from the first reply instead of only picking this up once enough
-    chat history has accumulated.
-
-    Everything the questionnaire collects belongs here — anything omitted is a
-    question the parent answered for nothing.
-    """
-    parts = []
-    nickname = (row.get("nickname") or "").strip()
-    if nickname:
-        parts.append(f"称呼：{nickname}")
-    role = _PARENT_ROLE_LABELS.get(row.get("parent_role"))
-    if role:
-        parts.append(f"身份：{role}")
-    city = (row.get("city") or "").strip()
-    if city:
-        parts.append(f"所在城市：{city}")
-
-    concerns = [_CONCERN_LABELS.get(c, c) for c in (row.get("top_concerns") or [])]
-    other = (row.get("concern_other") or "").strip()
-    if other:
-        concerns = [c for c in concerns if c != "其他"] + [other]
-    if concerns:
-        parts.append(f"主要关心：{'、'.join(concerns)}")
-
-    hobbies = (row.get("hobbies") or "").strip()
-    if hobbies:
-        parts.append(f"没带孩子时喜欢：{hobbies}")
-    info_source = _INFO_SOURCE_LABELS.get(row.get("info_source"))
-    if info_source:
-        parts.append(f"比较信任的信息来源：{info_source}")
-
-    for child in children or []:
-        desc = []
-        name = (child.get("nickname") or "").strip()
-        age = _age_label(child.get("birth_date"))
-        if age:
-            desc.append(age)
-        gender = _GENDER_LABELS.get(child.get("gender"))
-        if gender:
-            desc.append(gender)
-        allergies = [a for a in (child.get("allergies") or []) if a]
-        if allergies:
-            desc.append(f"过敏：{'、'.join(allergies)}")
-        notes = (child.get("notes") or "").strip()
-        if notes:
-            desc.append(notes)
-        if desc:
-            parts.append(f"孩子{('（' + name + '）') if name else ''}：{'，'.join(desc)}")
-
-    block = "；".join(parts)
-    help_pref = _HELP_PREF_LABELS.get(row.get("help_preference"))
-    if help_pref:
-        block += f"\n这位家长{help_pref}。在不违反上述规则的前提下，按这个偏好来组织回答。"
-    return block
-
-_PROFILE_FIELDS = (
-    "nickname,city,parent_role,top_concerns,concern_other,hobbies,"
-    "help_preference,info_source"
-)
-
-async def _load_profile(user_id: Optional[str]) -> tuple[dict, list]:
-    """Fetch the profile answers and children behind the prompt block.
-
-    One loader for every caller: the chat path used to select a narrower column
-    set than _profile_ctx reads, so answers the parent had given were silently
-    dropped in chat while showing up in the intro message.
-    """
-    sb = _get_supabase()
-    if not user_id or not sb:
-        return {}, []
-    async def _user():
-        try:
-            r = await anyio.to_thread.run_sync(
-                lambda: sb.table("users").select(_PROFILE_FIELDS)
-                .eq("id", user_id).maybe_single().execute()
-            )
-            return (r.data if r else None) or {}
-        except Exception as e:
-            print(f"[warn] _load_profile user: {e}")
-            return {}
-    async def _children():
-        try:
-            r = await anyio.to_thread.run_sync(
-                lambda: sb.table("children").select("nickname,birth_date,gender,allergies,notes")
-                .eq("user_id", user_id).execute()
-            )
-            return r.data or []
-        except Exception as e:
-            print(f"[warn] _load_profile children: {e}")
-            return []
-    profile, children = await asyncio.gather(_user(), _children())
-    return profile, children
-
-
-def _ms(start: float) -> int:
-    """Elapsed milliseconds since a perf_counter() reading."""
-    return int((time.perf_counter() - start) * 1000)
+_age_in_months = core_family_store.age_in_months
+_age_label = core_family_store.age_label
+_safe_child_recommendation_context = core_family_store.safe_child_recommendation_context
+_attach_child_recommendation_context = core_family_store.attach_child_recommendation_context
+_profile_ctx = core_family_store.profile_ctx
+_load_profile = core_family_store.load_profile
+_save_normalized_input = core_family_store.save_normalized_input
+_extract_memories_sync = core_family_store.extract_memories_sync
+_upsert_memories = core_family_store.upsert_memories
+_worth_extracting = core_family_store.worth_extracting
+_follow_up_due_at = core_family_store.follow_up_due_at
+_upsert_follow_ups = core_family_store.upsert_follow_ups
+_get_follow_up_context = core_family_store.get_follow_up_context
+_take_due_follow_up = core_family_store.take_due_follow_up
+_mark_follow_up_asked = core_family_store.mark_follow_up_asked
+_get_memory_context = core_family_store.get_memory_context
+_extract_and_upsert_memories = core_family.extract_and_upsert_memories
 
 
 class _TurnMetrics:
@@ -2888,331 +2630,6 @@ class _TurnMetrics:
                 print(f"[warn] chat_turn_logs retry failed: {e2}")
 
 
-async def _save_normalized_input(
-    *, user_id: Optional[str], session_id: Optional[str], source: str,
-    raw_text: str = "", raw_image_base64: Optional[str] = None,
-    card_ref: Optional[dict] = None, context_hints: Optional[dict] = None,
-    child_id: Optional[str] = None,
-) -> None:
-    """Log every user turn through one canonical shape before it reaches the router/LLM."""
-    sb = _get_supabase()
-    if not sb:
-        return
-    row = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "child_id": child_id,
-        "session_id": session_id,
-        "source": source,
-        "raw_text": raw_text,
-        "normalized_text": raw_text.strip(),
-        "normalization_version": "v1",
-        "raw_image_base64": raw_image_base64,
-        "card_ref": card_ref,
-        "context_hints": context_hints or {},
-        "created_at": _now(),
-    }
-    try:
-        await anyio.to_thread.run_sync(lambda: sb.table("normalized_inputs").insert(row).execute())
-    except Exception as e:
-        print(f"[warn] _save_normalized_input: {e}")
-
-def _extract_memories_sync(history: list[dict]) -> dict:
-    """Ask a small model whether this conversation contains stable, reusable facts."""
-    if not oai:
-        return {"memories": [], "follow_ups": []}
-    convo = "\n".join(
-        f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
-        for m in history[-8:] if m.get("text")
-    )
-    if not convo.strip():
-        return {"memories": [], "follow_ups": []}
-    system = (
-        "从下面这段育儿助手对话里提取两种东西。两者都没有就都返回空数组，不要勉强凑数。\n\n"
-        "memories：值得长期记住的、稳定的事实——长期偏好、过敏史、育儿理念上的坚持、"
-        "孩子的持续性状态。不要提取一次性的、当下情绪化的、或还不确定的内容。\n\n"
-        "follow_ups：过一段时间值得回头关心一次的事。包括家长提到的有日期的安排"
-        "（几号开始托婴、哪天回诊、下周满两岁），也包括正在进行、需要一段时间才看得出结果的事"
-        "（在戒尿布、刚换睡眠作息、在试新食材），以及 NURI 自己刚承诺过要之后再看的事。\n"
-        "- topic：4-8 字的短标题，同一件事每次都要用同样的写法，这是去重的依据"
-        "（例如固定写「托婴适应」，不要一次写「托婴」一次写「上托婴中心的适应」）\n"
-        "- note：一句话说清楚要问什么，要带上具体背景，让之后问起来不像罐头问候\n"
-        "- due_date：家长明确讲了日期就填 YYYY-MM-DD，没讲就填空字符串。"
-        "一段话里出现好几个日期时，填最值得回头关心的那个未来日期"
-        "（例如同时提到「7/30 签约」和「9/1 开始托婴」，要问的是入托适应，就填 9/1）\n"
-        "- 纯粹的情绪倾诉、已经解决完的事、不需要再追问的闲聊，不要放进来"
-    )
-    try:
-        resp = oai.chat.completions.create(
-            model="gpt-5.4-mini",
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": convo}],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "memory_extraction",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "memories": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "category": {
-                                            "type": "string",
-                                            "enum": ["preference", "concern", "child_state", "fact", "constraint"],
-                                        },
-                                        "key": {"type": "string"},
-                                        "value": {"type": "string"},
-                                        "confidence": {"type": "number"},
-                                    },
-                                    "required": ["category", "key", "value", "confidence"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "follow_ups": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        # Short handle, reused as the dedupe key.
-                                        "topic": {"type": "string"},
-                                        "note": {"type": "string"},
-                                        # "" when the parent named no date; the
-                                        # topic then decides the interval.
-                                        "due_date": {"type": "string"},
-                                    },
-                                    "required": ["topic", "note", "due_date"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                        },
-                        "required": ["memories", "follow_ups"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-        )
-        data = json.loads(resp.choices[0].message.content)
-        return {
-            "memories": data.get("memories", [])[:5],
-            "follow_ups": data.get("follow_ups", [])[:3],
-        }
-    except Exception as e:
-        print(f"[error] _extract_memories_sync failed: {type(e).__name__}: {e}")
-        return {"memories": [], "follow_ups": []}
-
-async def _upsert_memories(
-    memories: list[dict], *, user_id: str, child_id: Optional[str],
-    source_type: str, source_id: Optional[str],
-) -> None:
-    """Write by (user_id, child_id, category, key); only replace value/confidence
-    when the new read is at least as confident, so a low-confidence guess can't
-    clobber an already-confirmed fact."""
-    sb = _get_supabase()
-    if not sb or not memories:
-        return
-    now = _now()
-    for m in memories:
-        key = (m.get("key") or "").strip()
-        value = (m.get("value") or "").strip()
-        category = m.get("category") or "fact"
-        confidence = float(m.get("confidence") or 0.7)
-        if not key or not value:
-            continue
-        try:
-            q = sb.table("user_memories").select("id,confidence").eq("user_id", user_id).eq("category", category).eq("key", key)
-            q = q.is_("child_id", "null") if child_id is None else q.eq("child_id", child_id)
-            existing = await anyio.to_thread.run_sync(lambda: q.execute())
-            if existing.data:
-                row_id = existing.data[0]["id"]
-                old_confidence = existing.data[0].get("confidence") or 0
-                updates = {"source_id": source_id, "last_confirmed_at": now, "updated_at": now}
-                if confidence >= old_confidence:
-                    updates["value"] = value
-                    updates["confidence"] = confidence
-                await anyio.to_thread.run_sync(lambda: sb.table("user_memories").update(updates).eq("id", row_id).execute())
-            else:
-                row = {
-                    "id": str(uuid.uuid4()), "user_id": user_id, "child_id": child_id,
-                    "category": category, "key": key, "value": value, "confidence": confidence,
-                    "source_type": source_type, "source_id": source_id, "status": "active",
-                    "created_at": now, "updated_at": now, "last_confirmed_at": now,
-                }
-                await anyio.to_thread.run_sync(lambda: sb.table("user_memories").insert(row).execute())
-        except Exception as e:
-            print(f"[warn] _upsert_memories key={key}: {e}")
-
-#: A parent message shorter than this rarely carries a durable fact. "嗯"、
-#: "好的"、"谢谢" are the common case, and running an extraction over them is a
-#: model call spent to be told there is nothing to remember.
-MEMORY_MIN_USER_CHARS = int(os.getenv("MEMORY_MIN_USER_CHARS", "12"))
-
-
-def _worth_extracting(history: list[dict]) -> bool:
-    """Whether this turn plausibly contains something to remember.
-
-    Extraction used to run on every single turn. It is a background task so it
-    never cost latency, but it did cost a model call each time — including for
-    acknowledgements and thanks, which by definition state nothing new.
-    """
-    latest = next(
-        (m for m in reversed(history) if m.get("role") == "user" and (m.get("text") or "").strip()),
-        None,
-    )
-    if not latest:
-        return False
-    text = (latest.get("text") or "").strip()
-    if text == "[图片]":
-        return False
-    return len(text) >= MEMORY_MIN_USER_CHARS
-
-
-# Default gap before checking back, when the parent didn't give a date. Without
-# these most follow-ups would never come due: "最近在戒尿布" is worth revisiting
-# but carries no deadline of its own. Keyed by the topic words the extractor is
-# told to use; anything unmatched falls back to the default.
-FOLLOW_UP_INTERVALS = {
-    "睡眠": 4, "喂养": 5, "餵養": 5, "副食品": 5, "辅食": 5,
-    "就医": 3, "就醫": 3, "生病": 3, "发烧": 2, "發燒": 2, "疫苗": 3,
-    "情绪": 7, "情緒": 7, "行为": 7, "行為": 7,
-    "发展": 21, "發展": 21, "里程碑": 21,
-    "托婴": 14, "托嬰": 14, "入园": 14, "幼儿园": 14, "幼兒園": 14,
-    "戒奶": 14, "戒尿布": 14, "断奶": 14, "斷奶": 14,
-}
-FOLLOW_UP_DEFAULT_DAYS = int(os.getenv("FOLLOW_UP_DEFAULT_DAYS", "7"))
-#: Anything not asked within this window of falling due is stale — a parenting
-#: situation a month old has usually resolved itself, and asking about it reads
-#: as not having been paying attention.
-FOLLOW_UP_EXPIRE_DAYS = int(os.getenv("FOLLOW_UP_EXPIRE_DAYS", "30"))
-
-
-def _follow_up_due_at(item: dict) -> tuple[str, str]:
-    """Resolve when to come back to something, and record where the date came
-    from. A parent-stated date is used as given; otherwise the topic decides."""
-    stated = (item.get("due_date") or "").strip()
-    if stated:
-        try:
-            d = date.fromisoformat(stated[:10])
-            # A date already in the past was probably mentioned as history
-            # rather than as a plan; check in tomorrow instead of never.
-            if d < date.today():
-                d = date.today() + timedelta(days=1)
-            return datetime.combine(d, dt_time(9, 0), tzinfo=timezone.utc).isoformat(), "stated"
-        except (ValueError, TypeError):
-            pass
-    topic = (item.get("topic") or "") + (item.get("note") or "")
-    days = next((v for k, v in FOLLOW_UP_INTERVALS.items() if k in topic), FOLLOW_UP_DEFAULT_DAYS)
-    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(), "inferred"
-
-
-async def _upsert_follow_ups(
-    items: list[dict], *, user_id: str, source_id: Optional[str],
-) -> None:
-    """One open follow-up per topic. A parent who mentions 托嬰 across four turns
-    should be asked once, not four times — the partial unique index enforces it,
-    and this refreshes the existing row rather than failing on the conflict."""
-    sb = _get_supabase()
-    if not sb or not items:
-        return
-    now = _now()
-    for item in items[:3]:
-        topic = (item.get("topic") or "").strip()
-        if not topic:
-            continue
-        due_at, due_source = _follow_up_due_at(item)
-        try:
-            existing = await anyio.to_thread.run_sync(
-                lambda: sb.table("follow_ups").select("id,due_source")
-                .eq("user_id", user_id).eq("topic", topic).eq("status", "pending").execute()
-            )
-            if existing.data:
-                row_id = existing.data[0]["id"]
-                # Never let an inferred date overwrite one the parent gave.
-                patch = {"note": (item.get("note") or "").strip(), "updated_at": now}
-                if not (existing.data[0].get("due_source") == "stated" and due_source == "inferred"):
-                    patch.update({"due_at": due_at, "due_source": due_source})
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("follow_ups").update(patch).eq("id", row_id).execute()
-                )
-            else:
-                row = {
-                    "id": str(uuid.uuid4()), "user_id": user_id, "child_id": None,
-                    "topic": topic, "note": (item.get("note") or "").strip(),
-                    "due_at": due_at, "due_source": due_source,
-                    "source_message_id": source_id, "status": "pending",
-                    "created_at": now, "updated_at": now,
-                }
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("follow_ups").insert(row).execute()
-                )
-        except Exception as e:
-            print(f"[warn] _upsert_follow_ups topic={topic}: {e}")
-
-
-async def _get_follow_up_context(user_id: Optional[str], limit: int = 3) -> str:
-    """Open follow-ups that have come due, for the reply prompt.
-
-    This is the quieter of the two channels. The scheduled check-in is what
-    makes a parent feel remembered; this one just stops NURI from asking about
-    副食品 while the parent is already talking about it, and lets it close the
-    loop naturally when they happen to be here anyway.
-    """
-    if not user_id:
-        return ""
-    sb = _get_supabase()
-    if not sb:
-        return ""
-    try:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("follow_ups").select("topic,note,due_at")
-            .eq("user_id", user_id).eq("status", "pending")
-            .lte("due_at", _now()).order("due_at").limit(limit).execute()
-        )
-        rows = res.data or []
-    except Exception as e:
-        print(f"[warn] _get_follow_up_context: {e}")
-        return ""
-    if not rows:
-        return ""
-    lines = "\n".join(f"- {r['topic']}：{r.get('note') or ''}" for r in rows)
-    return (
-        "之前聊过、现在到了可以回头关心一下的事：\n" + lines +
-        "\n如果和家长这一轮说的自然接得上，就顺势关心一句；接不上就不要硬提，"
-        "更不要一次问完好几件。"
-    )
-
-
-async def _take_due_follow_up(user_id: str) -> Optional[dict]:
-    """The single oldest due item for this family, expiring anything stale.
-
-    One at a time, deliberately. A family can easily have five things due at
-    once — sleep, solids, daycare, a check-up — and a digest of all five is a
-    to-do list rather than someone remembering to ask after you.
-    """
-    sb = _get_supabase()
-    if not sb:
-        return None
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=FOLLOW_UP_EXPIRE_DAYS)).isoformat()
-    try:
-        # Aged-out items are retired first, so a long-abandoned topic can't sit
-        # at the head of the queue blocking everything behind it.
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("follow_ups").update({"status": "expired", "updated_at": _now()})
-            .eq("user_id", user_id).eq("status", "pending").lt("due_at", cutoff).execute()
-        )
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("follow_ups").select("id,topic,note,due_at")
-            .eq("user_id", user_id).eq("status", "pending")
-            .lte("due_at", _now()).order("due_at").limit(1).execute()
-        )
-        rows = res.data or []
-        return rows[0] if rows else None
-    except Exception as e:
-        print(f"[warn] _take_due_follow_up {user_id}: {e}")
-        return None
-
 
 async def _compose_follow_up_message(nickname: str, item: dict) -> str:
     """Write the check-in in NURI's voice, not from a template.
@@ -3248,65 +2665,6 @@ async def _compose_follow_up_message(nickname: str, item: dict) -> str:
         return ""
 
 
-async def _mark_follow_up_asked(follow_up_id: str) -> None:
-    sb = _get_supabase()
-    if not sb:
-        return
-    try:
-        now = _now()
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("follow_ups")
-            .update({"status": "asked", "asked_at": now, "updated_at": now})
-            .eq("id", follow_up_id).execute()
-        )
-    except Exception as e:
-        print(f"[warn] _mark_follow_up_asked {follow_up_id}: {e}")
-
-
-async def _extract_and_upsert_memories(
-    history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
-) -> None:
-    """Runs as a fire-and-forget background task so memory extraction never adds
-    latency to the chat reply (or task update) the user is waiting on."""
-    if not _worth_extracting(history):
-        return
-    try:
-        extracted = await anyio.to_thread.run_sync(lambda: _extract_memories_sync(history))
-        memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
-        await _upsert_memories(memories, user_id=user_id, child_id=None, source_type=source_type, source_id=source_id)
-        if isinstance(extracted, dict):
-            await _upsert_follow_ups(extracted.get("follow_ups", []), user_id=user_id, source_id=source_id)
-        # The family model caches the rendered memory block; a fact learned
-        # this turn has to be usable on the next one.
-        core_family.invalidate(user_id)
-    except Exception as e:
-        print(f"[warn] _extract_and_upsert_memories: {e}")
-
-async def _get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
-    """Fetch active long-term memories for the Context Builder, grouped by category
-    so the prompt reads as a stable profile block rather than a flat dump."""
-    if not user_id:
-        return ""
-    sb = _get_supabase()
-    if not sb:
-        return ""
-    try:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("user_memories").select("category,key,value")
-            .eq("user_id", user_id).eq("status", "active")
-            .order("updated_at", desc=True).limit(limit).execute()
-        )
-        rows = res.data or []
-    except Exception as e:
-        print(f"[warn] _get_memory_context: {e}")
-        return ""
-    if not rows:
-        return ""
-    grouped: dict[str, list[str]] = {}
-    for r in rows:
-        label = _MEMORY_CATEGORY_LABELS.get(r["category"], "其他信息")
-        grouped.setdefault(label, []).append(r["value"])
-    return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())
 
 # Chat command Linda (or any whitelisted reviewer) types inline to correct a
 # reply: "#fix <什么地方不对>". It never reaches the user — it gets distilled
@@ -9238,158 +8596,28 @@ async def health():
     }
 
 # ── RAG helper functions ───────────────────────────────────────────────────────
-def _read_pdf(pdf_bytes: bytes) -> str:
-    if PdfReader is None:
-        raise HTTPException(503, "pypdf not installed")
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    text = "\n".join(p.extract_text() or "" for p in reader.pages)
-    return text.replace("\x00", "")  # postgres text columns reject NUL bytes
+# The vector stores and the embedding/chunking behind them now live in
+# backend/nuri_core/knowledge_store.py. Aliased for the /index, /ask and
+# /admin/books routes below, which still call them by their old names.
+_read_pdf = core_knowledge_store.read_pdf
+_chunk_text = core_knowledge_store.chunk_text
+_embed_batch = core_knowledge_store.embed_batch
+_embed_one = core_knowledge_store.embed_one
+_is_indexed = core_knowledge_store.is_indexed
+_upsert_doc = core_knowledge_store.upsert_doc
+_retrieve = core_knowledge_store.retrieve
+_retrieve_internal = core_knowledge_store.retrieve_internal
+_internal_rules_ctx = core_knowledge_store.internal_rules_ctx
 
-def _chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
-    text = text.replace("\r\n", "\n")
-    chunks, start, n = [], 0, len(text)
-    while start < n:
-        end = min(start + size, n)
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end == n:
-            break
-        start = max(0, end - overlap)
-    return chunks
-
-def _embed_batch(texts: List[str]) -> List[List[float]]:
-    # Ingest-time only, and batches can be large — keep the longer client default.
-    resp = oai.embeddings.create(model="text-embedding-3-large", input=texts, dimensions=EMBED_DIM)
-    return [d.embedding for d in resp.data]
-
-def _embed_one(text: str) -> List[float]:
-    resp = oai.embeddings.create(
-        model="text-embedding-3-large", input=text, dimensions=EMBED_DIM,
-        timeout=OPENAI_FAST_TIMEOUT_S,
-    )
-    return resp.data[0].embedding
-
-def _is_indexed(doc_id: str, namespace: str = VECTOR_NAMESPACE):
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(503, "Supabase not configured")
-    res = (
-        sb.table(VECTOR_TABLE)
-        .select("id", count="exact")
-        .eq("namespace", namespace)
-        .eq("doc_id", doc_id)
-        .limit(1)
-        .execute()
-    )
-    total = int(getattr(res, "count", 0) or 0)
-    return total > 0, total or None
-
-def _upsert_doc(doc_id: str, chunks: List[str], namespace: str = VECTOR_NAMESPACE, extra_metadata: Optional[dict] = None) -> int:
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(503, "Supabase not configured")
-    vecs_data = _embed_batch(chunks)
-    base_meta = extra_metadata or {}
-    rows = [
-        {
-            "id": f"{doc_id}-{i}",
-            "namespace": namespace,
-            "doc_id": doc_id,
-            "chunk_id": i,
-            "content": c,
-            "embedding": v,
-            "metadata": {**base_meta, "doc_id": doc_id, "chunk_id": i},
-        }
-        for i, (c, v) in enumerate(zip(chunks, vecs_data))
-    ]
-    for start in range(0, len(rows), 100):
-        sb.table(VECTOR_TABLE).upsert(rows[start:start + 100], on_conflict="id").execute()
-    return len(chunks)
-
-def _retrieve(question: str, top_k: int, doc_id: Optional[str]):
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(503, "Supabase not configured")
-
-    # When no specific doc requested, restrict to enabled books only.
-    enabled_doc_ids = None
-    if doc_id is None:
-        try:
-            books_res = sb.table("books").select("doc_id").eq("enabled", True).execute()
-            rows = getattr(books_res, "data", None) or []
-            if rows:
-                enabled_doc_ids = [r["doc_id"] for r in rows]
-            # If books table is empty / missing, enabled_doc_ids stays None → search all.
-        except Exception:
-            pass
-
-    qv = _embed_one(question)
-    res = sb.rpc(
-        "match_rag_chunks",
-        {
-            "query_embedding": qv,
-            "match_count": top_k,
-            "filter_doc_id": doc_id,
-            "filter_doc_ids": enabled_doc_ids,
-            "filter_namespace": VECTOR_NAMESPACE,
-        },
-    ).execute()
-    matches = getattr(res, "data", None) or []
-    chunks, scores = [], []
-    for m in (matches or []):
-        text = (m or {}).get("content", "")
-        if text:
-            chunks.append(text)
-            scores.append(float((m or {}).get("similarity", 0)))
-    return chunks, scores
-
-def _retrieve_internal(question: str, top_k: int = INTERNAL_TOP_K):
-    """Top-k similarity search over the internal (must-follow) namespace.
-    Unlike _retrieve, there's no books/enabled gating — every ingested
-    internal doc is eligible. Matches below INTERNAL_MIN_SIMILARITY are
-    dropped so an off-topic message doesn't drag in unrelated internal
-    guidance mislabeled as mandatory."""
-    sb = _get_supabase()
-    if not sb or not oai:
-        return [], []
-    qv = _embed_one(question)
-    # No filter_doc_ids here (unlike _retrieve): internal docs have no
-    # books-style enable/disable toggle, every ingested doc is eligible.
-    res = sb.rpc(
-        "match_rag_chunks",
-        {
-            "query_embedding": qv,
-            "match_count": top_k,
-            "filter_doc_id": None,
-            "filter_namespace": INTERNAL_NAMESPACE,
-        },
-    ).execute()
-    matches = getattr(res, "data", None) or []
-    chunks, scores = [], []
-    for m in (matches or []):
-        score = float((m or {}).get("similarity", 0))
-        text = (m or {}).get("content", "")
-        if text and score >= INTERNAL_MIN_SIMILARITY:
-            chunks.append(text)
-            scores.append(score)
-    return chunks, scores
-
-def _internal_rules_ctx(question: str, top_k: int = INTERNAL_TOP_K) -> str:
-    if not question or not question.strip():
-        return ""
-    try:
-        chunks, _ = _retrieve_internal(question, top_k)
-    except Exception as e:
-        print(f"[warn] _internal_rules_ctx: {e}")
-        return ""
-    if not chunks:
-        return ""
-    body = "\n\n".join(f"[內部準則 {i+1}]\n{c}" for i, c in enumerate(chunks))
-    return ("以下是內部知識庫中與本次對話相關的準則，必須嚴格遵守，其優先級高於任何外部參考文獻、書籍引用，"
-            "以及你自身的一般知識。若內部準則與其他資料衝突，一律以內部準則為準：\n" + body)
 
 def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
+    """Answer a /ask question from retrieved book chunks, in NURI's voice.
+
+    Stays here rather than in knowledge_store because of the persona: this
+    writes prose as NURI, which makes it the dialogue model's business, and a
+    retrieval module that imports a persona is the tangle this split exists to
+    undo. It belongs beside the other reply calls.
+    """
     context = "\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks))
     citation = ('\n在回答結束時，另起一行，僅引用上方參考文獻中明確出現的理論或概念名稱，格式為：參考自「[文獻中出現的理論或概念名稱]」理論。若文獻未明確提及任何理論名稱，則省略此行。'
                 if book_name else "")
