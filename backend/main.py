@@ -7127,9 +7127,12 @@ _core_ports_singleton: Optional[CorePorts] = None
 def _core_ports() -> CorePorts:
     """The application surface handed to nuri_core.
 
-    Built lazily and once. Everything here is a reference to a function defined
-    above; nuri_core never imports this module, which is what keeps the four
-    subsystems testable without a FastAPI app and two OpenAI clients.
+    Built lazily and once. Most of what a subsystem needs now lives in its own
+    store module and is named here directly, so this reads as the wiring
+    diagram: which subsystem gets which capability. What remains injected
+    rather than imported is the part still owned by this file — the generated
+    feed cards and the card context that renders them — plus the two seams
+    tests actually substitute.
     """
     global _core_ports_singleton
     if _core_ports_singleton is None:
@@ -7137,21 +7140,25 @@ def _core_ports() -> CorePorts:
             supabase=_get_supabase,
             aoai=aoai,
             to_thread=anyio.to_thread.run_sync,
-            load_profile=_load_profile,
-            profile_ctx=_profile_ctx,
-            age_label=_age_label,
-            age_months=_age_in_months,
-            memory_context=_get_memory_context,
-            follow_up_context=_get_follow_up_context,
-            internal_rules=_internal_rules_ctx,
+            # 1 家庭模型
+            load_profile=core_family_store.load_profile,
+            profile_ctx=core_family_store.profile_ctx,
+            age_label=core_family_store.age_label,
+            age_months=core_family_store.age_in_months,
+            memory_context=core_family_store.get_memory_context,
+            follow_up_context=core_family_store.get_follow_up_context,
+            # 2 知识与决策模型
+            internal_rules=core_knowledge_store.internal_rules_ctx,
             search_sources=search_sources,
             sources_prompt_block=sources_prompt_block,
             search_provider_name=lambda: get_search_provider().name,
-            persona=NURI_PERSONA,
-            style_rules=_get_style_rules_ctx,
+            # 3 对话与主动模型
+            persona=core_dialogue_reply.NURI_PERSONA,
+            style_rules=core_dialogue_reply.get_style_rules_ctx,
             card_ctx=_card_ctx,
             gen_cards=_db_get_gen_cards,
-            is_urgent=_urgent_task_suppressed,
+            # 横切 Safety Layer
+            is_urgent=core_dialogue_reply.urgent_task_suppressed,
         )
     return _core_ports_singleton
 
