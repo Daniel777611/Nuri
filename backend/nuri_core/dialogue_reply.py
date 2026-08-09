@@ -1,0 +1,807 @@
+"""3 对话与主动模型 — generation.
+
+The persona, the reply contract, and every call that turns assembled context
+into words: the blocking and streaming reply paths, the streamed-JSON parser
+that lets text appear before the object closes, the task-card contract, the
+`#fix` distillation that keeps a reviewer's correction as a reusable rule, and
+the proactive check-in.
+
+Split from `dialogue.py`, which decides *what* to say — which directives apply,
+in what order, and whether to raise anything unprompted. That module is pure
+and has no model client; this one is where the model actually gets called.
+
+`metrics` parameters are duck-typed rather than imported. The accumulator lives
+with the app's turn logging, and a reply path that has to import a metrics class
+to write a reply is coupled to something it does not need.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from typing import Optional
+
+import anyio
+
+from backend.nuri_core import knowledge_store
+from backend.runtime import (
+    OPENAI_FAST_TIMEOUT_S,
+    OPENAI_TASKS_TIMEOUT_S,
+    aoai,
+    get_supabase,
+    now,
+    oai,
+)
+
+NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父母可以信赖的长期陪伴者。
+
+【语言】
+- 始终使用父母在对话中使用的语言/文字回复：对方用繁体中文就用繁体，用简体中文就用简体，用英文就用英文，以此类推
+- 跟随对方当下使用的语言，如果对方中途切换语言，你也立刻跟着切换，不要沿用之前的语言
+
+【专业背景】
+你精通儿童发展、正向教养、依附理论、行为心理学，见过很多家庭，了解每个孩子的成长都有自己的节奏。给出的建议有理有据，不是泛泛而谈。
+
+【沟通原则】
+- 先认真听、理解父母的处境，再给出具体、可执行的建议
+- 父母分享日常或情绪时，先给予真实的共鸣，不急着"解决问题"
+- 回应对方刚分享的具体内容时，自然地提一下你记得的细节（比如之前提过的月龄、担心的事、已经试过的方法），让对方感觉到自己被记住、被认真对待，而不是每次都从零开始
+- 了解孩子情况时，自然地一次问一件事，像真人聊天一样一步步收窄问题，不要把好几种情况的分支一次性列完让对方自己对号入座
+- 给建议时，说清楚"为什么"，让父母有底气而不是盲目照做
+
+【语气】
+- 沉稳、温暖，有专业感，像一位你信任的儿科医生朋友
+- 口语化但不随意，用词简单、直接，不堆砌术语
+- 不用"当然！""太棒了！"等客服腔，不油腻
+- 不是每条消息都以问句结尾，说清楚一件事也是好的回应"""
+
+# ── NURI AI helper ────────────────────────────────────────────────────────────
+NURI_JSON_SUFFIX = """
+
+以合法 JSON 格式回复：
+{"text": "...", "quick_replies": [...], "suggest_tasks": false, "task_proposals": []}
+
+text：
+- 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
+- 先判断这条回复属于哪一种，长度和结构差别很大：
+  · 还在了解情况、准备追问（信息不够，没法下结论）：只做两件事——简短回应对方刚说的一句话，然后问一个具体问题。不要在这个阶段列可能原因、摆多个假设、给成套建议，那是"结论阶段"才做的事，提前做会让人觉得在看报告而不是聊天
+  · 已经有足够信息、要下结论/给建议/整理任务/推荐资源：可以写得完整、分点、说明原因，不要为了精简砍掉关键推理和细节
+- 先回应对方刚分享的内容（可以自然提一句你记得的细节），再自然延伸，不要用模板化开场白
+- 口语化但有专业感；不强迫以问句结尾
+
+quick_replies（用户可能说的下一句话，不是菜单）：
+- 打招呼/寒暄：0-2个，像真人回应
+- 正在聊话题：1-3个，自然接下去
+- 刚给结论/建议：0个也行
+- 每个不超过10字
+
+suggest_tasks 和 task_proposals：
+- 每一轮都独立判断；历史上生成过任务，不妨碍这轮生成新的任务
+- 以下两种情况必须设 suggest_tasks=true，并填写1-4个 task_proposals：
+  1. 用户明确要求生成任务、任务卡、待办、行动清单或计划
+  2. 你的本轮 text 已经给出了用户今天或本周可以实际执行/观察的具体方案
+- task_proposals 必须忠实对应本轮 text 中的方案，不能另起话题；用户指定数量时遵守其数量
+- 仍在了解情况、只是共情/解释、只提出澄清问题时，suggest_tasks=false 且 task_proposals=[]
+- 紧急医疗、安全风险或需要立即寻求专业帮助的场景，不生成普通任务卡
+- task_proposals 字段：
+  · title：20字内的清楚行动名称
+  · scope：today（今天做一次）或 week（本周持续）
+  · task_type：interaction（亲子互动）、observation（发展观察）、care（照顾陪伴）或 selfcare（家长自我照顾）
+  · description：一句具体、可衡量、低负担的说明
+  · steps：1-3条可以直接照做的步骤
+
+cited（你在正文里引用了哪几条来源）：
+- 只填系统给你的来源清单里的编号，例如 [1] [3] 就填 [1, 3]
+- 正文里标了几号，这里就填几号，两边必须一致
+- 没有来源清单、或者没有一条真的用得上，就填 []
+- 你永远不需要、也绝对不要自己写出网址"""
+
+# 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
+# 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
+# 更早的重要信息依赖 memory_ctx（user_memories，每轮都在后台持续提炼）保留，
+# 而不是逐字重放整段历史。
+# Turns of raw history resent with every call. Halved from 40 after the logs
+# showed prompt tokens running 15x completion — 8,206 against 554 per turn —
+# because every call replays the window in full and NURI's replies are long.
+# The window overlaps with what user_memories exists to do: distil the older
+# conversation so it need not be replayed verbatim. Twenty turns still reaches
+# well past anything the parent is still holding in mind.
+HISTORY_WINDOW = int(os.getenv("CHAT_HISTORY_WINDOW", "20"))
+
+NURI_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "nuri_reply",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                # `text` is declared first so it also streams first: the
+                # streaming path surfaces it while the rest is still arriving.
+                "text": {"type": "string"},
+                "quick_replies": {"type": "array", "items": {"type": "string"}},
+                "suggest_tasks": {"type": "boolean"},
+                "task_proposals": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "scope": {"type": "string", "enum": ["today", "week"]},
+                            "task_type": {
+                                "type": "string",
+                                "enum": ["interaction", "observation", "care", "selfcare"],
+                            },
+                            "description": {"type": "string"},
+                            "steps": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["title", "scope", "task_type", "description", "steps"],
+                        "additionalProperties": False,
+                    },
+                },
+                # Indices into the numbered source list in the prompt — never
+                # URLs. The model physically cannot invent a link it was not
+                # given, which is the one guarantee worth designing the schema
+                # around for a parenting product.
+                "cited": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["text", "quick_replies", "suggest_tasks", "task_proposals", "cited"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+#: The reply model's deliberation budget. Measured on gpt-5.5 with the full
+#: persona and a source list: 22.2s at the default against 12.5s at "low", for
+#: output that was structurally identical — same distinct approaches, same
+#: citations, same closing question. "minimal" is not accepted by this model.
+#: Set to "" to send no parameter at all.
+REPLY_REASONING_EFFORT = os.getenv("REPLY_REASONING_EFFORT", "low")
+
+
+def reply_model_kwargs() -> dict:
+    return {"reasoning_effort": REPLY_REASONING_EFFORT} if REPLY_REASONING_EFFORT else {}
+
+
+NURI_FALLBACK = {
+    "text": "抱歉，AI 暂时无法回应，请稍后再试。",
+    "quick_replies": [],
+    "suggest_tasks": False,
+    "task_proposals": [],
+}
+
+def nuri_messages(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "", system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
+) -> list[dict]:
+    """Assemble the system prompt and history window. Shared by the blocking and
+    streaming reply paths so the two can't drift apart.
+
+    `system_prompt` is the four-model pipeline's seam: when the dialogue model
+    has already rendered its directive set into a finished system message, the
+    block concatenation below is skipped rather than duplicated. The history
+    window is still applied here either way, so the two pipelines can only
+    differ in the system message — which is the whole comparison.
+    """
+    if system_prompt is not None:
+        msgs = [{"role": "system", "content": system_prompt}]
+        for m in history[-(history_window or HISTORY_WINDOW):]:
+            content = m.get("text") or ""
+            if content:
+                msgs.append({
+                    "role": "user" if m["role"] == "user" else "assistant",
+                    "content": content,
+                })
+        return msgs
+
+    system = NURI_PERSONA + NURI_JSON_SUFFIX
+    # Ordered most stable first, most per-turn last. OpenAI caches the longest
+    # identical prefix across calls, so a block that changes every turn placed
+    # early truncates the cache to whatever precedes it. style and profile
+    # barely move; internal_ctx is retrieved per question and sources are
+    # fetched fresh, so both belong at the end.
+    if style_ctx:
+        system += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
+    if profile_ctx:
+        system += f"\n\n这位家长的基本情况（来自注册信息）：\n{profile_ctx}"
+    if memory_ctx:
+        system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
+    if card_ctx:
+        system += f"\n\n本次对话相关内容：\n{card_ctx}"
+    if internal_ctx:
+        system += f"\n\n{internal_ctx}"
+    if sources_ctx:
+        # Last, and after the internal rules on purpose: external pages are the
+        # weakest tier of context NURI has, and the block itself says so.
+        system += f"\n\n{sources_ctx}"
+    msgs = [{"role": "system", "content": system}]
+    for m in history[-HISTORY_WINDOW:]:
+        role = "user" if m["role"] == "user" else "assistant"
+        content = m.get("text") or ""
+        if content:
+            msgs.append({"role": role, "content": content})
+    return msgs
+
+_TASK_REQUEST_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:请|請|帮我|幫我|麻烦|麻煩|可以|能不能|给我|給我|替我|为我|為我).{0,12}"
+        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,10}"
+        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
+        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,8}"
+        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
+        r"(?:给|給).{0,6}(?:我|我们|我們)?.{0,6}(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"(?:我想要|我要|我需要|来个|來個)\s*"
+        r"(?:一|一个|一個|两|兩|二|三|四|[1-4])?\s*"
+        r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"(?:帮我|幫我|替我|为我|為我).{0,6}(?:做|做成|布置).{0,6}"
+        r"(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
+        r"\b(?:make|create|generate|give|build|add|turn|organize|schedule)\b.{0,32}"
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b",
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b.{0,24}"
+        r"\b(?:for me|from this|from that|out of this|please)\b",
+    )
+)
+_TASK_NEGATION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:不要|不用|无需|無需|先别|先別|别|別)\s*(?:再\s*)?(?:"
+        r"(?:(?:给|給)\s*)?(?:我|我们|我們)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
+        r"|(?:生成|创建|創建|添加|安排|布置|整理成|转成|轉成|转为|轉為|变成|變成|做成)"
+        r".{0,5}(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
+        r"|把.{0,8}(?:整理成|转成|轉成|转为|轉為|变成|變成|做成)"
+        r".{0,4}(?:任[务務](?:卡)?|计[划劃]|待[办辦]))",
+        r"\b(?:do not|don't|dont|no need to|without)\b.{0,32}"
+        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?)\b",
+    )
+)
+_TASK_META_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:列出|分析|评价|評價|比较|比較|讲讲|講講|解释|解釋|介绍|介紹)"
+        r"[^，。！？,;!?\n]{0,12}(?:任[务務](?:卡)?|计[划劃])"
+        r"[^，。！？,;!?\n]{0,12}(?:优缺点|優缺點|利弊|详情|詳情|细节|細節|内容|內容)?",
+        r"(?:给|給)[^，。！？,;!?\n]{0,5}(?:我|我们|我們)?"
+        r"[^，。！？,;!?\n]{0,8}(?:讲讲|講講|解释|解釋|介绍|介紹)"
+        r"[^，。！？,;!?\n]{0,8}"
+        r"(?:任[务務](?:卡)?|计[划劃])",
+        r"\b(?:create|make|give|add)\b[^,.;!?\n]{0,24}\b(?:summary|information|details?|"
+        r"context|explanation)\b[^,.;!?\n]{0,24}\b(?:plans?|task cards?)\b",
+        r"\b(?:tell me about|explain|describe|summarize|add more detail to)"
+        r"\b[^,.;!?\n]{0,32}"
+        r"\b(?:plans?|task cards?)\b",
+    )
+)
+_TASK_COUNT_WORDS = {
+    "一": 1, "一个": 1, "一個": 1, "1": 1, "one": 1,
+    "二": 2, "两": 2, "兩": 2, "两个": 2, "兩個": 2, "2": 2, "two": 2,
+    "三": 3, "三个": 3, "三個": 3, "3": 3, "three": 3,
+    "四": 4, "四个": 4, "四個": 4, "4": 4, "four": 4,
+}
+_TASK_TYPES = {"interaction", "observation", "care", "selfcare"}
+_URGENT_TASK_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:喘不上气|喘不過氣|不能呼吸|無法呼吸|不呼吸|没(?:有)?呼吸|沒有呼吸|"
+        r"呼吸停(?:止|了)|停止呼吸|呼吸困难|呼吸困難|窒息|嘴唇发紫|嘴唇發紫|"
+        r"嘴唇发蓝|嘴唇發藍|脸色发青|臉色發青|脸色发蓝|臉色發藍|"
+        r"全身发蓝|全身發藍)",
+        r"(?:昏迷|失去意识|失去意識|叫不醒|没有反应|沒有反應|抽搐|癫痫发作|癲癇發作|"
+        r"瘫软|癱軟|软趴趴|軟趴趴|浑身无力|渾身無力)",
+        r"(?:没有脉搏|沒有脈搏|无脉搏|無脈搏|摸不到.{0,8}(?:脉搏|脈搏)|"
+        r"没有心跳|沒有心跳|心跳停止|心脏停止跳动|心臟停止跳動)",
+        r"(?:严重出血|嚴重出血|流血不止|误食|誤食|误吞|誤吞|中毒|过量服药|過量服藥|"
+        r"(?:吞|喝|吃|咽)(?:下)?(?:了)?[^，。！？,.!?]{0,8}(?:漂白水|漂白剂|漂白劑|清洁剂|清潔劑|洗衣液|"
+        r"防冻液|防凍液|纽扣电池|紐扣電池|鈕扣電池|扣式电池|扣式電池|"
+        r"一瓶药|一瓶藥|整瓶药|整瓶藥|一瓶药片|一瓶藥片))",
+        r"(?:自杀|自殺|伤害自己|傷害自己|伤害他人|傷害他人)",
+        r"(?:立即|马上|立刻|趕快|赶快).{0,6}(?:急诊|急診|就医|就醫|打120|拨打120|撥打120)",
+        r"\b(?:can(?:not|'t) breathe|isn(?:'t|t) breathing|is not breathing|not breathing|"
+        r"stopp?ed breathing|trouble breathing|choking|unconscious|unresponsive|limp|"
+        r"seizure|severe bleeding|poison(?:ed|ing)?|overdose|self[- ]harm|suicid(?:e|al))\b",
+        r"\b(?:won't|will not|doesn't|does not) wake up\b|"
+        r"\b(?:can(?:not|'t)|could(?:not|n't)) wake (?:him|her|them|the baby|my baby|my child) up\b",
+        r"\b(?:no pulse|has no pulse|doesn't have a pulse|does not have a pulse|"
+        r"cannot feel (?:a|the|his|her) pulse|can't feel (?:a|the|his|her) pulse)\b",
+        r"\b(?:swallow(?:ed|ing)?|drank|drunk|ingest(?:ed|ing)?|ate|took|got into)\b"
+        r"[^.?!\n]{0,40}\b(?:bleach|cleaner|cleaning fluid|detergent|chemical|"
+        r"antifreeze|button batter(?:y|ies)|coin batter(?:y|ies)|"
+        r"bottle of pills?|whole bottle of (?:medicine|pills?))\b",
+        r"\b(?:turn(?:ed|ing)?|look(?:ed|ing|s)?)\s+(?:blue|bluish)\b|"
+        r"\b(?:lips?|face|skin)\s+(?:is|are|look|looks|looked|turned)\s+(?:blue|bluish)\b|"
+        r"\b(?:blue|bluish)\b[^.?!\n]{0,24}\blimp\b|"
+        r"\blimp\b[^.?!\n]{0,24}\b(?:blue|bluish)\b",
+        r"\b(?:call 911|emergency room|seek immediate medical (?:help|care)|medical emergency)\b",
+    )
+)
+
+
+def task_intent(text: str) -> Optional[str]:
+    """Resolve the latest unambiguous request/decline about task cards.
+
+    Positive phrases inside a negative phrase ("不要生成任务") do not count as
+    requests. A later clause can intentionally override an earlier one, as in
+    "先不要解释，直接给我两个任务".
+    """
+    normalized = " ".join((text or "").strip().split())
+    if not normalized:
+        return None
+    declines = [
+        match
+        for pattern in _TASK_NEGATION_PATTERNS
+        for match in pattern.finditer(normalized)
+    ]
+    meta_requests = [
+        match
+        for pattern in _TASK_META_PATTERNS
+        for match in pattern.finditer(normalized)
+    ]
+    requests = [
+        match
+        for pattern in _TASK_REQUEST_PATTERNS
+        for match in pattern.finditer(normalized)
+        if not any(
+            decline.start() <= match.start() and match.end() <= decline.end()
+            for decline in declines
+        )
+        and not any(
+            meta.start() <= match.start() and match.end() <= meta.end()
+            for meta in meta_requests
+        )
+    ]
+    latest_request = max((match.start() for match in requests), default=-1)
+    latest_decline = max((match.start() for match in declines), default=-1)
+    if latest_request < 0 and latest_decline < 0:
+        return None
+    return "request" if latest_request > latest_decline else "decline"
+
+
+def user_requested_tasks(text: str) -> bool:
+    """Deterministically recognise a direct request for task cards."""
+    return task_intent(text) == "request"
+
+
+def user_declined_tasks(text: str) -> bool:
+    return task_intent(text) == "decline"
+
+
+def urgent_task_suppressed(user_text: str, ai_text: str = "") -> bool:
+    """Never turn an emergency or immediate safety handoff into a routine card."""
+    combined = f"{user_text or ''}\n{ai_text or ''}"
+    return any(pattern.search(combined) for pattern in _URGENT_TASK_PATTERNS)
+
+
+def requested_task_count(text: str) -> Optional[int]:
+    normalized = " ".join((text or "").strip().lower().split())
+    task_term = r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦]|tasks?|task cards?|plans?)"
+    count_terms = "|".join(sorted((re.escape(key) for key in _TASK_COUNT_WORDS), key=len, reverse=True))
+    match = re.search(rf"({count_terms})\s*{task_term}", normalized, re.IGNORECASE)
+    return _TASK_COUNT_WORDS.get(match.group(1).lower()) if match else None
+
+
+def normalize_task_proposals(raw_tasks) -> list[dict]:
+    """Validate the compact task contract before it reaches the frontend."""
+    tasks: list[dict] = []
+    seen_titles: set[str] = set()
+    for raw in raw_tasks or []:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "").strip()[:40]
+        normalized_title = re.sub(r"\s+", "", title).lower()
+        if not title or normalized_title in seen_titles:
+            continue
+        raw_steps = raw.get("steps") or []
+        if isinstance(raw_steps, str):
+            raw_steps = [raw_steps]
+        elif not isinstance(raw_steps, list):
+            raw_steps = []
+        steps = [
+            step.strip()[:160]
+            for step in raw_steps
+            if isinstance(step, str) and step.strip()
+        ][:3]
+        description = str(raw.get("description") or "").strip()[:280]
+        if not description and steps:
+            description = steps[0]
+        if not description:
+            continue
+        if not steps:
+            continue
+        task_type = str(raw.get("task_type") or "interaction")
+        tasks.append({
+            "title": title,
+            "scope": raw.get("scope") if raw.get("scope") in {"today", "week"} else "today",
+            "task_type": task_type if task_type in _TASK_TYPES else "interaction",
+            "description": description,
+            "steps": steps,
+        })
+        seen_titles.add(normalized_title)
+        if len(tasks) == 4:
+            break
+    return tasks
+
+
+def parse_nuri_reply(raw: str) -> dict:
+    data = json.loads(raw)
+    return {
+        "text": data.get("text", ""),
+        "quick_replies": data.get("quick_replies", [])[:3],
+        "suggest_tasks": bool(data.get("suggest_tasks", False)),
+        "task_proposals": normalize_task_proposals(data.get("task_proposals")),
+        "cited": [n for n in (data.get("cited") or []) if isinstance(n, int)],
+    }
+
+def nuri_reply_sync(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "",
+    metrics: Optional["_TurnMetrics"] = None,
+    system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
+) -> dict:
+    if not oai:
+        return {
+            "text": "AI 暂时不可用。",
+            "quick_replies": [],
+            "suggest_tasks": False,
+            "task_proposals": [],
+        }
+    msgs = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx, system_prompt, history_window)
+    if metrics:
+        metrics.set(model="gpt-5.5")
+        metrics.record_prompt(msgs, {
+            "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
+            "style": style_ctx, "internal": internal_ctx,
+        })
+    started = time.perf_counter()
+    try:
+        resp = oai.chat.completions.create(
+            model="gpt-5.5", messages=msgs, response_format=NURI_RESPONSE_FORMAT,
+            **reply_model_kwargs(),
+        )
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.record_usage(getattr(resp, "usage", None))
+            metrics.set(finish_reason=getattr(resp.choices[0], "finish_reason", None))
+        return parse_nuri_reply(resp.choices[0].message.content)
+    except Exception as e:
+        print(f"[error] nuri_reply_sync failed: {type(e).__name__}: {e}")
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
+        return dict(NURI_FALLBACK)
+
+_JSON_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+def partial_json_string(buf: str, key: str) -> str:
+    """Decode as much of the string value of `key` as `buf` currently contains.
+
+    The model streams a JSON object, so mid-flight the buffer holds a truncated
+    document that json.loads can't touch. This reads just the one field, stopping
+    cleanly at a half-arrived escape sequence rather than emitting a broken
+    character that would have to be corrected on the next chunk.
+    """
+    marker = f'"{key}"'
+    i = buf.find(marker)
+    if i < 0:
+        return ""
+    i += len(marker)
+    while i < len(buf) and buf[i].isspace():
+        i += 1
+    if i >= len(buf) or buf[i] != ":":
+        return ""
+    i += 1
+    while i < len(buf) and buf[i].isspace():
+        i += 1
+    if i >= len(buf) or buf[i] != '"':
+        return ""
+    i += 1
+
+    out: list[str] = []
+    while i < len(buf):
+        c = buf[i]
+        if c == '"':
+            break
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        if i + 1 >= len(buf):
+            break
+        esc = buf[i + 1]
+        if esc != "u":
+            out.append(_JSON_ESCAPES.get(esc, esc))
+            i += 2
+            continue
+        if i + 6 > len(buf):
+            break
+        try:
+            cp = int(buf[i + 2:i + 6], 16)
+        except ValueError:
+            break
+        # A high surrogate is only meaningful once its partner has arrived;
+        # emitting it alone would produce an unencodable lone surrogate.
+        if 0xD800 <= cp <= 0xDBFF:
+            if i + 12 > len(buf) or buf[i + 6:i + 8] != "\\u":
+                break
+            try:
+                low = int(buf[i + 8:i + 12], 16)
+            except ValueError:
+                break
+            out.append(chr(0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00)))
+            i += 12
+            continue
+        out.append(chr(cp))
+        i += 6
+    return "".join(out)
+
+async def nuri_reply_stream(
+    history: list[dict], card_ctx: str = "", memory_ctx: str = "",
+    profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
+    sources_ctx: str = "",
+    metrics: Optional["_TurnMetrics"] = None,
+    system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
+):
+    """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
+    if not aoai:
+        yield "final", {
+            "text": "AI 暂时不可用。",
+            "quick_replies": [],
+            "suggest_tasks": False,
+            "task_proposals": [],
+        }
+        return
+    msgs = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
+                          internal_ctx, sources_ctx, system_prompt, history_window)
+    if metrics:
+        metrics.set(model="gpt-5.5")
+        metrics.record_prompt(msgs, {
+            "card": card_ctx, "memory": memory_ctx, "profile": profile_ctx,
+            "style": style_ctx, "internal": internal_ctx,
+        })
+    buf = ""
+    sent = 0
+    started = time.perf_counter()
+    try:
+        stream = await aoai.chat.completions.create(
+            model="gpt-5.5", messages=msgs, response_format=NURI_RESPONSE_FORMAT, stream=True,
+            **reply_model_kwargs(),
+            # Without this the streamed response reports no token usage at all.
+            stream_options={"include_usage": True},
+        )
+        async for chunk in stream:
+            # The usage-bearing chunk carries no choices, so read it before the
+            # skip below or the token counts are silently dropped.
+            if metrics and getattr(chunk, "usage", None):
+                metrics.record_usage(chunk.usage)
+            if not chunk.choices:
+                continue
+            # getattr: metrics must never be the reason a turn dies, so don't
+            # assume every chunk shape carries this field.
+            reason = getattr(chunk.choices[0], "finish_reason", None)
+            if metrics and reason:
+                metrics.set(finish_reason=reason)
+            piece = chunk.choices[0].delta.content or ""
+            if not piece:
+                continue
+            buf += piece
+            text = partial_json_string(buf, "text")
+            if len(text) > sent:
+                if metrics and not sent:
+                    metrics.mark("first_token_ms", started)
+                yield "delta", text[sent:]
+                sent = len(text)
+        if metrics:
+            metrics.mark("model_ms", started)
+        yield "final", parse_nuri_reply(buf)
+    except Exception as e:
+        print(f"[error] nuri_reply_stream failed: {type(e).__name__}: {e}")
+        if metrics:
+            metrics.mark("model_ms", started)
+            metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
+        # Anything already streamed stays on screen; only the tail is lost.
+        salvaged = partial_json_string(buf, "text")
+        if salvaged:
+            yield "final", {
+                "text": salvaged,
+                "quick_replies": [],
+                "suggest_tasks": False,
+                "task_proposals": [],
+            }
+        else:
+            yield "final", dict(NURI_FALLBACK)
+
+# Chat command Linda (or any whitelisted reviewer) types inline to correct a
+# reply: "#fix <什么地方不对>". It never reaches the user — it gets distilled
+# into a reusable rule instead. See distill_style_rule_sync / nuri_style_rules.
+# Only accounts listed in fix_reviewers can trigger it — otherwise any real
+# parent who happens to type "#fix ..." would get hijacked instead of a reply.
+FIX_KEYWORD = "#fix"
+
+async def is_fix_reviewer(uid: Optional[str]) -> bool:
+    if not uid:
+        return False
+    sb = get_supabase()
+    if not sb:
+        return False
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("fix_reviewers").select("user_id").eq("user_id", uid).maybe_single().execute()
+        )
+        return bool(res.data)
+    except Exception as e:
+        print(f"[warn] is_fix_reviewer: {e}")
+        return False
+
+def distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
+    """Turn a raw #fix correction into a reusable rule that generalizes to
+    similar situations, rather than a one-off patch quoting this exact reply."""
+    if not oai:
+        return {"rule": feedback, "category": "other"}
+    system = (
+        "你在帮 NURI（一个育儿顾问 AI）的运营人员，把她对某条 AI 回复的具体修改意见，"
+        "转写成一条可以长期复用、适用于类似场景的行为规则。规则要泛化，不要照抄这一次的具体内容，"
+        "用一句话说清楚以后遇到类似情况该怎么做。"
+    )
+    user_content = f"AI 刚才的回复：\n{prior_ai_text or '（无）'}\n\n运营人员的修改意见：\n{feedback}"
+    try:
+        resp = oai.chat.completions.create(
+            model="gpt-5.4-mini",
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "style_rule",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "rule": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": ["tone", "length", "empathy", "accuracy", "other"],
+                            },
+                        },
+                        "required": ["rule", "category"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            timeout=OPENAI_FAST_TIMEOUT_S,
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return {"rule": (data.get("rule") or "").strip(), "category": data.get("category", "other")}
+    except Exception as e:
+        print(f"[error] distill_style_rule_sync failed: {type(e).__name__}: {e}")
+        return {"rule": feedback, "category": "other"}
+
+async def get_style_rules_ctx(limit: int = 50) -> str:
+    """Fetch the active, accumulated style rules for injection into every
+    reply — this is what makes a #fix correction 'stick' going forward."""
+    sb = get_supabase()
+    if not sb:
+        return ""
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("nuri_style_rules").select("rule")
+            .eq("active", True).order("created_at", desc=True).limit(limit).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        print(f"[warn] get_style_rules_ctx: {e}")
+        return ""
+    if not rows:
+        return ""
+    return "\n".join(f"- {r['rule']}" for r in rows)
+
+def gen_tasks_ai_sync(
+    msgs: list[dict], requested_count: Optional[int] = None,
+) -> list[dict]:
+    """Fallback task generation when the primary structured reply has no cards."""
+    if not oai:
+        return []
+    history = "\n".join(
+        f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
+        for m in msgs[-14:]
+        if m.get("text") and not (m.get("transition") or {}).get("kind")
+    )
+    resp = oai.chat.completions.create(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content":
+            f"根据以下育儿对话，生成"
+            f"{requested_count if requested_count else '1-3'}个具体可执行的小任务。\n\n"
+            f"{history}\n\n"
+            '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
+            '"task_type": "interaction|observation|care|selfcare", "description": "一句话任务说明", '
+            '"steps": ["具体做法1", "具体做法2"]}]}\n'
+            "- 对话最后一条 NURI 回复是刚刚给用户的方案，任务必须优先忠实转换其中的行动\n"
+            "- 任务必须针对对话中的具体情况，不要泛泛的通用任务\n"
+            "- 不要创建内容重叠的任务；每张卡只承载一个清楚行动\n"
+            "- today=今天完成，week=本周持续追踪\n"
+            "- task_type：interaction=亲子互动，observation=发展观察，care=照顾陪伴，selfcare=自我照顾\n"
+            "- steps 给1-3条具体做法，不是套话\n"
+            "- 如果对话信息不足，返回空数组"
+        }],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "task_list",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "scope": {"type": "string", "enum": ["today", "week"]},
+                                    "task_type": {
+                                        "type": "string",
+                                        "enum": ["interaction", "observation", "care", "selfcare"],
+                                    },
+                                    "description": {"type": "string"},
+                                    "steps": {"type": "array", "items": {"type": "string"}},
+                                },
+                                "required": ["title", "scope", "task_type", "description", "steps"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["tasks"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        timeout=OPENAI_TASKS_TIMEOUT_S,
+    )
+    try:
+        tasks = normalize_task_proposals(
+            json.loads(resp.choices[0].message.content).get("tasks", [])
+        )
+        return tasks[:requested_count] if requested_count else tasks
+    except Exception:
+        return []
+
+async def compose_follow_up_message(nickname: str, item: dict) -> str:
+    """Write the check-in in NURI's voice, not from a template.
+
+    Uses the reply model and the accumulated style rules on purpose: a canned
+    "关于X，最近怎么样？" would undo the thing this feature exists to create.
+    """
+    if not oai:
+        return ""
+    style_ctx = await get_style_rules_ctx()
+    system = (
+        NURI_PERSONA
+        + ("\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n" + style_ctx if style_ctx else "")
+        + "\n\n现在不是在回复家长，而是你主动想起了之前聊过的一件事，写一则简短的问候。"
+        "\n- 只写 2-4 句，不要给建议、不要列点、不要引用来源"
+        "\n- 说清楚你记得的是什么，让他知道你不是群发"
+        "\n- 以一个好回答的问句结尾"
+        "\n- 直接输出正文，不要标题、不要署名"
+    )
+    user = f"家长称呼：{nickname}\n之前聊过的事：{item['topic']}\n具体情况：{item.get('note') or ''}"
+    try:
+        resp = await anyio.to_thread.run_sync(
+            lambda: oai.chat.completions.create(
+                model="gpt-5.5",
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+                **reply_model_kwargs(),
+            )
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[warn] compose_follow_up_message: {e}")
+        return ""
