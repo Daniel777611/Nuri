@@ -646,91 +646,6 @@ async def _db_persist_recommendation_snapshots(
     return True
 
 
-def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
-    """Expose a prepared, binding-validated pair on its matching home card."""
-
-    source_contract_ready = _prepared_snapshot_set_meets_source_contract([snapshot])
-    pair = prepared_resource_pair(snapshot) if source_contract_ready else None
-    pair_pool = prepared_resource_pairs(snapshot) if source_contract_ready else []
-    readiness = str(snapshot.get("resource_readiness") or "")
-    if pair:
-        article = next(resource for resource in pair if resource.get("kind") == "article")
-        card["resource_readiness"] = "ready"
-        card["resource_pair_complete"] = True
-        card["prepared_content_set_id"] = snapshot.get("prepared_content_set_id")
-        card["resource_summary"] = summarize_resource_slots(
-            pair,
-            str(snapshot.get("preferred_locale") or "zh-CN"),
-        )
-        card["resources"] = pair
-        card["active_pair_id"] = pair_pool[0]["pair_id"] if pair_pool else None
-        card["alternate_resource_pairs"] = pair_pool[1:]
-        card["alternate_count"] = max(0, len(pair_pool) - 1)
-        card["title"] = article.get("title") or card.get("title")
-        card["summary"] = article.get("description") or card.get("summary")
-        card["publisher"] = article.get("publisher") or card.get("publisher")
-        card["headline_source"] = "prepared_article"
-        _decorate_delivery_card(card, pair)
-        return
-    if card.get("resource_readiness") == "ready" and card.get("resource_pair_complete"):
-        card["prepared_content_set_id"] = None
-        return
-    card["resource_readiness"] = (
-        readiness if readiness in {"preparing", "retryable"} else "preparing"
-    )
-    card["prepared_content_set_id"] = None
-
-
-async def _attach_recommendation_snapshots(
-    uid: str,
-    cards: list[dict],
-    context: dict,
-) -> list[dict]:
-    """Persist one bounded snapshot per conversation-matched card.
-
-    ``app_settings`` already exists in every deployed NURI database, so this
-    adds stable detail links without making a schema migration a prerequisite.
-    A process-local copy keeps local preview/tests useful; the legacy session
-    and cutoff fields remain on every card as a safe compatibility fallback.
-    """
-
-    pairs: list[tuple[dict, dict]] = []
-    for card in cards:
-        if not card.get("is_conversation_match"):
-            continue
-        snapshot = build_snapshot(uid, card, context)
-        requested_readiness = str(card.get("resource_readiness") or "")
-        if requested_readiness in {"preparing", "retryable"}:
-            snapshot["resource_readiness"] = requested_readiness
-        try:
-            previous = await _db_get_recommendation_snapshot(
-                uid,
-                snapshot["recommendation_id"],
-            )
-        except HTTPException:
-            previous = None
-        if previous:
-            snapshot = carry_prepared_resource_state(previous, snapshot)
-        pairs.append((card, snapshot))
-
-    if not pairs:
-        return cards
-
-    persisted = await _db_persist_recommendation_snapshots(
-        uid,
-        [snapshot for _, snapshot in pairs],
-    )
-
-    for card, snapshot in pairs:
-        if persisted:
-            card["recommendation_id"] = snapshot["recommendation_id"]
-            card["recommendation_context_status"] = "persisted"
-            _apply_prepared_snapshot_to_feed_card(card, snapshot)
-        else:
-            card.pop("recommendation_id", None)
-            card["recommendation_context_status"] = "legacy_fallback"
-    return cards
-
 
 async def _db_get_recommendation_snapshot(
     uid: str,
@@ -5087,6 +5002,99 @@ def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) 
     except Exception as exc:
         # Observability must never be allowed to break a parent's home feed.
         print(f"[warn] personalized feed diagnostics failed: {type(exc).__name__}")
+
+
+# ── Snapshot -> card, the delivery half ──────────────────────────────────────
+# These two read and write recommendation snapshots, but what they do with one
+# is decorate a home card — which is this layer's job, not the store's. They
+# sat among the _db_* helpers and called _decorate_delivery_card and
+# _prepared_snapshot_set_meets_source_contract back out of it, which made the
+# store and delivery layers mutually dependent and neither of them separable.
+# Here the dependency runs one way: delivery calls the store.
+def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
+    """Expose a prepared, binding-validated pair on its matching home card."""
+
+    source_contract_ready = _prepared_snapshot_set_meets_source_contract([snapshot])
+    pair = prepared_resource_pair(snapshot) if source_contract_ready else None
+    pair_pool = prepared_resource_pairs(snapshot) if source_contract_ready else []
+    readiness = str(snapshot.get("resource_readiness") or "")
+    if pair:
+        article = next(resource for resource in pair if resource.get("kind") == "article")
+        card["resource_readiness"] = "ready"
+        card["resource_pair_complete"] = True
+        card["prepared_content_set_id"] = snapshot.get("prepared_content_set_id")
+        card["resource_summary"] = summarize_resource_slots(
+            pair,
+            str(snapshot.get("preferred_locale") or "zh-CN"),
+        )
+        card["resources"] = pair
+        card["active_pair_id"] = pair_pool[0]["pair_id"] if pair_pool else None
+        card["alternate_resource_pairs"] = pair_pool[1:]
+        card["alternate_count"] = max(0, len(pair_pool) - 1)
+        card["title"] = article.get("title") or card.get("title")
+        card["summary"] = article.get("description") or card.get("summary")
+        card["publisher"] = article.get("publisher") or card.get("publisher")
+        card["headline_source"] = "prepared_article"
+        _decorate_delivery_card(card, pair)
+        return
+    if card.get("resource_readiness") == "ready" and card.get("resource_pair_complete"):
+        card["prepared_content_set_id"] = None
+        return
+    card["resource_readiness"] = (
+        readiness if readiness in {"preparing", "retryable"} else "preparing"
+    )
+    card["prepared_content_set_id"] = None
+
+
+async def _attach_recommendation_snapshots(
+    uid: str,
+    cards: list[dict],
+    context: dict,
+) -> list[dict]:
+    """Persist one bounded snapshot per conversation-matched card.
+
+    ``app_settings`` already exists in every deployed NURI database, so this
+    adds stable detail links without making a schema migration a prerequisite.
+    A process-local copy keeps local preview/tests useful; the legacy session
+    and cutoff fields remain on every card as a safe compatibility fallback.
+    """
+
+    pairs: list[tuple[dict, dict]] = []
+    for card in cards:
+        if not card.get("is_conversation_match"):
+            continue
+        snapshot = build_snapshot(uid, card, context)
+        requested_readiness = str(card.get("resource_readiness") or "")
+        if requested_readiness in {"preparing", "retryable"}:
+            snapshot["resource_readiness"] = requested_readiness
+        try:
+            previous = await _db_get_recommendation_snapshot(
+                uid,
+                snapshot["recommendation_id"],
+            )
+        except HTTPException:
+            previous = None
+        if previous:
+            snapshot = carry_prepared_resource_state(previous, snapshot)
+        pairs.append((card, snapshot))
+
+    if not pairs:
+        return cards
+
+    persisted = await _db_persist_recommendation_snapshots(
+        uid,
+        [snapshot for _, snapshot in pairs],
+    )
+
+    for card, snapshot in pairs:
+        if persisted:
+            card["recommendation_id"] = snapshot["recommendation_id"]
+            card["recommendation_context_status"] = "persisted"
+            _apply_prepared_snapshot_to_feed_card(card, snapshot)
+        else:
+            card.pop("recommendation_id", None)
+            card["recommendation_context_status"] = "legacy_fallback"
+    return cards
 
 
 @api.get("/feed/personalized")
