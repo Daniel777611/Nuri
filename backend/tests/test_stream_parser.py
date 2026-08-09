@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.main import _partial_json_string  # noqa: E402
+from backend.nuri_core.dialogue_reply import partial_json_string as _partial_json_string  # noqa: E402
 
 VALUES = [
     "宝宝晚上不肯睡觉，可以试试固定的睡前流程。",

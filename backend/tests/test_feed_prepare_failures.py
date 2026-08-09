@@ -12,6 +12,12 @@ from copy import deepcopy
 
 import pytest
 
+from backend import stores  # noqa: E402
+from backend.nuri_core import outcome_store as core_outcome_store  # noqa: E402
+from backend.nuri_core import family_store as core_family_store  # noqa: E402
+from backend.feed import delivery as feed_delivery  # noqa: E402
+from backend.feed import signals as feed_signals  # noqa: E402
+from backend import content_research  # noqa: E402
 from backend import memstore, runtime  # noqa: E402
 from backend import main
 from backend.content_library import LEARNING_CONTENT_BY_ID
@@ -113,11 +119,11 @@ class _PrepareHarness:
             )
             return [card], True
 
-        monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-        monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_child)
-        monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-        monkeypatch.setattr(main, "_rank_learning_content", ranked)
-        monkeypatch.setattr(main, "content_research_oai", object())
+        monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+        monkeypatch.setattr(core_family_store, "attach_child_recommendation_context", attach_child)
+        monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+        monkeypatch.setattr(feed_signals, "rank_learning_content", ranked)
+        monkeypatch.setattr(runtime, "content_research_oai", object())
 
         if persistent:
             supabase = _SettingsSupabase()
@@ -125,7 +131,7 @@ class _PrepareHarness:
             monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
             monkeypatch.setattr(memstore, "recommendation_snapshots", {})
             assert asyncio.run(
-                main._db_persist_recommendation_snapshots(
+                stores.persist_snapshots(
                     self.uid, list(self.snapshots.values())
                 )
             )
@@ -143,13 +149,11 @@ class _PrepareHarness:
                     self.snapshots[value["recommendation_id"]] = deepcopy(value)
                 return True
 
-            monkeypatch.setattr(main, "_db_get_recommendation_snapshot", load_snapshot)
-            monkeypatch.setattr(
-                main,
-                "_db_get_recommendation_snapshot_persistent",
+            monkeypatch.setattr(stores, "get_snapshot", load_snapshot)
+            monkeypatch.setattr(stores, "get_snapshot_persistent",
                 load_persistent,
             )
-            monkeypatch.setattr(main, "_db_persist_recommendation_snapshots", persist)
+            monkeypatch.setattr(stores, "persist_snapshots", persist)
 
     def run(self) -> dict:
         return asyncio.run(main.prepare_feed_research(self.request, uid=self.uid))
@@ -161,7 +165,7 @@ class _PrepareHarness:
             self.provider_calls += 1
             return deepcopy(remaining.pop(0))
 
-        monkeypatch.setattr(main, "_research_card_detail_resources", research)
+        monkeypatch.setattr(feed_delivery, "research_card_detail_resources", research)
 
 
 def _assert_atomic_retryable(result: dict) -> None:
@@ -269,12 +273,12 @@ def test_personalized_feed_publishes_reviewed_pairs_during_dynamic_upgrade(
         for index, item in enumerate(items):
             item["recommendation_id"] = f"rec_reviewed_{index}"
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
-    monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_child)
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked)
-    monkeypatch.setattr(main, "_attach_recommendation_snapshots", attach_snapshots)
-    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", load_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context", attach_child)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked)
+    monkeypatch.setattr(feed_delivery, "attach_recommendation_snapshots", attach_snapshots)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
 
     result = asyncio.run(
         main.get_personalized_feed(
@@ -456,7 +460,7 @@ def test_reviewed_whitelist_ready_card_opens_without_another_provider_call(
 
 @pytest.mark.parametrize(
     "recommendation_focus",
-    main._TOPIC_SIGNAL_ALIASES["learn_language_milestones"],
+    feed_signals.TOPIC_SIGNAL_ALIASES["learn_language_milestones"],
 )
 def test_language_reviewed_whitelist_covers_every_conversation_focus(
     monkeypatch,
@@ -539,7 +543,7 @@ def test_prepare_provider_timeout_returns_retryable_for_all_three_cards(
         calls.append(1)
         raise TimeoutError("provider timed out")
 
-    monkeypatch.setattr(main, "research_learning_resources", provider_timeout)
+    monkeypatch.setattr(content_research, "research_learning_resources", provider_timeout)
 
     result = harness.run()
 
@@ -642,7 +646,7 @@ def test_immediate_retry_after_incomplete_bundle_bypasses_warm_failure_cache(
     )
     provider = _FakeClient((incomplete, incomplete, incomplete, complete))
     harness = _PrepareHarness(monkeypatch)
-    monkeypatch.setattr(main, "content_research_oai", provider)
+    monkeypatch.setattr(runtime, "content_research_oai", provider)
 
     try:
         first = harness.run()

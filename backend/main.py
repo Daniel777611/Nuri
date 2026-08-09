@@ -51,6 +51,8 @@ from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend import locales, memstore, runtime, stores
+from backend.feed import delivery as feed_delivery
+from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
 from backend.nuri_core import knowledge_store as core_knowledge_store
 from backend.nuri_core import outcome as core_outcome
@@ -219,8 +221,6 @@ from backend.runtime import (  # noqa: E402
     VECTOR_TABLE,
     _SUPABASE_OK,
     aoai,
-    content_research_limiter,
-    content_research_oai,
     elapsed_ms as _ms,
     now as _now,
     oai,
@@ -275,19 +275,16 @@ app.add_middleware(
 # a monkeypatch that silently stops applying, which is worse than one that
 # fails loudly.
 
-_SUPPORTED_PREFERRED_LOCALES = locales.SUPPORTED_PREFERRED_LOCALES
-_normalize_preferred_locale = locales.normalize_preferred_locale
-_with_requested_preferred_locale = locales.with_requested_preferred_locale
 
 
-_DEFAULT_PRIVACY = {
+stores.DEFAULT_PRIVACY = {
     "allow_history_training": True,
     "allow_external_content_research": False,
     "daily_push": True,
     "anonymous_community_share": False,
     "language": "zh-CN",
 }
-_PRIVACY_STORAGE_UNAVAILABLE = "_storage_unavailable"
+stores.PRIVACY_STORAGE_UNAVAILABLE = "_storage_unavailable"
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 _bearer = HTTPBearer(auto_error=False)
@@ -345,33 +342,7 @@ def _to_public(doc: dict) -> dict:
 # The generic persistence layer moved to backend/stores.py, and the
 # recommendation-engagement stream — the second half of 4 结果学习模型 — to
 # backend/nuri_core/outcome_store.py. Aliased for the routes below.
-_db_get_gen_cards = stores.get_gen_cards
-_db_save_gen_cards = stores.save_gen_cards
-_db_get_feed_mode = stores.get_feed_mode
-_db_set_feed_mode = stores.set_feed_mode
-_DEFAULT_PRIVACY = stores.DEFAULT_PRIVACY
-_PRIVACY_STORAGE_UNAVAILABLE = stores.PRIVACY_STORAGE_UNAVAILABLE
-_normalized_privacy_settings = stores.normalized_privacy_settings
-_privacy_storage_key = stores.privacy_storage_key
-_db_get_privacy = stores.get_privacy
-_db_set_privacy = stores.set_privacy
-_db_delete_privacy = stores.delete_privacy
-_db_persist_recommendation_snapshots = stores.persist_snapshots
-_db_get_recommendation_snapshot = stores.get_snapshot
-_db_get_recommendation_snapshot_persistent = stores.get_snapshot_persistent
-_db_delete_recommendation_snapshots = stores.delete_snapshots
-_db_list_fav_ids = stores.list_fav_ids
-_db_toggle_fav = stores.toggle_fav
-_db_save_fav = stores.save_fav
-_db_list_collections = stores.list_collections
-_db_create_collection = stores.create_collection
-_db_rename_collection = stores.rename_collection
-_db_delete_collection = stores.delete_collection
 
-_db_get_recommendation_events = core_outcome_store.get_events
-_db_append_recommendation_events = core_outcome_store.append_events
-_db_delete_recommendation_events = core_outcome_store.delete_events
-_new_recommendation_event = core_outcome_store.new_event
 
 
 
@@ -756,24 +727,6 @@ SCRIPTS: dict = {
 # The persona, the reply calls, the task-card contract, the streamed-JSON
 # parser, the #fix distillation and the proactive check-in now live in
 # backend/nuri_core/dialogue_reply.py. Aliased for the chat routes below.
-NURI_PERSONA = core_dialogue_reply.NURI_PERSONA
-_NURI_JSON_SUFFIX = core_dialogue_reply.NURI_JSON_SUFFIX
-_NURI_RESPONSE_FORMAT = core_dialogue_reply.NURI_RESPONSE_FORMAT
-_NURI_FALLBACK = core_dialogue_reply.NURI_FALLBACK
-_HISTORY_WINDOW = core_dialogue_reply.HISTORY_WINDOW
-REPLY_REASONING_EFFORT = core_dialogue_reply.REPLY_REASONING_EFFORT
-_reply_model_kwargs = core_dialogue_reply.reply_model_kwargs
-_nuri_messages = core_dialogue_reply.nuri_messages
-_parse_nuri_reply = core_dialogue_reply.parse_nuri_reply
-_nuri_reply_sync = core_dialogue_reply.nuri_reply_sync
-_nuri_reply_stream = core_dialogue_reply.nuri_reply_stream
-_partial_json_string = core_dialogue_reply.partial_json_string
-_task_intent = core_dialogue_reply.task_intent
-_user_requested_tasks = core_dialogue_reply.user_requested_tasks
-_user_declined_tasks = core_dialogue_reply.user_declined_tasks
-_urgent_task_suppressed = core_dialogue_reply.urgent_task_suppressed
-_requested_task_count = core_dialogue_reply.requested_task_count
-_normalize_task_proposals = core_dialogue_reply.normalize_task_proposals
 def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
     for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
@@ -795,35 +748,7 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
 # family.py. Aliased under their old private names because the routes below,
 # the ports wiring and several tests all still call them that; the aliases go
 # once those move out of this file too.
-_MEMORY_CATEGORY_LABELS = core_family_store.MEMORY_CATEGORY_LABELS
-_PARENT_ROLE_LABELS = core_family_store.PARENT_ROLE_LABELS
-_CONCERN_LABELS = core_family_store.CONCERN_LABELS
-_HELP_PREF_LABELS = core_family_store.HELP_PREF_LABELS
-_INFO_SOURCE_LABELS = core_family_store.INFO_SOURCE_LABELS
-_GENDER_LABELS = core_family_store.GENDER_LABELS
-_PROFILE_FIELDS = core_family_store.PROFILE_FIELDS
-MEMORY_MIN_USER_CHARS = core_family_store.MEMORY_MIN_USER_CHARS
-FOLLOW_UP_INTERVALS = core_family_store.FOLLOW_UP_INTERVALS
-FOLLOW_UP_DEFAULT_DAYS = core_family_store.FOLLOW_UP_DEFAULT_DAYS
-FOLLOW_UP_EXPIRE_DAYS = core_family_store.FOLLOW_UP_EXPIRE_DAYS
 
-_age_in_months = core_family_store.age_in_months
-_age_label = core_family_store.age_label
-_safe_child_recommendation_context = core_family_store.safe_child_recommendation_context
-_attach_child_recommendation_context = core_family_store.attach_child_recommendation_context
-_profile_ctx = core_family_store.profile_ctx
-_load_profile = core_family_store.load_profile
-_save_normalized_input = core_family_store.save_normalized_input
-_extract_memories_sync = core_family_store.extract_memories_sync
-_upsert_memories = core_family_store.upsert_memories
-_worth_extracting = core_family_store.worth_extracting
-_follow_up_due_at = core_family_store.follow_up_due_at
-_upsert_follow_ups = core_family_store.upsert_follow_ups
-_get_follow_up_context = core_family_store.get_follow_up_context
-_take_due_follow_up = core_family_store.take_due_follow_up
-_mark_follow_up_asked = core_family_store.mark_follow_up_asked
-_get_memory_context = core_family_store.get_memory_context
-_extract_and_upsert_memories = core_family.extract_and_upsert_memories
 
 
 class _TurnMetrics:
@@ -906,15 +831,10 @@ class _TurnMetrics:
 
 
 
-_compose_follow_up_message = core_dialogue_reply.compose_follow_up_message
 # Chat command Linda (or any whitelisted reviewer) types inline to correct a
 # reply: "#fix <什么地方不对>". It never reaches the user — it gets distilled
 # into a reusable rule instead. Only accounts listed in fix_reviewers can
 # trigger it, or any parent who happens to type "#fix ..." gets hijacked.
-FIX_KEYWORD = core_dialogue_reply.FIX_KEYWORD
-_is_fix_reviewer = core_dialogue_reply.is_fix_reviewer
-_distill_style_rule_sync = core_dialogue_reply.distill_style_rule_sync
-_get_style_rules_ctx = core_dialogue_reply.get_style_rules_ctx
 
 # Seed offsets per type so tip/news/product get visually distinct images
 _TYPE_SEED_OFFSET = {"tip": 0, "news": 100, "product": 200}
@@ -995,7 +915,6 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
     except Exception:
         return []
 
-_gen_tasks_ai_sync = core_dialogue_reply.gen_tasks_ai_sync
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 @api.post("/auth/register", status_code=201)
@@ -1096,7 +1015,7 @@ async def _invalidate_child_recommendations(uid: Optional[str]) -> None:
     # the family model's cached state has to go with the recommendations.
     core_family.invalidate(uid)
     try:
-        await _db_delete_recommendation_snapshots(uid)
+        await stores.delete_snapshots(uid)
     except Exception as exc:
         # Child profile writes must not look failed after the database already
         # accepted them.  The profile fingerprint is the correctness backstop.
@@ -1172,2850 +1091,10 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
     return {"ok": True}
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
-def _recommendation_activity_key(row: dict) -> tuple[str, str]:
-    return (str(row.get("created_at") or ""), str(row.get("id") or ""))
+# The conversation read and the delivery contract moved to backend/feed/.
+# Aliased for the route handlers below, which are the last thing left in this
+# file that calls them.
 
-
-_ACCOUNT_HISTORY_SESSION_LIMIT = 5
-_ACCOUNT_HISTORY_USER_MESSAGE_LIMIT = 18
-_CURRENT_SESSION_USER_HISTORY_LIMIT = 24
-
-
-def _safe_context_message(message: dict, *, context_scope: str) -> dict:
-    """Return only the conversation fields needed by recommendation ranking."""
-
-    return {
-        "id": message.get("id"),
-        "session_id": message.get("session_id"),
-        "role": message.get("role"),
-        "text": str(message.get("text") or ""),
-        "created_at": message.get("created_at"),
-        "context_scope": context_scope,
-    }
-
-
-def _recent_account_user_signals(
-    messages: list[dict],
-    *,
-    current_session_id: str,
-) -> list[dict]:
-    """Select a bounded, balanced set of user-authored account history.
-
-    The caller must already have scoped ``messages`` to one authenticated user
-    and excluded card-linked sessions.  We keep at most five other main chats
-    and at most four messages from any one chat so a long stale conversation
-    cannot drown out the current request.
-    """
-
-    selected: list[dict] = []
-    session_counts: dict[str, int] = {}
-    for message in sorted(messages, key=_recommendation_activity_key, reverse=True):
-        session_id = str(message.get("session_id") or "")
-        if not session_id or session_id == current_session_id:
-            continue
-        if message.get("role") != "user" or not str(message.get("text") or "").strip():
-            continue
-        if session_id not in session_counts:
-            if len(session_counts) >= _ACCOUNT_HISTORY_SESSION_LIMIT:
-                continue
-            session_counts[session_id] = 0
-        if session_counts[session_id] >= 4:
-            continue
-        session_counts[session_id] += 1
-        selected.append(message)
-        if len(selected) >= _ACCOUNT_HISTORY_USER_MESSAGE_LIMIT:
-            break
-    return [
-        _safe_context_message(message, context_scope="account_history")
-        for message in reversed(selected)
-    ]
-
-
-def _recent_main_chat_from_memory(
-    uid: str,
-    limit: int = 12,
-    preferred_session_id: Optional[str] = None,
-    through_created_at: Optional[str] = None,
-) -> dict:
-    """Resolve the user's real main conversation without trusting a client ID."""
-
-    sessions = [
-        session
-        for session in memstore.sessions.values()
-        if session.get("user_id") == uid and not session.get("source_card_id")
-    ]
-    if not sessions:
-        return {"state": "no_history", "session_id": None, "messages": []}
-
-    session_ids = {session["id"] for session in sessions}
-    all_user_messages = [
-        {**message, "session_id": message.get("session_id") or session_id}
-        for session_id in session_ids
-        for message in memstore.messages.get(session_id, [])
-        if message.get("role") == "user" and str(message.get("text") or "").strip()
-    ]
-    last_user_message = max(
-        all_user_messages,
-        key=_recommendation_activity_key,
-        default=None,
-    )
-    preferred_session = next(
-        (session for session in sessions if session.get("id") == preferred_session_id),
-        None,
-    )
-    if preferred_session_id and not preferred_session:
-        return {
-            "state": "context_not_found",
-            "session_id": None,
-            "messages": [],
-            "context_created_at": None,
-            "history_session_count": 0,
-            "history_user_message_count": 0,
-        }
-    if preferred_session:
-        session = preferred_session
-        preferred_messages = [
-            message
-            for message in memstore.messages.get(session["id"], [])
-            if not through_created_at
-            or str(message.get("created_at") or "") <= through_created_at
-        ]
-        last_user_message = next(
-            (
-                message
-                for message in reversed(
-                    sorted(preferred_messages, key=_recommendation_activity_key)
-                )
-                if message.get("role") == "user"
-                and str(message.get("text") or "").strip()
-            ),
-            None,
-        )
-    elif last_user_message:
-        session = next(
-            item for item in sessions if item["id"] == last_user_message.get("session_id")
-        )
-    else:
-        session = max(sessions, key=_recommendation_activity_key)
-
-    all_current_messages = sorted(
-        [
-            message
-            for message in memstore.messages.get(session["id"], [])
-            if not through_created_at
-            or str(message.get("created_at") or "") <= through_created_at
-        ],
-        key=_recommendation_activity_key,
-    )
-    messages = all_current_messages[-limit:]
-    safe_messages = [
-        _safe_context_message(
-            {**message, "session_id": message.get("session_id") or session["id"]},
-            context_scope="current_session",
-        )
-        for message in messages
-        if message.get("role") in {"user", "ai", "assistant"}
-    ]
-    recent_message_ids = {
-        str(message.get("id") or "") for message in safe_messages if message.get("id")
-    }
-    bounded_current_user_messages = [
-        item
-        for item in all_current_messages
-        if item.get("role") == "user" and str(item.get("text") or "").strip()
-    ][-_CURRENT_SESSION_USER_HISTORY_LIMIT:]
-    deeper_current_user_messages = [
-        _safe_context_message(
-            {**message, "session_id": message.get("session_id") or session["id"]},
-            context_scope="current_session_history",
-        )
-        for message in bounded_current_user_messages
-        if str(message.get("id") or "") not in recent_message_ids
-    ]
-    history_messages = (
-        []
-        if preferred_session_id or through_created_at
-        else _recent_account_user_signals(
-            all_user_messages,
-            current_session_id=session["id"],
-        )
-    )
-    return {
-        "state": "ready" if last_user_message else "no_user_message",
-        "session_id": session.get("id"),
-        "messages": [
-            *history_messages,
-            *deeper_current_user_messages,
-            *safe_messages,
-        ],
-        "context_created_at": (safe_messages[-1].get("created_at") if safe_messages else None),
-        "history_session_count": len(
-            {message.get("session_id") for message in history_messages}
-        ),
-        "history_user_message_count": len(history_messages),
-        "current_session_user_message_count": sum(
-            1
-            for message in [*deeper_current_user_messages, *safe_messages]
-            if message.get("role") == "user"
-        ),
-    }
-
-
-async def _load_recent_main_chat(
-    uid: str,
-    limit: int = 12,
-    preferred_session_id: Optional[str] = None,
-    through_created_at: Optional[str] = None,
-) -> dict:
-    """Load recent main-chat context scoped to ``uid``.
-
-    Card-linked conversations are intentionally excluded.  When Supabase is
-    temporarily unavailable we return a safe default state instead of exposing
-    another user's process-local data or breaking the home screen.
-    """
-
-    privacy = await _db_get_privacy(uid, fail_closed=True)
-    preferred_locale = _normalize_preferred_locale(privacy.get("language"))
-    external_research_allowed = bool(
-        privacy.get("allow_external_content_research") is True
-    )
-    if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
-        return {
-            "state": "unavailable",
-            "session_id": None,
-            "messages": [],
-            "preferred_locale": preferred_locale,
-            "external_research_allowed": False,
-        }
-    if privacy.get("allow_history_training") is False:
-        return {
-            "state": "privacy_off",
-            "session_id": None,
-            "messages": [],
-            "preferred_locale": preferred_locale,
-            "external_research_allowed": False,
-        }
-
-    sb = _get_supabase()
-    if not sb:
-        return {
-            **_recent_main_chat_from_memory(
-                uid, limit, preferred_session_id, through_created_at
-            ),
-            "preferred_locale": preferred_locale,
-            "external_research_allowed": external_research_allowed,
-        }
-
-    try:
-        session_res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_sessions")
-            .select("id,title,source_card_id,created_at")
-            .eq("user_id", uid)
-            .execute()
-        )
-        main_sessions = [
-            session
-            for session in (session_res.data or [])
-            if not session.get("source_card_id")
-        ]
-        if not main_sessions:
-            return {
-                "state": "no_history",
-                "session_id": None,
-                "messages": [],
-                "preferred_locale": preferred_locale,
-                "external_research_allowed": external_research_allowed,
-            }
-
-        session_ids = [session["id"] for session in main_sessions]
-        preferred_session = next(
-            (
-                item
-                for item in main_sessions
-                if item.get("id") == preferred_session_id
-            ),
-            None,
-        )
-        if preferred_session_id and not preferred_session:
-            return {
-                "state": "context_not_found",
-                "session_id": None,
-                "messages": [],
-                "context_created_at": None,
-                "history_session_count": 0,
-                "history_user_message_count": 0,
-                "preferred_locale": preferred_locale,
-                "external_research_allowed": external_research_allowed,
-            }
-        if preferred_session:
-            session = preferred_session
-        else:
-            # This first query only identifies the active main conversation.
-            # Account history is loaded separately below; otherwise a long
-            # current chat can consume the global PostgREST limit and erase all
-            # continuity signals from the user's other conversations.
-            latest_user_res = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_messages")
-                .select("id,session_id,role,text,created_at")
-                .in_("session_id", session_ids)
-                .eq("role", "user")
-                .order("created_at", desc=True)
-                .order("id", desc=True)
-                .limit(1)
-                .execute()
-            )
-            last_user_message = ((latest_user_res.data or []) or [None])[0]
-            if last_user_message:
-                session = next(
-                    item
-                    for item in main_sessions
-                    if item["id"] == last_user_message.get("session_id")
-                )
-            else:
-                session = max(main_sessions, key=_recommendation_activity_key)
-
-        def load_context_messages():
-            query = (
-                sb.table("chat_messages")
-                .select("id,session_id,role,text,created_at")
-                .eq("session_id", session["id"])
-            )
-            if through_created_at:
-                query = query.lte("created_at", through_created_at)
-            return (
-                query.order("created_at", desc=True)
-                .order("id", desc=True)
-                .limit(limit)
-                .execute()
-            )
-
-        message_res = await anyio.to_thread.run_sync(load_context_messages)
-        current_messages = list(reversed(message_res.data or []))
-
-        def load_current_user_history():
-            query = (
-                sb.table("chat_messages")
-                .select("id,session_id,role,text,created_at")
-                .eq("session_id", session["id"])
-                .eq("role", "user")
-            )
-            if through_created_at:
-                query = query.lte("created_at", through_created_at)
-            return (
-                query.order("created_at", desc=True)
-                .order("id", desc=True)
-                .limit(_CURRENT_SESSION_USER_HISTORY_LIMIT)
-                .execute()
-            )
-
-        current_user_history_res = await anyio.to_thread.run_sync(
-            load_current_user_history
-        )
-        recent_message_ids = {
-            str(message.get("id") or "")
-            for message in current_messages
-            if message.get("id")
-        }
-        deeper_current_user_messages = [
-            _safe_context_message(
-                message,
-                context_scope="current_session_history",
-            )
-            for message in reversed(current_user_history_res.data or [])
-            if str(message.get("id") or "") not in recent_message_ids
-        ]
-        history_messages: list[dict] = []
-        if not preferred_session_id and not through_created_at:
-            history_sessions = sorted(
-                (
-                    item
-                    for item in main_sessions
-                    if item.get("id") != session["id"]
-                ),
-                key=_recommendation_activity_key,
-                reverse=True,
-            )[:_ACCOUNT_HISTORY_SESSION_LIMIT]
-
-            async def load_history_session(history_session_id: str):
-                return await anyio.to_thread.run_sync(
-                    lambda: sb.table("chat_messages")
-                    .select("id,session_id,role,text,created_at")
-                    .eq("session_id", history_session_id)
-                    .eq("role", "user")
-                    .order("created_at", desc=True)
-                    .order("id", desc=True)
-                    # Fetch enough from each candidate session for the global
-                    # 18-message selector below to find durable themes. A fixed
-                    # four-message slice hid older but repeatedly important
-                    # context in accounts with one long historical main chat.
-                    .limit(_ACCOUNT_HISTORY_USER_MESSAGE_LIMIT)
-                    .execute()
-                )
-
-            history_results = await asyncio.gather(
-                *(
-                    load_history_session(str(item["id"]))
-                    for item in history_sessions
-                )
-            )
-            history_user_messages = [
-                message
-                for result in history_results
-                for message in (result.data or [])
-            ]
-            history_messages = _recent_account_user_signals(
-                history_user_messages,
-                current_session_id=session["id"],
-            )
-        messages = [
-            *history_messages,
-            *deeper_current_user_messages,
-            *[
-                _safe_context_message(message, context_scope="current_session")
-                for message in current_messages
-                if message.get("role") in {"user", "ai", "assistant"}
-            ],
-        ]
-        session_has_user_message = any(
-            message.get("role") == "user"
-            and str(message.get("text") or "").strip()
-            for message in [*deeper_current_user_messages, *current_messages]
-        )
-        return {
-            "state": "ready" if session_has_user_message else "no_user_message",
-            "session_id": session.get("id"),
-            "messages": messages,
-            "context_created_at": (
-                current_messages[-1].get("created_at") if current_messages else None
-            ),
-            "history_session_count": len(
-                {message.get("session_id") for message in history_messages}
-            ),
-            "history_user_message_count": len(history_messages),
-            "current_session_user_message_count": sum(
-                1
-                for message in [*deeper_current_user_messages, *current_messages]
-                if message.get("role") == "user"
-            ),
-            "preferred_locale": preferred_locale,
-            "external_research_allowed": external_research_allowed,
-        }
-    except Exception as exc:
-        print(f"[warn] personalized feed conversation lookup failed: {exc}")
-        return {
-            "state": "unavailable",
-            "session_id": None,
-            "messages": [],
-            "preferred_locale": preferred_locale,
-            "external_research_allowed": False,
-        }
-
-
-_CONVERSATION_MATCH_MIN_SCORE = 8
-_WEAK_MATCH_TERMS = frozenset(
-    {
-        "沟通",
-        "表达",
-        "互动",
-        "连接",
-        "安全",
-        "压力",
-        "play",
-        "words",
-        "behavior",
-        "food",
-        # Age alone describes context, not the family's current goal.  It may
-        # support a development match but must not beat an explicit language,
-        # sleep or behavior concern.
-        "月龄",
-        "9个月",
-        "九个月",
-        "10个月",
-        "十个月",
-        "11个月",
-        "十一个月",
-        "一岁",
-    }
-)
-_NEGATION_MARKERS = (
-    "不是",
-    "并不是",
-    "不属于",
-    "不用",
-    "无需",
-    "不要聊",
-    "不想聊",
-    "无关",
-    "没关系",
-    "没有关系",
-    "not about",
-    "unrelated",
-    "isn't",
-    "is not",
-    "isnt",
-    "aren't",
-    "are not",
-    "not ",
-    "don't mean",
-    "do not mean",
-    "is unrelated",
-    "isn't related",
-)
-_TOPIC_CLAUSE_BOUNDARIES = (
-    "，",
-    ",",
-    "。",
-    ".",
-    "！",
-    "!",
-    "？",
-    "?",
-    "；",
-    ";",
-    "\n",
-    " but ",
-    " however ",
-    "而是",
-    "但是",
-    "但",
-)
-_FOLLOW_UP_MARKERS = (
-    "任务",
-    "怎么做",
-    "怎么办",
-    "具体",
-    "继续",
-    "给我",
-    "建议",
-    "接下来",
-    "哪些",
-    "什么引导",
-    "什么样的引导",
-    "如何",
-)
-_ACTION_REQUEST_LABELS = (
-    ("任务", "可执行任务"),
-    ("方案", "可执行方案"),
-    ("计划", "行动计划"),
-    ("练习", "日常练习"),
-    ("步骤", "具体步骤"),
-    ("怎么做", "具体做法"),
-    ("怎么办", "具体做法"),
-    ("action plan", "行动方案"),
-    ("task", "可执行任务"),
-)
-_ACTION_ONLY_FILLERS = (
-    "也",
-    "再",
-    "请",
-    "帮我",
-    "给我",
-    "可以",
-    "能不能",
-    "想要",
-    "需要",
-    "一些",
-    "几个",
-    "一个",
-    "具体",
-    "接下来",
-    "现在",
-    "吧",
-    "吗",
-    "呢",
-    "please",
-    "give me",
-    "some",
-    "a",
-    "an",
-    "the",
-    "for me",
-    "create",
-    "make",
-    "can you",
-    "could you",
-    "would you",
-    "你",
-    "适合我的",
-    "適合我的",
-    "适合我",
-    "適合我",
-    "个",
-    "個",
-    "项",
-    "項",
-    "条",
-    "條",
-)
-_TOPIC_SIGNAL_ALIASES: dict[str, tuple[str, ...]] = {
-    "learn_language_milestones": (
-        "发声",
-        "轮流发声",
-        "音节",
-        "重复音节",
-        "模仿音节",
-        "学他发音",
-        "学她发音",
-        "咿呀",
-        "语音理解",
-        "模仿声音",
-        "声音回应",
-        "回应名字",
-        "名字反应",
-        "叫他或她时会回应",
-        "叫他时会回应",
-        "叫她时会回应",
-        "听到名字会回应",
-        "短句回应",
-    ),
-    "learn_serve_and_return": (
-        "轮流互动",
-        "轮流回应",
-        "跟随孩子",
-        "陪孩子",
-        "陪娃",
-        "陪他的时间",
-        "陪她的时间",
-        "陪孩子的时间",
-        "陪宝宝的时间",
-        "陪娃的时间",
-        "陪伴时间",
-        "没空陪孩子",
-        "没空陪他",
-        "没空陪她",
-        "很少陪孩子",
-        "很少陪他",
-        "很少陪她",
-        "主要是妈妈在照顾",
-        "主要是妈妈再照顾",
-        "主要是爸爸在照顾",
-        "主要是爸爸再照顾",
-        "主要由妈妈照顾",
-        "主要由爸爸照顾",
-    ),
-}
-_PRODUCT_META_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:为什么|为何|为啥|怎么|怎么会|还是|又|一直|现在|这里|这个地方)?"
-        r"[^，。！？,;!?\n]{0,10}(?:没有|没|未|不显示|看不到|找不到|没收到)"
-        r"[^，。！？,;!?\n]{0,16}(?:任[务務]卡(?:片)?|推送卡片|推荐卡片|推薦卡片)",
-        r"(?:任[务務]卡(?:片)?|推送卡片|推荐卡片|推薦卡片)"
-        r"[^，。！？,;!?\n]{0,16}(?:在哪|在哪里|不见|不見|没有|沒有|没了|沒了|"
-        r"不显示|不顯示|看不到|找不到|没生成|沒生成|未生成)",
-        r"(?:系统|系統|页面|頁面|首页|首頁|应用|應用|app|nuri|你)"
-        r"[^，。！？,;!?\n]{0,16}(?:没有|沒有|没|沒|未|不)"
-        r"[^，。！？,;!?\n]{0,12}(?:生成|显示|顯示|给|給)"
-        r"[^，。！？,;!?\n]{0,8}(?:任[务務]卡(?:片)?|推荐卡片|推薦卡片)",
-        r"\b(?:why|where|how come)\b[^.?!\n]{0,32}"
-        r"\b(?:task cards?|recommendation cards?)\b|"
-        r"\b(?:task cards?|recommendation cards?)\b[^.?!\n]{0,24}"
-        r"\b(?:missing|not showing|not generated|gone)\b",
-    )
-)
-_RECOMMENDATION_FEEDBACK_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:(?:这个|這個|这条|這條|这些|這些)\s*)?"
-        r"(?:这段内容|這段內容|这段推荐|這段推薦|推荐(?:卡片|内容)?|"
-        r"推薦(?:卡片|內容)?|推送(?:卡片|内容|內容)?|"
-        r"卡片|你给的(?:推荐|内容|卡片)|你給的(?:推薦|內容|卡片))"
-        r"[^，。！？,;!?\n]{0,24}(?:不相关|不相關|无关|無關|不准确|不準確|"
-        r"不够准确|不夠準確|不合适|不合適|不适合|不適合|"
-        r"关系不大|關係不大|不是我想要的)",
-        r"(?:不相关|不相關|无关|無關|不准确|不準確|不够准确|不夠準確)"
-        r"[^，。！？,;!?\n]{0,16}(?:推荐|推薦|推送|内容|內容|卡片|对话|對話)",
-        r"\b(?:this|these|the|your)?\s*"
-        r"(?:recommendations?|suggestions?|recommended\s+content|suggested\s+content|"
-        r"content|cards?)\b[^.?!\n]{0,32}"
-        r"\b(?:irrelevant|not\s+relevant|inaccurate|not\s+accurate|"
-        r"unsuitable|not\s+suitable)\b",
-        r"\b(?:irrelevant|not\s+relevant|inaccurate|not\s+accurate|"
-        r"unsuitable|not\s+suitable)\b[^.?!\n]{0,32}"
-        r"\b(?:recommendations?|suggestions?|content|cards?)\b",
-    )
-)
-_CONVERSATION_META_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:我们|我們).{0,8}(?:讨论过|討論過|聊过|聊過).{0,8}(?:什么|什麼)",
-        r"你.{0,8}(?:记得|記得).{0,8}(?:什么|什麼)",
-        r"你.{0,8}(?:认为|認為|觉得|覺得)我.{0,12}(?:什么样|什麼樣).{0,8}(?:父亲|父親|爸爸|母亲|母親|妈妈|媽媽)",
-        r"\bwhat\s+(?:have|did)\s+we\s+(?:discuss(?:ed)?|talk(?:ed)?\s+about)\b",
-        r"\bwhat\s+do\s+you\s+remember\s+about\s+me\b",
-        r"\bwhat\s+kind\s+of\s+(?:father|mother|parent)\s+do\s+you\s+think\s+i\s+am\b",
-    )
-)
-_GENERIC_CONTEXT_REQUEST_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"你?.{0,6}(?:认为|認為|觉得|覺得)?我(?:现在|現在)?"
-        r".{0,6}最需要.{0,8}(?:什么样|什麼樣|什么|什麼)?"
-        r".{0,6}(?:引导|引導|帮助|幫助|建议|建議|支持)",
-        r"(?:结合|結合|根据|根據).{0,12}(?:我的情况|我的情況|我们的对话|我們的對話)"
-        r".{0,12}(?:给我|給我|推荐|推薦|建议|建議)",
-    )
-)
-_CONTEXT_CORRECTION_ONLY_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"^我?(?:并|並)?(?:没有|沒有|没|沒|不是|并不是|並不是|不觉得|不覺得|不认为|不認為)"
-        r".{0,12}(?:愧疚|内疚|內疚|自责|自責|后悔|後悔|焦虑|焦慮)[啊呀吧呢]?$",
-    )
-)
-_NON_PARENTING_TOPIC_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:只|只是|仅仅|僅僅).{0,10}(?:创业|創業|公司|工作|生意)"
-        r".{0,12}(?:没有|沒有|没|沒|未|不).{0,8}(?:谈|談|聊|说|說|涉及)"
-        r".{0,6}(?:孩子|宝宝|寶寶|育儿|育兒)",
-        r"(?:创业|創業|公司|工作|生意).{0,12}(?:和|与|與)"
-        r".{0,6}(?:孩子|宝宝|寶寶|育儿|育兒).{0,6}(?:无关|無關|没关系|沒關係)",
-        r"(?:这次|這次|这里|這裡|当前|當前)?\s*"
-        r"(?:没有|沒有|没|沒|未|不在|不是在)"
-        r".{0,4}(?:谈|談|聊|说|說|讨论|討論|涉及)"
-        r".{0,10}(?:孩子|宝宝|寶寶|育儿|育兒|陪伴|亲子|親子)",
-    )
-)
-_PARENTING_CONTEXT_TERMS = (
-    "孩子",
-    "宝宝",
-    "寶寶",
-    "宝贝",
-    "寶貝",
-    "育儿",
-    "育兒",
-    "亲子",
-    "親子",
-    "陪伴",
-    "陪他",
-    "陪她",
-    "照顾他",
-    "照顧他",
-    "照顾她",
-    "照顧她",
-    "儿子",
-    "兒子",
-    "女儿",
-    "女兒",
-)
-_DYNAMIC_PARENTING_DOMAIN_TERMS = (
-    "child",
-    "children",
-    "baby",
-    "parent",
-    "family",
-    "caregiver",
-    "father",
-    "mother",
-    "dad",
-    "mom",
-    "school",
-    "preschool",
-    "daycare",
-    "父亲",
-    "父親",
-    "母亲",
-    "母親",
-    "爸爸",
-    "妈妈",
-    "媽媽",
-    "家长",
-    "家長",
-    "家庭",
-    "照顾者",
-    "照顧者",
-    "蒙特梭利",
-    "montessori",
-    "森林学校",
-    "森林學校",
-    "forest school",
-    "幼儿园",
-    "幼兒園",
-    "托育",
-    "早教",
-    "学校",
-    "學校",
-    "堂兄",
-    "堂姐",
-    "亲属",
-    "親屬",
-    "霸凌",
-    "移居",
-)
-_CONTEXT_REJECTION_MARKERS = (
-    "不想继续",
-    "不要继续",
-    "别再",
-    "不再聊",
-    "换个话题",
-    "换一个话题",
-    "另一个话题",
-    "别聊",
-    "不想聊",
-    "stop talking",
-    "don't continue",
-    "do not continue",
-    "change the subject",
-    "different topic",
-    "move on",
-)
-_ACKNOWLEDGEMENT_ONLY = frozenset(
-    {"谢谢", "谢谢你", "好的", "好", "明白了", "知道了", "收到", "ok", "okay", "thanks", "thank you"}
-)
-_DYNAMIC_RESEARCH_CARD_PREFIX = "learn_conversation_"
-
-
-def _is_acknowledgement_only(text: str) -> bool:
-    """Recognize one or more acknowledgement phrases with no real topic."""
-
-    normalized = re.sub(r"[\s，。！？,.!?]+", "", text.casefold())
-    if not normalized:
-        return True
-    tokens = sorted(
-        {
-            re.sub(r"[\s，。！？,.!?]+", "", value.casefold())
-            for value in _ACKNOWLEDGEMENT_ONLY
-        },
-        key=len,
-        reverse=True,
-    )
-    residue = normalized
-    for token in tokens:
-        residue = residue.replace(token, "")
-    return not residue
-
-
-def _is_product_meta_request(text: str) -> bool:
-    """Exclude feedback about NURI's UI/cards from parenting-topic ranking."""
-
-    normalized = " ".join((text or "").strip().split())
-    return bool(normalized) and any(
-        pattern.search(normalized) for pattern in _PRODUCT_META_PATTERNS
-    )
-
-
-def _is_recommendation_feedback(text: str) -> bool:
-    normalized = " ".join((text or "").strip().split())
-    return bool(normalized) and any(
-        pattern.search(normalized) for pattern in _RECOMMENDATION_FEEDBACK_PATTERNS
-    )
-
-
-def _is_conversation_meta_request(text: str) -> bool:
-    normalized = " ".join((text or "").strip().split())
-    return bool(normalized) and any(
-        pattern.search(normalized) for pattern in _CONVERSATION_META_PATTERNS
-    )
-
-
-def _is_context_correction_only(text: str) -> bool:
-    normalized = " ".join((text or "").strip().split()).strip("，。！？,.!?；;：:")
-    return bool(normalized) and any(
-        pattern.fullmatch(normalized)
-        for pattern in _CONTEXT_CORRECTION_ONLY_PATTERNS
-    )
-
-
-def _is_explicitly_non_parenting_topic(text: str) -> bool:
-    normalized = " ".join((text or "").strip().split())
-    return bool(normalized) and any(
-        pattern.search(normalized) for pattern in _NON_PARENTING_TOPIC_PATTERNS
-    )
-
-
-def _is_generic_context_request(text: str) -> bool:
-    normalized = " ".join((text or "").strip().split()).strip(
-        "，。！？,.!?；;：:"
-    )
-    if _is_action_only_request(normalized):
-        return True
-    return bool(normalized) and any(
-        pattern.fullmatch(normalized) for pattern in _GENERIC_CONTEXT_REQUEST_PATTERNS
-    )
-
-
-def _clean_parenting_signal(text: str) -> str:
-    """Remove product/conversation feedback clauses, preserving family facts."""
-
-    normalized = " ".join((text or "").strip().split())
-    if not normalized:
-        return ""
-    clauses = re.split(
-        r"(?:[，,。！？!?；;]+|但是|但|不过|不過|其实|其實|然而)",
-        normalized,
-    )
-    kept: list[str] = []
-    for raw_clause in clauses:
-        clause = raw_clause.strip(" \t\r\n，。！？,.!?；;：:")
-        if not clause:
-            continue
-        if (
-            _is_product_meta_request(clause)
-            or _is_recommendation_feedback(clause)
-            or _is_conversation_meta_request(clause)
-            or _is_context_correction_only(clause)
-            or _is_explicitly_non_parenting_topic(clause)
-        ):
-            continue
-        kept.append(clause)
-    return "，".join(kept)
-
-
-def _current_action_intent(text: str) -> Optional[str]:
-    casefolded = text.casefold()
-    return next(
-        (label for marker, label in _ACTION_REQUEST_LABELS if marker in casefolded),
-        None,
-    )
-
-
-def _recommendation_intent_code(text: str) -> str:
-    casefolded = text.casefold()
-    if _current_action_intent(casefolded):
-        return "action_plan"
-    if any(marker in casefolded for marker in ("比较", "对比", "区别", "怎么选", "选择", " vs ", " versus ")):
-        return "compare"
-    if any(
-        marker in casefolded
-        for marker in (
-            "我很累",
-            "我撑不住",
-            "我快崩溃",
-            "我很焦虑",
-            "安慰我",
-            "陪陪我",
-            "support me",
-        )
-    ):
-        return "support"
-    return "learn"
-
-
-def _is_action_only_request(text: str) -> bool:
-    """Detect generic requests such as “给我一些任务吧” without a topic."""
-
-    if not _current_action_intent(text):
-        return False
-    residue = text.casefold()
-    for marker, _label in _ACTION_REQUEST_LABELS:
-        if re.fullmatch(r"[a-z][a-z ]*", marker):
-            suffix = "s?" if marker == "task" else ""
-            residue = re.sub(
-                rf"(?<![a-z0-9]){re.escape(marker)}{suffix}(?![a-z0-9])",
-                " ",
-                residue,
-            )
-        else:
-            residue = residue.replace(marker, "")
-    for filler in _ACTION_ONLY_FILLERS:
-        if re.fullmatch(r"[a-z][a-z ]*", filler):
-            residue = re.sub(
-                rf"(?<![a-z0-9]){re.escape(filler)}(?![a-z0-9])",
-                " ",
-                residue,
-            )
-        else:
-            residue = residue.replace(filler, "")
-    residue = re.sub(r"(?:\d+|[一二两兩三四五六七八九十百几幾]+)", "", residue)
-    residue = re.sub(r"[^a-z0-9\u3400-\u9fff]+", "", residue)
-    return not residue
-
-
-def _conversation_goal_signal(messages: list[dict]) -> tuple[str, str]:
-    """Return the nearest concrete user goal and whether it is cross-session."""
-
-    user_messages = [
-        message
-        for message in messages
-        if message.get("role") == "user" and str(message.get("text") or "").strip()
-    ]
-    current_messages = [
-        message
-        for message in user_messages
-        if message.get("context_scope") != "account_history"
-    ]
-    history_messages = [
-        message
-        for message in user_messages
-        if message.get("context_scope") == "account_history"
-    ]
-    for scope, candidates in (
-        ("current_session", current_messages),
-        ("account_history", history_messages),
-    ):
-        for message in reversed(candidates):
-            raw_text = str(message.get("text") or "").strip()
-            text = _clean_parenting_signal(raw_text)
-            if (
-                _is_acknowledgement_only(text)
-                or _is_generic_context_request(raw_text)
-                or not text
-            ):
-                continue
-            return text, scope
-    latest = _clean_parenting_signal(
-        str((current_messages or history_messages or [{}])[-1].get("text") or "")
-    )
-    return latest, "current_session" if current_messages else "account_history"
-
-
-def _conversation_topic_excerpt(messages: list[dict], limit: int = 84) -> str:
-    """Return a short, redacted description of the latest real user topic."""
-
-    latest, _scope = _conversation_goal_signal(messages)
-    topic = " ".join(redact_conversation_text(latest, 240).split())
-    topic = topic.strip(" \t\r\n，。！？,.!?；;：:")
-    if len(topic) > limit:
-        topic = f"{topic[: limit - 1].rstrip()}…"
-    return topic
-
-
-def _has_parenting_domain_signal(topic: str) -> bool:
-    normalized = " ".join((topic or "").casefold().split())
-    if not normalized:
-        return False
-    if _matched_terms(
-        normalized,
-        [*_PARENTING_CONTEXT_TERMS, *_DYNAMIC_PARENTING_DOMAIN_TERMS],
-    ):
-        return True
-    for card in LEARNING_CONTENT_CARDS:
-        terms = [
-            *card.get("match_terms", []),
-            *_TOPIC_SIGNAL_ALIASES.get(str(card.get("id") or ""), ()),
-        ]
-        if _matched_terms(normalized, terms):
-            return True
-    return False
-
-
-def _is_dynamic_topic_candidate(topic: str) -> bool:
-    if _is_acknowledgement_only(topic):
-        return False
-    if _is_generic_context_request(topic):
-        return False
-    if (
-        _is_product_meta_request(topic)
-        or _is_recommendation_feedback(topic)
-        or _is_conversation_meta_request(topic)
-        or _is_explicitly_non_parenting_topic(topic)
-    ):
-        return False
-    if not _has_parenting_domain_signal(topic):
-        return False
-    # “换个话题” alone contains no topic to research.  Once the user names a
-    # concrete new subject, the longer message remains eligible.
-    if len(topic) <= 60 and any(
-        marker in topic.casefold() for marker in _CONTEXT_REJECTION_MARKERS
-    ):
-        return False
-    return True
-
-
-def _dynamic_research_card_id(
-    *,
-    session_id: Optional[str],
-    context_created_at: Optional[str],
-    topic: str,
-) -> str:
-    """Build an addressable ID without placing conversation text in the URL."""
-
-    normalized_topic = " ".join(topic.casefold().split())
-    material = "\n".join(
-        (session_id or "no-session", context_created_at or "no-time", normalized_topic)
-    )
-    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
-    return f"{_DYNAMIC_RESEARCH_CARD_PREFIX}{digest}"
-
-
-def _build_dynamic_research_card(
-    messages: list[dict],
-    *,
-    session_id: Optional[str],
-    context_created_at: Optional[str],
-    include_detail: bool,
-) -> Optional[dict]:
-    """Create a transient card for a real topic outside the reviewed library.
-
-    A dynamic card deliberately has no static resources.  Presenting a sleep,
-    emotion or development bundle under an unrelated topic (for example,
-    Montessori school choice) is more misleading than showing a bounded
-    research state.  The research endpoint only publishes a complete verified
-    six-to-nine item bundle; the frontend hides category shelves until that
-    quality threshold is met.
-    """
-
-    topic = _conversation_topic_excerpt(messages)
-    if not _is_dynamic_topic_candidate(topic):
-        return None
-    card_id = _dynamic_research_card_id(
-        session_id=session_id,
-        context_created_at=context_created_at,
-        topic=topic,
-    )
-    latest_current_user_text = next(
-        (
-            str(message.get("text") or "")
-            for message in reversed(messages)
-            if message.get("role") == "user"
-            and message.get("context_scope") != "account_history"
-        ),
-        topic,
-    )
-    intent_source = (
-        topic
-        if (
-            _is_product_meta_request(latest_current_user_text)
-            or _is_recommendation_feedback(latest_current_user_text)
-            or _is_conversation_meta_request(latest_current_user_text)
-            or _is_context_correction_only(latest_current_user_text)
-        )
-        else latest_current_user_text
-    )
-    card = {
-        "id": card_id,
-        "topic": topic,
-        "topic_label": topic,
-        "type": "tip",
-        "type_label": "对话精选",
-        "cta": "为这次对话检索内容",
-        "publisher": "NURI 个性化内容研究",
-        "title": f"继续了解：{topic}",
-        "summary": (
-            "NURI 会依据这次对话，分别核验权威内容、精彩解读和真实家庭案例。"
-        ),
-        "personalization_reason": f"因为你最近和 NURI 聊到“{topic}”",
-        "is_conversation_match": True,
-        "is_dynamic_research_card": True,
-        "related_session_id": session_id,
-        "context_created_at": context_created_at,
-        "recommendation_focus": topic,
-        "recommendation_intent": _recommendation_intent_code(intent_source),
-        "recommendation_score": _CONVERSATION_MATCH_MIN_SCORE,
-    }
-    if include_detail:
-        card.update(
-            {
-                "body": (
-                    "这是根据你刚刚提出的具体问题建立的学习主题。完成外部检索后，"
-                    "这里只会展示六至九项通过来源、语言和内容核验的结果：三个类别，"
-                    "每类至少一篇文章和一个视频；第三项只有同样可靠时才会加入。"
-                ),
-                "hook_line": "让 NURI 围绕这次真实对话继续筛选。",
-                "tags": ["#对话相关", "#个性化检索"],
-                "resources": [],
-            }
-        )
-    return card
-
-
-def _restore_dynamic_research_card_from_snapshot(
-    snapshot: dict,
-    *,
-    include_detail: bool,
-) -> Optional[dict]:
-    """Rebuild a novel-topic card when its goal came from account history.
-
-    A detail request deliberately reloads only the bound main session.  For a
-    generic current follow-up such as “给我任务”, that session may not contain
-    the concrete cross-session topic that originally created the dynamic card.
-    The snapshot keeps only the bounded, redacted focus required to restore it.
-    """
-
-    focus = str(snapshot.get("recommendation_focus") or "").strip()
-    if not focus:
-        return None
-    card = _build_dynamic_research_card(
-        [
-            {
-                "role": "user",
-                "text": focus,
-                "context_scope": "current_session",
-            }
-        ],
-        session_id=snapshot.get("session_id"),
-        context_created_at=snapshot.get("context_created_at"),
-        include_detail=include_detail,
-    )
-    if card:
-        card["id"] = snapshot["card_id"]
-    return card
-
-
-def _term_occurrences(text: str, term: str) -> list[tuple[int, int]]:
-    """Find complete English terms and literal CJK phrases."""
-
-    if not text or not term:
-        return []
-    normalized_term = term.casefold()
-    if re.fullmatch(r"[a-z0-9][a-z0-9 '\-]*", normalized_term):
-        pattern = re.compile(
-            rf"(?<![a-z0-9]){re.escape(normalized_term)}(?![a-z0-9])",
-            re.IGNORECASE,
-        )
-        return [(match.start(), match.end()) for match in pattern.finditer(text)]
-
-    positions: list[tuple[int, int]] = []
-    start = 0
-    while True:
-        index = text.find(normalized_term, start)
-        if index < 0:
-            break
-        positions.append((index, index + len(normalized_term)))
-        start = index + max(1, len(normalized_term))
-    return positions
-
-
-def _term_is_present(text: str, term: str) -> bool:
-    """Return True when at least one occurrence is not locally negated."""
-
-    for start, end in _term_occurrences(text, term):
-        clause_start = 0
-        clause_end = len(text)
-        for boundary in _TOPIC_CLAUSE_BOUNDARIES:
-            previous = text.rfind(boundary, 0, start)
-            if previous >= 0:
-                clause_start = max(clause_start, previous + len(boundary))
-            following = text.find(boundary, end)
-            if following >= 0:
-                clause_end = min(clause_end, following)
-        clause = text[clause_start:clause_end]
-        if not any(marker in clause for marker in _NEGATION_MARKERS):
-            return True
-    return False
-
-
-def _matched_terms(text: str, terms: list[object]) -> list[str]:
-    """Return specific, non-overlapping topic signals found in ``text``."""
-
-    matches = {
-        str(raw_term).casefold()
-        for raw_term in terms
-        if str(raw_term).strip() and _term_is_present(text, str(raw_term).casefold())
-    }
-    ordered = sorted(matches, key=lambda value: (-len(value), value))
-    selected: list[str] = []
-    for term in ordered:
-        if any(term in more_specific for more_specific in selected):
-            continue
-        selected.append(term)
-    return selected
-
-
-def _signal_score(matches: list[str], strong_base: int, weak_base: int, bonus_cap: int) -> int:
-    if not matches:
-        return 0
-    has_strong_signal = any(term not in _WEAK_MATCH_TERMS for term in matches)
-    base = strong_base if has_strong_signal else weak_base
-    return base + min(bonus_cap, max(0, len(matches) - 1))
-
-
-def _is_context_follow_up(text: str) -> bool:
-    casefolded = text.casefold()
-    if _is_acknowledgement_only(text):
-        return False
-    if any(marker in casefolded for marker in _CONTEXT_REJECTION_MARKERS):
-        return False
-    return any(marker in casefolded for marker in _FOLLOW_UP_MARKERS)
-
-
-def _conversation_focus_for_terms(
-    messages: list[dict], terms: list[object]
-) -> tuple[str, str]:
-    """Return the closest substantive user statement matching one card."""
-
-    for message in reversed(messages):
-        if message.get("role") != "user":
-            continue
-        raw_text = str(message.get("text") or "").strip()
-        text = _clean_parenting_signal(raw_text)
-        if (
-            not text
-            or _is_acknowledgement_only(text)
-            or _is_generic_context_request(raw_text)
-        ):
-            continue
-        if _matched_terms(text.casefold(), terms):
-            scope = (
-                "account_history"
-                if message.get("context_scope") == "account_history"
-                else "current_session"
-            )
-            return text, scope
-    return "", "current_session"
-
-
-def _rank_learning_content(
-    messages: list[dict],
-    count: int = 4,
-    session_id: Optional[str] = None,
-    context_created_at: Optional[str] = None,
-    context_state: str = "ready",
-    include_detail: bool = False,
-    behavior_events: Optional[list[dict]] = None,
-) -> tuple[list[dict], bool]:
-    """Rank candidates by conversation relevance, affinity, and freshness."""
-
-    raw_current_user_texts = [
-        str(message.get("text") or "").strip()
-        for message in messages
-        if message.get("role") == "user" and str(message.get("text") or "").strip()
-        and message.get("context_scope") != "account_history"
-    ]
-    raw_historical_user_texts = [
-        str(message.get("text") or "").strip()
-        for message in messages
-        if message.get("role") == "user" and str(message.get("text") or "").strip()
-        and message.get("context_scope") == "account_history"
-    ]
-    current_user_texts = [
-        cleaned
-        for text in raw_current_user_texts
-        if (cleaned := _clean_parenting_signal(text))
-    ]
-    historical_user_texts = [
-        cleaned
-        for text in raw_historical_user_texts
-        if (cleaned := _clean_parenting_signal(text))
-    ]
-    user_texts = [*historical_user_texts, *current_user_texts]
-    raw_last_user_text = raw_current_user_texts[-1] if raw_current_user_texts else ""
-    cleaned_last_user_text = _clean_parenting_signal(raw_last_user_text)
-    latest_meta_feedback = bool(raw_last_user_text) and (
-        _is_product_meta_request(raw_last_user_text)
-        or _is_recommendation_feedback(raw_last_user_text)
-        or _is_conversation_meta_request(raw_last_user_text)
-        or _is_context_correction_only(raw_last_user_text)
-    )
-    latest_meta_only = latest_meta_feedback and not cleaned_last_user_text
-    generic_context_request = _is_generic_context_request(raw_last_user_text)
-    topical_current_user_texts = [
-        cleaned
-        for raw_text in raw_current_user_texts
-        if (cleaned := _clean_parenting_signal(raw_text))
-        and not _is_acknowledgement_only(cleaned)
-        and not _is_generic_context_request(raw_text)
-    ]
-    # Partition only substantive family statements.  Generic task/guidance
-    # requests, corrections and product feedback therefore do not consume the
-    # four-message topical window in a long-running main conversation.
-    last_user_text = (
-        topical_current_user_texts[-1].casefold()
-        if topical_current_user_texts
-        else ""
-    )
-    previous_user_text = " ".join(topical_current_user_texts[-4:-1]).casefold()
-    older_user_text = " ".join(topical_current_user_texts[:-4]).casefold()
-    substantive_history_texts = [
-        cleaned
-        for raw_text in raw_historical_user_texts
-        if (cleaned := _clean_parenting_signal(raw_text))
-        and not _is_acknowledgement_only(cleaned)
-        and not _is_generic_context_request(raw_text)
-    ]
-    latest_history_text = (
-        substantive_history_texts[-1].casefold()
-        if substantive_history_texts
-        else ""
-    )
-    older_history_text = " ".join(substantive_history_texts[:-1]).casefold()
-    allow_assistant_context = (
-        not latest_meta_only and _is_context_follow_up(raw_last_user_text)
-    )
-    action_intent = (
-        None if latest_meta_only else _current_action_intent(raw_last_user_text)
-    )
-    action_only_request = _is_action_only_request(raw_last_user_text)
-    inherit_prior_context = generic_context_request or latest_meta_only
-    goal_text, goal_scope = _conversation_goal_signal(messages)
-    safe_goal = " ".join(redact_conversation_text(goal_text, 160).split())
-    if len(safe_goal) > 48:
-        safe_goal = f"{safe_goal[:47].rstrip()}…"
-
-    last_user_index = max(
-        (
-            index
-            for index, message in enumerate(messages)
-            if message.get("role") == "user"
-            and message.get("context_scope") != "account_history"
-        ),
-        default=-1,
-    )
-    assistants_after_user = [
-        str(message.get("text") or "").strip()
-        for message in messages[last_user_index + 1 :]
-        if message.get("role") in {"ai", "assistant"}
-        and str(message.get("text") or "").strip()
-    ]
-    assistants_before_user = [
-        str(message.get("text") or "").strip()
-        for message in messages[:last_user_index]
-        if message.get("role") in {"ai", "assistant"}
-        and str(message.get("text") or "").strip()
-    ]
-    if latest_meta_only:
-        assistant_context_text = ""
-    elif assistants_after_user:
-        assistant_context_text = assistants_after_user[-1].casefold()
-    elif allow_assistant_context and assistants_before_user:
-        # A short follow-up such as “给我几个任务” legitimately refers to the
-        # immediately preceding NURI answer.  Explicit topic switches do not.
-        assistant_context_text = assistants_before_user[-1].casefold()
-    else:
-        assistant_context_text = ""
-
-    ranked: list[
-        tuple[int, int, int, int, dict, Optional[str], str, str, dict]
-    ] = []
-    for index, card in enumerate(LEARNING_CONTENT_CARDS):
-        terms = [
-            *card.get("match_terms", []),
-            *_TOPIC_SIGNAL_ALIASES.get(str(card.get("id") or ""), ()),
-        ]
-        latest_matches = _matched_terms(last_user_text, terms)
-        recent_matches = _matched_terms(previous_user_text, terms)
-        older_matches = _matched_terms(older_user_text, terms)
-        latest_history_matches = _matched_terms(latest_history_text, terms)
-        older_history_matches = _matched_terms(older_history_text, terms)
-        assistant_matches = _matched_terms(assistant_context_text, terms)
-
-        latest_score = _signal_score(latest_matches, 14, 5, 3)
-        recent_score = _signal_score(recent_matches, 10, 3, 3)
-        # Older statements provide continuity, but cannot outweigh a concrete
-        # need the parent expressed more recently.  This matters in one long
-        # main chat where a topic may have been repeated many times before the
-        # user's situation changed (for example, a busy parent asking for
-        # short, high-quality ways to connect after discussing milestones).
-        older_matching_message_count = sum(
-            1
-            for text in topical_current_user_texts[:-4]
-            if _matched_terms(text.casefold(), terms)
-        )
-        # One old mention stays below the personalization threshold.  A topic
-        # the parent returned to several times remains eligible as a secondary
-        # card even when a newer concern becomes Top-1.  This preserves durable
-        # themes such as repeated questions about a child's key developmental
-        # window without letting one stale aside outrank the current need.
-        older_repeat_bonus = min(4, max(0, older_matching_message_count - 1))
-        older_score = (
-            _signal_score(older_matches, 5, 1, 1) + older_repeat_bonus
-        )
-        # Cross-session history is continuity, not the present request.  It can
-        # resolve a generic “give me a task” follow-up, but otherwise remains a
-        # weak preference signal and cannot establish a personalized match.
-        history_score = _signal_score(
-            latest_history_matches,
-            8 if inherit_prior_context and not recent_matches else 3,
-            2 if inherit_prior_context and not recent_matches else 1,
-            2,
-        )
-        history_score += _signal_score(older_history_matches, 1, 0, 1)
-        user_signal_score = latest_score + recent_score + older_score + history_score
-        assistant_score = 0
-        if assistant_context_text and (latest_matches or recent_matches or history_score):
-            # Assistant text may clarify a user-established goal, never create
-            # one.  This prevents a broad AI aside such as “精细动作” from
-            # outranking the parent's explicit language-interaction concern.
-            assistant_score = _signal_score(assistant_matches, 3, 1, 1)
-        conversation_score = user_signal_score + assistant_score
-        behavior = card_behavior_signal(
-            str(card.get("id") or ""),
-            behavior_events or [],
-        )
-        score = conversation_score + int(behavior.get("score") or 0)
-
-        reason_term = next(
-            (
-                candidate
-                for candidates in (
-                    latest_matches,
-                    recent_matches,
-                    latest_history_matches,
-                    assistant_matches,
-                )
-                for candidate in candidates
-                if candidate not in _WEAK_MATCH_TERMS
-            ),
-            None,
-        )
-        focus_text, focus_scope = _conversation_focus_for_terms(messages, terms)
-        ranked.append(
-            (
-                score,
-                conversation_score,
-                user_signal_score,
-                index,
-                card,
-                reason_term,
-                focus_text,
-                focus_scope,
-                behavior,
-            )
-        )
-
-    def _eligible_match(item: tuple) -> bool:
-        return bool(
-            item[1] >= _CONVERSATION_MATCH_MIN_SCORE
-            and item[2] >= _CONVERSATION_MATCH_MIN_SCORE
-            and not item[8].get("explicit_negative")
-        )
-
-    # A prior click must never manufacture relevance for an unrelated current
-    # conversation. Eligible conversation candidates come first; behaviour and
-    # freshness only reorder candidates inside that pool.
-    ranked.sort(
-        key=lambda item: (
-            not _eligible_match(item),
-            -item[0],
-            -item[1],
-            item[3],
-        )
-    )
-    has_conversation_match = bool(
-        raw_current_user_texts
-        and ranked
-        and any(_eligible_match(item) for item in ranked)
-    )
-    has_explicitly_rejected_match = bool(
-        raw_current_user_texts
-        and any(
-            item[1] >= _CONVERSATION_MATCH_MIN_SCORE
-            and item[2] >= _CONVERSATION_MATCH_MIN_SCORE
-            and item[8].get("explicit_negative")
-            for item in ranked
-        )
-    )
-    selected: list[dict] = []
-    for (
-        score,
-        conversation_score,
-        user_signal_score,
-        _,
-        card,
-        reason_term,
-        focus_text,
-        focus_scope,
-        behavior,
-    ) in ranked[
-        : max(1, min(count, len(LEARNING_CONTENT_CARDS)))
-    ]:
-        safe_focus = " ".join(redact_conversation_text(focus_text, 160).split())
-        if len(safe_focus) > 48:
-            safe_focus = f"{safe_focus[:47].rstrip()}…"
-        if not safe_focus:
-            safe_focus = safe_goal
-        if (
-            conversation_score >= _CONVERSATION_MATCH_MIN_SCORE
-            and user_signal_score >= _CONVERSATION_MATCH_MIN_SCORE
-            and has_conversation_match
-            and not behavior.get("explicit_negative")
-        ):
-            if latest_meta_only and safe_focus:
-                continuity = (
-                    "结合你最近其他对话里提到的"
-                    if focus_scope == "account_history"
-                    else "延续你之前提到的"
-                )
-                reason = (
-                    f"{continuity}“{safe_focus}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
-                )
-            elif action_intent and safe_focus:
-                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你提到的"
-                reason = (
-                    f"你现在想要{action_intent}，{continuity}“{safe_focus}”；"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
-                )
-            elif inherit_prior_context and safe_focus:
-                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你之前提到的"
-                reason = (
-                    f"{continuity}“{safe_focus}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
-                )
-            elif reason_term:
-                reason = (
-                    f"因为你最近重点聊到“{reason_term}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
-                )
-            else:
-                reason = f"因为你最近和 NURI 聊到了“{card['topic_label']}”"
-            related_session_id = session_id
-            is_match = True
-        elif context_state == "privacy_off":
-            reason = "你已关闭对话个性化，这是 NURI 的可信来源精选"
-            related_session_id = None
-            is_match = False
-        elif context_state == "unavailable":
-            reason = "近期对话暂时无法读取，这是 NURI 的可信来源精选"
-            related_session_id = None
-            is_match = False
-        elif not user_texts:
-            reason = "还没有足够的近期对话，这是 NURI 的可信来源精选"
-            related_session_id = None
-            is_match = False
-        else:
-            reason = "NURI 从可信育儿来源中为你补充精选"
-            related_session_id = None
-            is_match = False
-
-        hidden_fields = {"match_terms"}
-        if not include_detail:
-            hidden_fields.update({"body", "hook_line", "resources", "tags"})
-        public_card = {key: value for key, value in card.items() if key not in hidden_fields}
-        public_card.update(
-            {
-                "personalization_reason": reason,
-                "is_conversation_match": is_match,
-                "related_session_id": related_session_id,
-            }
-        )
-        if is_match:
-            public_card.update(
-                {
-                    "recommendation_focus": safe_focus or reason_term or card["topic_label"],
-                    "recommendation_intent": _recommendation_intent_code(
-                        raw_last_user_text
-                        if action_intent
-                        else (safe_focus or goal_text)
-                    ),
-                    "recommendation_score": score,
-                    "reason_codes": [
-                        "recent_conversation",
-                        *(
-                            ["learned_preference"]
-                            if int(behavior.get("affinity") or 0) > 0
-                            else []
-                        ),
-                        *(
-                            ["freshness_adjusted"]
-                            if int(behavior.get("freshness_penalty") or 0) < 0
-                            else []
-                        ),
-                    ],
-                }
-            )
-        selected.append(public_card)
-
-    if (
-        not has_conversation_match
-        and not has_explicitly_rejected_match
-        and context_state == "ready"
-        and raw_current_user_texts
-    ):
-        dynamic_card = _build_dynamic_research_card(
-            messages,
-            session_id=session_id,
-            context_created_at=context_created_at,
-            include_detail=include_detail,
-        )
-        if dynamic_card:
-            selected = [dynamic_card, *selected[: max(0, count - 1)]]
-            has_conversation_match = True
-    return selected, has_conversation_match
-
-
-_CATEGORY_CARD_META = {
-    "authority": {
-        "label": "权威来源",
-        "eyebrow": "事实与安全底线",
-        "description": "来自政府、大学、医院、医学组织或专业期刊。",
-        "fallback_title": "权威机构如何看“{topic_label}”",
-        "fallback_publisher": "NURI 权威来源筛选",
-    },
-    "featured": {
-        "label": "精选内容",
-        "eyebrow": "清楚、实用、值得看",
-        "description": "专业可靠、讲解精彩，也适合家庭直接使用。",
-        "fallback_title": "围绕“{topic_label}”的实用方法精选",
-        "fallback_publisher": "NURI 编辑精选",
-    },
-    "case": {
-        "label": "真实案例",
-        "eyebrow": "其他家庭的真实实践",
-        "description": "用具体家庭经历呈现过程、调整与可借鉴做法。",
-        "fallback_title": "其他家庭如何面对“{topic_label}”",
-        "fallback_publisher": "NURI 真实家庭案例",
-    },
-}
-
-
-_DELIVERY_ACTION_STEPS = {
-    "authority": [
-        "先看与孩子当前阶段对应的观察点",
-        "用一周时间记录最常出现的行为和变化",
-        "如果持续担心，带着记录咨询儿科或儿童发展专业人员",
-    ],
-    "featured": [
-        "今天选择一个本来就会发生的日常场景",
-        "照着内容示范练习五分钟，不额外增加复杂任务",
-        "观察孩子的回应，明天只调整一个小地方",
-    ],
-    "case": [
-        "先找出案例与你家处境最相似的一点",
-        "只借鉴一个低风险做法试一周",
-        "根据孩子反应调整，不把单个家庭经验当作诊断或保证",
-    ],
-}
-
-
-def _resource_parent_org_id(resource: dict) -> str:
-    """Return a stable organization key for package-level diversity."""
-
-    # Never trust an externally supplied ``parent_org_id``. The shared source
-    # policy derives identity from registered destination/evidence domains,
-    # then reviewed publisher aliases or a deterministic host/creator fallback.
-    return policy_resource_parent_org_id(resource)
-
-
-def _resource_with_delivery_metadata(resource: dict) -> dict:
-    """Add bounded presentation metadata without inventing source facts."""
-
-    value = dict(resource)
-    value["parent_org_id"] = _resource_parent_org_id(value)
-    value.setdefault("author", "")
-    value.setdefault("updated_at", "")
-    if not isinstance(value.get("estimated_minutes"), int):
-        value["estimated_minutes"] = 4 if value.get("kind") == "article" else 5
-    return value
-
-
-def _delivery_locale_priority(resource: dict, preferred_locale: Optional[str]) -> int:
-    """Rank delivery language without letting an English fallback lead zh-CN.
-
-    A Chinese account first sees an institution's official Chinese edition,
-    then an original/allowlisted Chinese destination.  A NURI-guided English
-    article remains a last-resort reading fallback.  English-audio video is
-    ranked after every Chinese option (and the delivery gate normally rejects
-    it entirely), so provider result order can never promote it accidentally.
-    """
-
-    if preferred_locale != "zh-CN":
-        return 0
-    kind = str(resource.get("kind") or "")
-    translation_type = str(resource.get("translation_type") or "")
-    source_language = str(resource.get("source_language") or "").casefold()
-    content_locale = str(resource.get("content_locale") or "").casefold()
-    display_locale = str(resource.get("display_locale") or "")
-    spoken_language = str(resource.get("spoken_language") or "").casefold()
-
-    # Video language is a hard user-experience boundary: subtitles, a Chinese
-    # guide, or a localized title do not turn English audio into Chinese video.
-    if kind == "video" and spoken_language not in {
-        "mandarin",
-        "putonghua",
-        "chinese",
-        "国语",
-        "普通话",
-        "华语",
-    }:
-        return 90
-    if translation_type == "official_translation" and display_locale == "zh-CN":
-        return 0
-    # For a Simplified-Chinese account, verified Mandarin is the actual video
-    # language requirement. A Taiwan Mandarin explanation should not be pushed
-    # below a lower-quality mainland clip solely because its metadata uses
-    # Traditional Chinese; the visible region/script label is still retained.
-    if kind == "video" and display_locale == "zh-CN":
-        return 1
-    if display_locale == "zh-CN" and (
-        source_language in {"zh", "zh-cn", "chinese", "mandarin"}
-        or content_locale in {"zh", "zh-cn", "chinese", "mandarin"}
-    ):
-        return 1
-    if (
-        translation_type == "original"
-        and (
-            source_language in {"zh-tw", "traditional-chinese"}
-            or content_locale in {"zh-tw", "traditional-chinese"}
-        )
-    ):
-        return 5
-    if (
-        kind == "article"
-        and source_language == "en"
-        and translation_type == "nuri_guide"
-        and display_locale == "zh-CN"
-    ):
-        return 10
-    return 50
-
-
-def _delivery_resource_sort_key(
-    resource: dict,
-    preferred_locale: Optional[str],
-    content_category: str,
-) -> tuple[int, int, int, int]:
-    """Sort by language, editorial quality, authority, then freshness."""
-
-    quality_priority = 0
-    substance_status = str(
-        resource.get("content_substance_status") or ""
-    ).casefold()
-    readability_status = str(
-        resource.get("featured_readability_status") or ""
-    ).casefold()
-    case_process_status = str(
-        resource.get("case_process_status") or ""
-    ).casefold()
-    case_reader_status = str(
-        resource.get("case_reader_experience_status")
-        or case_article_reader_experience_status(resource.get("url"))
-    ).casefold()
-    if str(resource.get("kind") or "") == "video":
-        if substance_status in {"ad_like", "rejected"}:
-            quality_priority = 90
-        elif substance_status != "verified":
-            quality_priority = 1
-    if content_category == "featured":
-        if readability_status == "rejected":
-            quality_priority = 90
-        elif readability_status != "verified":
-            quality_priority = max(quality_priority, 1)
-    if content_category == "case":
-        if case_process_status in {"promotion_only", "rejected"}:
-            quality_priority = 90
-        elif case_process_status != "verified":
-            quality_priority = max(quality_priority, 1)
-        if str(resource.get("kind") or "") == "article":
-            if case_reader_status == "rejected":
-                quality_priority = 90
-            elif case_reader_status != "verified":
-                quality_priority = max(quality_priority, 1)
-
-    authority_priority = 0
-    if content_category == "authority":
-        if _is_us_authority_resource(resource):
-            authority_priority = 0
-        elif _resource_parent_org_id(resource) in ENGLISH_AUTHORITY_SOURCE_PARENT_ORG_IDS:
-            authority_priority = 1
-        else:
-            authority_priority = 2
-    return (
-        _delivery_locale_priority(resource, preferred_locale),
-        quality_priority,
-        authority_priority,
-        0 if resource.get("research_source") == "openai_web_search" else 1,
-    )
-
-
-def _delivery_contract_pair(
-    resources: list[dict],
-    content_category: str,
-    preferred_locale: str,
-    *,
-    require_dynamic: bool = True,
-) -> list[dict]:
-    """Select one publishable article/video pair that satisfies the lane contract."""
-
-    matching = [
-        _resource_with_delivery_metadata(resource)
-        for resource in resources
-        if str(resource.get("content_category") or "") == content_category
-        and not delivery_lane_rejection_reason(
-            resource,
-            preferred_locale,
-            require_dynamic=require_dynamic,
-        )
-    ]
-    matching.sort(
-        key=lambda resource: _delivery_resource_sort_key(
-            resource,
-            preferred_locale,
-            content_category,
-        )
-    )
-    pair: list[dict] = []
-    for kind in ("article", "video"):
-        resource = next(
-            (item for item in matching if item.get("kind") == kind),
-            None,
-        )
-        if resource:
-            pair.append(resource)
-    return pair
-
-
-def _prepared_snapshot_set_meets_source_contract(snapshots: list[dict]) -> bool:
-    """Reject previously prepared packages created under the old source rules."""
-
-    if not snapshots or any(
-        snapshot.get("version") != SNAPSHOT_VERSION
-        or snapshot.get("context_version") != SNAPSHOT_CONTEXT_VERSION
-        or snapshot.get("source_contract_version")
-        != DELIVERY_SOURCE_CONTRACT_VERSION
-        for snapshot in snapshots
-    ):
-        return False
-    for snapshot in snapshots:
-        category = str(snapshot.get("content_category") or "")
-        locale = str(snapshot.get("preferred_locale") or "zh-CN")
-        pairs = prepared_resource_pairs(snapshot)
-        if not pairs:
-            return False
-        if any(
-            len(
-                _delivery_contract_pair(
-                    pair["resources"],
-                    category,
-                    locale,
-                    require_dynamic=False,
-                )
-            )
-            != 2
-            for pair in pairs
-        ):
-            return False
-    return True
-
-
-def _delivery_gate_diagnostics(
-    resources: list[dict],
-    locale: str,
-    *,
-    require_dynamic: bool = True,
-) -> dict:
-    reasons: dict[str, int] = {}
-    accepted = {category: {"article": 0, "video": 0} for category in CONTENT_CATEGORIES}
-    for resource in resources:
-        category = str(resource.get("content_category") or "")
-        kind = str(resource.get("kind") or "")
-        reason = delivery_lane_rejection_reason(
-            resource,
-            locale,
-            require_dynamic=require_dynamic,
-        )
-        if reason:
-            reasons[reason] = reasons.get(reason, 0) + 1
-        elif category in accepted and kind in accepted[category]:
-            accepted[category][kind] += 1
-    return {"accepted_slots": accepted, "rejection_counts": reasons}
-
-
-def _attach_featured_evidence_anchor(resources: list[dict]) -> list[dict]:
-    """Bind every featured item to the vetted authority lane in its package."""
-
-    normalized = [_resource_with_delivery_metadata(resource) for resource in resources]
-    authority_article = next(
-        (
-            resource
-            for resource in normalized
-            if resource.get("content_category") == "authority"
-            and resource.get("kind") == "article"
-        ),
-        None,
-    )
-    if not authority_article:
-        return normalized
-    anchor = {
-        "title": str(authority_article.get("title") or "")[:180],
-        "publisher": str(authority_article.get("publisher") or "")[:140],
-        "url": str(authority_article.get("url") or ""),
-        "source_tier": "authority",
-    }
-    for resource in normalized:
-        if resource.get("content_category") == "featured":
-            resource["evidence_anchor"] = dict(anchor)
-    return normalized
-
-
-def _category_resource_pair_options(
-    resources: list[dict],
-    content_category: str,
-    *,
-    excluded_primary_orgs: Optional[set[str]] = None,
-    preferred_locale: Optional[str] = None,
-    require_dynamic: bool = True,
-    max_pairs: int = 3,
-) -> list[list[dict]]:
-    """Build a primary pair and instant alternatives from a validated pool."""
-
-    matching = [
-        _resource_with_delivery_metadata(resource)
-        for resource in resources
-        if str(resource.get("content_category") or "") == content_category
-        and (
-            not preferred_locale
-            or not delivery_lane_rejection_reason(
-                resource,
-                preferred_locale,
-                require_dynamic=require_dynamic,
-            )
-        )
-    ]
-    articles = [resource for resource in matching if resource.get("kind") == "article"]
-    videos = [resource for resource in matching if resource.get("kind") == "video"]
-    articles.sort(
-        key=lambda resource: _delivery_resource_sort_key(
-            resource,
-            preferred_locale,
-            content_category,
-        )
-    )
-    videos.sort(
-        key=lambda resource: _delivery_resource_sort_key(
-            resource,
-            preferred_locale,
-            content_category,
-        )
-    )
-    candidates: list[list[dict]] = []
-    seen: set[tuple[str, str]] = set()
-    for article in articles:
-        for video in videos:
-            signature = (
-                str(article.get("url") or ""),
-                str(video.get("url") or ""),
-            )
-            if signature in seen:
-                continue
-            seen.add(signature)
-            candidates.append([article, video])
-    candidates.sort(
-        key=lambda pair: (
-            max(
-                _delivery_locale_priority(resource, preferred_locale)
-                for resource in pair
-            ),
-            sum(
-                _delivery_locale_priority(resource, preferred_locale)
-                for resource in pair
-            ),
-            # Source diversity is a tie-breaker inside the same language tier;
-            # it must never force a Chinese user onto an English or less-local
-            # destination merely to avoid reusing an institution.
-            sum(
-                _delivery_resource_sort_key(
-                    resource,
-                    preferred_locale,
-                    content_category,
-                )[1]
-                for resource in pair
-            ),
-            # Source diversity matters only after both resources satisfy the
-            # strongest editorial-quality tier. A different publisher cannot
-            # compensate for an ad-like video or a hard-to-read article.
-            sum(
-                _resource_parent_org_id(resource)
-                in (excluded_primary_orgs or set())
-                for resource in pair
-            ),
-            pair[0].get("research_source") != "openai_web_search",
-            pair[1].get("research_source") != "openai_web_search",
-        )
-    )
-    if not candidates:
-        return []
-    # Pick a strong primary, then maximize *both* format changes.  With two
-    # articles and two videos this yields A1+V1, A2+V2 before A1+V2, so a
-    # parent asking for another group does not immediately see half the same
-    # content again.  Only a genuinely sparse pool is allowed to reuse one
-    # side of the pair.
-    selected = [candidates.pop(0)]
-    used_article_urls = {str(selected[0][0].get("url") or "")}
-    used_video_urls = {str(selected[0][1].get("url") or "")}
-    while candidates and len(selected) < max(1, max_pairs):
-        candidates.sort(
-            key=lambda pair: (
-                -max(
-                    _delivery_locale_priority(resource, preferred_locale)
-                    for resource in pair
-                ),
-                -sum(
-                    _delivery_locale_priority(resource, preferred_locale)
-                    for resource in pair
-                ),
-                str(pair[0].get("url") or "") not in used_article_urls
-                and str(pair[1].get("url") or "") not in used_video_urls,
-                str(pair[0].get("url") or "") not in used_article_urls,
-                str(pair[1].get("url") or "") not in used_video_urls,
-                pair[0].get("research_source") == "openai_web_search",
-                pair[1].get("research_source") == "openai_web_search",
-            ),
-            reverse=True,
-        )
-        chosen = candidates.pop(0)
-        selected.append(chosen)
-        used_article_urls.add(str(chosen[0].get("url") or ""))
-        used_video_urls.add(str(chosen[1].get("url") or ""))
-    return selected
-
-
-def _compact_stage_label(card: dict) -> str:
-    raw = str(card.get("child_age_context") or "").strip()
-    if "：" in raw:
-        raw = raw.split("：", 1)[1]
-    return raw[:80] or "当前发展阶段"
-
-
-def _delivery_title(card: dict, content_category: str, resources: list[dict]) -> str:
-    locale = str(card.get("preferred_locale") or "zh-CN")
-    article = next(
-        (resource for resource in resources if resource.get("kind") == "article"),
-        {},
-    )
-    topic = str(card.get("topic_label") or card.get("topic") or "这个问题").strip()
-    if locale == "en":
-        source_title = str(article.get("title") or topic).strip()
-        prefixes = {
-            "authority": "What the evidence says",
-            "featured": "A practical method to try today",
-            "case": "How a similar family approached it",
-        }
-        return f"{prefixes[content_category]}: {source_title}"[:180]
-    stage = _compact_stage_label(card)
-    templates = {
-        "authority": f"{stage}的“{topic}”：哪些进展值得观察",
-        "featured": f"今天就能做：把“{topic}”变成一个日常小练习",
-        "case": f"相似家庭如何一步步面对“{topic}”",
-    }
-    return templates[content_category][:180]
-
-
-def _decorate_delivery_card(card: dict, resources: list[dict]) -> None:
-    """Apply the user-facing learning-capsule contract to one card."""
-
-    category = str(card.get("content_category") or "")
-    if category not in CONTENT_CATEGORIES:
-        return
-    pair = [_resource_with_delivery_metadata(resource) for resource in resources]
-    article = next((resource for resource in pair if resource.get("kind") == "article"), {})
-    video = next((resource for resource in pair if resource.get("kind") == "video"), {})
-    card["delivery_title"] = _delivery_title(card, category, pair)
-    card["source_label"] = str(article.get("publisher") or card.get("publisher") or "")
-    article_language = str(article.get("language") or "").strip()
-    video_language = str(video.get("language") or "").strip()
-    card["language_label"] = " · ".join(
-        value for value in (article_language, video_language) if value
-    )[:120]
-    estimated_minutes = sum(
-        int(resource.get("estimated_minutes") or 0) for resource in pair
-    )
-    card["estimated_time_label"] = (
-        f"约 {estimated_minutes} 分钟" if estimated_minutes else "约 5–10 分钟"
-    )
-    card["applicable_stage"] = _compact_stage_label(card)
-    focus = str(
-        card.get("recommendation_focus")
-        or card.get("topic_label")
-        or card.get("topic")
-        or "这个问题"
-    ).strip()
-    category_intro = {
-        "authority": "先用权威依据判断当前阶段值得观察什么，再决定是否需要进一步咨询。",
-        "featured": "这组内容把可靠结论转成今天就能尝试的做法，并优先照顾你的现实时间限制。",
-        "case": "这个真实家庭案例用于理解过程和调整方法，不代表普遍效果或医学建议。",
-    }[category]
-    card["guide"] = (
-        f"这组内容围绕你最近提到的“{focus[:80]}”，并结合"
-        f"{_compact_stage_label(card)}筛选。{category_intro}"
-    )[:300]
-    card["action_steps"] = list(_DELIVERY_ACTION_STEPS[category])
-
-
-def _resource_blueprint(
-    content_category: Optional[str] = None,
-) -> dict[str, list[str]]:
-    if content_category in CONTENT_CATEGORIES:
-        return {str(content_category): ["article", "video"]}
-    # Each editorial lane offers a real choice while preserving format
-    # diversity. The third slot is quality-gated rather than quota-filled.
-    return {
-        category: ["article", "video", "article_or_video_optional"]
-        for category in CONTENT_CATEGORIES
-    }
-
-
-def _select_category_resource_pair(
-    resources: list[dict],
-    content_category: Optional[str],
-    preferred_locale: Optional[str] = None,
-) -> list[dict]:
-    """Return at most one article and one video for one editorial lane."""
-
-    if content_category not in CONTENT_CATEGORIES:
-        return list(resources)
-    matching = [
-        resource
-        for resource in resources
-        if str(resource.get("content_category") or "") == content_category
-        and _reviewed_editorial_quality_allowed(resource)
-    ]
-    # Language fitness is the first ordering axis.  Among equally localized
-    # authority items, prefer verified U.S. public-health, pediatric and
-    # university sources without trusting model-authored country labels.
-    matching.sort(
-        key=lambda resource: _delivery_resource_sort_key(
-            resource,
-            preferred_locale,
-            str(content_category),
-        )
-    )
-    pair: list[dict] = []
-    for kind in ("article", "video"):
-        selected = next(
-            (resource for resource in matching if resource.get("kind") == kind),
-            None,
-        )
-        if selected:
-            pair.append(selected)
-    return pair
-
-
-def _reviewed_editorial_quality_allowed(resource: dict) -> bool:
-    """Apply lane-quality exclusions before a reviewed pair reaches the UI."""
-
-    category = str(resource.get("content_category") or "")
-    kind = str(resource.get("kind") or "")
-    org_id = _resource_parent_org_id(resource)
-    if category == "featured" and org_id in FEATURED_FORBIDDEN_PARENT_ORG_IDS:
-        return False
-    if (
-        category == "authority"
-        and kind == "video"
-        and org_id in AUTHORITY_VIDEO_FORBIDDEN_PARENT_ORG_IDS
-    ):
-        return False
-    if category == "case" and org_id in CASE_FORBIDDEN_PARENT_ORG_IDS:
-        return False
-    if (
-        category == "case"
-        and kind == "article"
-        and case_article_reader_experience_status(resource.get("url")) == "rejected"
-    ):
-        return False
-    if category == "case":
-        case_process_status = str(
-            resource.get("case_process_status") or ""
-        ).casefold()
-        if case_process_status in {"promotion_only", "rejected"}:
-            return False
-        if case_process_status != "verified":
-            return False
-        if (
-            kind == "video"
-            and str(resource.get("content_substance_status") or "").casefold()
-            != "verified"
-        ):
-            return False
-    if kind == "video" and str(
-        resource.get("content_substance_status") or ""
-    ).casefold() in {"ad_like", "rejected"}:
-        return False
-    return not (
-        category == "featured"
-        and str(resource.get("featured_readability_status") or "").casefold()
-        == "rejected"
-    )
-
-
-_YOUTUBE_HOSTS = frozenset(
-    {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
-)
-_REVIEWED_US_AUTHORITY_VIDEO_IDS = frozenset(
-    {
-        "sleep-aap-video",
-        "food-aap-video",
-        "development-cdc-video",
-        "language-cdc-video",
-        "safety-aap-video",
-    }
-)
-
-
-def _safe_https_hostname(url: object) -> str:
-    """Return a normalized host only for an ordinary, safe HTTPS URL."""
-
-    try:
-        parsed = urlparse(str(url or ""))
-        port = parsed.port
-    except (TypeError, ValueError):
-        return ""
-    if (
-        parsed.scheme.lower() != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or port not in (None, 443)
-    ):
-        return ""
-    return parsed.hostname.rstrip(".").lower()
-
-
-def _is_direct_us_authority_url(url: object) -> bool:
-    host = _safe_https_hostname(url)
-    if not host or host in _YOUTUBE_HOSTS:
-        return False
-    return source_parent_org_id(url) in US_AUTHORITY_SOURCE_PARENT_ORG_IDS
-
-
-def _is_us_authority_resource(resource: dict) -> bool:
-    """Recognize real U.S. institutions without trusting model country labels."""
-
-    url = str(resource.get("url") or "")
-    if _is_direct_us_authority_url(url):
-        return True
-
-    host = _safe_https_hostname(url)
-    if host not in _YOUTUBE_HOSTS:
-        return False
-
-    # A hosted video needs evidence beyond a mutable publisher/country string.
-    # Reviewed AAP/CDC IDs are tied to manually checked URLs.  Dynamic results
-    # can qualify only when they cite the corresponding institution page.
-    if (
-        str(resource.get("id") or "") in _REVIEWED_US_AUTHORITY_VIDEO_IDS
-        and is_trusted_resource_url(url)
-    ):
-        return True
-    return any(
-        _is_direct_us_authority_url(resource.get(field))
-        for field in (
-            "evidence_url",
-            "authority_evidence_url",
-            "publisher_evidence_url",
-            "source_evidence_url",
-        )
-    )
-
-
-def _reviewed_category_resource_pair(
-    resources: list[dict],
-    locale: str,
-    content_category: Optional[str],
-    topic_context: Optional[dict] = None,
-) -> list[dict]:
-    """Select a stable same-language article/video pair for a category card.
-
-    The conversation-aware filter is preferred.  If it removes one format, the
-    manually reviewed resources on the same base topic are allowed to fill that
-    format; this never crosses topic, category or language boundaries.
-    """
-
-    reviewed = _reviewed_resources_for_context(resources, locale, topic_context)
-    pair = _select_category_resource_pair(
-        reviewed,
-        content_category,
-        preferred_locale=locale,
-    )
-    # Never refill a missing format from an unfiltered pool.  That old fallback
-    # could put a 10–12 month article back beside a 30 month recommendation.
-    # A stage-correct single format is safer than a visually complete wrong-age
-    # pair; live research may later supply the missing format.
-    return pair
-
-
-def _category_feed_card(
-    base_card: dict,
-    content_category: str,
-    locale: str,
-    *,
-    context_state: str,
-) -> dict:
-    """Present one ranked topic as a clearly labelled editorial-lane card."""
-
-    card = dict(base_card)
-    card["preferred_locale"] = locale
-    meta = _CATEGORY_CARD_META[content_category]
-    library_resources = LEARNING_CONTENT_BY_ID.get(
-        str(base_card.get("id") or ""), {}
-    ).get("resources", [])
-    topic_context = (
-        base_card
-        if base_card.get("child_age_context")
-        or (context_state == "ready" and base_card.get("is_conversation_match"))
-        else None
-    )
-    pair = _reviewed_category_resource_pair(
-        library_resources,
-        locale,
-        content_category,
-        topic_context,
-    )
-    article = next(
-        (resource for resource in pair if resource.get("kind") == "article"),
-        None,
-    )
-    topic_label = str(
-        card.get("topic_label") or card.get("topic") or "这个育儿问题"
-    ).strip()
-    card.update(
-        {
-            "content_category": content_category,
-            "content_category_label": meta["label"],
-            "content_category_eyebrow": meta["eyebrow"],
-            "content_category_description": meta["description"],
-            "type_label": meta["label"],
-            "resource_pair_complete": len(pair) == 2,
-            "resource_summary": summarize_resource_slots(pair, locale),
-            # When no reviewed article survives the language, age and topic
-            # gates, do not repeat the base topic headline across all three
-            # editorial lanes or imply that its publisher supplied every lane.
-            # These labels describe the pending lane honestly until research
-            # produces a concrete article title on the detail page.
-            "title": meta["fallback_title"].format(topic_label=topic_label),
-            "publisher": meta["fallback_publisher"],
-            "headline_source": "category_fallback",
-        }
-    )
-    # The card is about the concrete content the user will open, while the
-    # topic and NURI guide remain available on the detail page.
-    if (
-        (context_state != "ready" or not content_research_oai)
-        and article
-        and str(article.get("title") or "").strip()
-    ):
-        card["title"] = article["title"]
-        card["summary"] = article.get("description") or card.get("summary")
-        card["publisher"] = article.get("publisher") or card.get("publisher")
-        card["headline_source"] = "reviewed_article"
-    _decorate_delivery_card(card, pair)
-    return card
-
-
-def _resource_matches_preferred_locale(resource: dict, locale: str) -> bool:
-    """Keep Chinese fallbacks available without disguising their script.
-
-    Exact reviewed Traditional-Chinese parent/editorial pages are a better
-    fallback for a Chinese account than an English original. Their existing
-    ``language`` and region labels remain visible, so this does not present a
-    Taiwan source as Simplified Chinese.
-    """
-
-    locales = resource.get("locales") or []
-    if locale not in locales:
-        return False
-    if locale != "zh-CN":
-        return True
-    reviewed_chinese_fallback = bool(
-        resource.get("research_source") == "reviewed_whitelist"
-        and str(resource.get("content_category") or "") in {"featured", "case"}
-        and (
-            str(resource.get("content_category") or "") != "case"
-            or str(resource.get("case_process_status") or "").casefold()
-            == "verified"
-        )
-        and (
-            str(resource.get("source_region") or "").upper() == "TW"
-            or str(resource.get("script_language") or "") == "zh-Hant"
-        )
-    )
-    if reviewed_chinese_fallback:
-        return True
-    if (
-        str(resource.get("kind") or "") == "video"
-        and str(resource.get("spoken_language") or "").casefold()
-        in {"mandarin", "putonghua", "chinese", "国语", "普通话", "华语"}
-    ):
-        # Spoken Mandarin is the hard boundary for zh-CN video delivery. Keep
-        # the Taiwan/Traditional label visible, but do not discard a stronger
-        # Mandarin explanation because its publishing metadata is zh-Hant.
-        return True
-    if str(resource.get("source_region") or "").upper() == "TW":
-        return False
-    if str(resource.get("script_language") or "") == "zh-Hant":
-        return False
-    identity = " ".join(
-        str(resource.get(field) or "")
-        for field in ("language", "publisher", "trust_note", "recognition")
-    )
-    return not any(
-        marker in identity for marker in ("繁体", "繁體", "台湾", "台灣", "臺灣")
-    )
-
-
-def _reviewed_resources_for_context(
-    resources: list[dict],
-    locale: str,
-    topic_context: Optional[dict] = None,
-) -> list[dict]:
-    """Return reviewed items that are trusted, locale-correct and relevant."""
-
-    return order_learning_resources(
-        [
-            resource
-            for resource in resources
-            if is_trusted_resource_url(str(resource.get("url") or ""))
-            and not (
-                str(resource.get("content_category") or "") == "case"
-                and str(resource.get("kind") or "") == "article"
-                and case_article_reader_experience_status(resource.get("url"))
-                == "rejected"
-            )
-            and _resource_matches_preferred_locale(resource, locale)
-            and (
-                topic_context is None
-                or reviewed_resource_matches_context(resource, topic_context)
-            )
-        ],
-        locale,
-    )
-
-
-def _research_safety_identifier(uid: str) -> str:
-    """Create a stable, privacy-preserving API safety identifier."""
-
-    digest = hashlib.sha256(f"nuri-content:{uid}".encode("utf-8")).hexdigest()
-    return f"nuri_{digest[:32]}"
-
-
-def _context_requires_urgent_handoff(context: dict) -> bool:
-    """Keep emergencies out of learning-content research."""
-
-    recent_text = "\n".join(
-        str(message.get("text") or "")
-        for message in (context.get("messages") or [])[-6:]
-    )
-    return bool(recent_text and _urgent_task_suppressed(recent_text))
-
-
-async def _research_card_detail_resources(
-    *,
-    card: dict,
-    context: dict,
-    uid: Optional[str],
-    force: bool = False,
-    extra_excluded_urls: Optional[list[str]] = None,
-) -> Optional[dict]:
-    """Run bounded, validated web research for a conversation-matched detail."""
-
-    # Safety is evaluated before consent/provider eligibility.  Emergency text
-    # must never be used for external research, regardless of the user's saved
-    # privacy setting or the availability of an OpenAI client.
-    if _context_requires_urgent_handoff(context):
-        return None
-    if (
-        not uid
-        or not content_research_oai
-        or not context.get("external_research_allowed")
-        or context.get("state") != "ready"
-        or not context.get("messages")
-        or not card.get("is_conversation_match")
-    ):
-        return None
-    behavior_events = await _db_get_recommendation_events(uid)
-    excluded_urls = list(
-        dict.fromkeys(
-            [
-                *recent_resource_urls(behavior_events),
-                *(extra_excluded_urls or []),
-            ]
-        )
-    )[:120]
-    feedback_preferences = card_behavior_signal(
-        str(card.get("id") or ""), behavior_events
-    ).get("content_refresh_reasons") or []
-    try:
-        return await anyio.to_thread.run_sync(
-            lambda: research_learning_resources(
-                content_research_oai,
-                card=card,
-                messages=context.get("messages") or [],
-                preferred_locale=str(context.get("preferred_locale") or "zh-CN"),
-                model=OPENAI_CONTENT_RESEARCH_MODEL,
-                safety_identifier=_research_safety_identifier(uid),
-                force=force,
-                excluded_urls=excluded_urls,
-                feedback_preferences=feedback_preferences,
-            ),
-            limiter=content_research_limiter,
-        )
-    except Exception as exc:
-        # Dynamic research is an enhancement.  A provider outage, timeout, bad
-        # result or incomplete quality bundle must never break the reviewed detail.
-        print(f"[warn] conversation content research fell back: {type(exc).__name__}")
-        return {"_provider_failure": "retryable"}
-
-
-def _prepared_content_set_id(snapshots: list[dict], _resources: list[dict]) -> str:
-    first = snapshots[0]
-    # Bind the public set ID to the frozen recommendation group, not to one
-    # provider response. Two Vercel instances may finish equivalent research
-    # concurrently; a stable ID lets either completed response open whichever
-    # valid winner is durably stored, instead of turning the first link stale.
-    material = {
-        "card_id": first.get("card_id"),
-        "session_id": first.get("session_id"),
-        "context_created_at": first.get("context_created_at"),
-        "child_profile_fingerprint": first.get("child_profile_fingerprint"),
-        "preferred_locale": first.get("preferred_locale"),
-        "recommendations": sorted(
-            (
-                str(snapshot.get("recommendation_id") or ""),
-                str(snapshot.get("content_category") or ""),
-            )
-            for snapshot in snapshots
-        ),
-    }
-    digest = hashlib.sha256(
-        json.dumps(material, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    return f"pcs_{digest[:24]}"
-
-
-def _prepare_response_items(snapshots: list[dict]) -> list[dict]:
-    items: list[dict] = []
-    for snapshot in snapshots:
-        pair = prepared_resource_pair(snapshot)
-        pair_pool = prepared_resource_pairs(snapshot)
-        readiness = "ready" if pair else str(
-            snapshot.get("resource_readiness") or "retryable"
-        )
-        if readiness not in {"preparing", "ready", "retryable"}:
-            readiness = "retryable"
-        item = {
-            "card_id": snapshot.get("card_id"),
-            "recommendation_id": snapshot.get("recommendation_id"),
-            "content_category": snapshot.get("content_category"),
-            "resource_readiness": readiness,
-            "resource_pair_complete": bool(pair),
-            "prepared_content_set_id": (
-                snapshot.get("prepared_content_set_id") if pair else None
-            ),
-            "resources": pair or [],
-            "active_pair_id": pair_pool[0]["pair_id"] if pair_pool else None,
-            "alternate_resource_pairs": pair_pool[1:],
-            "alternate_count": max(0, len(pair_pool) - 1),
-            "research_status": "ready" if pair else readiness,
-        }
-        if pair:
-            article = next(
-                resource for resource in pair if resource.get("kind") == "article"
-            )
-            item["title"] = article.get("title")
-            item["publisher"] = article.get("publisher")
-            item["source_label"] = article.get("publisher")
-            item["child_age_context"] = snapshot.get("child_age_context") or ""
-            item["preferred_locale"] = (
-                snapshot.get("preferred_locale") or "zh-CN"
-            )
-            item["topic_label"] = snapshot.get("recommendation_focus") or "这个问题"
-            item["recommendation_focus"] = snapshot.get("recommendation_focus") or ""
-            _decorate_delivery_card(item, pair)
-        items.append(item)
-    return items
-
-
-def _prepare_retry_or_previous_payload(snapshots: list[dict]) -> dict:
-    """Keep a complete previous set published while its upgrade is retryable."""
-
-    pairs = [prepared_resource_pair(snapshot) for snapshot in snapshots]
-    set_ids = {
-        str(snapshot.get("prepared_content_set_id") or "")
-        for snapshot, pair in zip(snapshots, pairs)
-        if pair
-    }
-    if (
-        all(pairs)
-        and len(set_ids) == 1
-        and _prepared_snapshot_set_meets_source_contract(snapshots)
-    ):
-        previous_set_id = next(iter(set_ids))
-        return {
-            "resource_readiness": "ready",
-            "prepared_content_set_id": previous_set_id,
-            "recommendation_set_id": previous_set_id,
-            "publication_state": "published",
-            "upgrade_state": "preparing",
-            "items": _prepare_response_items(snapshots),
-        }
-    return {
-        "resource_readiness": "retryable",
-        "prepared_content_set_id": None,
-        "recommendation_set_id": None,
-        "publication_state": "preparing",
-        "items": _prepare_response_items(snapshots),
-    }
-
-
-async def _mark_prepare_retryable(uid: str, snapshots: list[dict]) -> list[dict]:
-    retryable: list[dict] = []
-    for snapshot in snapshots:
-        current = await _db_get_recommendation_snapshot_persistent(
-            uid,
-            snapshot.get("recommendation_id"),
-        )
-        if current and prepared_resource_pair(current) and _prepared_snapshot_set_meets_source_contract([current]):
-            retryable.append(current)
-        elif prepared_resource_pair(snapshot) and _prepared_snapshot_set_meets_source_contract([snapshot]):
-            retryable.append(snapshot)
-        else:
-            # Failure is returned to this caller, but is intentionally not an
-            # app_settings write: a stale failed request must never downgrade a
-            # pair concurrently published by another Vercel invocation.
-            retryable.append(
-                snapshot_with_resource_readiness(snapshot, "retryable")
-            )
-    return retryable
-
-
-async def _record_resource_delivery(
-    *,
-    uid: str,
-    card_id: str,
-    recommendation_id: Optional[str],
-    content_category: Optional[str],
-    preferred_locale: str,
-    resources: list[dict],
-) -> None:
-    events = [
-        _new_recommendation_event(
-            event="resource_delivered",
-            card_id=card_id,
-            trusted_resource_url=True,
-            recommendation_id=recommendation_id,
-            resource_id=str(resource.get("id") or ""),
-            resource_url=str(resource.get("url") or ""),
-            resource_kind=str(resource.get("kind") or ""),
-            content_category=str(
-                resource.get("content_category") or content_category or ""
-            ),
-            locale=(resource.get("locales") or [preferred_locale])[0],
-            position=index,
-        )
-        for index, resource in enumerate(resources)
-        if resource.get("id") and resource.get("url")
-    ]
-    if events:
-        await _db_append_recommendation_events(uid, events)
-
-
-def _log_personalized_feed_decision(uid: str, context: dict, items: list[dict]) -> None:
-    """Emit ranking diagnostics without storing conversation text or user IDs."""
-
-    try:
-        user_messages = [
-            message
-            for message in (context.get("messages") or [])
-            if message.get("role") == "user"
-        ]
-        payload = {
-            "event": "personalized_feed_ranked",
-            "user_ref": hashlib.sha256(
-                f"nuri-feed:{uid}".encode("utf-8")
-            ).hexdigest()[:12],
-            "context_state": context.get("state", "no_history"),
-            "message_count": len(context.get("messages") or []),
-            "user_message_count": len(user_messages),
-            "current_session_user_message_count": int(
-                context.get("current_session_user_message_count") or 0
-            ),
-            "account_history_user_message_count": int(
-                context.get("history_user_message_count") or 0
-            ),
-            "filtered_product_feedback_count": sum(
-                1
-                for message in user_messages
-                if _is_product_meta_request(str(message.get("text") or ""))
-                or _is_recommendation_feedback(str(message.get("text") or ""))
-            ),
-            "selected": [
-                {
-                    "id": str(item.get("id") or ""),
-                    "match": bool(item.get("is_conversation_match")),
-                    "dynamic": bool(item.get("is_dynamic_research_card")),
-                    "score": item.get("recommendation_score"),
-                }
-                for item in items
-            ],
-        }
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    except Exception as exc:
-        # Observability must never be allowed to break a parent's home feed.
-        print(f"[warn] personalized feed diagnostics failed: {type(exc).__name__}")
-
-
-# ── Snapshot -> card, the delivery half ──────────────────────────────────────
-# These two read and write recommendation snapshots, but what they do with one
-# is decorate a home card — which is this layer's job, not the store's. They
-# sat among the _db_* helpers and called _decorate_delivery_card and
-# _prepared_snapshot_set_meets_source_contract back out of it, which made the
-# store and delivery layers mutually dependent and neither of them separable.
-# Here the dependency runs one way: delivery calls the store.
-def _apply_prepared_snapshot_to_feed_card(card: dict, snapshot: dict) -> None:
-    """Expose a prepared, binding-validated pair on its matching home card."""
-
-    source_contract_ready = _prepared_snapshot_set_meets_source_contract([snapshot])
-    pair = prepared_resource_pair(snapshot) if source_contract_ready else None
-    pair_pool = prepared_resource_pairs(snapshot) if source_contract_ready else []
-    readiness = str(snapshot.get("resource_readiness") or "")
-    if pair:
-        article = next(resource for resource in pair if resource.get("kind") == "article")
-        card["resource_readiness"] = "ready"
-        card["resource_pair_complete"] = True
-        card["prepared_content_set_id"] = snapshot.get("prepared_content_set_id")
-        card["resource_summary"] = summarize_resource_slots(
-            pair,
-            str(snapshot.get("preferred_locale") or "zh-CN"),
-        )
-        card["resources"] = pair
-        card["active_pair_id"] = pair_pool[0]["pair_id"] if pair_pool else None
-        card["alternate_resource_pairs"] = pair_pool[1:]
-        card["alternate_count"] = max(0, len(pair_pool) - 1)
-        card["title"] = article.get("title") or card.get("title")
-        card["summary"] = article.get("description") or card.get("summary")
-        card["publisher"] = article.get("publisher") or card.get("publisher")
-        card["headline_source"] = "prepared_article"
-        _decorate_delivery_card(card, pair)
-        return
-    if card.get("resource_readiness") == "ready" and card.get("resource_pair_complete"):
-        card["prepared_content_set_id"] = None
-        return
-    card["resource_readiness"] = (
-        readiness if readiness in {"preparing", "retryable"} else "preparing"
-    )
-    card["prepared_content_set_id"] = None
-
-
-async def _attach_recommendation_snapshots(
-    uid: str,
-    cards: list[dict],
-    context: dict,
-) -> list[dict]:
-    """Persist one bounded snapshot per conversation-matched card.
-
-    ``app_settings`` already exists in every deployed NURI database, so this
-    adds stable detail links without making a schema migration a prerequisite.
-    A process-local copy keeps local preview/tests useful; the legacy session
-    and cutoff fields remain on every card as a safe compatibility fallback.
-    """
-
-    pairs: list[tuple[dict, dict]] = []
-    for card in cards:
-        if not card.get("is_conversation_match"):
-            continue
-        snapshot = build_snapshot(uid, card, context)
-        requested_readiness = str(card.get("resource_readiness") or "")
-        if requested_readiness in {"preparing", "retryable"}:
-            snapshot["resource_readiness"] = requested_readiness
-        try:
-            previous = await _db_get_recommendation_snapshot(
-                uid,
-                snapshot["recommendation_id"],
-            )
-        except HTTPException:
-            previous = None
-        if previous:
-            snapshot = carry_prepared_resource_state(previous, snapshot)
-        pairs.append((card, snapshot))
-
-    if not pairs:
-        return cards
-
-    persisted = await _db_persist_recommendation_snapshots(
-        uid,
-        [snapshot for _, snapshot in pairs],
-    )
-
-    for card, snapshot in pairs:
-        if persisted:
-            card["recommendation_id"] = snapshot["recommendation_id"]
-            card["recommendation_context_status"] = "persisted"
-            _apply_prepared_snapshot_to_feed_card(card, snapshot)
-        else:
-            card.pop("recommendation_id", None)
-            card["recommendation_context_status"] = "legacy_fallback"
-    return cards
 
 
 @api.get("/feed/personalized")
@@ -4026,13 +1105,13 @@ async def get_personalized_feed(
 ):
     """Return learning topics tied to this parent's real main conversation."""
 
-    context = await _load_recent_main_chat(uid)
-    await _attach_child_recommendation_context(uid, context)
+    context = await feed_signals.load_recent_main_chat(uid)
+    await core_family_store.attach_child_recommendation_context(uid, context)
     has_profile_category_context = bool(
         context.get("help_preference") or context.get("info_source")
     )
     behavior_events = (
-        await _db_get_recommendation_events(uid)
+        await core_outcome_store.get_events(uid)
         if context.get("state") == "ready"
         or (
             context.get("state") == "no_history"
@@ -4047,7 +1126,7 @@ async def get_personalized_feed(
     )
     initial_content_category = weighted_category_for_window(uid, category_mix)
     requested_count = max(1, min(count, 3 if presentation == "category_cards" else 6))
-    items, used_conversation = _rank_learning_content(
+    items, used_conversation = feed_signals.rank_learning_content(
         context.get("messages") or [],
         count=1 if presentation == "category_cards" else requested_count,
         session_id=context.get("session_id"),
@@ -4067,7 +1146,7 @@ async def get_personalized_feed(
             # so derived age context must be present before that work happens.
             primary["child_age_context"] = context["child_age_context"]
         items = [
-            _category_feed_card(
+            feed_delivery.category_feed_card(
                 primary,
                 content_category,
                 preferred_locale,
@@ -4093,8 +1172,8 @@ async def get_personalized_feed(
         mode = "default_unavailable"
     else:
         mode = "default"
-    _log_personalized_feed_decision(uid, context, items)
-    urgent_suppressed = _context_requires_urgent_handoff(context)
+    feed_delivery.log_personalized_feed_decision(uid, context, items)
+    urgent_suppressed = feed_delivery.context_requires_urgent_handoff(context)
     for item in items:
         if context.get("child_age_context"):
             item["child_age_context"] = context["child_age_context"]
@@ -4111,7 +1190,7 @@ async def get_personalized_feed(
             else None
         )
         if item.get("content_category") in CONTENT_CATEGORIES:
-            reviewed = _reviewed_category_resource_pair(
+            reviewed = feed_delivery.reviewed_category_resource_pair(
                 reviewed_source,
                 preferred_locale,
                 str(item["content_category"]),
@@ -4119,18 +1198,18 @@ async def get_personalized_feed(
             )
             item["resource_pair_complete"] = len(reviewed) == 2
         else:
-            reviewed = _reviewed_resources_for_context(
+            reviewed = feed_delivery.reviewed_resources_for_context(
                 reviewed_source,
                 preferred_locale,
                 topic_context,
             )
         item["resource_summary"] = summarize_resource_slots(reviewed, preferred_locale)
-        item["resource_blueprint"] = _resource_blueprint(item.get("content_category"))
+        item["resource_blueprint"] = feed_delivery.resource_blueprint(item.get("content_category"))
         if item.get("is_dynamic_research_card"):
             if urgent_suppressed:
                 item["curation_mode"] = "dynamic_research_suppressed"
                 item["resource_status"] = "urgent_suppressed"
-            elif not content_research_oai:
+            elif not runtime.content_research_oai:
                 item["curation_mode"] = "dynamic_research_unavailable"
                 item["resource_status"] = "unavailable"
             elif not context.get("external_research_allowed"):
@@ -4147,7 +1226,7 @@ async def get_personalized_feed(
                 item["curation_mode"] = (
                     "conversation_web_research"
                     if item.get("is_conversation_match")
-                    and content_research_oai
+                    and runtime.content_research_oai
                     and context.get("external_research_allowed")
                     else "reviewed_library"
                 )
@@ -4177,7 +1256,7 @@ async def get_personalized_feed(
         else:
             item["resource_readiness"] = "retryable"
         item["prepared_content_set_id"] = None
-    await _attach_recommendation_snapshots(uid, items, context)
+    await feed_delivery.attach_recommendation_snapshots(uid, items, context)
     feed_request_id = str(uuid.uuid4())
     for rank, item in enumerate(items, start=1):
         item["rank"] = rank
@@ -4213,7 +1292,7 @@ async def prepare_feed_research(
     snapshots: list[dict] = []
     seen_categories: set[str] = set()
     for requested in body.items:
-        snapshot = await _db_get_recommendation_snapshot(
+        snapshot = await stores.get_snapshot(
             uid,
             requested.recommendation_id,
         )
@@ -4254,14 +1333,14 @@ async def prepare_feed_research(
         all(ready_pairs)
         and len(ready_set_ids) == 1
         and all(pair_pool for pair_pool in ready_pair_pools)
-        and _prepared_snapshot_set_meets_source_contract(snapshots)
+        and feed_delivery.prepared_snapshot_set_meets_source_contract(snapshots)
     ):
         return {
             "resource_readiness": "ready",
             "prepared_content_set_id": next(iter(ready_set_ids)),
             "recommendation_set_id": next(iter(ready_set_ids)),
             "publication_state": "published",
-            "items": _prepare_response_items(snapshots),
+            "items": feed_delivery.prepare_response_items(snapshots),
         }
 
     preparing = [
@@ -4270,7 +1349,7 @@ async def prepare_feed_research(
         else snapshot_with_resource_readiness(snapshot, "preparing")
         for snapshot in snapshots
     ]
-    if not await _db_persist_recommendation_snapshots(uid, preparing):
+    if not await stores.persist_snapshots(uid, preparing):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Prepared resources could not be persisted",
@@ -4289,23 +1368,23 @@ async def prepare_feed_research(
         all(persisted_ready_pairs)
         and len(persisted_ready_ids) == 1
         and all(pair_pool for pair_pool in persisted_pair_pools)
-        and _prepared_snapshot_set_meets_source_contract(snapshots)
+        and feed_delivery.prepared_snapshot_set_meets_source_contract(snapshots)
     ):
         return {
             "resource_readiness": "ready",
             "prepared_content_set_id": next(iter(persisted_ready_ids)),
             "recommendation_set_id": next(iter(persisted_ready_ids)),
             "publication_state": "published",
-            "items": _prepare_response_items(snapshots),
+            "items": feed_delivery.prepare_response_items(snapshots),
         }
     first = snapshots[0]
-    context = await _load_recent_main_chat(
+    context = await feed_signals.load_recent_main_chat(
         uid,
         preferred_session_id=first.get("session_id"),
         through_created_at=first.get("context_created_at"),
     )
-    await _attach_child_recommendation_context(uid, context)
-    context = _with_requested_preferred_locale(
+    await core_family_store.attach_child_recommendation_context(uid, context)
+    context = locales.with_requested_preferred_locale(
         context,
         str(first.get("preferred_locale") or "") or None,
     )
@@ -4317,13 +1396,13 @@ async def prepare_feed_research(
             and first.get("child_profile_fingerprint")
             != context.get("child_profile_fingerprint")
         )
-        or _context_requires_urgent_handoff(context)
+        or feed_delivery.context_requires_urgent_handoff(context)
     ):
-        retryable = await _mark_prepare_retryable(uid, snapshots)
-        return _prepare_retry_or_previous_payload(retryable)
+        retryable = await feed_delivery.mark_prepare_retryable(uid, snapshots)
+        return feed_delivery.prepare_retry_or_previous_payload(retryable)
 
-    behavior_events = await _db_get_recommendation_events(uid)
-    ranked, _ = _rank_learning_content(
+    behavior_events = await core_outcome_store.get_events(uid)
+    ranked, _ = feed_signals.rank_learning_content(
         context.get("messages") or [],
         count=len(LEARNING_CONTENT_CARDS),
         session_id=context.get("session_id"),
@@ -4334,11 +1413,11 @@ async def prepare_feed_research(
     )
     card_id = str(first.get("card_id") or "")
     card = next((item for item in ranked if item["id"] == card_id), None)
-    if not card and card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX):
-        card = _restore_dynamic_research_card_from_snapshot(first, include_detail=True)
+    if not card and card_id.startswith(feed_signals.DYNAMIC_RESEARCH_CARD_PREFIX):
+        card = feed_signals.restore_dynamic_research_card_from_snapshot(first, include_detail=True)
     if not card:
-        retryable = await _mark_prepare_retryable(uid, snapshots)
-        return _prepare_retry_or_previous_payload(retryable)
+        retryable = await feed_delivery.mark_prepare_retryable(uid, snapshots)
+        return feed_delivery.prepare_retry_or_previous_payload(retryable)
     if context.get("child_age_context"):
         card["child_age_context"] = context["child_age_context"]
     for field in (
@@ -4351,7 +1430,7 @@ async def prepare_feed_research(
             card[field] = first[field]
     card["is_conversation_match"] = True
     preferred_locale = str(first.get("preferred_locale") or "zh-CN")
-    research = await _research_card_detail_resources(
+    research = await feed_delivery.research_card_detail_resources(
         card=card,
         context=context,
         uid=uid,
@@ -4364,11 +1443,11 @@ async def prepare_feed_research(
         # already returned above without reaching this provider boundary.
         force=True,
     )
-    resources = _attach_featured_evidence_anchor(
+    resources = feed_delivery.attach_featured_evidence_anchor(
         list((research or {}).get("resources") or [])
     )
     pairs_by_category = {
-        category: _delivery_contract_pair(
+        category: feed_delivery.delivery_contract_pair(
             resources,
             category,
             preferred_locale,
@@ -4388,7 +1467,7 @@ async def prepare_feed_research(
     )
     reviewed_fallback_used = False
     if not complete_bundle:
-        dynamic_diagnostics = _delivery_gate_diagnostics(
+        dynamic_diagnostics = feed_delivery.delivery_gate_diagnostics(
             resources,
             preferred_locale,
         )
@@ -4396,11 +1475,11 @@ async def prepare_feed_research(
             card=card,
             preferred_locale=preferred_locale,
         )
-        reviewed_resources = _attach_featured_evidence_anchor(
+        reviewed_resources = feed_delivery.attach_featured_evidence_anchor(
             list((reviewed or {}).get("resources") or [])
         )
         reviewed_pairs = {
-            category: _delivery_contract_pair(
+            category: feed_delivery.delivery_contract_pair(
                 reviewed_resources,
                 category,
                 preferred_locale,
@@ -4459,7 +1538,7 @@ async def prepare_feed_research(
             complete_bundle = True
             reviewed_fallback_used = True
         else:
-            fallback_diagnostics = _delivery_gate_diagnostics(
+            fallback_diagnostics = feed_delivery.delivery_gate_diagnostics(
                 reviewed_resources,
                 preferred_locale,
                 require_dynamic=False,
@@ -4479,20 +1558,20 @@ async def prepare_feed_research(
                 ),
                 flush=True,
             )
-            retryable = await _mark_prepare_retryable(uid, snapshots)
-            return _prepare_retry_or_previous_payload(retryable)
+            retryable = await feed_delivery.mark_prepare_retryable(uid, snapshots)
+            return feed_delivery.prepare_retry_or_previous_payload(retryable)
 
     # Publish one coherent source mode. A provider result uses fresh cited
     # destinations; a provider outage may use only the exact manually verified
     # whitelist lane. Legacy reviewed-library resources cannot enter either.
     option_pool = list(resources)
-    option_pool = _attach_featured_evidence_anchor(option_pool)
+    option_pool = feed_delivery.attach_featured_evidence_anchor(option_pool)
 
     def build_pair_options(pool: list[dict]) -> dict[str, list[list[dict]]]:
         options: dict[str, list[list[dict]]] = {}
         used_category_orgs: set[str] = set()
         for category in CONTENT_CATEGORIES:
-            category_options = _category_resource_pair_options(
+            category_options = feed_delivery.category_resource_pair_options(
                 pool,
                 category,
                 excluded_primary_orgs=used_category_orgs,
@@ -4502,10 +1581,10 @@ async def prepare_feed_research(
             options[category] = category_options
             if category_options:
                 used_category_orgs.update(
-                    _resource_parent_org_id(resource)
+                    feed_delivery.resource_parent_org_id(resource)
                     for pair in category_options
                     for resource in pair
-                    if _resource_parent_org_id(resource)
+                    if feed_delivery.resource_parent_org_id(resource)
                 )
         return options
 
@@ -4523,7 +1602,7 @@ async def prepare_feed_research(
         ]
         for _reserve_attempt in range(2):
             try:
-                reserve = await _research_card_detail_resources(
+                reserve = await feed_delivery.research_card_detail_resources(
                     card=card,
                     context=context,
                     uid=uid,
@@ -4554,7 +1633,7 @@ async def prepare_feed_research(
             excluded_option_urls.extend(
                 str(resource.get("url") or "") for resource in additions
             )
-            option_pool = _attach_featured_evidence_anchor(option_pool)
+            option_pool = feed_delivery.attach_featured_evidence_anchor(option_pool)
             pair_options_by_category = build_pair_options(option_pool)
             if all(
                 len(options) >= 2
@@ -4580,10 +1659,10 @@ async def prepare_feed_research(
             ),
             flush=True,
         )
-        retryable = await _mark_prepare_retryable(uid, snapshots)
-        return _prepare_retry_or_previous_payload(retryable)
+        retryable = await feed_delivery.mark_prepare_retryable(uid, snapshots)
+        return feed_delivery.prepare_retry_or_previous_payload(retryable)
 
-    content_set_id = _prepared_content_set_id(snapshots, option_pool)
+    content_set_id = feed_delivery.prepared_content_set_id(snapshots, option_pool)
     prepared = [
         snapshot_with_prepared_resource_pairs(
             snapshot,
@@ -4592,8 +1671,8 @@ async def prepare_feed_research(
         )
         for snapshot in snapshots
     ]
-    if not await _db_persist_recommendation_snapshots(uid, prepared):
-        await _mark_prepare_retryable(uid, snapshots)
+    if not await stores.persist_snapshots(uid, prepared):
+        await feed_delivery.mark_prepare_retryable(uid, snapshots)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Prepared resources could not be persisted",
@@ -4615,7 +1694,7 @@ async def prepare_feed_research(
                     category: [
                         {
                             "kind": resource.get("kind"),
-                            "parent_org_id": _resource_parent_org_id(resource),
+                            "parent_org_id": feed_delivery.resource_parent_org_id(resource),
                             "translation_type": resource.get("translation_type"),
                             "source_language": resource.get("source_language"),
                             "display_locale": resource.get("display_locale"),
@@ -4639,13 +1718,13 @@ async def prepare_feed_research(
         "research_status": (
             "reviewed_whitelist" if reviewed_fallback_used else "ready"
         ),
-        "items": _prepare_response_items(prepared),
+        "items": feed_delivery.prepare_response_items(prepared),
     }
 
 
 @api.get("/feed")
 async def get_feed(shuffle: bool = False):
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     cards = list(FEED_CARDS) + gen_cards
     if shuffle:
         random.shuffle(cards)
@@ -4653,7 +1732,7 @@ async def get_feed(shuffle: bool = False):
 
 @api.get("/feed/alt")
 async def get_alt_card(exclude: str = ""):
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     exclude_ids = {e for e in exclude.split(",") if e}
     pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + gen_cards) if c["id"] not in exclude_ids]
     if not pool:
@@ -4662,7 +1741,7 @@ async def get_alt_card(exclude: str = ""):
 
 @api.get("/feed/search")
 async def search_feed(q: str = "", type: Optional[str] = None):
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     q_lower = q.lower().strip()
     all_cards = FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
     if not q_lower:
@@ -4686,7 +1765,7 @@ async def search_feed(q: str = "", type: Optional[str] = None):
 
 @api.post("/feed/generate")
 async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
-    feed_mode = await _db_get_feed_mode()
+    feed_mode = await stores.get_feed_mode()
     if feed_mode == "alt":
         pool = list(FEED_CARDS + ALT_FEED_CARDS)
         random.shuffle(pool)
@@ -4712,7 +1791,7 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
     new_cards = await anyio.to_thread.run_sync(
         lambda: _gen_feed_cards_sync(keywords, body.count)
     )
-    await _db_save_gen_cards(new_cards)
+    await stores.save_gen_cards(new_cards)
     return new_cards
 
 @api.get("/feed/{card_id}/detail")
@@ -4726,10 +1805,10 @@ async def get_card_detail(
     preferred_locale: Optional[Literal["zh-CN", "zh-TW", "en"]] = None,
     uid: Optional[str] = Depends(_opt_uid),
 ):
-    is_dynamic_request = card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+    is_dynamic_request = card_id.startswith(feed_signals.DYNAMIC_RESEARCH_CARD_PREFIX)
     if card_id in LEARNING_CONTENT_BY_ID or is_dynamic_request:
         snapshot = (
-            await _db_get_recommendation_snapshot(uid, recommendation_id)
+            await stores.get_snapshot(uid, recommendation_id)
             if uid and recommendation_id
             else None
         )
@@ -4739,7 +1818,7 @@ async def get_card_detail(
             raise HTTPException(404, "recommendation not found")
         snapshot_source_contract_ready = bool(
             snapshot
-            and _prepared_snapshot_set_meets_source_contract([snapshot])
+            and feed_delivery.prepared_snapshot_set_meets_source_contract([snapshot])
         )
         snapshot_prepared_pair = (
             prepared_resource_pair(snapshot)
@@ -4763,12 +1842,12 @@ async def get_card_detail(
             session_id = snapshot.get("session_id")
             context_created_at = snapshot.get("context_created_at")
         if uid:
-            context = await _load_recent_main_chat(
+            context = await feed_signals.load_recent_main_chat(
                 uid,
                 preferred_session_id=session_id,
                 through_created_at=context_created_at,
             )
-            await _attach_child_recommendation_context(uid, context)
+            await core_family_store.attach_child_recommendation_context(uid, context)
         else:
             context = {
                 "state": "no_history",
@@ -4786,7 +1865,7 @@ async def get_card_detail(
             if snapshot
             else ""
         ) or preferred_locale
-        context = _with_requested_preferred_locale(context, selected_locale)
+        context = locales.with_requested_preferred_locale(context, selected_locale)
         if snapshot and (
             context.get("state") != "ready"
             or context.get("session_id") != snapshot.get("session_id")
@@ -4800,7 +1879,7 @@ async def get_card_detail(
             # derived context after history personalization is disabled, wiped,
             # or no longer verifiably available.
             raise HTTPException(404, "recommendation not found")
-        ranked, _ = _rank_learning_content(
+        ranked, _ = feed_signals.rank_learning_content(
             context.get("messages") or [],
             count=len(LEARNING_CONTENT_CARDS),
             session_id=context.get("session_id"),
@@ -4808,14 +1887,14 @@ async def get_card_detail(
             context_state=context.get("state", "no_history"),
             include_detail=True,
             behavior_events=(
-                await _db_get_recommendation_events(uid)
+                await core_outcome_store.get_events(uid)
                 if uid and context.get("state") == "ready"
                 else []
             ),
         )
         card = next((item for item in ranked if item["id"] == card_id), None)
         if not card and snapshot and is_dynamic_request:
-            card = _restore_dynamic_research_card_from_snapshot(
+            card = feed_signals.restore_dynamic_research_card_from_snapshot(
                 snapshot,
                 include_detail=True,
             )
@@ -4824,7 +1903,7 @@ async def get_card_detail(
         if context.get("child_age_context"):
             card["child_age_context"] = context["child_age_context"]
         if selected_content_category in CONTENT_CATEGORIES:
-            meta = _CATEGORY_CARD_META[str(selected_content_category)]
+            meta = feed_delivery.CATEGORY_CARD_META[str(selected_content_category)]
             card["content_category"] = selected_content_category
             card["content_category_label"] = meta["label"]
             card["content_category_eyebrow"] = meta["eyebrow"]
@@ -4855,7 +1934,7 @@ async def get_card_detail(
             )
         )
         if selected_content_category in CONTENT_CATEGORIES:
-            card["resources"] = _reviewed_category_resource_pair(
+            card["resources"] = feed_delivery.reviewed_category_resource_pair(
                 card.get("resources", []),
                 preferred_locale,
                 str(selected_content_category),
@@ -4863,15 +1942,15 @@ async def get_card_detail(
             )
             card["resource_pair_complete"] = len(card["resources"]) == 2
         else:
-            card["resources"] = _reviewed_resources_for_context(
+            card["resources"] = feed_delivery.reviewed_resources_for_context(
                 card.get("resources", []),
                 preferred_locale,
                 card if apply_recommendation_context else None,
             )
-        urgent_suppressed = _context_requires_urgent_handoff(context)
+        urgent_suppressed = feed_delivery.context_requires_urgent_handoff(context)
         research_eligible = bool(
             uid
-            and content_research_oai
+            and runtime.content_research_oai
             and not urgent_suppressed
             and context.get("external_research_allowed")
             and context.get("state") == "ready"
@@ -4901,7 +1980,7 @@ async def get_card_detail(
             card["publisher"] = article.get("publisher") or card.get("publisher")
             card["headline_source"] = "prepared_article"
             if uid:
-                await _record_resource_delivery(
+                await feed_delivery.record_resource_delivery(
                     uid=uid,
                     card_id=card_id,
                     recommendation_id=recommendation_id,
@@ -4929,7 +2008,7 @@ async def get_card_detail(
         elif (
             uid
             and card.get("is_conversation_match")
-            and content_research_oai
+            and runtime.content_research_oai
             and not context.get("external_research_allowed")
         ):
             card["research_status"] = "consent_required"
@@ -4953,7 +2032,7 @@ async def get_card_detail(
             and card.get("resource_readiness") == "ready"
             and card.get("resources")
         ):
-            await _record_resource_delivery(
+            await feed_delivery.record_resource_delivery(
                 uid=uid,
                 card_id=card_id,
                 recommendation_id=recommendation_id,
@@ -4966,14 +2045,14 @@ async def get_card_detail(
             research_eligible
             and (prepared_pair or card.get("resource_pair_complete"))
         )
-        card["resource_blueprint"] = _resource_blueprint(selected_content_category)
+        card["resource_blueprint"] = feed_delivery.resource_blueprint(selected_content_category)
         card["resource_summary"] = summarize_resource_slots(
             card["resources"], preferred_locale
         )
-        _decorate_delivery_card(card, card["resources"])
+        feed_delivery.decorate_delivery_card(card, card["resources"])
         return card
 
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards:
         if c["id"] == card_id:
             if card_id in CARD_DETAILS:
@@ -5005,10 +2084,10 @@ async def get_card_research(
 
     if (
         card_id not in LEARNING_CONTENT_BY_ID
-        and not card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+        and not card_id.startswith(feed_signals.DYNAMIC_RESEARCH_CARD_PREFIX)
     ):
         raise HTTPException(404, "card not found")
-    snapshot = await _db_get_recommendation_snapshot(uid, recommendation_id)
+    snapshot = await stores.get_snapshot(uid, recommendation_id)
     if recommendation_id and not snapshot:
         raise HTTPException(404, "recommendation not found")
     if snapshot and snapshot.get("card_id") != card_id:
@@ -5020,18 +2099,18 @@ async def get_card_research(
     if snapshot:
         session_id = snapshot.get("session_id")
         context_created_at = snapshot.get("context_created_at")
-    context = await _load_recent_main_chat(
+    context = await feed_signals.load_recent_main_chat(
         uid,
         preferred_session_id=session_id,
         through_created_at=context_created_at,
     )
-    await _attach_child_recommendation_context(uid, context)
+    await core_family_store.attach_child_recommendation_context(uid, context)
     # Category-card snapshots keep the language selected by the account at feed
     # generation time.  Legacy clients may still use the old request override.
     selected_locale = (
         str(snapshot.get("preferred_locale") or "") if snapshot else ""
     ) or preferred_locale
-    context = _with_requested_preferred_locale(context, selected_locale)
+    context = locales.with_requested_preferred_locale(context, selected_locale)
     if snapshot and (
         context.get("state") != "ready"
         or context.get("session_id") != snapshot.get("session_id")
@@ -5045,9 +2124,9 @@ async def get_card_research(
     # This gate deliberately precedes the external-research consent branch.
     # An emergency always returns the same non-research state, whether consent
     # is on or off, and no provider call is attempted.
-    if _context_requires_urgent_handoff(context):
+    if feed_delivery.context_requires_urgent_handoff(context):
         return {"research_status": "urgent_suppressed"}
-    ranked, _ = _rank_learning_content(
+    ranked, _ = feed_signals.rank_learning_content(
         context.get("messages") or [],
         count=len(LEARNING_CONTENT_CARDS),
         session_id=context.get("session_id"),
@@ -5055,7 +2134,7 @@ async def get_card_research(
         context_state=context.get("state", "no_history"),
         include_detail=True,
         behavior_events=(
-            await _db_get_recommendation_events(uid)
+            await core_outcome_store.get_events(uid)
             if context.get("state") == "ready"
             else []
         ),
@@ -5064,9 +2143,9 @@ async def get_card_research(
     if (
         not card
         and snapshot
-        and card_id.startswith(_DYNAMIC_RESEARCH_CARD_PREFIX)
+        and card_id.startswith(feed_signals.DYNAMIC_RESEARCH_CARD_PREFIX)
     ):
-        card = _restore_dynamic_research_card_from_snapshot(
+        card = feed_signals.restore_dynamic_research_card_from_snapshot(
             snapshot,
             include_detail=True,
         )
@@ -5075,7 +2154,7 @@ async def get_card_research(
     if context.get("child_age_context"):
         card["child_age_context"] = context["child_age_context"]
     if selected_content_category in CONTENT_CATEGORIES:
-        meta = _CATEGORY_CARD_META[str(selected_content_category)]
+        meta = feed_delivery.CATEGORY_CARD_META[str(selected_content_category)]
         card["content_category"] = selected_content_category
         card["content_category_label"] = meta["label"]
         card["content_category_eyebrow"] = meta["eyebrow"]
@@ -5106,7 +2185,7 @@ async def get_card_research(
         }
     prepared_pairs = (
         prepared_resource_pairs(snapshot)
-        if snapshot and _prepared_snapshot_set_meets_source_contract([snapshot])
+        if snapshot and feed_delivery.prepared_snapshot_set_meets_source_contract([snapshot])
         else []
     )
     if refresh and prepared_pairs:
@@ -5123,17 +2202,17 @@ async def get_card_research(
                 )
             except ValueError as exc:
                 raise HTTPException(404, "prepared resource pair not found") from exc
-            if not await _db_persist_recommendation_snapshots(uid, [switched]):
+            if not await stores.persist_snapshots(uid, [switched]):
                 raise HTTPException(
                     status.HTTP_503_SERVICE_UNAVAILABLE,
                     "Prepared resources could not be persisted",
                 )
             switched_pairs = prepared_resource_pairs(switched)
             active_resources = prepared_resource_pair(switched) or []
-            await _db_append_recommendation_events(
+            await core_outcome_store.append_events(
                 uid,
                 [
-                    _new_recommendation_event(
+                    core_outcome_store.new_event(
                         event="content_refresh",
                         card_id=card_id,
                         recommendation_id=recommendation_id,
@@ -5142,7 +2221,7 @@ async def get_card_research(
                     )
                 ],
             )
-            await _record_resource_delivery(
+            await feed_delivery.record_resource_delivery(
                 uid=uid,
                 card_id=card_id,
                 recommendation_id=recommendation_id,
@@ -5160,7 +2239,7 @@ async def get_card_research(
                 "research_status": "ready",
                 "refresh_status": "switched_prepared",
                 "has_more": len(switched_pairs) > 1,
-                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
                 "resource_summary": summarize_resource_slots(
                     active_resources,
                     str(context.get("preferred_locale") or "zh-CN"),
@@ -5187,10 +2266,10 @@ async def get_card_research(
         and resource.get("url")
     ]
     if refresh:
-        await _db_append_recommendation_events(
+        await core_outcome_store.append_events(
             uid,
             [
-                _new_recommendation_event(
+                core_outcome_store.new_event(
                     event="content_refresh",
                     card_id=card_id,
                     recommendation_id=recommendation_id,
@@ -5212,7 +2291,7 @@ async def get_card_research(
             force=refresh,
             extra_excluded_urls=extra_excluded_urls,
         )
-    research = await _research_card_detail_resources(**research_kwargs)
+    research = await feed_delivery.research_card_detail_resources(**research_kwargs)
     retryable_provider_failure = bool(
         research and research.get("_provider_failure") == "retryable"
     )
@@ -5224,7 +2303,7 @@ async def get_card_research(
                 "research_status": "temporarily_unavailable",
                 "refresh_status": "temporarily_unavailable",
                 "has_more": True,
-                "resource_blueprint": _resource_blueprint(
+                "resource_blueprint": feed_delivery.resource_blueprint(
                     selected_content_category
                 ),
             }
@@ -5236,14 +2315,14 @@ async def get_card_research(
                 "research_status": "refresh_unavailable",
                 "refresh_status": "no_alternative",
                 "has_more": False,
-                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
             }
         if card.get("is_dynamic_research_card"):
             return {
                 "resources": [],
                 "research_status": "unavailable",
                 "fallback_reason": "no_complete_verified_bundle",
-                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
                 "resource_summary": summarize_resource_slots(
                     [], preferred_locale
                 ),
@@ -5259,7 +2338,7 @@ async def get_card_research(
             # failure.
             reviewed_resources = []
         else:
-            reviewed_resources = _reviewed_resources_for_context(
+            reviewed_resources = feed_delivery.reviewed_resources_for_context(
                 card.get("resources", []),
                 preferred_locale,
                 card,
@@ -5270,7 +2349,7 @@ async def get_card_research(
                 "reviewed_fallback" if reviewed_resources else "unavailable"
             ),
             "fallback_reason": "no_complete_verified_bundle",
-            "resource_blueprint": _resource_blueprint(selected_content_category),
+            "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
             "resource_summary": summarize_resource_slots(
                 reviewed_resources, preferred_locale
             ),
@@ -5299,11 +2378,11 @@ async def get_card_research(
                 if refresh
                 else {}
             ),
-            "resource_blueprint": _resource_blueprint(selected_content_category),
+            "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
             "resource_summary": summarize_resource_slots([], preferred_locale),
         }
     if selected_content_category in CONTENT_CATEGORIES:
-        live_pair = _delivery_contract_pair(
+        live_pair = feed_delivery.delivery_contract_pair(
             full_resources,
             str(selected_content_category),
             preferred_locale,
@@ -5335,7 +2414,7 @@ async def get_card_research(
                     else {}
                 ),
                 "fallback_reason": "no_complete_verified_pair",
-                "resource_blueprint": _resource_blueprint(selected_content_category),
+                "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
                 "resource_summary": summarize_resource_slots([], preferred_locale),
             }
         dynamic_count = sum(
@@ -5364,7 +2443,7 @@ async def get_card_research(
         )
     content_set_id = str(uuid.uuid4())
     resource_events = [
-        _new_recommendation_event(
+        core_outcome_store.new_event(
             event="resource_delivered",
             card_id=card_id,
             trusted_resource_url=True,
@@ -5380,7 +2459,7 @@ async def get_card_research(
         if resource.get("id") and resource.get("url")
     ]
     if resource_events:
-        await _db_append_recommendation_events(uid, resource_events)
+        await core_outcome_store.append_events(uid, resource_events)
     return {
         "resources": resources,
         "content_set_id": content_set_id,
@@ -5392,7 +2471,7 @@ async def get_card_research(
         "research_source_count": research.get("cited_source_count", 0),
         "dynamic_resource_count": dynamic_count,
         "reviewed_resource_count": reviewed_count,
-        "resource_blueprint": _resource_blueprint(selected_content_category),
+        "resource_blueprint": feed_delivery.resource_blueprint(selected_content_category),
         "resource_summary": summarize_resource_slots(resources, preferred_locale),
     }
 
@@ -5401,21 +2480,21 @@ MAX_COLLECTIONS = 12
 
 @api.get("/collections")
 async def list_collections(uid: Optional[str] = Depends(_opt_uid)):
-    return await _db_list_collections(uid or "anon")
+    return await stores.list_collections(uid or "anon")
 
 @api.post("/collections")
 async def create_collection(body: CollectionCreate, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    existing = await _db_list_collections(key)
+    existing = await stores.list_collections(key)
     if len(existing) >= MAX_COLLECTIONS:
         raise HTTPException(400, f"已达上限，最多创建 {MAX_COLLECTIONS} 个收藏夹")
-    col = await _db_create_collection(key, body.name)
+    col = await stores.create_collection(key, body.name)
     return col
 
 @api.put("/collections/{col_id}")
 async def rename_collection(col_id: str, body: CollectionRename, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    ok = await _db_rename_collection(key, col_id, body.name)
+    ok = await stores.rename_collection(key, col_id, body.name)
     if not ok:
         raise HTTPException(404, "收藏夹不存在")
     return {"id": col_id, "name": body.name}
@@ -5423,7 +2502,7 @@ async def rename_collection(col_id: str, body: CollectionRename, uid: Optional[s
 @api.delete("/collections/{col_id}")
 async def delete_collection(col_id: str, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    await _db_delete_collection(key, col_id)
+    await stores.delete_collection(key, col_id)
     return {"ok": True}
 
 # ── Favorites ─────────────────────────────────────────────────────────────────
@@ -5446,7 +2525,7 @@ async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
     else:
         ids = memstore.favorites.get(key, set())
         col_map = memstore.fav_cols.get(key, {})
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     by_id = {
         c["id"]: c
         for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
@@ -5456,13 +2535,13 @@ async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
 @api.post("/favorites/toggle")
 async def toggle_favorite(body: FavToggle, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    favorited = await _db_toggle_fav(key, body.card_id)
+    favorited = await stores.toggle_fav(key, body.card_id)
     return {"favorited": favorited, "card_id": body.card_id}
 
 @api.post("/favorites/save")
 async def save_favorite(body: FavSave, uid: Optional[str] = Depends(_opt_uid)):
     key = uid or "anon"
-    saved = await _db_save_fav(key, body.card_id, body.collection_id)
+    saved = await stores.save_fav(key, body.card_id, body.collection_id)
     return {"saved": saved, "card_id": body.card_id, "collection_id": body.collection_id}
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
@@ -5479,8 +2558,8 @@ async def track_recommendation_event(
 ):
     """Persist a bounded recommendation signal without conversation text/PII."""
 
-    privacy = await _db_get_privacy(uid, fail_closed=True)
-    if privacy.get(_PRIVACY_STORAGE_UNAVAILABLE):
+    privacy = await stores.get_privacy(uid, fail_closed=True)
+    if privacy.get(stores.PRIVACY_STORAGE_UNAVAILABLE):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Recommendation settings are temporarily unavailable",
@@ -5503,7 +2582,7 @@ async def track_recommendation_event(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Feedback reason is only valid for not_relevant events",
         )
-    _, persisted = await _db_append_recommendation_events(uid, [normalized])
+    _, persisted = await core_outcome_store.append_events(uid, [normalized])
     return {
         "accepted": True,
         "persisted": persisted,
@@ -5693,13 +2772,13 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         memstore.messages[session["id"]] = []
 
     # Fetch profile info for a personalised greeting and ongoing context
-    profile, children = await _load_profile(uid)
+    profile, children = await core_family_store.load_profile(uid)
     nickname = profile.get("nickname", "")
-    profile_ctx = _profile_ctx(profile, children)
+    profile_ctx = core_family_store.profile_ctx(profile, children)
 
-    gen_cards = await _db_get_gen_cards()
+    gen_cards = await stores.get_gen_cards()
     ctx = _card_ctx(card_id, gen_cards) if card_id else ""
-    style_ctx = await _get_style_rules_ctx()
+    style_ctx = await core_dialogue_reply.get_style_rules_ctx()
     name_part = f"用户的名字是{nickname}，" if nickname else ""
     quick_replies: list = []
     if oai:
@@ -5719,7 +2798,7 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
                 "语气温暖但沉稳，不油腻，不问问题，控制在3句话以内。"
             )
         reply = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync([{"role": "user", "text": intro_prompt}], "", "", profile_ctx, style_ctx)
+            lambda: core_dialogue_reply.nuri_reply_sync([{"role": "user", "text": intro_prompt}], "", "", profile_ctx, style_ctx)
         )
         first_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
@@ -5836,11 +2915,11 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         "quick_replies": [], "transition": None, "created_at": _now(),
     }
 
-    profile, children = await _load_profile(owner_uid)
+    profile, children = await core_family_store.load_profile(owner_uid)
     context_hints = dict(profile)
     if children:
         context_hints["children"] = children
-    await _save_normalized_input(
+    await core_family_store.save_normalized_input(
         user_id=owner_uid, session_id=session_id,
         source="card_chat" if session.get("source_card_id") else "chat",
         raw_text=body.text or "", raw_image_base64=body.image_base64,
@@ -5869,11 +2948,11 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
 
     # "#fix <反馈>" is an internal command for reviewers to correct the AI's
     # last reply — it never reaches the parent as a normal turn. See
-    # _distill_style_rule_sync / nuri_style_rules.
+    # core_dialogue_reply.distill_style_rule_sync / nuri_style_rules.
     fix_text = None
     stripped_text = (body.text or "").strip()
-    if stripped_text.startswith(FIX_KEYWORD) and await _is_fix_reviewer(owner_uid):
-        fix_text = stripped_text[len(FIX_KEYWORD):].strip()
+    if stripped_text.startswith(core_dialogue_reply.FIX_KEYWORD) and await core_dialogue_reply.is_fix_reviewer(owner_uid):
+        fix_text = stripped_text[len(core_dialogue_reply.FIX_KEYWORD):].strip()
 
     user_turns = sum(1 for m in msgs if m["role"] == "user")
     await _maybe_set_title(session, session_id, body, fix_text, user_turns)
@@ -5926,7 +3005,7 @@ async def _fix_reply(msgs: list, fix_text: str, uid: Optional[str] = None) -> st
     prior_ai_text = next(
         (m.get("text", "") for m in reversed(msgs[:-1]) if m.get("role") == "ai"), ""
     )
-    rule = await anyio.to_thread.run_sync(lambda: _distill_style_rule_sync(prior_ai_text, fix_text))
+    rule = await anyio.to_thread.run_sync(lambda: core_dialogue_reply.distill_style_rule_sync(prior_ai_text, fix_text))
     if sb and rule.get("rule"):
         try:
             await anyio.to_thread.run_sync(
@@ -6085,7 +3164,7 @@ def _core_ports() -> CorePorts:
             persona=core_dialogue_reply.NURI_PERSONA,
             style_rules=core_dialogue_reply.get_style_rules_ctx,
             card_ctx=_card_ctx,
-            gen_cards=_db_get_gen_cards,
+            gen_cards=stores.get_gen_cards,
             # 横切 Safety Layer
             is_urgent=core_dialogue_reply.urgent_task_suppressed,
         )
@@ -6114,7 +3193,7 @@ async def _reply_context_four_model(
         ports=_core_ports(),
         route_turn=route_turn,
         source_card_id=turn.session.get("source_card_id") or "",
-        history_window=_HISTORY_WINDOW,
+        history_window=core_dialogue_reply.HISTORY_WINDOW,
         on_route_done=_on_route,
     )
 
@@ -6158,13 +3237,13 @@ async def _reply_context(
     if NURI_PIPELINE == "four_model":
         return await _reply_context_four_model(turn, body, metrics)
     started = time.perf_counter()
-    profile_ctx = _profile_ctx(turn.context_hints, turn.context_hints.get("children"))
+    profile_ctx = core_family_store.profile_ctx(turn.context_hints, turn.context_hints.get("children"))
     gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
-        _db_get_gen_cards(),
-        _get_memory_context(turn.owner_uid),
-        _get_follow_up_context(turn.owner_uid),
-        _get_style_rules_ctx(),
-        anyio.to_thread.run_sync(_internal_rules_ctx, body.text or ""),
+        stores.get_gen_cards(),
+        core_family_store.get_memory_context(turn.owner_uid),
+        core_family_store.get_follow_up_context(turn.owner_uid),
+        core_dialogue_reply.get_style_rules_ctx(),
+        anyio.to_thread.run_sync(core_knowledge_store.internal_rules_ctx, body.text or ""),
         _route_and_search(turn, profile_ctx, metrics),
     )
     route, results = routed
@@ -6187,10 +3266,10 @@ async def _reply_context(
 
 def _plan_prompt(rc: _ReplyContext) -> tuple[Optional[str], Optional[int]]:
     """The system message the dialogue model rendered, or (None, None) to let
-    _nuri_messages concatenate the blocks the old way."""
+    core_dialogue_reply.nuri_messages concatenate the blocks the old way."""
     if rc.plan is None:
         return None, None
-    return rc.plan.system_prompt(NURI_PERSONA + _NURI_JSON_SUFFIX), rc.plan.history_window
+    return rc.plan.system_prompt(core_dialogue_reply.NURI_PERSONA + core_dialogue_reply.NURI_JSON_SUFFIX), rc.plan.history_window
 
 
 async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
@@ -6239,14 +3318,14 @@ async def _task_suggestion(
     # `allow` is the safety layer's gate, already decided for this turn. It
     # subsumes the urgency check below rather than replacing it: the linear
     # pipeline has no safety layer, so both paths keep the same floor.
-    if not allow or _user_declined_tasks(user_text) or _urgent_task_suppressed(user_text, ai_text):
+    if not allow or core_dialogue_reply.user_declined_tasks(user_text) or core_dialogue_reply.urgent_task_suppressed(user_text, ai_text):
         return None
-    explicit_request = _user_requested_tasks(user_text)
-    task_list = _normalize_task_proposals(reply.get("task_proposals"))
+    explicit_request = core_dialogue_reply.user_requested_tasks(user_text)
+    task_list = core_dialogue_reply.normalize_task_proposals(reply.get("task_proposals"))
     if not (explicit_request or reply.get("suggest_tasks")):
         return None
 
-    requested_count = _requested_task_count(user_text) if explicit_request else None
+    requested_count = core_dialogue_reply.requested_task_count(user_text) if explicit_request else None
     if requested_count and task_list:
         task_list = task_list[:requested_count]
 
@@ -6255,9 +3334,9 @@ async def _task_suggestion(
         task_context = msgs + [{"role": "ai", "text": ai_text}]
         try:
             fallback_tasks = await anyio.to_thread.run_sync(
-                lambda: _gen_tasks_ai_sync(task_context, requested_count)
+                lambda: core_dialogue_reply.gen_tasks_ai_sync(task_context, requested_count)
             )
-            task_list = _normalize_task_proposals(task_list + fallback_tasks)
+            task_list = core_dialogue_reply.normalize_task_proposals(task_list + fallback_tasks)
             if requested_count:
                 task_list = task_list[:requested_count]
         except Exception as e:
@@ -6355,7 +3434,7 @@ async def post_message(
         rc = await _reply_context(turn, body, metrics)
         system_prompt, history_window = _plan_prompt(rc)
         reply = await anyio.to_thread.run_sync(
-            lambda: _nuri_reply_sync(
+            lambda: core_dialogue_reply.nuri_reply_sync(
                 turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                 rc.internal, rc.sources, metrics, system_prompt, history_window,
             )
@@ -6383,7 +3462,7 @@ async def post_message(
 
     if oai and turn.owner_uid:
         background_tasks.add_task(
-            _extract_and_upsert_memories, turn.msgs + [ai_msg], turn.owner_uid, session_id
+            core_family.extract_and_upsert_memories, turn.msgs + [ai_msg], turn.owner_uid, session_id
         )
 
     return {"user_message": turn.user_msg, "ai_messages": [ai_msg]}
@@ -6421,7 +3500,7 @@ async def post_message_stream(
                 rc = await _reply_context(turn, body, metrics)
                 system_prompt, history_window = _plan_prompt(rc)
                 reply = None
-                async for kind, value in _nuri_reply_stream(
+                async for kind, value in core_dialogue_reply.nuri_reply_stream(
                     turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                     rc.internal, rc.sources, metrics, system_prompt, history_window,
                 ):
@@ -6429,7 +3508,7 @@ async def post_message_stream(
                         yield _sse({"type": "delta", "text": value})
                     else:
                         reply = value
-                reply = reply or dict(_NURI_FALLBACK)
+                reply = reply or dict(core_dialogue_reply.NURI_FALLBACK)
                 ai_text = reply["text"]
                 quick_replies = reply.get("quick_replies", [])
                 sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
@@ -6478,7 +3557,7 @@ async def post_message_stream(
             await _after_turn(rc, turn, session_id)
         args = finished.get("memory_args")
         if args:
-            await _extract_and_upsert_memories(*args)
+            await core_family.extract_and_upsert_memories(*args)
 
     return StreamingResponse(
         events(),
@@ -6617,7 +3696,7 @@ async def update_task(
                 if oai and body.note:
                     reflection_text = f"任务「{t.get('title', '')}」的反馈：{body.note}"
                     background_tasks.add_task(
-                        _extract_and_upsert_memories,
+                        core_family.extract_and_upsert_memories,
                         [{"role": "user", "text": reflection_text}], uid, task_id, "task_reflection",
                     )
                 return result
@@ -6717,20 +3796,20 @@ async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
 # ── Privacy ───────────────────────────────────────────────────────────────────
 @api.get("/privacy")
 async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
-    settings = await _db_get_privacy(uid, fail_closed=bool(uid))
-    if settings.get(_PRIVACY_STORAGE_UNAVAILABLE):
+    settings = await stores.get_privacy(uid, fail_closed=bool(uid))
+    if settings.get(stores.PRIVACY_STORAGE_UNAVAILABLE):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Privacy settings are temporarily unavailable",
         )
-    return _normalized_privacy_settings(settings)
+    return stores.normalized_privacy_settings(settings)
 
 @api.put("/privacy")
 async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
-    settings = await _db_set_privacy(uid, body.model_dump())
+    settings = await stores.set_privacy(uid, body.model_dump())
     if uid and settings.get("allow_history_training") is False:
-        await _db_delete_recommendation_snapshots(uid)
-        await _db_delete_recommendation_events(uid)
+        await stores.delete_snapshots(uid)
+        await core_outcome_store.delete_events(uid)
     return settings
 
 @api.post("/privacy/wipe")
@@ -6739,7 +3818,7 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         # Keep an explicit opt-out tombstone instead of deleting the privacy
         # row.  If any later deletion fails, history must remain disabled rather
         # than falling back to the default-on setting while user data survives.
-        await _db_set_privacy(
+        await stores.set_privacy(
             uid,
             {
                 "allow_history_training": False,
@@ -6749,8 +3828,8 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
                 "language": "zh-CN",
             },
         )
-        await _db_delete_recommendation_snapshots(uid)
-        await _db_delete_recommendation_events(uid)
+        await stores.delete_snapshots(uid)
+        await core_outcome_store.delete_events(uid)
         memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
         memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
         for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:
@@ -6793,15 +3872,6 @@ async def health():
 # The vector stores and the embedding/chunking behind them now live in
 # backend/nuri_core/knowledge_store.py. Aliased for the /index, /ask and
 # /admin/books routes below, which still call them by their old names.
-_read_pdf = core_knowledge_store.read_pdf
-_chunk_text = core_knowledge_store.chunk_text
-_embed_batch = core_knowledge_store.embed_batch
-_embed_one = core_knowledge_store.embed_one
-_is_indexed = core_knowledge_store.is_indexed
-_upsert_doc = core_knowledge_store.upsert_doc
-_retrieve = core_knowledge_store.retrieve
-_retrieve_internal = core_knowledge_store.retrieve_internal
-_internal_rules_ctx = core_knowledge_store.internal_rules_ctx
 
 
 def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[str] = None) -> str:
@@ -6815,8 +3885,8 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
     context = "\n\n".join(f"[Chunk {i+1}]\n{c}" for i, c in enumerate(chunks))
     citation = ('\n在回答結束時，另起一行，僅引用上方參考文獻中明確出現的理論或概念名稱，格式為：參考自「[文獻中出現的理論或概念名稱]」理論。若文獻未明確提及任何理論名稱，則省略此行。'
                 if book_name else "")
-    internal_ctx = _internal_rules_ctx(question)
-    system = (NURI_PERSONA
+    internal_ctx = core_knowledge_store.internal_rules_ctx(question)
+    system = (core_dialogue_reply.NURI_PERSONA
               + "\n\n以下是本次對話的參考文獻節錄，可作為輔助依據。NURI 應優先運用自身的兒童發展與育兒專業知識作答，文獻內容僅供參考補充。無論文獻是否涵蓋問題，都請盡力提供有幫助的回應，避免直接回答「我不知道」或「抱歉，我無法回答」。\n"
               + citation)
     if internal_ctx:
@@ -6837,12 +3907,12 @@ async def index_pdf(file: UploadFile = File(...)):
         raise HTTPException(503, "OpenAI not configured")
     pdf_bytes = await file.read()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
-    already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
+    already, total = await anyio.to_thread.run_sync(core_knowledge_store.is_indexed, doc_id)
     if already:
         return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": True}
-    text   = await anyio.to_thread.run_sync(_read_pdf, pdf_bytes)
-    chunks = await anyio.to_thread.run_sync(_chunk_text, text)
-    total  = await anyio.to_thread.run_sync(_upsert_doc, doc_id, chunks)
+    text   = await anyio.to_thread.run_sync(core_knowledge_store.read_pdf, pdf_bytes)
+    chunks = await anyio.to_thread.run_sync(core_knowledge_store.chunk_text, text)
+    total  = await anyio.to_thread.run_sync(core_knowledge_store.upsert_doc, doc_id, chunks)
     return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": False}
 
 @api.post("/index-from-url")
@@ -6856,12 +3926,12 @@ async def index_from_url(req: IndexFromUrlRequest):
     with urllib.request.urlopen(req.url) as r:
         pdf_bytes = r.read()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
-    already, total = await anyio.to_thread.run_sync(_is_indexed, doc_id)
+    already, total = await anyio.to_thread.run_sync(core_knowledge_store.is_indexed, doc_id)
     if already:
         return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": True}
-    text   = await anyio.to_thread.run_sync(_read_pdf, pdf_bytes)
-    chunks = await anyio.to_thread.run_sync(_chunk_text, text)
-    total  = await anyio.to_thread.run_sync(_upsert_doc, doc_id, chunks)
+    text   = await anyio.to_thread.run_sync(core_knowledge_store.read_pdf, pdf_bytes)
+    chunks = await anyio.to_thread.run_sync(core_knowledge_store.chunk_text, text)
+    total  = await anyio.to_thread.run_sync(core_knowledge_store.upsert_doc, doc_id, chunks)
     return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": False}
 
 @app.post("/ask")
@@ -6870,7 +3940,7 @@ async def ask(req: AskRequest):
         raise HTTPException(503, "Supabase not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
-    chunks, scores = await anyio.to_thread.run_sync(_retrieve, req.question, req.top_k, req.doc_id)
+    chunks, scores = await anyio.to_thread.run_sync(core_knowledge_store.retrieve, req.question, req.top_k, req.doc_id)
     answer = await anyio.to_thread.run_sync(_generate_rag_answer, req.question, chunks, req.book_name)
     return {"answer": answer, "chunks": chunks, "scores": scores}
 
@@ -6918,7 +3988,7 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
 
 # NURI 的"规则文档"：由 #fix 聊天指令自动写入，也可以在这里直接管理。
 # 每次生成回复都会把 active=true 的规则整段注入 system prompt（见
-# _get_style_rules_ctx / _nuri_reply_sync）。
+# core_dialogue_reply.get_style_rules_ctx / core_dialogue_reply.nuri_reply_sync）。
 @app.get("/admin/style-rules")
 async def admin_list_style_rules(_: None = Depends(_require_admin)):
     sb = _get_supabase()
@@ -6959,7 +4029,7 @@ async def admin_delete_style_rule(rule_id: str, _: None = Depends(_require_admin
     sb.table("nuri_style_rules").delete().eq("id", rule_id).execute()
     return {"ok": True}
 
-# 允许使用聊天里 "#fix" 指令的账号白名单，见 _is_fix_reviewer。
+# 允许使用聊天里 "#fix" 指令的账号白名单，见 core_dialogue_reply.is_fix_reviewer。
 @app.get("/admin/fix-reviewers")
 async def admin_list_fix_reviewers(_: None = Depends(_require_admin)):
     sb = _get_supabase()
@@ -7226,11 +4296,11 @@ async def admin_delete_account(user_id: str, _: None = Depends(_require_admin)):
 
 @app.get("/admin/settings")
 async def admin_get_settings(_: None = Depends(_require_admin)):
-    return {"feed_gen_mode": await _db_get_feed_mode()}
+    return {"feed_gen_mode": await stores.get_feed_mode()}
 
 @app.put("/admin/settings")
 async def admin_update_settings(body: FeedModeUpdate, _: None = Depends(_require_admin)):
-    await _db_set_feed_mode(body.mode)
+    await stores.set_feed_mode(body.mode)
     return {"feed_gen_mode": body.mode}
 
 @app.get("/admin/discover")
@@ -7330,16 +4400,16 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
             # gets at most one per day, because the push runs daily and this
             # takes only the single oldest item — five things due at once is a
             # to-do list, not someone remembering to ask after you.
-            follow_up = await _take_due_follow_up(uid)
+            follow_up = await core_family_store.take_due_follow_up(uid)
             if follow_up:
                 nickname = user.get("nickname") or "家长"
-                text = await _compose_follow_up_message(nickname, follow_up)
+                text = await core_dialogue_reply.compose_follow_up_message(nickname, follow_up)
                 if text:
                     await anyio.to_thread.run_sync(
                         lambda _to=user["email"], _b=text:
                         _send_email_smtp(_to, f"NURI 想问问你 | {follow_up['topic']}", _b)
                     )
-                    await _mark_follow_up_asked(follow_up["id"])
+                    await core_family_store.mark_follow_up_asked(follow_up["id"])
                     sent += 1
                     continue
                 # Composing failed: leave it pending for tomorrow and fall
@@ -7406,7 +4476,7 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
             card = cards[0]
 
             # 4. Persist card so /detail/:id works
-            await _db_save_gen_cards([card])
+            await stores.save_gen_cards([card])
 
             # 5. Build and send email
             preview_src = card.get("body") or card.get("summary", "")

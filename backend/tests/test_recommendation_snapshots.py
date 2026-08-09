@@ -7,6 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend import stores  # noqa: E402
+from backend.feed import signals as feed_signals  # noqa: E402
+from backend.feed import delivery as feed_delivery  # noqa: E402
+from backend.nuri_core import outcome_store as core_outcome_store  # noqa: E402
+from backend.nuri_core import family_store as core_family_store  # noqa: E402
 from backend import memstore, runtime  # noqa: E402
 from backend import main
 from backend.recommendation_snapshots import (
@@ -341,7 +346,7 @@ def test_category_card_feed_and_details_keep_category_delivery_contract(
     supabase = _SettingsSupabase()
     monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
     context = {
         "state": "ready",
         "session_id": "main-session",
@@ -371,13 +376,11 @@ def test_category_card_feed_and_details_keep_category_delivery_contract(
     async def no_events(_uid):
         return []
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", load_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
 
     payload = asyncio.run(
         main.get_personalized_feed(
@@ -440,7 +443,7 @@ def test_category_card_feed_and_details_keep_category_delivery_contract(
         ) == 2
 
         snapshot = asyncio.run(
-            main._db_get_recommendation_snapshot(
+            stores.get_snapshot(
                 "parent-1", item["recommendation_id"]
             )
         )
@@ -526,14 +529,12 @@ def test_category_cards_use_distinct_honest_fallback_headlines_without_articles(
             "child_age_context": "孩子当前年龄：9个月",
         }
     )
-    monkeypatch.setattr(
-        main,
-        "_reviewed_category_resource_pair",
+    monkeypatch.setattr(feed_delivery, "reviewed_category_resource_pair",
         lambda *_args, **_kwargs: [],
     )
 
     cards = [
-        main._category_feed_card(
+        feed_delivery.category_feed_card(
             base_card,
             category,
             "zh-CN",
@@ -594,7 +595,7 @@ def test_profile_only_category_feed_loads_events_and_attaches_age_before_cards(
         card["is_conversation_match"] = False
         return [card], False
 
-    original_category_card = main._category_feed_card
+    original_category_card = feed_delivery.category_feed_card
 
     def inspect_category_card(base_card, *args, **kwargs):
         assert base_card["child_age_context"] == "孩子当前年龄：30个月"
@@ -603,16 +604,14 @@ def test_profile_only_category_feed_loads_events_and_attaches_age_before_cards(
     async def skip_snapshots(_uid, cards, _context):
         return cards
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", load_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", load_events)
-    monkeypatch.setattr(main, "_rank_learning_content", rank_default)
-    monkeypatch.setattr(main, "_category_feed_card", inspect_category_card)
-    monkeypatch.setattr(main, "_attach_recommendation_snapshots", skip_snapshots)
+    monkeypatch.setattr(core_outcome_store, "get_events", load_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", rank_default)
+    monkeypatch.setattr(feed_delivery, "category_feed_card", inspect_category_card)
+    monkeypatch.setattr(feed_delivery, "attach_recommendation_snapshots", skip_snapshots)
 
     payload = asyncio.run(
         main.get_personalized_feed(
@@ -652,7 +651,7 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
             }
         ],
     }
-    cards, _ = main._rank_learning_content(
+    cards, _ = feed_signals.rank_learning_content(
         context["messages"],
         count=4,
         session_id=context["session_id"],
@@ -664,7 +663,7 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
     language_card["personalization_reason"] = "冻结后的具体推荐理由"
 
     asyncio.run(
-        main._attach_recommendation_snapshots("parent-1", [language_card], context)
+        feed_delivery.attach_recommendation_snapshots("parent-1", [language_card], context)
     )
     rec_id = language_card["recommendation_id"]
     assert language_card["recommendation_context_status"] == "persisted"
@@ -672,13 +671,13 @@ def test_snapshot_survives_process_cache_and_restores_detail_reason(monkeypatch)
     # Simulate a Vercel cold start: process-local cache disappears while the
     # existing app_settings row remains available.
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
-    restored = asyncio.run(main._db_get_recommendation_snapshot("parent-1", rec_id))
+    restored = asyncio.run(stores.get_snapshot("parent-1", rec_id))
     assert restored["personalization_reason"] == "冻结后的具体推荐理由"
 
     async def load_context(*_args, **_kwargs):
         return context
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", load_context)
     detail = asyncio.run(
         main.get_card_detail(
             "learn_language_milestones",
@@ -739,11 +738,11 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     )
 
     assert asyncio.run(
-        main._db_persist_recommendation_snapshots("parent-prepared", [prepared])
+        stores.persist_snapshots("parent-prepared", [prepared])
     )
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     restored = asyncio.run(
-        main._db_get_recommendation_snapshot(
+        stores.get_snapshot(
             "parent-prepared",
             snapshot["recommendation_id"],
         )
@@ -752,7 +751,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
 
     rebuilt_card = deepcopy(card)
     asyncio.run(
-        main._attach_recommendation_snapshots(
+        feed_delivery.attach_recommendation_snapshots(
             "parent-prepared",
             [rebuilt_card],
             context,
@@ -768,7 +767,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     stale_retryable = deepcopy(snapshot)
     stale_retryable["resource_readiness"] = "retryable"
     assert asyncio.run(
-        main._db_persist_recommendation_snapshots(
+        stores.persist_snapshots(
             "parent-prepared",
             [stale_retryable],
         )
@@ -776,7 +775,7 @@ def test_prepared_pair_survives_cold_cache_and_repeated_feed(monkeypatch):
     assert prepared_resource_pair(stale_retryable) == pair
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     still_ready = asyncio.run(
-        main._db_get_recommendation_snapshot(
+        stores.get_snapshot(
             "parent-prepared",
             snapshot["recommendation_id"],
         )
@@ -806,14 +805,14 @@ def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic
 
     preparing = main.snapshot_with_resource_readiness(snapshot, "preparing")
     assert asyncio.run(
-        main._db_persist_recommendation_snapshots(
+        stores.persist_snapshots(
             "parent-retryable",
             [preparing],
         )
     )
 
     retryable = asyncio.run(
-        main._mark_prepare_retryable("parent-retryable", [preparing])
+        feed_delivery.mark_prepare_retryable("parent-retryable", [preparing])
     )
 
     assert retryable[0]["resource_readiness"] == "retryable"
@@ -824,7 +823,7 @@ def test_provider_failure_returns_retryable_while_durable_preparing_is_monotonic
     # row in another Vercel instance.
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     durable = asyncio.run(
-        main._db_get_recommendation_snapshot(
+        stores.get_snapshot(
             "parent-retryable",
             snapshot["recommendation_id"],
         )
@@ -872,13 +871,13 @@ def test_persistent_ready_snapshot_wins_over_stale_process_cache(monkeypatch):
         content_set_id=f"pcs_{'b' * 24}",
     )
 
-    assert asyncio.run(main._db_persist_recommendation_snapshots(uid, [ready]))
+    assert asyncio.run(stores.persist_snapshots(uid, [ready]))
     # Simulate another warm function instance whose process cache still holds
     # the pre-generation state while durable storage already contains ready.
     memstore.recommendation_snapshots[(uid, snapshot["recommendation_id"])] = preparing
 
     restored = asyncio.run(
-        main._db_get_recommendation_snapshot(uid, snapshot["recommendation_id"])
+        stores.get_snapshot(uid, snapshot["recommendation_id"])
     )
 
     assert prepared_resource_pair(restored) == pair
@@ -889,7 +888,7 @@ def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):
     supabase = _SettingsSupabase()
     monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
     context = {
         "state": "ready",
         "session_id": "main-session",
@@ -911,7 +910,7 @@ def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):
     async def load_context(*_args, **_kwargs):
         return context
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", load_context)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", load_context)
     payload = asyncio.run(main.get_personalized_feed(count=4, uid="parent-1"))
     matched = [
         item for item in payload["items"] if item.get("is_conversation_match")
@@ -924,7 +923,7 @@ def test_feed_exposes_recommendation_ids_per_card_only(monkeypatch):
     assert len(recommendation_ids) == len(set(recommendation_ids))
     for item in matched:
         snapshot = asyncio.run(
-            main._db_get_recommendation_snapshot(
+            stores.get_snapshot(
                 "parent-1", item["recommendation_id"]
             )
         )
@@ -941,7 +940,7 @@ def test_recommendation_id_cannot_be_reused_for_another_card(monkeypatch):
     async def stored_snapshot(_uid, _recommendation_id):
         return snapshot
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
+    monkeypatch.setattr(stores, "get_snapshot", stored_snapshot)
     with pytest.raises(Exception) as error:
         asyncio.run(
             main.get_card_detail(
@@ -957,7 +956,7 @@ def test_explicit_missing_recommendation_id_fails_closed(monkeypatch):
     async def missing_snapshot(_uid, _recommendation_id):
         return None
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", missing_snapshot)
+    monkeypatch.setattr(stores, "get_snapshot", missing_snapshot)
     with pytest.raises(Exception) as error:
         asyncio.run(
             main.get_card_detail(
@@ -982,12 +981,12 @@ def test_recommendation_id_is_user_bound_in_persistent_lookup(monkeypatch):
         "session_id": "session-1",
         "context_created_at": "2026-08-01T10:00:00+00:00",
     }
-    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    asyncio.run(feed_delivery.attach_recommendation_snapshots("parent-1", [card], context))
     rec_id = card["recommendation_id"]
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
 
     assert asyncio.run(
-        main._db_get_recommendation_snapshot("parent-2", rec_id)
+        stores.get_snapshot("parent-2", rec_id)
     ) is None
 
 
@@ -1000,14 +999,14 @@ def test_snapshot_privacy_delete_removes_cache_and_persistent_rows(monkeypatch):
         "session_id": "session-1",
         "context_created_at": "2026-08-01T10:00:00+00:00",
     }
-    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    asyncio.run(feed_delivery.attach_recommendation_snapshots("parent-1", [card], context))
     rec_id = card["recommendation_id"]
 
-    asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+    asyncio.run(stores.delete_snapshots("parent-1"))
 
     assert not supabase.store
     assert asyncio.run(
-        main._db_get_recommendation_snapshot("parent-1", rec_id)
+        stores.get_snapshot("parent-1", rec_id)
     ) is None
     with pytest.raises(Exception) as error:
         asyncio.run(
@@ -1034,7 +1033,7 @@ def test_snapshot_privacy_delete_failure_is_fail_closed(monkeypatch):
     ] = serialize_snapshot(snapshot, secret=TEST_SNAPSHOT_SECRET)
 
     with pytest.raises(Exception) as error:
-        asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+        asyncio.run(stores.delete_snapshots("parent-1"))
 
     assert getattr(error.value, "status_code", None) == 503
     assert supabase.store
@@ -1044,7 +1043,7 @@ def test_snapshot_delete_without_database_returns_503(monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: None)
 
     with pytest.raises(Exception) as error:
-        asyncio.run(main._db_delete_recommendation_snapshots("parent-1"))
+        asyncio.run(stores.delete_snapshots("parent-1"))
 
     assert getattr(error.value, "status_code", None) == 503
 
@@ -1053,13 +1052,13 @@ def test_authenticated_privacy_update_without_database_returns_503(monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: None)
     monkeypatch.setattr(
         memstore, "privacy",
-        {"parent-1": main._normalized_privacy_settings({})},
+        {"parent-1": stores.normalized_privacy_settings({})},
     )
     previous = dict(memstore.privacy["parent-1"])
 
     with pytest.raises(Exception) as error:
         asyncio.run(
-            main._db_set_privacy(
+            stores.set_privacy(
                 "parent-1",
                 {"allow_history_training": False},
             )
@@ -1079,7 +1078,7 @@ def test_wipe_keeps_history_opt_out_when_snapshot_delete_fails(monkeypatch):
         asyncio.run(main.wipe_all(uid="parent-1"))
 
     assert getattr(error.value, "status_code", None) == 503
-    privacy_value = supabase.store[main._privacy_storage_key("parent-1")]
+    privacy_value = supabase.store[stores.privacy_storage_key("parent-1")]
     assert json.loads(privacy_value)["allow_history_training"] is False
     assert memstore.privacy["parent-1"]["allow_history_training"] is False
 
@@ -1106,8 +1105,8 @@ def test_snapshot_cannot_restore_context_when_history_privacy_is_off(monkeypatch
             "external_research_allowed": False,
         }
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
-    monkeypatch.setattr(main, "_load_recent_main_chat", privacy_off_context)
+    monkeypatch.setattr(stores, "get_snapshot", stored_snapshot)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", privacy_off_context)
 
     with pytest.raises(Exception) as error:
         asyncio.run(
@@ -1147,8 +1146,8 @@ def test_snapshot_cannot_bind_to_a_different_resolved_session(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
-    monkeypatch.setattr(main, "_load_recent_main_chat", wrong_session_context)
+    monkeypatch.setattr(stores, "get_snapshot", stored_snapshot)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", wrong_session_context)
 
     with pytest.raises(Exception) as error:
         asyncio.run(
@@ -1171,13 +1170,13 @@ def test_disabling_history_invalidates_old_recommendation_link(monkeypatch):
         "session_id": "session-1",
         "context_created_at": "2026-08-01T10:00:00+00:00",
     }
-    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    asyncio.run(feed_delivery.attach_recommendation_snapshots("parent-1", [card], context))
     rec_id = card["recommendation_id"]
 
     async def save_privacy(_uid, values):
         return values
 
-    monkeypatch.setattr(main, "_db_set_privacy", save_privacy)
+    monkeypatch.setattr(stores, "set_privacy", save_privacy)
     asyncio.run(
         main.update_privacy(
             main.PrivacySettings(allow_history_training=False),
@@ -1186,7 +1185,7 @@ def test_disabling_history_invalidates_old_recommendation_link(monkeypatch):
     )
 
     assert asyncio.run(
-        main._db_get_recommendation_snapshot("parent-1", rec_id)
+        stores.get_snapshot("parent-1", rec_id)
     ) is None
 
 
@@ -1203,7 +1202,7 @@ def test_unpersisted_feed_card_uses_legacy_context_only(monkeypatch):
         "context_created_at": "2026-08-01T10:00:00+00:00",
     }
 
-    asyncio.run(main._attach_recommendation_snapshots("parent-1", [card], context))
+    asyncio.run(feed_delivery.attach_recommendation_snapshots("parent-1", [card], context))
 
     assert "recommendation_id" not in card
     assert card["recommendation_context_status"] == "legacy_fallback"
@@ -1245,9 +1244,9 @@ def test_dynamic_cross_session_card_restores_from_snapshot_focus(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", stored_snapshot)
-    monkeypatch.setattr(main, "_load_recent_main_chat", generic_current_context)
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(stores, "get_snapshot", stored_snapshot)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", generic_current_context)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
 
     detail = asyncio.run(
         main.get_card_detail(

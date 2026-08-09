@@ -12,14 +12,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend.feed.delivery import (  # noqa: E402
+    resource_matches_preferred_locale as _resource_matches_preferred_locale,
+)
 from backend.nuri_core import family_store  # noqa: E402
-from backend.main import (  # noqa: E402
-    ChildCreate,
-    _age_label,
-    _child_payload,
-    _profile_ctx,
-    _resource_matches_preferred_locale,
-    _safe_child_recommendation_context,
+from backend.main import ChildCreate, _child_payload  # noqa: E402
+from backend.nuri_core.family_store import (  # noqa: E402
+    age_label as _age_label,
+    profile_ctx as _profile_ctx,
+    safe_child_recommendation_context as _safe_child_recommendation_context,
 )
 
 

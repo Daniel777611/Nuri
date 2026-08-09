@@ -14,6 +14,14 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import stores  # noqa: E402
+from backend.nuri_core import outcome_store as core_outcome_store  # noqa: E402
+from backend.nuri_core import family_store as core_family_store  # noqa: E402
+from backend.feed import delivery as feed_delivery  # noqa: E402
+from backend.feed import signals as feed_signals  # noqa: E402
+from backend import content_research  # noqa: E402
+from backend import runtime  # noqa: E402
+from backend import recommendation_feedback  # noqa: E402
 from backend import memstore  # noqa: E402
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
@@ -386,8 +394,8 @@ def test_zh_cn_pair_prefers_official_chinese_then_chinese_original_then_english_
     """Provider order must not make an English result outrank Chinese delivery."""
 
     monkeypatch.setattr(
-        main,
-        "delivery_lane_rejection_reason",
+    content_research,
+"delivery_lane_rejection_reason",
         lambda *_args, **_kwargs: "",
     )
     candidates = [
@@ -400,7 +408,7 @@ def test_zh_cn_pair_prefers_official_chinese_then_chinese_original_then_english_
         for kind in ("article", "video")
     ]
 
-    options = main._category_resource_pair_options(
+    options = feed_delivery.category_resource_pair_options(
         candidates,
         category,
         preferred_locale="zh-CN",
@@ -421,7 +429,7 @@ def test_zh_cn_pair_prefers_official_chinese_then_chinese_original_then_english_
         for resource in candidates
         if resource["translation_type"] != "official_translation"
     ]
-    original_options = main._category_resource_pair_options(
+    original_options = feed_delivery.category_resource_pair_options(
         without_official,
         category,
         preferred_locale="zh-CN",
@@ -434,7 +442,7 @@ def test_zh_cn_pair_prefers_official_chinese_then_chinese_original_then_english_
 
     english_article = _localization_candidate(category, "article", "english_guide")
     mandarin_video = _localization_candidate(category, "video", "chinese_original")
-    final_fallback = main._category_resource_pair_options(
+    final_fallback = feed_delivery.category_resource_pair_options(
         [english_article, mandarin_video],
         category,
         preferred_locale="zh-CN",
@@ -586,13 +594,13 @@ def test_verified_quality_anchors_beat_complete_but_unverified_dynamic_slots():
     )
 
     assert merged is not None
-    authority = main._category_resource_pair_options(
+    authority = feed_delivery.category_resource_pair_options(
         merged["resources"],
         "authority",
         preferred_locale="zh-CN",
         require_dynamic=False,
     )[0]
-    featured = main._category_resource_pair_options(
+    featured = feed_delivery.category_resource_pair_options(
         merged["resources"],
         "featured",
         preferred_locale="zh-CN",
@@ -612,7 +620,7 @@ def test_serve_and_return_static_zh_cn_pairs_keep_institutions_out_of_case_lane(
 
     resources = LEARNING_CONTENT_BY_ID["learn_serve_and_return"]["resources"]
     for category in ("authority", "featured"):
-        pair = main._reviewed_category_resource_pair(
+        pair = feed_delivery.reviewed_category_resource_pair(
             resources,
             "zh-CN",
             category,
@@ -625,7 +633,7 @@ def test_serve_and_return_static_zh_cn_pairs_keep_institutions_out_of_case_lane(
         assert article.get("translation_type") == "original"
         assert video.get("spoken_language") == "mandarin"
 
-    cases = main._reviewed_category_resource_pair(
+    cases = feed_delivery.reviewed_category_resource_pair(
         resources,
         "zh-CN",
         "case",
@@ -775,16 +783,16 @@ def test_legacy_text_board_case_article_is_never_user_facing():
     ) == (
         "case_article_poor_reader_experience"
     )
-    assert main._reviewed_editorial_quality_allowed(ptt_case) is False
+    assert feed_delivery.reviewed_editorial_quality_allowed(ptt_case) is False
     assert case_article_reader_experience_status(mama_case["url"]) == "verified"
     assert mama_case["case_reader_experience_status"] == "verified"
-    assert main._reviewed_editorial_quality_allowed(mama_case) is True
+    assert feed_delivery.reviewed_editorial_quality_allowed(mama_case) is True
 
 
 def test_default_and_uncategorized_reviewed_paths_also_exclude_legacy_case_pages():
     resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
 
-    visible = main._reviewed_resources_for_context(resources, "zh-CN")
+    visible = feed_delivery.reviewed_resources_for_context(resources, "zh-CN")
 
     assert any(
         resource["id"] == "language-mama-parent-response-case-article-zh-cn-v1"
@@ -805,7 +813,7 @@ def test_language_case_pair_uses_stage_matched_parent_process_not_campaign(
         ),
     }
 
-    pair = main._reviewed_category_resource_pair(
+    pair = feed_delivery.reviewed_category_resource_pair(
         resources,
         "zh-CN",
         "case",
@@ -891,7 +899,7 @@ def test_reviewed_bundle_keeps_parent_case_ready_across_stage_and_chinese_locale
     )
 
     assert bundle is not None
-    pair = main._select_category_resource_pair(
+    pair = feed_delivery.select_category_resource_pair(
         bundle["resources"],
         "case",
         preferred_locale,
@@ -959,8 +967,8 @@ def test_substantive_video_outranks_shorter_unverified_video(monkeypatch):
     """Short is a tie-breaker at most; useful content wins the primary pair."""
 
     monkeypatch.setattr(
-        main,
-        "delivery_lane_rejection_reason",
+    content_research,
+"delivery_lane_rejection_reason",
         lambda *_args, **_kwargs: "",
     )
     article = _localization_candidate("featured", "article", "chinese_original")
@@ -977,7 +985,7 @@ def test_substantive_video_outranks_shorter_unverified_video(monkeypatch):
         "featured_readability_status": "verified",
     }
 
-    options = main._category_resource_pair_options(
+    options = feed_delivery.category_resource_pair_options(
         [article, short_video, substantive_video],
         "featured",
         preferred_locale="zh-CN",
@@ -994,12 +1002,12 @@ def test_reviewed_language_card_uses_readable_featured_and_substantive_mandarin_
     """The home-card preview and prepared detail must agree on the best pair."""
 
     resources = LEARNING_CONTENT_BY_ID["learn_language_milestones"]["resources"]
-    authority = main._reviewed_category_resource_pair(
+    authority = feed_delivery.reviewed_category_resource_pair(
         resources,
         "zh-CN",
         "authority",
     )
-    featured = main._reviewed_category_resource_pair(
+    featured = feed_delivery.reviewed_category_resource_pair(
         resources,
         "zh-CN",
         "featured",
@@ -2646,7 +2654,7 @@ def test_category_pair_never_backfills_a_wrong_age_format():
         "recommendation_focus": "创业工作很忙、陪伴少，也想了解当前阶段的发展",
     }
 
-    pair = main._reviewed_category_resource_pair(
+    pair = feed_delivery.reviewed_category_resource_pair(
         resources,
         "zh-CN",
         "case",
@@ -2685,7 +2693,7 @@ def test_authority_pair_prefers_verified_us_source_not_untrusted_country_claim()
         "url": "https://med.stanford.edu/video",
     }
 
-    pair = main._select_category_resource_pair(
+    pair = feed_delivery.select_category_resource_pair(
         [non_us_article, forged_video, us_article, real_us_video],
         "authority",
     )
@@ -2707,30 +2715,30 @@ def test_authority_pair_prefers_verified_us_source_not_untrusted_country_claim()
     ],
 )
 def test_us_authority_recognition_uses_institution_host_evidence(url):
-    assert main._is_us_authority_resource({"url": url})
+    assert feed_delivery.is_us_authority_resource({"url": url})
 
 
 def test_us_authority_recognition_rejects_country_claim_and_arbitrary_youtube():
-    assert not main._is_us_authority_resource(
+    assert not feed_delivery.is_us_authority_resource(
         {
             "source_region": "US",
             "url": "https://example.com/parenting",
         }
     )
-    assert not main._is_us_authority_resource(
+    assert not feed_delivery.is_us_authority_resource(
         {
             "source_region": "US",
             "publisher": "CDC official",
             "url": "https://www.youtube.com/watch?v=unverified",
         }
     )
-    assert main._is_us_authority_resource(
+    assert feed_delivery.is_us_authority_resource(
         {
             "url": "https://www.youtube.com/watch?v=verified",
             "evidence_url": "https://www.cdc.gov/parents/video.html",
         }
     )
-    assert main._is_us_authority_resource(
+    assert feed_delivery.is_us_authority_resource(
         {
             "id": "development-cdc-video",
             "url": "https://www.youtube.com/watch?v=S-OQXmjY53o",
@@ -2864,16 +2872,14 @@ def test_detail_request_locale_override_returns_only_traditional_resources_witho
         return [card], True
 
     monkeypatch.setattr(memstore, "privacy", {"parent-locale": saved_privacy})
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_db_set_privacy", must_not_persist_locale)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(stores, "set_privacy", must_not_persist_locale)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
 
     detail = asyncio.run(
         main.get_card_detail(
@@ -2933,16 +2939,14 @@ def test_research_request_locale_override_uses_english_provider_and_summary(
         return deepcopy(bundle)
 
     research_client = object()
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
-    monkeypatch.setattr(main, "content_research_oai", research_client)
-    monkeypatch.setattr(main, "research_learning_resources", fake_research)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(runtime, "content_research_oai", research_client)
+    monkeypatch.setattr(content_research, "research_learning_resources", fake_research)
 
     research = asyncio.run(
         main.get_card_research(
@@ -2975,7 +2979,7 @@ def test_refresh_forces_new_search_and_excludes_current_reviewed_pair(monkeypatc
     }
     card = deepcopy(LEARNING_CONTENT_BY_ID["learn_sleep_routine"])
     card["is_conversation_match"] = True
-    current_pair = main._reviewed_category_resource_pair(
+    current_pair = feed_delivery.reviewed_category_resource_pair(
         card["resources"],
         "zh-CN",
         "authority",
@@ -3000,16 +3004,14 @@ def test_refresh_forces_new_search_and_excludes_current_reviewed_pair(monkeypatc
         calls.append(kwargs)
         return deepcopy(_delivery_ready_parsed_bundle())
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", fake_research)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", fake_research)
 
     result = asyncio.run(
         main.get_card_research(
@@ -3061,16 +3063,14 @@ def test_refresh_failure_keeps_existing_pair_on_client_instead_of_backfilling(mo
     def ranked_sleep_card(*_args, **_kwargs):
         return [deepcopy(card)], True
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", lambda *_args, **_kwargs: None)
 
     result = asyncio.run(
         main.get_card_research(
@@ -3113,16 +3113,14 @@ def test_refresh_provider_timeout_is_retryable_and_keeps_existing_pair(monkeypat
     def provider_timeout(*_args, **_kwargs):
         raise TimeoutError("provider timed out")
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(
-        main,
-        "_attach_child_recommendation_context",
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context",
         leave_child_context_unchanged,
     )
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_sleep_card)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", provider_timeout)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_sleep_card)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", provider_timeout)
 
     result = asyncio.run(
         main.get_card_research(
@@ -3502,7 +3500,7 @@ def test_unmatched_virtual_card_is_not_exposed(monkeypatch):
     async def no_generated_cards():
         return []
 
-    monkeypatch.setattr(main, "_db_get_gen_cards", no_generated_cards)
+    monkeypatch.setattr(stores, "get_gen_cards", no_generated_cards)
 
     with pytest.raises(main.HTTPException) as exc_info:
         asyncio.run(
@@ -3544,9 +3542,9 @@ def test_detail_serves_reviewed_pair_while_dynamic_upgrade_is_not_ready(monkeypa
         calls.append((args, kwargs))
         raise AssertionError("detail endpoint must never call the research provider")
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", should_not_search)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", should_not_search)
 
     detail = asyncio.run(
         main.get_card_detail(
@@ -3595,11 +3593,11 @@ def test_detail_filters_reviewed_resources_with_real_card_context(monkeypatch):
         )
         return [card], True
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_age)
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked_development)
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context", attach_age)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked_development)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
 
     detail = asyncio.run(
         main.get_card_detail(
@@ -3667,11 +3665,11 @@ def test_research_endpoint_returns_dynamic_bundle_for_matched_card(
         calls.append((passed_client, kwargs))
         return deepcopy(bundle)
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(main, "_db_get_recommendation_events", stored_behavior)
-    monkeypatch.setattr(main, "card_behavior_signal", behavior_signal)
-    monkeypatch.setattr(main, "content_research_oai", client)
-    monkeypatch.setattr(main, "research_learning_resources", fake_research)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_outcome_store, "get_events", stored_behavior)
+    monkeypatch.setattr(recommendation_feedback, "card_behavior_signal", behavior_signal)
+    monkeypatch.setattr(runtime, "content_research_oai", client)
+    monkeypatch.setattr(content_research, "research_learning_resources", fake_research)
 
     research = asyncio.run(
         main.get_card_research("learn_sleep_routine", uid="parent-private-id")
@@ -3741,9 +3739,9 @@ def test_research_endpoint_returns_fallback_when_provider_fails(
             raise RuntimeError("provider unavailable")
         return None
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", failed_research)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", failed_research)
 
     research = asyncio.run(
         main.get_card_research("learn_sleep_routine", uid="parent-private-id")
@@ -3800,9 +3798,9 @@ def test_research_endpoint_does_not_search_when_card_did_not_match_chat(monkeypa
         calls.append((args, kwargs))
         raise AssertionError("web research must not run for an unrelated card")
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_sleep_context)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", should_not_search)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_sleep_context)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", should_not_search)
 
     research = asyncio.run(
         main.get_card_research("learn_picky_eating", uid="parent-private-id")
@@ -3835,9 +3833,9 @@ def test_external_research_requires_separate_explicit_consent(monkeypatch):
         calls.append((args, kwargs))
         raise AssertionError("provider must not run without explicit consent")
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", consent_off_context)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", should_not_search)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", consent_off_context)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", should_not_search)
 
     detail = asyncio.run(
         main.get_card_detail("learn_sleep_routine", uid="parent-private-id")
@@ -3872,9 +3870,9 @@ def test_emergency_context_never_calls_content_research_provider(monkeypatch):
         calls.append((args, kwargs))
         raise AssertionError("emergencies must never enter content research")
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", urgent_context)
-    monkeypatch.setattr(main, "content_research_oai", object())
-    monkeypatch.setattr(main, "research_learning_resources", should_not_search)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", urgent_context)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
+    monkeypatch.setattr(content_research, "research_learning_resources", should_not_search)
 
     detail = asyncio.run(
         main.get_card_detail("learn_sleep_routine", uid="parent-private-id")
@@ -3928,12 +3926,13 @@ def test_research_gate_never_calls_provider_when_preconditions_fail(
         raise AssertionError("provider should not be called")
 
     monkeypatch.setattr(
-        main, "content_research_oai", object() if client_configured else None
+    runtime,
+"content_research_oai", object() if client_configured else None
     )
-    monkeypatch.setattr(main, "research_learning_resources", should_not_search)
+    monkeypatch.setattr(content_research, "research_learning_resources", should_not_search)
 
     result = asyncio.run(
-        main._research_card_detail_resources(
+        feed_delivery.research_card_detail_resources(
             card={"id": "learn_sleep_routine", "is_conversation_match": is_match},
             context=context,
             uid=uid,
@@ -4041,15 +4040,15 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
         delivered.extend(events)
         return events, True
 
-    monkeypatch.setattr(main, "_db_get_recommendation_snapshot", load_snapshot)
-    monkeypatch.setattr(main, "_db_persist_recommendation_snapshots", persist)
-    monkeypatch.setattr(main, "_load_recent_main_chat", ready_context)
-    monkeypatch.setattr(main, "_attach_child_recommendation_context", attach_child)
-    monkeypatch.setattr(main, "_db_get_recommendation_events", no_events)
-    monkeypatch.setattr(main, "_rank_learning_content", ranked)
-    monkeypatch.setattr(main, "_research_card_detail_resources", research_once)
-    monkeypatch.setattr(main, "_db_append_recommendation_events", capture_delivery)
-    monkeypatch.setattr(main, "content_research_oai", object())
+    monkeypatch.setattr(stores, "get_snapshot", load_snapshot)
+    monkeypatch.setattr(stores, "persist_snapshots", persist)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", ready_context)
+    monkeypatch.setattr(core_family_store, "attach_child_recommendation_context", attach_child)
+    monkeypatch.setattr(core_outcome_store, "get_events", no_events)
+    monkeypatch.setattr(feed_signals, "rank_learning_content", ranked)
+    monkeypatch.setattr(feed_delivery, "research_card_detail_resources", research_once)
+    monkeypatch.setattr(core_outcome_store, "append_events", capture_delivery)
+    monkeypatch.setattr(runtime, "content_research_oai", object())
 
     result = asyncio.run(
         main.prepare_feed_research(main.ResearchPrepareRequest(items=requested), uid=uid)
@@ -4127,11 +4126,11 @@ def test_prepared_content_set_id_converges_for_same_frozen_group():
         for category in CONTENT_CATEGORIES
     ]
 
-    first = main._prepared_content_set_id(
+    first = feed_delivery.prepared_content_set_id(
         snapshots,
         [{"id": "first", "url": "https://example.org/first"}],
     )
-    concurrent = main._prepared_content_set_id(
+    concurrent = feed_delivery.prepared_content_set_id(
         snapshots,
         [{"id": "second", "url": "https://example.org/second"}],
     )

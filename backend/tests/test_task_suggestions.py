@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend.nuri_core import dialogue_reply as core_dialogue_reply  # noqa: E402
 from backend import memstore, runtime  # noqa: E402
 from backend import main  # noqa: E402
 from backend.router import TurnRoute  # noqa: E402
@@ -37,7 +38,7 @@ from backend.router import TurnRoute  # noqa: E402
     ],
 )
 def test_explicit_task_requests_are_deterministic(text):
-    assert main._user_requested_tasks(text) is True
+    assert core_dialogue_reply.user_requested_tasks(text) is True
 
 
 @pytest.mark.parametrize(
@@ -52,7 +53,7 @@ def test_explicit_task_requests_are_deterministic(text):
     ],
 )
 def test_task_mentions_and_declines_do_not_false_trigger(text):
-    assert main._user_requested_tasks(text) is False
+    assert core_dialogue_reply.user_requested_tasks(text) is False
 
 
 @pytest.mark.parametrize(
@@ -66,7 +67,7 @@ def test_task_mentions_and_declines_do_not_false_trigger(text):
     ],
 )
 def test_plan_information_requests_do_not_create_tasks(text):
-    assert main._user_requested_tasks(text) is False
+    assert core_dialogue_reply.user_requested_tasks(text) is False
 
 
 @pytest.mark.parametrize(
@@ -80,7 +81,7 @@ def test_plan_information_requests_do_not_create_tasks(text):
     ],
 )
 def test_requested_task_count(text, expected):
-    assert main._requested_task_count(text) == expected
+    assert core_dialogue_reply.requested_task_count(text) == expected
 
 
 def _proposal(title: str, *, scope: str = "today") -> dict:
@@ -94,7 +95,7 @@ def _proposal(title: str, *, scope: str = "today") -> dict:
 
 
 def test_primary_reply_carries_validated_task_proposals():
-    parsed = main._parse_nuri_reply(
+    parsed = core_dialogue_reply.parse_nuri_reply(
         json.dumps(
             {
                 "text": "今天先试两个小步骤。",
@@ -130,7 +131,7 @@ def test_actionable_reply_uses_primary_proposals_even_after_old_task_cards(monke
     def should_not_run(*_args, **_kwargs):
         raise AssertionError("primary proposals should not need a second model call")
 
-    monkeypatch.setattr(main, "_gen_tasks_ai_sync", should_not_run)
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync", should_not_run)
     history_with_old_card = [
         {
             "role": "ai",
@@ -168,7 +169,7 @@ def test_explicit_request_forces_fallback_and_includes_current_ai_plan(monkeypat
         captured["requested_count"] = requested_count
         return [_proposal("练习平静回应"), _proposal("记录用餐变化")]
 
-    monkeypatch.setattr(main, "_gen_tasks_ai_sync", generate)
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync", generate)
     reply = {
         "text": "这周可以先练习平静回应，并记录孩子离桌的次数。",
         "quick_replies": [],
@@ -192,9 +193,7 @@ def test_explicit_request_forces_fallback_and_includes_current_ai_plan(monkeypat
 
 
 def test_user_requested_count_truncates_primary_proposals(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: pytest.fail("fallback should not run"),
     )
     reply = {
@@ -216,9 +215,7 @@ def test_user_requested_count_truncates_primary_proposals(monkeypatch):
 
 
 def test_user_requested_count_fills_missing_primary_proposals(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: [
             _proposal("任务二"),
             _proposal("任务三"),
@@ -244,9 +241,7 @@ def test_user_requested_count_fills_missing_primary_proposals(monkeypatch):
 
 
 def test_proposals_cannot_trigger_when_model_declines(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: pytest.fail("a disabled turn must stay disabled"),
     )
     reply = {
@@ -263,9 +258,7 @@ def test_proposals_cannot_trigger_when_model_declines(monkeypatch):
 
 
 def test_task_decline_overrides_model_suggestion(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: pytest.fail("declined tasks must not be generated"),
     )
     reply = {
@@ -287,9 +280,7 @@ def test_task_decline_overrides_model_suggestion(monkeypatch):
 
 
 def test_emergency_request_never_falls_back_to_routine_tasks(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: pytest.fail("urgent turns must not generate tasks"),
     )
     reply = {
@@ -311,9 +302,7 @@ def test_emergency_request_never_falls_back_to_routine_tasks(monkeypatch):
 
 
 def test_clarifying_turn_does_not_generate_tasks(monkeypatch):
-    monkeypatch.setattr(
-        main,
-        "_gen_tasks_ai_sync",
+    monkeypatch.setattr(core_dialogue_reply, "gen_tasks_ai_sync",
         lambda *_args, **_kwargs: pytest.fail("clarifying turns must not generate tasks"),
     )
     reply = {
@@ -380,9 +369,7 @@ def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypat
         )
 
     monkeypatch.setattr(main, "_reply_context", reply_context)
-    monkeypatch.setattr(
-        main,
-        "_nuri_reply_sync",
+    monkeypatch.setattr(core_dialogue_reply, "nuri_reply_sync",
         lambda *_args, **_kwargs: {
             "text": "这次先固定睡前顺序。",
             "quick_replies": [],

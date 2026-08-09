@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from backend import stores  # noqa: E402
+from backend.feed import signals as feed_signals  # noqa: E402
+from backend.nuri_core import outcome_store as core_outcome_store  # noqa: E402
 from backend import memstore, runtime  # noqa: E402
 from backend.nuri_core import outcome_store  # noqa: E402
 from backend import main
@@ -229,7 +232,7 @@ def test_prune_events_deduplicates_client_event_ids_and_expires_old_rows():
 
 def test_behavior_feedback_cannot_create_conversation_relevance():
     messages = [{"role": "user", "text": "孩子晚上一直醒，怎么安排睡前流程？"}]
-    cards, used = main._rank_learning_content(
+    cards, used = feed_signals.rank_learning_content(
         messages,
         count=4,
         behavior_events=[
@@ -305,7 +308,7 @@ def test_weighted_first_exposure_is_stable_within_window():
 
 def test_not_relevant_suppresses_exact_static_card():
     messages = [{"role": "user", "text": "孩子晚上一直醒，怎么安排睡前流程？"}]
-    cards, _ = main._rank_learning_content(
+    cards, _ = feed_signals.rank_learning_content(
         messages,
         count=4,
         session_id="main-session",
@@ -322,7 +325,7 @@ def test_authenticated_event_endpoint_persists_only_bounded_metadata(monkeypatch
     async def enabled_privacy(*_args, **_kwargs):
         return {"allow_history_training": True}
 
-    monkeypatch.setattr(main, "_db_get_privacy", enabled_privacy)
+    monkeypatch.setattr(stores, "get_privacy", enabled_privacy)
 
     result = asyncio.run(
         main.track_recommendation_event(
@@ -369,7 +372,7 @@ def test_not_relevant_endpoint_requires_a_specific_reason(monkeypatch):
     async def enabled_privacy(*_args, **_kwargs):
         return {"allow_history_training": True}
 
-    monkeypatch.setattr(main, "_db_get_privacy", enabled_privacy)
+    monkeypatch.setattr(stores, "get_privacy", enabled_privacy)
 
     with pytest.raises(main.HTTPException) as missing_reason:
         asyncio.run(
@@ -596,7 +599,7 @@ def test_recommendation_event_table_appends_deduplicates_and_deletes(monkeypatch
     second = _storage_event("row-event-0002", event="helpful")
 
     _, persisted = asyncio.run(
-        main._db_append_recommendation_events(uid, [first, second, first])
+        core_outcome_store.append_events(uid, [first, second, first])
     )
 
     assert persisted is True
@@ -607,13 +610,13 @@ def test_recommendation_event_table_appends_deduplicates_and_deletes(monkeypatch
 
     # A cold instance rehydrates from independent rows, not a mutable JSON list.
     monkeypatch.setattr(memstore, "recommendation_events", {})
-    loaded = asyncio.run(main._db_get_recommendation_events(uid))
+    loaded = asyncio.run(core_outcome_store.get_events(uid))
     assert {event["event_id"] for event in loaded} == {
         "row-event-0001",
         "row-event-0002",
     }
 
-    asyncio.run(main._db_delete_recommendation_events(uid))
+    asyncio.run(core_outcome_store.delete_events(uid))
     assert supabase.event_rows == {}
 
 
@@ -635,10 +638,10 @@ def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
         "updated_at": legacy["occurred_at"],
     }
 
-    asyncio.run(main._db_append_recommendation_events(uid, [first]))
+    asyncio.run(core_outcome_store.append_events(uid, [first]))
     # Simulate another Vercel instance with no process-local event cache.
     monkeypatch.setattr(memstore, "recommendation_events", {})
-    asyncio.run(main._db_append_recommendation_events(uid, [second, first]))
+    asyncio.run(core_outcome_store.append_events(uid, [second, first]))
 
     # The first missing-table response is cached for this warm instance; all
     # later reads and writes go straight to atomic per-event setting rows.
@@ -653,14 +656,14 @@ def test_missing_event_table_uses_atomic_per_event_setting_rows(monkeypatch):
     assert supabase.settings[legacy_key]["value"] == legacy_value
 
     monkeypatch.setattr(memstore, "recommendation_events", {})
-    loaded = asyncio.run(main._db_get_recommendation_events(uid))
+    loaded = asyncio.run(core_outcome_store.get_events(uid))
     assert {event["event_id"] for event in loaded} == {
         "setting-event-0001",
         "setting-event-0002",
         "legacy-event-0001",
     }
 
-    asyncio.run(main._db_delete_recommendation_events(uid))
+    asyncio.run(core_outcome_store.delete_events(uid))
     assert not any(key.startswith(prefix) for key in supabase.settings)
     assert legacy_key not in supabase.settings
 
@@ -694,7 +697,7 @@ def test_row_table_physically_removes_expired_and_overflow_events(monkeypatch):
         occurred_at=(now + timedelta(seconds=1)).isoformat(),
     )
     _, persisted = asyncio.run(
-        main._db_append_recommendation_events(uid, [newest])
+        core_outcome_store.append_events(uid, [newest])
     )
 
     assert persisted is True
@@ -756,7 +759,7 @@ def test_settings_v2_physically_removes_expired_and_overflow_events(monkeypatch)
         occurred_at=(now + timedelta(seconds=1)).isoformat(),
     )
     _, persisted = asyncio.run(
-        main._db_append_recommendation_events(uid, [newest])
+        core_outcome_store.append_events(uid, [newest])
     )
 
     assert persisted is True
@@ -797,7 +800,7 @@ def test_settings_cleanup_deletes_empty_legacy_v1_value(monkeypatch):
     }
 
     _, persisted = asyncio.run(
-        main._db_append_recommendation_events(
+        core_outcome_store.append_events(
             uid,
             [_storage_event("new-v2-event")],
         )
@@ -826,7 +829,7 @@ def test_cleanup_failure_keeps_successfully_written_event(monkeypatch, capsys):
     event = _storage_event("persisted-before-cleanup")
 
     _, persisted = asyncio.run(
-        main._db_append_recommendation_events(uid, [event])
+        core_outcome_store.append_events(uid, [event])
     )
 
     assert persisted is True

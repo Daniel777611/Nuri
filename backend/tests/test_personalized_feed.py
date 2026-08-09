@@ -12,6 +12,10 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from backend import stores  # noqa: E402
+from backend.nuri_core import dialogue_reply as core_dialogue_reply  # noqa: E402
+from backend.feed import delivery as feed_delivery  # noqa: E402
+from backend.feed import signals as feed_signals  # noqa: E402
 from backend import memstore, runtime  # noqa: E402
 from backend import main  # noqa: E402
 from backend.content_library import (  # noqa: E402
@@ -64,17 +68,17 @@ def _run_personalized(
     monkeypatch.setattr(memstore, "messages", messages)
     # Keep deterministic ranking tests independent of developer-machine API
     # credentials. Tests for open-topic research opt in with a sentinel client.
-    monkeypatch.setattr(main, "content_research_oai", research_client)
+    monkeypatch.setattr(runtime, "content_research_oai", research_client)
 
     async def verified_privacy(request_uid, fail_closed=False):
         del fail_closed
         stored = (privacy or {}).get(request_uid)
-        return main._normalized_privacy_settings(stored)
+        return stores.normalized_privacy_settings(stored)
 
     # Ranking tests use the in-memory conversation fallback, but privacy must
     # still be treated as a successfully verified setting. Storage-failure
     # behavior is covered independently below.
-    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    monkeypatch.setattr(stores, "get_privacy", verified_privacy)
     return asyncio.run(main.get_personalized_feed(count=count, uid=uid))
 
 
@@ -258,17 +262,17 @@ def test_supabase_long_current_chat_keeps_substantive_cross_session_goal(monkeyp
     )
     supabase = _ChatSupabase(sessions, messages)
     monkeypatch.setattr(runtime, "get_supabase", lambda: supabase)
-    monkeypatch.setattr(main, "content_research_oai", None)
+    monkeypatch.setattr(runtime, "content_research_oai", None)
 
     async def verified_privacy(_uid, fail_closed=False):
         del fail_closed
-        return main._normalized_privacy_settings({})
+        return stores.normalized_privacy_settings({})
 
     async def skip_snapshots(_uid, cards, _context):
         return cards
 
-    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
-    monkeypatch.setattr(main, "_attach_recommendation_snapshots", skip_snapshots)
+    monkeypatch.setattr(stores, "get_privacy", verified_privacy)
+    monkeypatch.setattr(feed_delivery, "attach_recommendation_snapshots", skip_snapshots)
 
     payload = asyncio.run(main.get_personalized_feed(count=4, uid="parent-1"))
 
@@ -297,11 +301,11 @@ def test_supabase_missing_requested_session_does_not_fall_through(monkeypatch):
 
     async def verified_privacy(_uid, fail_closed=False):
         del fail_closed
-        return main._normalized_privacy_settings({})
+        return stores.normalized_privacy_settings({})
 
-    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    monkeypatch.setattr(stores, "get_privacy", verified_privacy)
     context = asyncio.run(
-        main._load_recent_main_chat(
+        feed_signals.load_recent_main_chat(
             "parent-1",
             preferred_session_id="deleted-main",
             through_created_at="2026-07-31T10:00:00+00:00",
@@ -331,11 +335,11 @@ def test_memory_missing_requested_session_does_not_fall_through(monkeypatch):
 
     async def verified_privacy(_uid, fail_closed=False):
         del fail_closed
-        return main._normalized_privacy_settings({})
+        return stores.normalized_privacy_settings({})
 
-    monkeypatch.setattr(main, "_db_get_privacy", verified_privacy)
+    monkeypatch.setattr(stores, "get_privacy", verified_privacy)
     context = asyncio.run(
-        main._load_recent_main_chat(
+        feed_signals.load_recent_main_chat(
             "parent-1",
             preferred_session_id="deleted-main",
             through_created_at="2026-07-31T10:00:00+00:00",
@@ -701,8 +705,7 @@ def test_novel_real_topics_are_conversation_matches_and_can_research(
             "cited_source_count": 9,
         }
 
-    monkeypatch.setattr(
-        main, "_research_card_detail_resources", complete_dynamic_research
+    monkeypatch.setattr(feed_delivery, "research_card_detail_resources", complete_dynamic_research
     )
     research = asyncio.run(
         main.get_card_research(
@@ -801,13 +804,13 @@ def test_urgent_research_gate_precedes_consent_and_never_calls_research(
         },
         research_client=object(),
     )
-    assert main._urgent_task_suppressed(urgent_text) is True
+    assert core_dialogue_reply.urgent_task_suppressed(urgent_text) is True
     assert payload["items"][0]["resource_status"] == "urgent_suppressed"
 
     async def research_must_not_run(**_kwargs):
         raise AssertionError("urgent context reached external research")
 
-    monkeypatch.setattr(main, "_research_card_detail_resources", research_must_not_run)
+    monkeypatch.setattr(feed_delivery, "research_card_detail_resources", research_must_not_run)
     detail = asyncio.run(
         main.get_card_detail(
             "learn_sleep_routine",
@@ -863,7 +866,7 @@ def test_memory_context_honors_preferred_session_for_followup_binding(monkeypatc
     monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
     monkeypatch.setattr(memstore, "messages", messages)
 
-    context = main._recent_main_chat_from_memory(
+    context = feed_signals.recent_main_chat_from_memory(
         "parent-1", preferred_session_id="preferred-chat"
     )
 
@@ -916,7 +919,7 @@ def test_memory_context_aggregates_only_same_users_recent_main_chats(monkeypatch
     monkeypatch.setattr(memstore, "sessions", {item["id"]: item for item in sessions})
     monkeypatch.setattr(memstore, "messages", messages)
 
-    context = main._recent_main_chat_from_memory("parent-1")
+    context = feed_signals.recent_main_chat_from_memory("parent-1")
 
     assert context["session_id"] == "current-main"
     assert [message["id"] for message in context["messages"]] == [
@@ -962,7 +965,7 @@ def test_action_request_keeps_user_language_goal_ahead_of_ai_fine_motor_aside(
     assert payload["personalization_mode"] == "conversation"
     assert card["id"] == "learn_language_milestones"
     assert card["recommendation_intent"] == "action_plan"
-    assert card["recommendation_score"] >= main._CONVERSATION_MATCH_MIN_SCORE
+    assert card["recommendation_score"] >= feed_signals.CONVERSATION_MATCH_MIN_SCORE
     assert "轮流发声" in card["recommendation_focus"]
     assert "可执行任务" in card["personalization_reason"]
     assert "轮流发声" in card["personalization_reason"]
@@ -1231,7 +1234,7 @@ def test_long_single_session_keeps_busy_parent_and_key_period_as_top_two(
     monkeypatch.setattr(memstore, "sessions", {"long-main": sessions[0]})
     monkeypatch.setattr(memstore, "messages", messages)
 
-    context = main._recent_main_chat_from_memory("parent-1", limit=12)
+    context = feed_signals.recent_main_chat_from_memory("parent-1", limit=12)
     payload = _run_personalized(monkeypatch, "parent-1", sessions, messages)
     first, second = payload["items"][:2]
 
@@ -1259,10 +1262,10 @@ def test_long_single_session_keeps_busy_parent_and_key_period_as_top_two(
 
 
 def test_recommendation_feedback_clause_keeps_real_parenting_fact():
-    assert main._clean_parenting_signal(
+    assert feed_signals.clean_parenting_signal(
         "这个推荐和我的对话不相关，我创业很忙，陪孩子时间很少。"
     ) == "我创业很忙，陪孩子时间很少"
-    assert main._clean_parenting_signal(
+    assert feed_signals.clean_parenting_signal(
         "这段内容不准确，宝宝现在九个月，未来两个月想关注关键期。"
     ) == "宝宝现在九个月，未来两个月想关注关键期"
 
@@ -1276,8 +1279,8 @@ def test_recommendation_feedback_clause_keeps_real_parenting_fact():
     ],
 )
 def test_english_recommendation_feedback_is_not_a_parenting_topic(text):
-    assert main._is_recommendation_feedback(text) is True
-    assert main._clean_parenting_signal(text) == ""
+    assert feed_signals.is_recommendation_feedback(text) is True
+    assert feed_signals.clean_parenting_signal(text) == ""
 
 
 @pytest.mark.parametrize(
@@ -1289,8 +1292,8 @@ def test_english_recommendation_feedback_is_not_a_parenting_topic(text):
     ],
 )
 def test_english_conversation_meta_is_not_a_parenting_topic(text):
-    assert main._is_conversation_meta_request(text) is True
-    assert main._clean_parenting_signal(text) == ""
+    assert feed_signals.is_conversation_meta_request(text) is True
+    assert feed_signals.clean_parenting_signal(text) == ""
 
 
 @pytest.mark.parametrize(
@@ -1302,7 +1305,7 @@ def test_english_conversation_meta_is_not_a_parenting_topic(text):
     ],
 )
 def test_english_generic_action_requests_inherit_the_existing_topic(text):
-    assert main._is_action_only_request(text) is True
+    assert feed_signals.is_action_only_request(text) is True
 
 
 @pytest.mark.parametrize(
@@ -1331,7 +1334,7 @@ def test_english_generic_action_requests_inherit_the_existing_topic(text):
     ],
 )
 def test_signal_cleaning_drops_only_product_or_non_parenting_clauses(raw, expected):
-    assert main._clean_parenting_signal(raw) == expected
+    assert feed_signals.clean_parenting_signal(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -1352,7 +1355,7 @@ def test_signal_cleaning_drops_only_product_or_non_parenting_clauses(raw, expect
     ],
 )
 def test_non_parenting_clause_does_not_erase_a_real_child_fact(raw, expected):
-    assert main._clean_parenting_signal(raw) == expected
+    assert feed_signals.clean_parenting_signal(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -1367,19 +1370,19 @@ def test_non_parenting_clause_does_not_erase_a_real_child_fact(raw, expected):
     ],
 )
 def test_action_only_classifier_preserves_short_parenting_topics(text, expected):
-    assert main._is_action_only_request(text) is expected
+    assert feed_signals.is_action_only_request(text) is expected
 
 
 def test_generic_context_request_does_not_swallow_a_trailing_real_topic():
-    assert main._is_generic_context_request("你认为我最需要什么引导？") is True
+    assert feed_signals.is_generic_context_request("你认为我最需要什么引导？") is True
     assert (
-        main._is_generic_context_request("你认为我最需要什么引导？孩子最近夜醒")
+        feed_signals.is_generic_context_request("你认为我最需要什么引导？孩子最近夜醒")
         is False
     )
 
 
 def test_recommendation_diagnostics_never_log_conversation_text(capsys):
-    main._log_personalized_feed_decision(
+    feed_delivery.log_personalized_feed_decision(
         "parent-secret-id",
         {
             "state": "ready",
@@ -1454,7 +1457,7 @@ def test_startup_company_only_does_not_become_parenting_recommendation(
     ],
 )
 def test_product_meta_detection_does_not_consume_real_task_requests(text, expected):
-    assert main._is_product_meta_request(text) is expected
+    assert feed_signals.is_product_meta_request(text) is expected
 
 
 @pytest.mark.parametrize(
@@ -1468,7 +1471,7 @@ def test_product_meta_detection_does_not_consume_real_task_requests(text, expect
     ],
 )
 def test_recommendation_intent_codes_describe_the_users_request(text, expected):
-    assert main._recommendation_intent_code(text) == expected
+    assert feed_signals.recommendation_intent_code(text) == expected
 
 
 def test_history_training_opt_out_never_reads_or_links_conversations(monkeypatch):
@@ -1641,7 +1644,7 @@ def test_simplified_resources_use_reviewed_non_mainland_source(card):
         for kind in ("article", "video")
     }
     primary_pairs = {
-        category: main._select_category_resource_pair(resources, category, "zh-CN")
+        category: feed_delivery.select_category_resource_pair(resources, category, "zh-CN")
         for category in ("authority", "featured", "case")
     }
     assert all(
@@ -1716,7 +1719,7 @@ def test_traditional_resources_are_taiwan_authority_first(card):
         for kind in ("article", "video")
     }
     primary_pairs = {
-        category: main._select_category_resource_pair(resources, category, "zh-TW")
+        category: feed_delivery.select_category_resource_pair(resources, category, "zh-TW")
         for category in ("authority", "featured", "case")
     }
     assert all(
@@ -1824,7 +1827,7 @@ def test_development_reviewed_resources_cover_age_and_busy_parent_focus():
 def test_runtime_zh_cn_filter_rejects_structurally_mislabeled_taiwan_resource(
     resource,
 ):
-    assert not main._resource_matches_preferred_locale(resource, "zh-CN")
+    assert not feed_delivery.resource_matches_preferred_locale(resource, "zh-CN")
 
 
 def test_reviewed_resource_summary_uses_runtime_locale_filter():
@@ -1851,7 +1854,7 @@ def test_reviewed_resource_summary_uses_runtime_locale_filter():
         },
     ]
 
-    filtered = main._reviewed_resources_for_context(mixed_resources, "zh-CN")
+    filtered = feed_delivery.reviewed_resources_for_context(mixed_resources, "zh-CN")
     summary = main.summarize_resource_slots(filtered, "zh-CN")
 
     assert [resource["id"] for resource in filtered] == ["valid-cn"]
@@ -1921,7 +1924,7 @@ def test_learning_detail_uses_saved_traditional_chinese_preference(monkeypatch):
             "preferred_locale": "zh-TW",
         }
 
-    monkeypatch.setattr(main, "_load_recent_main_chat", traditional_context)
+    monkeypatch.setattr(feed_signals, "load_recent_main_chat", traditional_context)
 
     detail = asyncio.run(main.get_card_detail("learn_sleep_routine", uid="parent-1"))
 
@@ -2026,7 +2029,7 @@ def test_missing_privacy_row_defaults_to_history_personalization_enabled(
     monkeypatch.setattr(runtime, "get_supabase", lambda: EmptyPrivacySupabase())
     monkeypatch.setattr(memstore, "privacy", {})
 
-    loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
+    loaded = asyncio.run(stores.get_privacy("parent-1", fail_closed=True))
 
     assert loaded["allow_history_training"] is True
     assert loaded["allow_external_content_research"] is False
@@ -2038,7 +2041,7 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
     monkeypatch.setattr(memstore, "privacy", {})
 
     saved = asyncio.run(
-        main._db_set_privacy(
+        stores.set_privacy(
             "parent-1",
             {
                 "allow_history_training": False,
@@ -2050,7 +2053,7 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
     )
     assert saved["allow_history_training"] is False
     assert (
-        json.loads(supabase.store[main._privacy_storage_key("parent-1")])[
+        json.loads(supabase.store[stores.privacy_storage_key("parent-1")])[
             "allow_history_training"
         ]
         is False
@@ -2058,13 +2061,13 @@ def test_privacy_opt_out_survives_a_cold_process_cache(monkeypatch):
 
     # Simulate a Vercel cold start: process memory is empty, Supabase remains.
     monkeypatch.setattr(memstore, "privacy", {})
-    loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
+    loaded = asyncio.run(stores.get_privacy("parent-1", fail_closed=True))
     assert loaded["allow_history_training"] is False
     assert loaded["language"] == "zh-TW"
 
 
 def test_legacy_chinese_privacy_locale_normalizes_to_simplified_chinese():
-    settings = main._normalized_privacy_settings({"language": "zh"})
+    settings = stores.normalized_privacy_settings({"language": "zh"})
 
     assert settings["language"] == "zh-CN"
 
@@ -2109,19 +2112,19 @@ def test_privacy_lookup_fails_closed_when_storage_is_unavailable(monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
     monkeypatch.setattr(memstore, "privacy", {})
 
-    loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
+    loaded = asyncio.run(stores.get_privacy("parent-1", fail_closed=True))
 
     assert loaded["allow_history_training"] is False
 
 
 def test_privacy_lookup_fails_closed_when_client_is_unconfigured(monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: None)
-    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
+    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(stores.DEFAULT_PRIVACY)})
 
-    loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
+    loaded = asyncio.run(stores.get_privacy("parent-1", fail_closed=True))
 
     assert loaded["allow_history_training"] is False
-    assert loaded[main._PRIVACY_STORAGE_UNAVAILABLE] is True
+    assert loaded[stores.PRIVACY_STORAGE_UNAVAILABLE] is True
 
 
 def test_privacy_lookup_does_not_trust_warm_cache_during_storage_failure(monkeypatch):
@@ -2130,12 +2133,12 @@ def test_privacy_lookup_does_not_trust_warm_cache_during_storage_failure(monkeyp
             raise RuntimeError("temporary outage")
 
     monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
-    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(main._DEFAULT_PRIVACY)})
+    monkeypatch.setattr(memstore, "privacy", {"parent-1": dict(stores.DEFAULT_PRIVACY)})
 
-    loaded = asyncio.run(main._db_get_privacy("parent-1", fail_closed=True))
+    loaded = asyncio.run(stores.get_privacy("parent-1", fail_closed=True))
 
     assert loaded["allow_history_training"] is False
-    assert loaded[main._PRIVACY_STORAGE_UNAVAILABLE] is True
+    assert loaded[stores.PRIVACY_STORAGE_UNAVAILABLE] is True
 
 
 def test_privacy_storage_failure_uses_unavailable_feed_not_opt_out_copy(monkeypatch):
@@ -2170,15 +2173,15 @@ def test_failed_privacy_write_restores_the_previous_cached_setting(monkeypatch):
         def table(self, _name):
             return BrokenTable()
 
-    previous = {**main._DEFAULT_PRIVACY, "allow_history_training": False}
+    previous = {**stores.DEFAULT_PRIVACY, "allow_history_training": False}
     monkeypatch.setattr(runtime, "get_supabase", lambda: BrokenSupabase())
     monkeypatch.setattr(memstore, "privacy", {"parent-1": previous})
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
-            main._db_set_privacy(
+            stores.set_privacy(
                 "parent-1",
-                {**main._DEFAULT_PRIVACY, "allow_history_training": True},
+                {**stores.DEFAULT_PRIVACY, "allow_history_training": True},
             )
         )
 
