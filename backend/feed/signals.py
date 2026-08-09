@@ -51,6 +51,7 @@ from backend.content_library import (
 from backend.content_research import (
     CONTENT_CATEGORIES,
     DELIVERY_SOURCE_CONTRACT_VERSION,
+    DYNAMIC_RESEARCH_CARD_PREFIX,
     MAX_TOTAL_RESEARCH_RESOURCES,
     MIN_TOTAL_RESEARCH_RESOURCES,
     redact_conversation_text,
@@ -872,9 +873,6 @@ _CONTEXT_REJECTION_MARKERS = (
 _ACKNOWLEDGEMENT_ONLY = frozenset(
     {"谢谢", "谢谢你", "好的", "好", "明白了", "知道了", "收到", "ok", "okay", "thanks", "thank you"}
 )
-DYNAMIC_RESEARCH_CARD_PREFIX = "learn_conversation_"
-
-
 def _is_acknowledgement_only(text: str) -> bool:
     """Recognize one or more acknowledgement phrases with no real topic."""
 
@@ -1125,15 +1123,23 @@ def _is_dynamic_topic_candidate(topic: str) -> bool:
 def _dynamic_research_card_id(
     *,
     session_id: Optional[str],
-    context_created_at: Optional[str],
     topic: str,
 ) -> str:
-    """Build an addressable ID without placing conversation text in the URL."""
+    """Build an addressable ID without placing conversation text in the URL.
+
+    Identity is the topic, not the moment. This used to hash
+    `context_created_at` — the timestamp of the last message — which meant the
+    card was a different card after every turn, including after "谢谢". The
+    research cache keys on the card id, so a mechanically rotating id made the
+    most expensive call in the system incapable of ever hitting it.
+
+    The topic excerpt still moves when the parent genuinely asks something new,
+    and a new id is right then: that is a different subject deserving different
+    content. What is gone is the churn that had nothing to do with the subject.
+    """
 
     normalized_topic = " ".join(topic.casefold().split())
-    material = "\n".join(
-        (session_id or "no-session", context_created_at or "no-time", normalized_topic)
-    )
+    material = "\n".join((session_id or "no-session", normalized_topic))
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
     return f"{DYNAMIC_RESEARCH_CARD_PREFIX}{digest}"
 
@@ -1158,11 +1164,7 @@ def _build_dynamic_research_card(
     topic = _conversation_topic_excerpt(messages)
     if not _is_dynamic_topic_candidate(topic):
         return None
-    card_id = _dynamic_research_card_id(
-        session_id=session_id,
-        context_created_at=context_created_at,
-        topic=topic,
-    )
+    card_id = _dynamic_research_card_id(session_id=session_id, topic=topic)
     latest_current_user_text = next(
         (
             str(message.get("text") or "")

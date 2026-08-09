@@ -30,7 +30,7 @@ from typing import List, Optional
 # out of main.py.
 from fastapi import HTTPException
 
-from backend import runtime
+from backend import llm_usage, runtime
 from backend.runtime import (
     EMBED_DIM,
     INTERNAL_MIN_SIMILARITY,
@@ -66,12 +66,20 @@ def chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
 def embed_batch(texts: List[str]) -> List[List[float]]:
     # Ingest-time only, and batches can be large — keep the longer client default.
     resp = oai.embeddings.create(model="text-embedding-3-large", input=texts, dimensions=EMBED_DIM)
+    llm_usage.record(
+        "rag.embed_batch", "text-embedding-3-large",
+        api="embeddings", usage=getattr(resp, "usage", None),
+    )
     return [d.embedding for d in resp.data]
 
 def embed_one(text: str) -> List[float]:
     resp = oai.embeddings.create(
         model="text-embedding-3-large", input=text, dimensions=EMBED_DIM,
         timeout=OPENAI_FAST_TIMEOUT_S,
+    )
+    llm_usage.record(
+        "rag.embed_query", "text-embedding-3-large",
+        api="embeddings", usage=getattr(resp, "usage", None),
     )
     return resp.data[0].embedding
 

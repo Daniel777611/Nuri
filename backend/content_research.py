@@ -25,6 +25,8 @@ from itertools import combinations
 from typing import Any, Iterable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from backend import llm_usage
+
 try:
     from backend.recommendation_feedback import canonical_resource_url
     from backend.content_library import (
@@ -60,6 +62,11 @@ except ImportError:  # pragma: no cover - direct module execution compatibility
 
 CONTENT_CATEGORIES = ("authority", "featured", "case")
 RESOURCE_KINDS = ("article", "video")
+#: Prefix of the card minted for a conversation no library card covers. Defined
+#: here rather than in feed.signals, which builds those cards, because this
+#: module has to tell the two kinds apart when recording what a research run
+#: cost — and it is the lower layer, so signals imports it from here.
+DYNAMIC_RESEARCH_CARD_PREFIX = "learn_conversation_"
 MIN_RESOURCES_PER_CATEGORY = 2
 MAX_RESOURCES_PER_CATEGORY = 3
 MIN_TOTAL_RESEARCH_RESOURCES = len(CONTENT_CATEGORIES) * MIN_RESOURCES_PER_CATEGORY
@@ -3497,17 +3504,95 @@ def _log_research_diagnostic(
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
 
 
+def _bundle_is_publishable(bundle: Optional[dict], locale: str) -> bool:
+    """True when a cached bundle would survive the delivery gate as-is.
+
+    A run that came back short still returns a dict, so "not None" is not the
+    same as "usable". The preparation route judges the bundle against
+    `delivery_lane_rejection_reason(..., require_dynamic=True)` and reports
+    `retryable` when a lane cannot be filled; caching such a bundle as a success
+    would make the parent's retry replay it and do no new work.
+
+    So this applies the same gate the caller will. Anything that fails it —
+    short bundles, and bundles that could only be filled from the reviewed
+    whitelist — gets the failure TTL and is skipped by `retry_failed`, which is
+    what makes a retry actually retry. This is the guarantee `force=True` used
+    to provide on this path, at the cost of also discarding bundles that were
+    perfectly deliverable.
+    """
+    if not bundle:
+        return False
+    deliverable = [
+        resource
+        for resource in bundle.get("resources") or []
+        if not delivery_lane_rejection_reason(resource, locale, require_dynamic=True)
+    ]
+    return _select_complete_resource_set(deliverable) is not None
+
+
+def _bundle_hits_excluded_urls(
+    bundle: Optional[dict],
+    excluded_url_keys: Iterable[str],
+) -> bool:
+    """True when a cached bundle contains something the caller must not re-show.
+
+    The exclusion list used to be part of the cache key, which made the key
+    change every time the parent read one more thing — a cache that could only
+    miss. Checking the collision on read keeps the guarantee (a URL on the list
+    is never served) while letting the common case, where nothing collides,
+    actually hit.
+    """
+    excluded = set(excluded_url_keys)
+    if not excluded or not bundle:
+        return False
+    return any(
+        _url_identity_keys(str(resource.get("url") or "")) & excluded
+        for resource in (bundle.get("resources") or [])
+    )
+
+
+def _record_provider_call(
+    site: str,
+    model: str,
+    started: float,
+    *,
+    response: Any = None,
+    error: Optional[BaseException] = None,
+) -> None:
+    """Log one Responses call's cost.
+
+    Worth recording even on the error path: a call that times out after
+    exhausting its tool budget has already been billed for every round it made,
+    and those are the rows a missing-data theory would otherwise never see.
+    """
+    llm_usage.record(
+        site,
+        model,
+        api="responses",
+        usage=getattr(response, "usage", None),
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        tool_calls=llm_usage.count_tool_calls(response),
+        status="ok" if error is None else "error",
+        error=None if error is None else f"{type(error).__name__}: {error}",
+    )
+
+
 def _cache_key(
     card: dict,
     messages: list[dict],
     locale: str,
     safety_identifier: str,
-    excluded_urls: Optional[Iterable[str]] = None,
     feedback_preferences: Optional[Iterable[object]] = None,
 ) -> str:
     # Raw messages must not enter cache material either: cache identity follows
     # the same bounded card context that is permitted to leave the service.
     del messages
+    # The excluded-URL list is deliberately *not* here. It grows every time the
+    # parent reads a resource, so including it gave a fresh key on nearly every
+    # call and an entry no later call could ever match. What it protects — never
+    # re-showing an excluded URL — is enforced on read by
+    # _bundle_hits_excluded_urls, which turns a conflict into a miss instead of
+    # making every request a miss.
     material = json.dumps(
         {
             "contract_version": _RESEARCH_CONTRACT_VERSION,
@@ -3515,7 +3600,6 @@ def _cache_key(
             "locale": normalize_resource_locale(locale),
             "user_scope": safety_identifier,
             "context": _structured_research_context(card),
-            "excluded_urls": _normalized_excluded_url_keys(excluded_urls),
             "feedback_preferences": _normalized_feedback_preferences(
                 feedback_preferences
             ),
@@ -3819,12 +3903,40 @@ def research_learning_resources(
     model: str,
     safety_identifier: str,
     force: bool = False,
+    retry_failed: bool = False,
     excluded_urls: Optional[Iterable[str]] = None,
     feedback_preferences: Optional[Iterable[object]] = None,
+    call_label: str = "primary",
 ) -> Optional[dict]:
-    """Search, validate and cache a quality-first six-to-nine-resource bundle."""
+    """Search, validate and cache a quality-first six-to-nine-resource bundle.
+
+    `force` discards any cached bundle: the refresh route wants content the
+    parent has not already been shown, so a hit is the wrong answer there.
+
+    `retry_failed` is the weaker request the preparation route actually needs —
+    ignore a remembered *failure* so a retry can reach the provider again, but
+    still serve a bundle that worked. It used to pass `force` for this, which
+    also threw away every success and made the cache unreachable on the one
+    path that runs the most expensive call in the system.
+
+    `call_label` only names the caller in the usage log. Every route reaches
+    this one function, so without it the preparation and refresh bundles are
+    indistinguishable in the cost breakdown.
+    """
 
     locale = normalize_resource_locale(preferred_locale)
+    # Split the spend label by card kind. A library card's id is fixed, so its
+    # bundle can be reused; the dynamic card's id embeds the timestamp of the
+    # last message, so it mints a new identity every turn and can never hit the
+    # cache. Those are different cost profiles, and keeping them apart in the
+    # breakdown is what makes "is the dynamic card paying for itself" a question
+    # the data answers.
+    card_kind = (
+        "dynamic"
+        if str(card.get("id") or "").startswith(DYNAMIC_RESEARCH_CARD_PREFIX)
+        else "static"
+    )
+    usage_site = f"{call_label}_{card_kind}"
     excluded_url_keys = _normalized_excluded_url_keys(excluded_urls)
     normalized_preferences = _normalized_feedback_preferences(feedback_preferences)
     key = _cache_key(
@@ -3832,25 +3944,38 @@ def research_learning_resources(
         messages,
         locale,
         safety_identifier,
-        excluded_url_keys,
         normalized_preferences,
     )
     now = time.monotonic()
     with _CACHE_LOCK:
         cached = _RESEARCH_CACHE.get(key)
         if not force and cached:
-            ttl = _CACHE_TTL_S if cached[1] is not None else _FAILURE_CACHE_TTL_S
-            if now - cached[0] < ttl:
+            # "Publishable", not merely "not None": a bundle that came back
+            # short is a failed attempt wearing a dict, and it gets the failure
+            # TTL so a retry is not answered with it.
+            publishable = _bundle_is_publishable(cached[1], locale)
+            ttl = _CACHE_TTL_S if publishable else _FAILURE_CACHE_TTL_S
+            fresh = now - cached[0] < ttl
+            # A cached bundle is only usable if none of it is on the caller's
+            # exclusion list. The list is no longer part of the cache key — it
+            # rotates as the parent reads things, and keying on it meant a
+            # different key on nearly every call — so the collision is checked
+            # here instead, where a conflict costs a miss rather than a repeat.
+            collides = publishable and _bundle_hits_excluded_urls(
+                cached[1], excluded_url_keys
+            )
+            if fresh and not collides and not (retry_failed and not publishable):
                 _RESEARCH_CACHE.move_to_end(key)
                 _log_research_diagnostic(
                     "cache_hit",
                     card,
                     locale,
-                    result_available=cached[1] is not None,
+                    result_available=publishable,
                     resource_count=len((cached[1] or {}).get("resources") or []),
                 )
                 return copy.deepcopy(cached[1])
-            _RESEARCH_CACHE.pop(key, None)
+            if not fresh or collides:
+                _RESEARCH_CACHE.pop(key, None)
         inflight = _INFLIGHT.get(key)
         owns_request = inflight is None
         if owns_request:
@@ -3892,27 +4017,38 @@ def research_learning_resources(
                 "region": "Taiwan",
                 "city": "Taipei",
             }
-        response = client.responses.create(
-            model=model,
-            instructions=(
-                "Return only schema-valid JSON. Use web search for every selected item. "
-                "Never invent a URL or claim popularity without visible evidence."
-            ),
-            input=build_research_prompt(
-                card,
-                messages,
-                locale,
-                excluded_urls=excluded_url_keys,
-                feedback_preferences=normalized_preferences,
-            ),
-            tools=[web_search_tool],
-            tool_choice="auto",
-            include=["web_search_call.action.sources"],
-            text={"format": _RESEARCH_RESPONSE_FORMAT},
-            max_output_tokens=9000,
-            max_tool_calls=18,
-            store=False,
-            safety_identifier=safety_identifier,
+        primary_started = time.perf_counter()
+        try:
+            response = client.responses.create(
+                model=model,
+                instructions=(
+                    "Return only schema-valid JSON. Use web search for every selected item. "
+                    "Never invent a URL or claim popularity without visible evidence."
+                ),
+                input=build_research_prompt(
+                    card,
+                    messages,
+                    locale,
+                    excluded_urls=excluded_url_keys,
+                    feedback_preferences=normalized_preferences,
+                ),
+                tools=[web_search_tool],
+                tool_choice="auto",
+                include=["web_search_call.action.sources"],
+                text={"format": _RESEARCH_RESPONSE_FORMAT},
+                max_output_tokens=9000,
+                max_tool_calls=18,
+                store=False,
+                safety_identifier=safety_identifier,
+            )
+        except Exception as provider_error:
+            _record_provider_call(
+                f"content_research.{usage_site}", model, primary_started,
+                error=provider_error,
+            )
+            raise
+        _record_provider_call(
+            f"content_research.{usage_site}", model, primary_started, response=response,
         )
         first_rejections: dict[str, int] = {}
         candidates = parse_research_candidates(
@@ -3959,6 +4095,7 @@ def research_learning_resources(
             repair_excluded_url_keys = tuple(
                 dict.fromkeys((*seen_raw_url_keys, *excluded_url_keys))
             )[:200]
+            repair_started = time.perf_counter()
             try:
                 repair_response = client.responses.create(
                     model=model,
@@ -3986,6 +4123,10 @@ def research_learning_resources(
                     max_tool_calls=max(4, min(12, len(requested_slots) * 3)),
                     store=False,
                     safety_identifier=safety_identifier,
+                )
+                _record_provider_call(
+                    f"content_research.{usage_site}_repair", model, repair_started,
+                    response=repair_response,
                 )
                 repair_rejections: dict[str, int] = {}
                 repair_candidates = parse_research_candidates(
@@ -4033,6 +4174,10 @@ def research_learning_resources(
                     else ()
                 )
             except Exception as repair_error:
+                _record_provider_call(
+                    f"content_research.{usage_site}_repair", model, repair_started,
+                    error=repair_error,
+                )
                 _log_research_diagnostic(
                     "repair_error",
                     card,

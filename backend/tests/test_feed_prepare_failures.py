@@ -572,9 +572,9 @@ def test_prepare_can_recover_after_timeout_from_a_cold_serverless_instance(
     monkeypatch.setattr(memstore, "recommendation_snapshots", {})
     recovered = harness.run()
 
-    # The first retry produces the complete primary bundle. The delivery
-    # contract may make one bounded reserve request to prewarm an instant
-    # alternate; failure of that optional reserve cannot roll back primary.
+    # The first retry produces the complete primary bundle. One call per
+    # preparation now: the reserve loop that used to prewarm an instant
+    # alternate was removed, so this is the first attempt plus this retry.
     assert harness.provider_calls >= 2
     assert recovered["resource_readiness"] == "ready"
     assert recovered["prepared_content_set_id"].startswith("pcs_")
@@ -655,8 +655,9 @@ def test_immediate_retry_after_incomplete_bundle_bypasses_warm_failure_cache(
 
         recovered = harness.run()
 
-        # The fourth call is the required fresh primary attempt. Additional
-        # calls are bounded reserve preparation for instant alternatives.
+        # The fourth call is the required fresh primary attempt. It happens
+        # because the previous bundle could not fill a lane, so `retry_failed`
+        # refuses to replay it — the guarantee `force=True` used to give here.
         assert len(provider.responses.calls) >= 4
         assert recovered["resource_readiness"] == "ready"
         assert all(

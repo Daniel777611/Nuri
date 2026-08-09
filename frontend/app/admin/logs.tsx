@@ -61,6 +61,52 @@ type TurnLog = {
 };
 type Account = { id: string; email: string; nickname: string; turns?: number };
 
+// Provider spend, from llm_call_logs. Separate from everything above on
+// purpose: chat_turn_logs measures the reply model, which turned out to be a
+// minority of the bill, so a "tokens" number taken from that table alone reads
+// as reassuring right up until the quota runs out.
+type SpendBucket = {
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  cached_prompt_tokens: number;
+  total_tokens: number;
+  avg_tool_calls: number;
+  duration_ms: number;
+  cost_usd: number | null;
+  share: number;
+};
+type Spend = {
+  window_days: number;
+  sampled_calls: number;
+  truncated: boolean;
+  pricing_configured: boolean;
+  total: SpendBucket;
+  by_call_site: (SpendBucket & { call_site: string })[];
+  by_model: (SpendBucket & { model: string })[];
+  worst_requests: (SpendBucket & { request_id: string })[];
+};
+
+const SPEND_COLUMNS: { label: string; width: number }[] = [
+  { label: "调用点", width: 190 },
+  { label: "次数", width: 62 },
+  { label: "prompt", width: 92 },
+  { label: "完成", width: 82 },
+  { label: "推理", width: 78 },
+  { label: "缓存命中", width: 88 },
+  { label: "工具轮/次", width: 84 },
+  { label: "占比", width: 64 },
+  { label: "成本", width: 80 },
+];
+
+function fmtTokens(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(v);
+}
+
 const WINDOWS = [1, 7, 30] as const;
 
 // Column widths are fixed so the header and rows stay aligned inside the
@@ -98,6 +144,11 @@ export default function AdminLogs() {
   const [gateError, setGateError] = useState("");
 
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [spend, setSpend] = useState<Spend | null>(null);
+  //  llm_call_logs ships after chat_turn_logs, so a deployment that has not run
+  //  the migration yet must still render the rest of the page rather than
+  //  failing the whole load on one missing table.
+  const [spendError, setSpendError] = useState("");
   const [logs, setLogs] = useState<TurnLog[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
@@ -159,6 +210,19 @@ export default function AdminLogs() {
       setLogs(l.logs || []);
       setHasMore(!!l.has_more);
       setTotal(l.total ?? null);
+      // Fetched separately, and its failure is caught separately: the spend
+      // table is the newest thing here and the most likely to be missing.
+      try {
+        setSpend(await call(`/admin/llm-usage/summary?days=${days}${scope}`));
+        setSpendError("");
+      } catch (e: any) {
+        setSpend(null);
+        setSpendError(
+          String(e?.message || e).includes("503")
+            ? "llm_call_logs 表还没建，先在 Supabase 跑 llm_call_logs_migration.sql"
+            : `读取失败: ${e?.message || e}`,
+        );
+      }
     } catch (e: any) {
       setError(
         String(e?.message || e).includes("503")
@@ -368,6 +432,118 @@ export default function AdminLogs() {
             )}
           </View>
         ) : null}
+
+        {/* ── Provider spend ── */}
+        <View style={styles.card}>
+          <Text style={styles.sectionHeader}>
+            Token 消耗（按调用点）
+            {spend ? `　${spend.window_days} 天 · ${spend.sampled_calls} 次调用` : ""}
+          </Text>
+          {spendError ? (
+            <Text style={styles.errorText}>{spendError}</Text>
+          ) : !spend || !spend.by_call_site.length ? (
+            <Text style={styles.emptyText}>这个范围内还没有数据。</Text>
+          ) : (
+            <>
+              <View style={styles.tileRow}>
+                <Tile label="总 token" value={fmtTokens(spend.total.total_tokens)} />
+                <Tile
+                  label="prompt"
+                  value={fmtTokens(spend.total.prompt_tokens)}
+                  hint={`缓存 ${fmtTokens(spend.total.cached_prompt_tokens)}`}
+                />
+                <Tile
+                  label="完成"
+                  value={fmtTokens(spend.total.completion_tokens)}
+                  hint={`推理 ${fmtTokens(spend.total.reasoning_tokens)}`}
+                />
+                <Tile
+                  label="估算成本"
+                  value={
+                    spend.total.cost_usd === null ? "未配价" : `$${spend.total.cost_usd.toFixed(2)}`
+                  }
+                  hint={spend.pricing_configured ? "按 LLM_PRICE_TABLE" : "设 LLM_PRICE_TABLE 后显示"}
+                />
+              </View>
+              {spend.truncated ? (
+                <Text style={styles.hintText}>
+                  已达取样上限，下面的数字是这个窗口的一部分，不是全部。
+                </Text>
+              ) : null}
+              <ScrollView horizontal showsHorizontalScrollIndicator style={{ marginTop: spacing.sm }}>
+                <View>
+                  <View style={styles.tableHeader}>
+                    {SPEND_COLUMNS.map((c) => (
+                      <Text key={c.label} style={[styles.th, { width: c.width }]}>
+                        {c.label}
+                      </Text>
+                    ))}
+                  </View>
+                  {spend.by_call_site.map((site) => (
+                    <View key={site.call_site} style={styles.tr}>
+                      <Text style={[styles.td, { width: 190 }]} numberOfLines={1}>
+                        {site.call_site}
+                      </Text>
+                      <Text style={[styles.td, { width: 62 }]}>
+                        {site.calls}
+                        {site.errors ? ` (${site.errors}✗)` : ""}
+                      </Text>
+                      <Text style={[styles.td, { width: 92 }]}>
+                        {fmtTokens(site.prompt_tokens)}
+                      </Text>
+                      <Text style={[styles.td, { width: 82 }]}>
+                        {fmtTokens(site.completion_tokens)}
+                      </Text>
+                      <Text style={[styles.td, { width: 78 }]}>
+                        {fmtTokens(site.reasoning_tokens)}
+                      </Text>
+                      <Text style={[styles.td, { width: 88 }]}>
+                        {fmtTokens(site.cached_prompt_tokens)}
+                      </Text>
+                      <Text style={[styles.td, { width: 84 }]}>
+                        {site.avg_tool_calls || "–"}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.td,
+                          { width: 64 },
+                          site.share >= 0.25 && styles.tdAlert,
+                        ]}
+                      >
+                        {Math.round(site.share * 100)}%
+                      </Text>
+                      <Text style={[styles.td, { width: 80 }]}>
+                        {site.cost_usd === null ? "–" : `$${site.cost_usd.toFixed(2)}`}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </ScrollView>
+              {spend.worst_requests.length ? (
+                <>
+                  <Text style={[styles.sectionHeader, { marginTop: spacing.md }]}>
+                    最贵的单次请求
+                  </Text>
+                  <Text style={styles.hintText}>
+                    一行是一次 HTTP 请求。次数大于 1 表示这一个动作向模型发了多次。
+                  </Text>
+                  {spend.worst_requests.slice(0, 8).map((r) => (
+                    <View key={r.request_id} style={styles.accountRow}>
+                      <Text style={styles.accountText} numberOfLines={1}>
+                        {r.request_id} · {r.calls} 次调用
+                        {r.avg_tool_calls ? ` · 平均 ${r.avg_tool_calls} 工具轮` : ""}
+                      </Text>
+                      <Text style={styles.accountMeta}>
+                        {fmtTokens(r.total_tokens)}
+                        {r.cost_usd === null ? "" : ` · $${r.cost_usd.toFixed(2)}`}
+                      </Text>
+                    </View>
+                  ))}
+                </>
+              ) : null}
+            </>
+          )}
+        </View>
 
         {/* ── Table ── */}
         <View style={styles.card}>

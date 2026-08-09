@@ -50,7 +50,7 @@ from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
-from backend import locales, memstore, runtime, stores
+from backend import llm_usage, locales, memstore, runtime, stores
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -247,6 +247,20 @@ app = FastAPI(title="Family Growth Radar API", lifespan=_lifespan)
 
 
 @app.middleware("http")
+async def _correlate_llm_calls(request: Request, call_next):
+    """Give every request an id so the provider calls it fans out into can be
+    costed as one unit.
+
+    A single feed preparation reaches the provider up to nine times through
+    four layers; without a shared id those are nine unrelated rows and the
+    per-action cost — the number that decides whether to cut anything — can't
+    be reconstructed."""
+    llm_usage.new_request_id()
+    llm_usage.set_user(None)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _protect_personalized_feed_cache(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
@@ -321,6 +335,9 @@ async def _req_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bear
     if not uid:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid token",
                             headers={"WWW-Authenticate": "Bearer"})
+    # Every authenticated route passes through here, which makes this the one
+    # place that can attribute the whole call tree below it to an account.
+    llm_usage.set_user(uid)
     return uid
 
 def _to_public(doc: dict) -> dict:
@@ -889,6 +906,7 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
             },
         },
     )
+    llm_usage.record("feed.gen_cards", "gpt-5.5", usage=getattr(resp, "usage", None))
     try:
         data = json.loads(resp.choices[0].message.content)
         cards = []
@@ -1441,7 +1459,13 @@ async def prepare_feed_research(
         # negative research cache here.  The research layer's per-key inflight
         # event still collapses concurrent calls, and a durable ready set has
         # already returned above without reaching this provider boundary.
-        force=True,
+        #
+        # `retry_failed` rather than `force`: bypassing the *negative* cache is
+        # all the above argues for. `force` additionally discarded successful
+        # bundles, which meant the most expensive call in the system ran with
+        # no cache at all on its hottest path.
+        retry_failed=True,
+        call_label="prepare",
     )
     resources = feed_delivery.attach_featured_evidence_anchor(
         list((research or {}).get("resources") or [])
@@ -1590,62 +1614,28 @@ async def prepare_feed_research(
 
     pair_options_by_category = build_pair_options(option_pool)
 
-    # A novel topic has no reviewed alternates.  Search up to two bounded
-    # reserve bundles in the background so "换一个" normally remains an
-    # in-memory/snapshot switch instead of another user-visible wait.
-    if (
-        not reviewed_fallback_used
-        and any(len(options) < 2 for options in pair_options_by_category.values())
-    ):
-        excluded_option_urls = [
-            str(resource.get("url") or "") for resource in option_pool
-        ]
-        for _reserve_attempt in range(2):
-            try:
-                reserve = await feed_delivery.research_card_detail_resources(
-                    card=card,
-                    context=context,
-                    uid=uid,
-                    force=True,
-                    extra_excluded_urls=excluded_option_urls,
-                )
-            except Exception as exc:
-                # Reserve preparation is best effort.  It must never roll back
-                # the already complete primary six-slot bundle.
-                print(
-                    f"[warn] reserve content preparation stopped: {type(exc).__name__}"
-                )
-                break
-            reserve_resources = list((reserve or {}).get("resources") or [])
-            if not reserve_resources:
-                break
-            known_urls = {
-                str(resource.get("url") or "") for resource in option_pool
-            }
-            additions = [
-                resource
-                for resource in reserve_resources
-                if str(resource.get("url") or "") not in known_urls
-            ]
-            if not additions:
-                break
-            option_pool.extend(additions)
-            excluded_option_urls.extend(
-                str(resource.get("url") or "") for resource in additions
-            )
-            option_pool = feed_delivery.attach_featured_evidence_anchor(option_pool)
-            pair_options_by_category = build_pair_options(option_pool)
-            if all(
-                len(options) >= 2
-                for options in pair_options_by_category.values()
-            ):
-                break
+    # There used to be a loop here that searched up to two further bundles so a
+    # later "换一个" could switch between prepared pairs instead of waiting.
+    #
+    # It was removed because it fired on nearly every preparation and was not
+    # actually in the background. A pair is one article crossed with one video,
+    # and the primary bundle's floor is exactly one of each per category, so
+    # `len(options) < 2` held unless the model returned a third item in all
+    # three categories — the maximum bundle. Each iteration was another full
+    # research run (a bundle plus up to two repair passes), awaited inside the
+    # request, which put up to six extra provider calls on a request that had
+    # already published a complete set.
+    #
+    # The alternative it existed to avoid is not that bad: with no second pair,
+    # the refresh route below falls through to a live search. That pays for one
+    # research run when a parent actually taps, instead of pre-paying for six on
+    # every preparation against the chance that someone might.
 
     if any(not options for options in pair_options_by_category.values()):
         print(
             json.dumps(
                 {
-                    "event": "content_research.reserve_incomplete",
+                    "event": "content_research.pair_options_incomplete",
                     "card_id": card_id,
                     "locale": preferred_locale,
                     "source_contract_version": DELIVERY_SOURCE_CONTRACT_VERSION,
@@ -1783,6 +1773,10 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
                         f"从以下育儿对话中提取3-5个关键词（名词短语，用逗号分隔）：\n{combined}\n\n只返回关键词，不要解释。"
                     }],
                 ))
+                llm_usage.record(
+                    "feed.keywords", "gpt-5.4-mini",
+                    usage=getattr(kw_resp, "usage", None),
+                )
                 keywords = [k.strip() for k in kw_resp.choices[0].message.content.split(",") if k.strip()][:5]
             except Exception:
                 pass
@@ -2286,10 +2280,13 @@ async def get_card_research(
     # Preserve the original internal call contract for ordinary detail loads;
     # refresh-only controls are supplied only when the caller requests them.
     # This also keeps older instrumentation and test doubles compatible.
+    # `call_label` belongs in here for the same reason — the plain detail load
+    # gets its label from the callee's default rather than a fourth kwarg.
     if refresh or extra_excluded_urls:
         research_kwargs.update(
             force=refresh,
             extra_excluded_urls=extra_excluded_urls,
+            call_label="detail_refresh" if refresh else "detail",
         )
     research = await feed_delivery.research_card_detail_resources(**research_kwargs)
     retryable_provider_failure = bool(
@@ -2976,6 +2973,10 @@ async def _maybe_set_title(
                         max_completion_tokens=20,
                         timeout=OPENAI_FAST_TIMEOUT_S,
                     )
+                )
+                llm_usage.record(
+                    "chat.session_title", "gpt-5.4-mini",
+                    usage=getattr(title_resp, "usage", None),
                 )
                 new_title = title_resp.choices[0].message.content.strip()[:20]
             except Exception:
@@ -3896,6 +3897,7 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": f"問題：{question}\n\n參考文獻：\n{context}"}],
     )
+    llm_usage.record("legacy.ask", "gpt-5.5", usage=getattr(resp, "usage", None))
     return resp.choices[0].message.content
 
 # ── Legacy RAG routes: PDF ingest & ask ────────────────────────────────────────
@@ -4201,6 +4203,198 @@ async def admin_turn_logs_summary(
     }
 
 
+# ── Provider spend ───────────────────────────────────────────────────────────
+# chat_turn_logs answers "was that turn slow". These answer "where did the
+# money go", which turned out to be a different question with a different
+# answer: the reply model is a minority of the bill, and the calls that are not
+# a chat turn at all had never been counted.
+
+def _llm_price_table() -> dict[str, tuple[float, float]]:
+    """USD per million tokens, as {model: [input, output]}, from LLM_PRICE_TABLE.
+
+    Deliberately env-configured with no built-in defaults. Hardcoding a price
+    list means it is wrong the first time a rate changes, and a confidently
+    wrong cost column is worse than an absent one — the token counts below are
+    measured, and anything derived from them should be visibly a local
+    assumption. Ranking by tokens works with this unset.
+    """
+    raw = os.getenv("LLM_PRICE_TABLE", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        table: dict[str, tuple[float, float]] = {}
+        for model, pair in parsed.items():
+            table[str(model)] = (float(pair[0]), float(pair[1]))
+        return table
+    except Exception as e:
+        print(f"[warn] LLM_PRICE_TABLE ignored ({type(e).__name__}: {e})")
+        return {}
+
+
+@app.get("/admin/llm-usage/summary")
+async def admin_llm_usage_summary(
+    days: int = 7, user_id: Optional[str] = None, sample: int = 5000,
+    _: None = Depends(_require_admin),
+):
+    """Total provider spend for a window, broken down by call site and model."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days = max(1, min(days, 90))
+    sample = max(1, min(sample, 20000))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    def _query():
+        q = sb.table("llm_call_logs").select(
+            "call_site,model,api,request_id,duration_ms,prompt_tokens,"
+            "completion_tokens,total_tokens,reasoning_tokens,cached_prompt_tokens,"
+            "tool_calls,status,created_at"
+        ).gte("created_at", since)
+        if user_id:
+            q = q.eq("user_id", user_id)
+        return q.order("created_at", desc=True).limit(sample).execute()
+
+    try:
+        res = await anyio.to_thread.run_sync(_query)
+    except Exception as e:
+        raise HTTPException(503, f"llm usage unavailable: {e}")
+    rows = getattr(res, "data", None) or []
+
+    prices = _llm_price_table()
+
+    def cost(row: dict) -> Optional[float]:
+        price = prices.get(str(row.get("model") or ""))
+        if not price:
+            return None
+        prompt_in = int(row.get("prompt_tokens") or 0)
+        cached = int(row.get("cached_prompt_tokens") or 0)
+        # Cached input bills at a fraction; without splitting it out, a working
+        # cache looks like no saving at all.
+        fresh = max(0, prompt_in - cached)
+        return (
+            fresh * price[0] / 1_000_000
+            + cached * price[0] * 0.1 / 1_000_000
+            + int(row.get("completion_tokens") or 0) * price[1] / 1_000_000
+        )
+
+    def blank() -> dict:
+        return {
+            "calls": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0,
+            "reasoning_tokens": 0, "cached_prompt_tokens": 0, "total_tokens": 0,
+            "tool_calls": 0, "duration_ms": 0, "cost_usd": 0.0, "priced_calls": 0,
+        }
+
+    def accumulate(bucket: dict, row: dict) -> None:
+        bucket["calls"] += 1
+        if row.get("status") != "ok":
+            bucket["errors"] += 1
+        for field in (
+            "prompt_tokens", "completion_tokens", "reasoning_tokens",
+            "cached_prompt_tokens", "total_tokens", "tool_calls", "duration_ms",
+        ):
+            bucket[field] += int(row.get(field) or 0)
+        row_cost = cost(row)
+        if row_cost is not None:
+            bucket["cost_usd"] += row_cost
+            bucket["priced_calls"] += 1
+
+    by_site: dict[str, dict] = {}
+    by_model: dict[str, dict] = {}
+    by_request: dict[str, dict] = {}
+    overall = blank()
+    for row in rows:
+        accumulate(overall, row)
+        accumulate(by_site.setdefault(str(row.get("call_site") or "?"), blank()), row)
+        accumulate(by_model.setdefault(str(row.get("model") or "?"), blank()), row)
+        rid = str(row.get("request_id") or "")
+        if rid:
+            accumulate(by_request.setdefault(rid, blank()), row)
+
+    def finish(bucket: dict) -> dict:
+        out = dict(bucket)
+        out["cost_usd"] = round(out["cost_usd"], 4) if out["priced_calls"] else None
+        out["avg_tool_calls"] = (
+            round(out["tool_calls"] / out["calls"], 1) if out["calls"] else 0
+        )
+        # The share that decides what to cut. Falls back to tokens when no price
+        # table is configured, so the ranking is never empty.
+        basis = out["cost_usd"] if out["cost_usd"] is not None else out["total_tokens"]
+        total_basis = (
+            overall["cost_usd"] if overall["priced_calls"] else overall["total_tokens"]
+        )
+        out["share"] = round(basis / total_basis, 4) if total_basis else 0
+        return out
+
+    def ranked(buckets: dict[str, dict], key: str) -> list[dict]:
+        return sorted(
+            ({key: name, **finish(bucket)} for name, bucket in buckets.items()),
+            key=lambda item: item["total_tokens"],
+            reverse=True,
+        )
+
+    overall_out = finish(overall)
+    return {
+        "window_days": days,
+        "sampled_calls": len(rows),
+        "truncated": len(rows) >= sample,
+        "pricing_configured": bool(prices),
+        "total": overall_out,
+        "by_call_site": ranked(by_site, "call_site"),
+        "by_model": ranked(by_model, "model"),
+        # One row per HTTP request, worst first: this is what shows a single
+        # user action fanning out into a double-digit number of provider calls.
+        "worst_requests": sorted(
+            (
+                {"request_id": rid, **finish(bucket)}
+                for rid, bucket in by_request.items()
+            ),
+            key=lambda item: item["total_tokens"],
+            reverse=True,
+        )[:20],
+    }
+
+
+@app.get("/admin/llm-usage")
+async def admin_list_llm_calls(
+    call_site: Optional[str] = None, request_id: Optional[str] = None,
+    user_id: Optional[str] = None, status_filter: Optional[str] = None,
+    limit: int = 50, offset: int = 0, _: None = Depends(_require_admin),
+):
+    """Raw provider calls, newest first. Filter by request_id to expand one
+    user action into the calls it actually made."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    def _query():
+        q = sb.table("llm_call_logs").select("*", count="exact")
+        if call_site:
+            q = q.eq("call_site", call_site)
+        if request_id:
+            q = q.eq("request_id", request_id)
+        if user_id:
+            q = q.eq("user_id", user_id)
+        if status_filter:
+            q = q.eq("status", status_filter)
+        return q.order("created_at", desc=True).range(offset, offset + limit).execute()
+
+    try:
+        res = await anyio.to_thread.run_sync(_query)
+    except Exception as e:
+        raise HTTPException(503, f"llm usage unavailable: {e}")
+    rows = getattr(res, "data", None) or []
+    return {
+        "calls": rows[:limit],
+        "has_more": len(rows) > limit,
+        "total": getattr(res, "count", None),
+        "offset": offset,
+        "limit": limit,
+    }
+
+
 # ── Account administration ───────────────────────────────────────────────────
 
 @app.get("/admin/accounts")
@@ -4456,6 +4650,10 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
                             }],
                             max_completion_tokens=30,
                         )
+                    )
+                    llm_usage.record(
+                        "push.keywords", "gpt-4.1-mini",
+                        usage=getattr(kw_resp, "usage", None), user_id=uid,
                     )
                     keywords = [k.strip() for k in kw_resp.choices[0].message.content.split(",") if k.strip()][:5]
                 except Exception as e:

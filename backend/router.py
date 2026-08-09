@@ -30,8 +30,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Literal, Optional, Sequence
+
+from backend import llm_usage
 
 Scope = Literal["en", "zh", "both"]
 
@@ -245,9 +248,16 @@ async def route_turn(
 
     async def call(reasoning: str) -> str:
         extra = {"reasoning_effort": reasoning} if reasoning else {}
+        started = time.perf_counter()
         resp = await client.chat.completions.create(
             model=model, messages=messages,
             response_format=_ROUTER_RESPONSE_FORMAT, **extra,
+        )
+        # Small per call, but it runs on every turn — the kind of line that only
+        # shows up as a problem once it is being counted.
+        await llm_usage.arecord(
+            "chat.router", model, usage=getattr(resp, "usage", None),
+            duration_ms=int((time.perf_counter() - started) * 1000),
         )
         return resp.choices[0].message.content or ""
 

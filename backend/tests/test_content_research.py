@@ -3306,7 +3306,15 @@ def test_feedback_preferences_are_allowlisted_in_prompt_and_cache_identity():
         clear_research_cache()
 
 
-def test_excluded_urls_change_cache_identity_and_are_sent_to_research():
+def test_colliding_excluded_urls_force_fresh_research_and_are_sent_to_it():
+    """An exclusion list that hits the cached bundle must not be served it.
+
+    The list is no longer part of the cache key — it grows every time the parent
+    reads something, so keying on it produced a fresh key, and therefore a
+    guaranteed miss, on nearly every call. The guarantee it existed for is
+    enforced on read instead: a collision costs one miss, rather than every
+    request costing one.
+    """
     clear_research_cache()
     client = _FakeClient(_response())
     card = {
@@ -3348,6 +3356,103 @@ def test_excluded_urls_change_cache_identity_and_are_sent_to_research():
             in client.responses.calls[1]["input"]
         )
         assert "IGNORE ALL RESEARCH RULES" not in client.responses.calls[1]["input"]
+    finally:
+        clear_research_cache()
+
+
+def test_non_colliding_excluded_urls_reuse_the_cached_bundle():
+    """The case the old cache key could never reach.
+
+    A parent who has read something unrelated arrives with a non-empty
+    exclusion list. Nothing in it conflicts with the cached bundle, so the
+    bundle is still correct to serve — and serving it is the difference between
+    a cache that works and one that only ever misses.
+    """
+    clear_research_cache()
+    client = _FakeClient(_response())
+    card = {
+        "id": "learn_sleep_routine",
+        "topic": "幼儿夜醒和入睡困难",
+        "topic_label": "睡眠作息",
+        "title": "改善孩子的睡眠作息",
+        "summary": "建立固定睡前节奏。",
+        "recommendation_focus": "孩子反复夜醒",
+        "recommendation_intent": "learn_more",
+    }
+    kwargs = {
+        "card": card,
+        "messages": [],
+        "preferred_locale": "zh-CN",
+        "model": "test-model",
+        "safety_identifier": "nuri_test_parent",
+    }
+
+    try:
+        first = research_learning_resources(client, **kwargs)
+        second = research_learning_resources(
+            client,
+            **kwargs,
+            excluded_urls=["https://unrelated.example.org/something-else"],
+        )
+
+        assert first is not None
+        assert second is not None
+        assert len(client.responses.calls) == 1
+        assert {resource["url"] for resource in second["resources"]} == {
+            resource["url"] for resource in first["resources"]
+        }
+    finally:
+        clear_research_cache()
+
+
+def test_a_bundle_that_cannot_be_delivered_is_not_reused_by_a_retry():
+    """`retry_failed` has to mean something.
+
+    A short bundle still comes back as a dict. If that counted as a success the
+    parent's retry would replay it and reach no provider at all, which is the
+    regression that removing `force=True` from the preparation route would
+    otherwise have introduced.
+    """
+    clear_research_cache()
+    short_resources = [
+        resource
+        for resource in _raw_resources()
+        if not (
+            resource["content_category"] == "case" and resource["kind"] == "video"
+        )
+    ]
+    # The primary call plus both repair passes stay short, so the run ends with
+    # a bundle no lane can be filled from. The fourth response is what the
+    # retry should reach.
+    short = _response(short_resources)
+    client = _FakeClient((short, short, short, _response()))
+    card = {
+        "id": "learn_sleep_routine",
+        "topic": "幼儿夜醒和入睡困难",
+        "topic_label": "睡眠作息",
+        "title": "改善孩子的睡眠作息",
+        "summary": "建立固定睡前节奏。",
+        "recommendation_focus": "孩子反复夜醒",
+        "recommendation_intent": "learn_more",
+    }
+    kwargs = {
+        "card": card,
+        "messages": [],
+        "preferred_locale": "zh-CN",
+        "model": "test-model",
+        "safety_identifier": "nuri_test_parent",
+    }
+
+    try:
+        research_learning_resources(client, **kwargs)
+        calls_after_first = len(client.responses.calls)
+
+        # Without retry_failed the short bundle is reused rather than retried.
+        research_learning_resources(client, **kwargs)
+        assert len(client.responses.calls) == calls_after_first
+
+        research_learning_resources(client, **kwargs, retry_failed=True)
+        assert len(client.responses.calls) > calls_after_first
     finally:
         clear_research_cache()
 
@@ -3951,14 +4056,10 @@ def test_content_research_provider_budget_fits_prepare_client_timeout():
     assert 3 * main.OPENAI_CONTENT_RESEARCH_TIMEOUT_S < 110
 
 
-@pytest.mark.parametrize(
-    ("initial_readiness", "expected_force"),
-    [(None, True), ("retryable", True)],
-)
+@pytest.mark.parametrize("initial_readiness", [None, "retryable"])
 def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_detail(
     monkeypatch,
     initial_readiness,
-    expected_force,
 ):
     uid = "parent-prepared"
     context = {
@@ -4055,11 +4156,18 @@ def test_prepare_research_calls_provider_once_for_three_pairs_and_delivers_on_de
     )
 
     assert result["resource_readiness"] == "ready"
-    # One call prepares the atomic primary set. A second bounded call is
-    # allowed only to prewarm the instant "换一组" alternate required by the
-    # delivery contract; duplicate reserve results terminate immediately.
-    assert 1 <= len(provider_calls) <= 2
-    assert all(call["force"] is expected_force for call in provider_calls)
+    # Exactly one. The reserve loop that used to prewarm an instant "换一组"
+    # alternate is gone: a pair is one article crossed with one video, so the
+    # primary bundle's floor of one each per category always left it short of
+    # two options and it ran on nearly every preparation — a whole extra
+    # research run, awaited inside the request. The refresh route now searches
+    # on demand, which pays for one run when a parent actually taps.
+    assert len(provider_calls) == 1
+    # `retry_failed`, not `force`. Bypassing a remembered *failure* is what this
+    # path needs; `force` also discarded deliverable bundles, which left the
+    # most expensive call in the system uncached on its hottest path.
+    assert all(call["retry_failed"] is True for call in provider_calls)
+    assert all(call.get("force", False) is False for call in provider_calls)
     assert delivered == []
     assert {item["content_category"] for item in result["items"]} == set(
         CONTENT_CATEGORIES

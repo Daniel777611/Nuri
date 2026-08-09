@@ -611,6 +611,49 @@ def test_unmapped_conversation_gets_addressable_dynamic_research_card(monkeypatc
     )
 
 
+def test_dynamic_card_id_survives_a_message_that_changes_no_topic(monkeypatch):
+    """The card identifies a topic, so an acknowledgement must not remint it.
+
+    The id used to hash the last message's timestamp, so every turn produced a
+    new card — and because the research cache keys on the card id, the most
+    expensive call in the app could never hit it. A parent saying "谢谢" is not
+    a new subject and must not cost another web search.
+    """
+    topic_text = "我们正在考虑让孩子上哪一种幼儿园，蒙特梭利和森林学校该怎么选择？"
+
+    def card_for(messages):
+        payload = _run_personalized(
+            monkeypatch,
+            "parent-1",
+            [_session("montessori-chat", "parent-1")],
+            {"montessori-chat": messages},
+            privacy={
+                "parent-1": {
+                    "allow_history_training": True,
+                    "allow_external_content_research": True,
+                }
+            },
+            research_client=object(),
+        )
+        return payload["items"][0]
+
+    first = card_for(
+        [_message("m1", "user", topic_text, "2026-07-31T10:00:00+00:00")]
+    )
+    later = card_for(
+        [
+            _message("m1", "user", topic_text, "2026-07-31T10:00:00+00:00"),
+            _message("m2", "assistant", "两种都各有侧重。", "2026-07-31T10:01:00+00:00"),
+            _message("m3", "user", "谢谢", "2026-07-31T10:02:00+00:00"),
+        ]
+    )
+
+    assert first["id"].startswith("learn_conversation_")
+    assert later["id"] == first["id"]
+    # The card still reports the current context; only its identity is stable.
+    assert later["context_created_at"] == "2026-07-31T10:02:00+00:00"
+
+
 @pytest.mark.parametrize(
     "topic_text, expected_fragment",
     [

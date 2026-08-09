@@ -26,6 +26,7 @@ from fastapi import HTTPException
 
 from backend import (
     content_research,
+    llm_usage,
     locales,
     memstore,
     recommendation_feedback,
@@ -941,7 +942,14 @@ async def research_card_detail_resources(
     context: dict,
     uid: Optional[str],
     force: bool = False,
+    # Weaker than `force`: ignore a remembered failure, keep a remembered
+    # success. What the preparation route wants, and what it used to ask for
+    # with `force` — which also discarded every usable bundle.
+    retry_failed: bool = False,
     extra_excluded_urls: Optional[list[str]] = None,
+    # Names the caller in the usage log only. Defaulted rather than required so
+    # the plain detail load keeps its three-kwarg call contract intact.
+    call_label: str = "detail",
 ) -> Optional[dict]:
     """Run bounded, validated web research for a conversation-matched detail."""
 
@@ -959,6 +967,7 @@ async def research_card_detail_resources(
         or not card.get("is_conversation_match")
     ):
         return None
+    llm_usage.set_user(uid)
     behavior_events = await outcome_store.get_events(uid)
     excluded_urls = list(
         dict.fromkeys(
@@ -981,8 +990,10 @@ async def research_card_detail_resources(
                 model=OPENAI_CONTENT_RESEARCH_MODEL,
                 safety_identifier=_research_safety_identifier(uid),
                 force=force,
+                retry_failed=retry_failed,
                 excluded_urls=excluded_urls,
                 feedback_preferences=feedback_preferences,
+                call_label=call_label,
             ),
             limiter=content_research_limiter,
         )

@@ -26,7 +26,7 @@ from typing import Optional
 import anyio
 
 from backend.nuri_core import knowledge_store
-from backend import runtime
+from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
     OPENAI_TASKS_TIMEOUT_S,
@@ -471,9 +471,20 @@ def nuri_reply_sync(
             metrics.mark("model_ms", started)
             metrics.record_usage(getattr(resp, "usage", None))
             metrics.set(finish_reason=getattr(resp.choices[0], "finish_reason", None))
+        # Also logged to chat_turn_logs above. Duplicated here on purpose: the
+        # usage table's job is to total the whole bill, and a breakdown missing
+        # its most-scrutinised line reads as if chat were free.
+        llm_usage.record(
+            "chat.reply", "gpt-5.5", usage=getattr(resp, "usage", None),
+            duration_ms=runtime.elapsed_ms(started),
+        )
         return parse_nuri_reply(resp.choices[0].message.content)
     except Exception as e:
         print(f"[error] nuri_reply_sync failed: {type(e).__name__}: {e}")
+        llm_usage.record(
+            "chat.reply", "gpt-5.5", duration_ms=runtime.elapsed_ms(started),
+            status="error", error=f"{type(e).__name__}: {e}",
+        )
         if metrics:
             metrics.mark("model_ms", started)
             metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
@@ -571,6 +582,9 @@ async def nuri_reply_stream(
     buf = ""
     sent = 0
     started = time.perf_counter()
+    # Captured independently of `metrics`, which is optional: the usage-bearing
+    # chunk arrives once and is gone, so anything not held here is unrecoverable.
+    stream_usage = None
     try:
         stream = await aoai.chat.completions.create(
             model="gpt-5.5", messages=msgs, response_format=NURI_RESPONSE_FORMAT, stream=True,
@@ -581,8 +595,10 @@ async def nuri_reply_stream(
         async for chunk in stream:
             # The usage-bearing chunk carries no choices, so read it before the
             # skip below or the token counts are silently dropped.
-            if metrics and getattr(chunk, "usage", None):
-                metrics.record_usage(chunk.usage)
+            if getattr(chunk, "usage", None):
+                stream_usage = chunk.usage
+                if metrics:
+                    metrics.record_usage(chunk.usage)
             if not chunk.choices:
                 continue
             # getattr: metrics must never be the reason a turn dies, so don't
@@ -602,9 +618,20 @@ async def nuri_reply_stream(
                 sent = len(text)
         if metrics:
             metrics.mark("model_ms", started)
+        await llm_usage.arecord(
+            "chat.reply_stream", "gpt-5.5", usage=stream_usage,
+            duration_ms=runtime.elapsed_ms(started),
+        )
         yield "final", parse_nuri_reply(buf)
     except Exception as e:
         print(f"[error] nuri_reply_stream failed: {type(e).__name__}: {e}")
+        # A stream that died mid-flight was still billed for everything the
+        # model had already produced, so record whatever usage did arrive.
+        await llm_usage.arecord(
+            "chat.reply_stream", "gpt-5.5", usage=stream_usage,
+            duration_ms=runtime.elapsed_ms(started),
+            status="error", error=f"{type(e).__name__}: {e}",
+        )
         if metrics:
             metrics.mark("model_ms", started)
             metrics.set(status="fallback", error=f"{type(e).__name__}: {e}"[:500])
@@ -677,6 +704,9 @@ def distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
                 },
             },
             timeout=OPENAI_FAST_TIMEOUT_S,
+        )
+        llm_usage.record(
+            "chat.fix_distill", "gpt-5.4-mini", usage=getattr(resp, "usage", None),
         )
         data = json.loads(resp.choices[0].message.content)
         return {"rule": (data.get("rule") or "").strip(), "category": data.get("category", "other")}
@@ -765,6 +795,9 @@ def gen_tasks_ai_sync(
         },
         timeout=OPENAI_TASKS_TIMEOUT_S,
     )
+    llm_usage.record(
+        "chat.tasks_fallback", "gpt-5.5", usage=getattr(resp, "usage", None),
+    )
     try:
         tasks = normalize_task_proposals(
             json.loads(resp.choices[0].message.content).get("tasks", [])
@@ -800,6 +833,9 @@ async def compose_follow_up_message(nickname: str, item: dict) -> str:
                           {"role": "user", "content": user}],
                 **reply_model_kwargs(),
             )
+        )
+        await llm_usage.arecord(
+            "push.follow_up", "gpt-5.5", usage=getattr(resp, "usage", None),
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:

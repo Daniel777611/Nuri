@@ -28,7 +28,7 @@ from typing import Optional
 
 import anyio
 
-from backend import runtime
+from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
     now,
@@ -356,6 +356,9 @@ def extract_memories_sync(history: list[dict]) -> dict:
                     },
                 },
             },
+        )
+        llm_usage.record(
+            "chat.memory_extract", "gpt-5.4-mini", usage=getattr(resp, "usage", None),
         )
         data = json.loads(resp.choices[0].message.content)
         return {
