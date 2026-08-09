@@ -49,7 +49,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import AsyncOpenAI, OpenAI
 
-from backend.router import TurnRoute, route_metrics, route_turn
+from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_context
+from backend.nuri_core import dialogue as core_dialogue
+from backend.nuri_core import family as core_family
+from backend.nuri_core import outcome as core_outcome
+from backend.nuri_core import provenance as core_provenance
+from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
     get_provider as get_search_provider,
     load_domain_rules,
@@ -2125,10 +2130,29 @@ _NURI_FALLBACK = {
 def _nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
-    sources_ctx: str = "",
+    sources_ctx: str = "", system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
 ) -> list[dict]:
     """Assemble the system prompt and history window. Shared by the blocking and
-    streaming reply paths so the two can't drift apart."""
+    streaming reply paths so the two can't drift apart.
+
+    `system_prompt` is the four-model pipeline's seam: when the dialogue model
+    has already rendered its directive set into a finished system message, the
+    block concatenation below is skipped rather than duplicated. The history
+    window is still applied here either way, so the two pipelines can only
+    differ in the system message — which is the whole comparison.
+    """
+    if system_prompt is not None:
+        msgs = [{"role": "system", "content": system_prompt}]
+        for m in history[-(history_window or _HISTORY_WINDOW):]:
+            content = m.get("text") or ""
+            if content:
+                msgs.append({
+                    "role": "user" if m["role"] == "user" else "assistant",
+                    "content": content,
+                })
+        return msgs
+
     system = NURI_PERSONA + _NURI_JSON_SUFFIX
     # Ordered most stable first, most per-turn last. OpenAI caches the longest
     # identical prefix across calls, so a block that changes every turn placed
@@ -2371,6 +2395,8 @@ def _nuri_reply_sync(
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
     sources_ctx: str = "",
     metrics: Optional["_TurnMetrics"] = None,
+    system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
 ) -> dict:
     if not oai:
         return {
@@ -2380,7 +2406,7 @@ def _nuri_reply_sync(
             "task_proposals": [],
         }
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
-                          internal_ctx, sources_ctx)
+                          internal_ctx, sources_ctx, system_prompt, history_window)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -2474,6 +2500,8 @@ async def _nuri_reply_stream(
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
     sources_ctx: str = "",
     metrics: Optional["_TurnMetrics"] = None,
+    system_prompt: Optional[str] = None,
+    history_window: Optional[int] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
@@ -2485,7 +2513,7 @@ async def _nuri_reply_stream(
         }
         return
     msgs = _nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
-                          internal_ctx, sources_ctx)
+                          internal_ctx, sources_ctx, system_prompt, history_window)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -2591,14 +2619,17 @@ _INFO_SOURCE_LABELS = {
 _GENDER_LABELS = {"boy": "男孩", "girl": "女孩"}
 
 
-def _age_label(birth_date: str) -> str:
-    """Render a birth date as an age NURI can reason about. Advice for a
-    6-month-old and a 6-year-old share almost nothing, so this is the single
-    most load-bearing fact in the profile."""
+def _age_in_months(birth_date: str) -> Optional[int]:
+    """Completed months since a birth date, or None if it can't be read.
+
+    Split out from _age_label because the four-model pipeline needs the number,
+    not the label: directive conditions are written as month ranges, and
+    parsing "2岁3个月" back into one would be absurd.
+    """
     try:
         born = date.fromisoformat(str(birth_date)[:10])
     except (ValueError, TypeError):
-        return ""
+        return None
     today = date.today()
     months = (today.year - born.year) * 12 + (today.month - born.month)
     # Treat the last day of a shorter month as the completed monthly
@@ -2609,7 +2640,15 @@ def _age_label(birth_date: str) -> str:
     anniversary_day = min(born.day, current_month_last_day)
     if today.day < anniversary_day:
         months -= 1
-    if months < 0:
+    return months if months >= 0 else None
+
+
+def _age_label(birth_date: str) -> str:
+    """Render a birth date as an age NURI can reason about. Advice for a
+    6-month-old and a 6-year-old share almost nothing, so this is the single
+    most load-bearing fact in the profile."""
+    months = _age_in_months(birth_date)
+    if months is None:
         return ""
     if months < 24:
         return f"{months}个月" if months else "未满1个月"
@@ -2832,6 +2871,21 @@ class _TurnMetrics:
             # A metrics table must never cost a turn. Most likely cause is the
             # migration not having been run yet.
             print(f"[warn] chat_turn_logs insert: {e}")
+            # The four-model columns arrive with four_model_migration.sql.
+            # Deploying ahead of it would otherwise drop every turn metric,
+            # including the ones that have been collected all along — so retry
+            # with just the columns the linear pipeline already wrote.
+            legacy = {k: v for k, v in self.row.items()
+                      if k not in core_provenance.TurnTrace.FLAT_COLUMNS}
+            if len(legacy) == len(self.row):
+                return
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_turn_logs").insert(legacy).execute()
+                )
+                print("[warn] logged without four-model columns; run four_model_migration.sql")
+            except Exception as e2:
+                print(f"[warn] chat_turn_logs retry failed: {e2}")
 
 
 async def _save_normalized_input(
@@ -3222,6 +3276,9 @@ async def _extract_and_upsert_memories(
         await _upsert_memories(memories, user_id=user_id, child_id=None, source_type=source_type, source_id=source_id)
         if isinstance(extracted, dict):
             await _upsert_follow_ups(extracted.get("follow_ups", []), user_id=user_id, source_id=source_id)
+        # The family model caches the rendered memory block; a fact learned
+        # this turn has to be usable on the next one.
+        core_family.invalidate(user_id)
     except Exception as e:
         print(f"[warn] _extract_and_upsert_memories: {e}")
 
@@ -3563,6 +3620,7 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
         await anyio.to_thread.run_sync(
             lambda: sb.table("users").update(updates).eq("id", uid).execute()
         )
+        core_family.invalidate(uid)
     doc = {**res.data[0], **updates}
     return _to_public(doc)
 
@@ -3578,6 +3636,9 @@ async def _invalidate_child_recommendations(uid: Optional[str]) -> None:
 
     if not uid:
         return
+    # A child's age band is the strongest condition a directive can carry, so
+    # the family model's cached state has to go with the recommendations.
+    core_family.invalidate(uid)
     try:
         await _db_delete_recommendation_snapshots(uid)
     except Exception as exc:
@@ -8305,9 +8366,14 @@ async def _maybe_set_title(
             elif session_id in _sessions:
                 _sessions[session_id]["title"] = new_title
 
-async def _fix_reply(msgs: list, fix_text: str) -> str:
+async def _fix_reply(msgs: list, fix_text: str, uid: Optional[str] = None) -> str:
     """Handle a reviewer's `#fix` correction: distil it into a reusable style
-    rule instead of answering the parent."""
+    rule instead of answering the parent.
+
+    Also the strongest learning signal the system gets: a reviewer objecting to
+    a reply is a labelled negative on every directive that shaped it, which is
+    worth more than any inference from a parent's silence.
+    """
     sb = _get_supabase()
     prior_ai_text = next(
         (m.get("text", "") for m in reversed(msgs[:-1]) if m.get("role") == "ai"), ""
@@ -8321,6 +8387,10 @@ async def _fix_reply(msgs: list, fix_text: str) -> str:
                     "source_note": fix_text, "active": True, "created_by": "chat:#fix",
                 }).execute()
             )
+            # The new rule has to be visible on the next turn, not in two
+            # minutes, or a reviewer testing a correction sees the old reply.
+            core_dialogue.clear_cache()
+            await core_outcome.observe_latest(uid=uid, signal="fix", ports=_core_ports())
             return f"已记录调整：{rule['rule']}"
         except Exception as e:
             print(f"[warn] #fix insert error: {e}")
@@ -8366,7 +8436,11 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
 class _ReplyContext(NamedTuple):
     """Everything assembled before the reply model is called. A NamedTuple
     rather than a bare tuple because it now carries eight things, and
-    positional unpacking of eight was one refactor away from a silent mix-up."""
+    positional unpacking of eight was one refactor away from a silent mix-up.
+
+    Field-compatible with nuri_core.TurnBundle on purpose: both pipelines hand
+    the same names to the same reply call, so switching between them changes
+    what is in the system prompt and nothing else about the turn."""
     card: str
     memory: str
     profile: str
@@ -8375,6 +8449,13 @@ class _ReplyContext(NamedTuple):
     sources: str                       # rendered allow-list, "" when not searching
     route: "TurnRoute"
     search_results: list               # SearchResult objects behind `sources`
+    #: Set only by the four-model pipeline. When present the dialogue model has
+    #: already rendered the system prompt and the blocks above are duplicates
+    #: kept for logging and for the A/B comparison.
+    plan: object = None
+    trace: object = None
+    family: object = None
+    evidence: object = None
 
 
 async def _route_and_search(
@@ -8415,11 +8496,112 @@ async def _route_and_search(
     return route, results
 
 
+#: Which turn pipeline builds the prompt. "four_model" runs the four
+#: subsystems in backend/nuri_core; "linear" is the original single-gather
+#: path. Both are kept deliberately: the point of the four-model build is to be
+#: measured against this one, and a flag is the only honest way to do that.
+NURI_PIPELINE = os.getenv("NURI_PIPELINE", "four_model")
+
+_core_ports_singleton: Optional[CorePorts] = None
+
+
+def _core_ports() -> CorePorts:
+    """The application surface handed to nuri_core.
+
+    Built lazily and once. Everything here is a reference to a function defined
+    above; nuri_core never imports this module, which is what keeps the four
+    subsystems testable without a FastAPI app and two OpenAI clients.
+    """
+    global _core_ports_singleton
+    if _core_ports_singleton is None:
+        _core_ports_singleton = CorePorts(
+            supabase=_get_supabase,
+            aoai=aoai,
+            to_thread=anyio.to_thread.run_sync,
+            load_profile=_load_profile,
+            profile_ctx=_profile_ctx,
+            age_label=_age_label,
+            age_months=_age_in_months,
+            memory_context=_get_memory_context,
+            follow_up_context=_get_follow_up_context,
+            internal_rules=_internal_rules_ctx,
+            search_sources=search_sources,
+            sources_prompt_block=sources_prompt_block,
+            search_provider_name=lambda: get_search_provider().name,
+            persona=NURI_PERSONA,
+            style_rules=_get_style_rules_ctx,
+            card_ctx=_card_ctx,
+            gen_cards=_db_get_gen_cards,
+            is_urgent=_urgent_task_suppressed,
+        )
+    return _core_ports_singleton
+
+
+async def _reply_context_four_model(
+    turn: _Turn, body: "UserMessageIn", metrics: Optional["_TurnMetrics"] = None,
+) -> _ReplyContext:
+    """Build the turn through 家庭 / 知识与决策 / 对话与主动 / 结果学习.
+
+    The metrics row keeps its existing shape — `route_ms`, `search_ms`,
+    `context_ms` and the route columns all still land where they did — because
+    the whole exercise is a comparison, and a comparison against a moved
+    goalpost is not one.
+    """
+    def _on_route(route) -> None:
+        if metrics and route is not None:
+            metrics.set(**route_metrics(route))
+
+    bundle: TurnBundle = await run_turn_context(
+        history=turn.msgs,
+        user_text=body.text or "",
+        uid=turn.owner_uid,
+        context_hints=turn.context_hints,
+        ports=_core_ports(),
+        route_turn=route_turn,
+        source_card_id=turn.session.get("source_card_id") or "",
+        history_window=_HISTORY_WINDOW,
+        on_route_done=_on_route,
+    )
+
+    trace = bundle.trace
+    if metrics:
+        metrics.set(**trace.metrics_row())
+        # The three the linear pipeline already reports, under their existing
+        # names, so a dashboard built on them keeps working across the switch.
+        metrics.set(
+            context_ms=trace.timings.get("context", 0),
+            route_ms=trace.timings.get("route", 0),
+            search_ms=trace.timings.get("search", 0),
+        )
+        if bundle.search_results:
+            metrics.set(
+                search_hits=len(bundle.search_results),
+                search_provider=get_search_provider().name,
+            )
+
+    return _ReplyContext(
+        card=bundle.card,
+        memory=bundle.memory,
+        profile=bundle.profile,
+        style=bundle.style,
+        internal=bundle.internal,
+        sources=bundle.sources,
+        route=bundle.route or NO_ROUTE,
+        search_results=list(bundle.search_results),
+        plan=bundle.plan,
+        trace=trace,
+        family=bundle.family,
+        evidence=bundle.evidence,
+    )
+
+
 async def _reply_context(
     turn: _Turn, body: "UserMessageIn", metrics: Optional["_TurnMetrics"] = None,
 ) -> _ReplyContext:
     """Gather the prompt context blocks. The I/O-bound ones run concurrently
     rather than as serial round trips before the reply starts."""
+    if NURI_PIPELINE == "four_model":
+        return await _reply_context_four_model(turn, body, metrics)
     started = time.perf_counter()
     profile_ctx = _profile_ctx(turn.context_hints, turn.context_hints.get("children"))
     gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
@@ -8448,9 +8630,44 @@ async def _reply_context(
     )
 
 
+def _plan_prompt(rc: _ReplyContext) -> tuple[Optional[str], Optional[int]]:
+    """The system message the dialogue model rendered, or (None, None) to let
+    _nuri_messages concatenate the blocks the old way."""
+    if rc.plan is None:
+        return None, None
+    return rc.plan.system_prompt(NURI_PERSONA + _NURI_JSON_SUFFIX), rc.plan.history_window
+
+
+async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
+    """Close the four-model loop once the reply has already been delivered.
+
+    Two writes, both optional. `outcome.record` opens a learning row that a
+    later signal — a `#fix`, an adopted task, a "没帮上忙" — attaches itself to;
+    `provenance.persist` stores the trace this branch exists to compare. Either
+    can fail without the parent noticing, which is why both run here and not on
+    the reply path.
+    """
+    if rc.plan is None or rc.trace is None:
+        return
+    ports = _core_ports()
+    await core_outcome.record(
+        uid=turn.owner_uid,
+        session_id=session_id,
+        turn_id=rc.trace.turn_id,
+        topic=getattr(rc.evidence, "topic", "") or "",
+        risk_tier=getattr(rc.evidence, "risk_tier", "none"),
+        directive_ids=rc.trace.directive_ids,
+        ports=ports,
+    )
+    await core_provenance.persist(
+        rc.trace, session_id=session_id, user_id=turn.owner_uid, ports=ports,
+    )
+
+
 async def _task_suggestion(
     reply: dict, msgs: list, user_text: str, ai_text: str,
     metrics: Optional["_TurnMetrics"] = None,
+    allow: bool = True,
 ) -> Optional[dict]:
     """Build task drafts for either supported trigger.
 
@@ -8464,7 +8681,10 @@ async def _task_suggestion(
     screen, so a failure here must never take the reply down with it — the turn
     just arrives without task cards.
     """
-    if _user_declined_tasks(user_text) or _urgent_task_suppressed(user_text, ai_text):
+    # `allow` is the safety layer's gate, already decided for this turn. It
+    # subsumes the urgency check below rather than replacing it: the linear
+    # pipeline has no safety layer, so both paths keep the same floor.
+    if not allow or _user_declined_tasks(user_text) or _urgent_task_suppressed(user_text, ai_text):
         return None
     explicit_request = _user_requested_tasks(user_text)
     task_list = _normalize_task_proposals(reply.get("task_proposals"))
@@ -8569,22 +8789,28 @@ async def post_message(
     turn = await _prepare_turn(session_id, body, uid)
     transition = None
     quick_replies: list = []
+    # Both the #fix and scripted branches below skip the model, and so produce
+    # no citations; without this the persist call a few lines down raises.
+    sources: list = []
+    rc: Optional[_ReplyContext] = None
 
     if turn.fix_text:
-        ai_text = await _fix_reply(turn.msgs, turn.fix_text)
+        ai_text = await _fix_reply(turn.msgs, turn.fix_text, turn.owner_uid)
     elif oai:
         rc = await _reply_context(turn, body, metrics)
+        system_prompt, history_window = _plan_prompt(rc)
         reply = await anyio.to_thread.run_sync(
             lambda: _nuri_reply_sync(
                 turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                rc.internal, rc.sources, metrics,
+                rc.internal, rc.sources, metrics, system_prompt, history_window,
             )
         )
         ai_text = reply["text"]
         quick_replies = reply.get("quick_replies", [])
         sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
         transition = await _task_suggestion(
-            reply, turn.msgs, body.text or "", ai_text, metrics
+            reply, turn.msgs, body.text or "", ai_text, metrics,
+            allow=rc.plan.allow_task_cards if rc.plan else True,
         )
     else:
         ai_text, quick_replies, transition = await _scripted_reply(turn.session, session_id)
@@ -8597,6 +8823,8 @@ async def post_message(
         background_tasks.add_task(
             metrics.flush, session_id=session_id, user_id=turn.owner_uid, reply_text=ai_text,
         )
+        if rc is not None:
+            background_tasks.add_task(_after_turn, rc, turn, session_id)
 
     if oai and turn.owner_uid:
         background_tasks.add_task(
@@ -8632,14 +8860,15 @@ async def post_message_stream(
         sources: list = []
         try:
             if turn.fix_text:
-                ai_text = await _fix_reply(turn.msgs, turn.fix_text)
+                ai_text = await _fix_reply(turn.msgs, turn.fix_text, turn.owner_uid)
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
                 rc = await _reply_context(turn, body, metrics)
+                system_prompt, history_window = _plan_prompt(rc)
                 reply = None
                 async for kind, value in _nuri_reply_stream(
                     turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                    rc.internal, rc.sources, metrics,
+                    rc.internal, rc.sources, metrics, system_prompt, history_window,
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})
@@ -8653,8 +8882,10 @@ async def post_message_stream(
                 # does not, the fallback call still runs only after the text is
                 # visible, so it cannot delay the parent's first token.
                 transition = await _task_suggestion(
-                    reply, turn.msgs, body.text or "", ai_text, metrics
+                    reply, turn.msgs, body.text or "", ai_text, metrics,
+                    allow=rc.plan.allow_task_cards if rc.plan else True,
                 )
+                finished["rc"] = rc
             else:
                 ai_text, quick_replies, transition = await _scripted_reply(
                     turn.session, session_id
@@ -8687,6 +8918,9 @@ async def post_message_stream(
             await metrics.flush(
                 session_id=session_id, user_id=turn.owner_uid, reply_text=reply_text,
             )
+        rc = finished.get("rc")
+        if rc is not None:
+            await _after_turn(rc, turn, session_id)
         args = finished.get("memory_args")
         if args:
             await _extract_and_upsert_memories(*args)
@@ -8996,6 +9230,11 @@ async def health():
         "supabase": bool(_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY),
         "vector_store": "supabase",
         "openai": oai is not None,
+        # Which turn pipeline this deployment is actually running. The A/B is
+        # driven by an env var, so "which one is prod on right now" has to be
+        # answerable without reading the Vercel dashboard.
+        "pipeline": NURI_PIPELINE,
+        "pipeline_version": PIPELINE_VERSION if NURI_PIPELINE == "four_model" else "",
     }
 
 # ── RAG helper functions ───────────────────────────────────────────────────────
