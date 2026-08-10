@@ -2737,8 +2737,43 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
         ) from exc
 
 
+async def _existing_session_for(uid: str) -> Optional[dict]:
+    """The account's one conversation, if it has been created already."""
+    sb = _get_supabase()
+    if sb:
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_sessions").select("*")
+                .eq("user_id", uid).order("created_at").limit(1).execute()
+            )
+            return (res.data or [None])[0]
+        except Exception as e:
+            print(f"[warn] existing_session_for: {e}")
+            return None
+    return next(
+        (s for s in memstore.sessions.values() if s.get("user_id") == uid), None
+    )
+
+
 @api.post("/chat/sessions")
 async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_opt_uid)):
+    # A parent has one conversation, for the life of the account, holding
+    # everything they have ever said. This route used to insert a row every time
+    # it was called and leave the client to decide whether it wanted one, which
+    # it did by listing sessions and picking the first without a source_card_id
+    # — so two requests that raced each made their own. Accounts accumulated up
+    # to nine, each opening with its own model-written greeting: five such calls
+    # on gpt-5.5 in one afternoon, 42% of the day's tokens, for conversations
+    # nobody asked to start.
+    #
+    # Returning what already exists makes the route idempotent, which is what
+    # the client was trying and failing to achieve from the outside.
+    # one_session_per_user_migration.sql enforces it underneath.
+    if uid:
+        existing = await _existing_session_for(uid)
+        if existing:
+            return existing
+
     card_id = body.card_id
     title = body.title or "和NURI聊天"
     if card_id:
@@ -2761,6 +2796,15 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         try:
             await anyio.to_thread.run_sync(lambda: sb.table("chat_sessions").insert(session).execute())
         except Exception as e:
+            # The check above is not atomic, so two first-ever requests from one
+            # account can both reach here. The unique index lets exactly one
+            # win; the loser must adopt that row rather than fall back to
+            # memory, or the account ends up with two conversations again —
+            # which is the whole failure this route exists to prevent.
+            if uid:
+                winner = await _existing_session_for(uid)
+                if winner:
+                    return winner
             print(f"[warn] start_session insert error: {e}")
             memstore.sessions[session["id"]] = session
             memstore.messages[session["id"]] = []
