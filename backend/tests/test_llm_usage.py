@@ -16,6 +16,17 @@ import pytest
 from backend import llm_usage, main, runtime
 
 
+@pytest.fixture
+def writes_allowed(monkeypatch):
+    """Let `record` reach the fake client in this module's tests.
+
+    Writes are suppressed under pytest because the suite runs against the real
+    project database, so the tests that exercise the write path have to opt in
+    explicitly — and they only ever hand it a fake.
+    """
+    monkeypatch.setattr(llm_usage, "_ALLOW_IN_TESTS", True)
+
+
 # ── Usage normalization ──────────────────────────────────────────────────────
 # The chat and responses APIs disagree on every field name. A summary that
 # groups across both is only meaningful if this mapping is right.
@@ -97,7 +108,7 @@ def test_record_is_a_noop_without_supabase(monkeypatch):
     llm_usage.record("chat.reply", "gpt-5.5", usage=SimpleNamespace(prompt_tokens=1))
 
 
-def test_record_swallows_a_broken_table(monkeypatch):
+def test_record_swallows_a_broken_table(monkeypatch, writes_allowed):
     """The realistic failure is the migration not having been run. That must
     cost a warning, not the turn the parent is waiting on."""
 
@@ -110,7 +121,7 @@ def test_record_swallows_a_broken_table(monkeypatch):
     llm_usage.record("content_research.prepare", "gpt-5.4-mini")
 
 
-def test_record_writes_the_correlation_and_account_fields(monkeypatch):
+def test_record_writes_the_correlation_and_account_fields(monkeypatch, writes_allowed):
     written: list[dict] = []
 
     class Recorder:
@@ -143,7 +154,7 @@ def test_record_writes_the_correlation_and_account_fields(monkeypatch):
     assert row["api"] == "responses"
 
 
-def test_explicit_user_id_beats_the_context(monkeypatch):
+def test_explicit_user_id_beats_the_context(monkeypatch, writes_allowed):
     """The daily push loops over accounts inside one request, so the loop's own
     uid has to win over whatever the request context holds."""
     written: list[dict] = []
@@ -274,3 +285,29 @@ def test_summary_ignores_an_unparseable_price_table(monkeypatch):
     monkeypatch.setenv("LLM_PRICE_TABLE", "not json")
     out = asyncio.run(main.admin_llm_usage_summary(days=7))
     assert out["pricing_configured"] is False
+
+
+def test_a_test_run_never_writes_to_the_real_table(monkeypatch):
+    """The regression that put 264 fake rows in the production metrics table.
+
+    There is no conftest and no test database, so `runtime.get_supabase()`
+    inside a test returns the real project client. Nothing in the suite may
+    reach it through this module without opting in.
+    """
+    written: list[dict] = []
+
+    class Recorder:
+        def table(self, _name):
+            return self
+
+        def insert(self, row):
+            written.append(row)
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    monkeypatch.setattr(runtime, "get_supabase", lambda: Recorder())
+    # No `writes_allowed` fixture: this is what an ordinary test looks like.
+    llm_usage.record("content_research.prepare", "gpt-5.4-mini")
+    assert written == []

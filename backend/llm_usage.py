@@ -30,6 +30,7 @@ Three constraints shaped it:
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from contextvars import ContextVar
 from typing import Any, Iterable, Optional
@@ -50,8 +51,28 @@ _request_id: ContextVar[Optional[str]] = ContextVar("llm_request_id", default=No
 #: and "which account is burning the quota" would stay unanswerable.
 _user_id: ContextVar[Optional[str]] = ContextVar("llm_user_id", default=None)
 
-#: Turned off by default in tests, where there is no Supabase and no point.
 _ENABLED = os.getenv("LLM_USAGE_LOGGING", "1").lower() not in {"0", "false", "no"}
+
+#: Set by this module's own tests, which need `record` to reach their fake
+#: client. Nothing else should touch it.
+_ALLOW_IN_TESTS = False
+
+
+def _suppressed() -> bool:
+    """True when a write would be a test artefact rather than a measurement.
+
+    There is no conftest and no test database: the suite runs against whatever
+    `.env` provides, which on a developer machine is the real project Supabase.
+    A test run therefore writes rows with fake models and fake accounts into the
+    exact table the spend decisions are read from. That happened — 264 rows on
+    the first run — and the table is only useful if everything in it is real.
+
+    `"pytest" in sys.modules` rather than `PYTEST_CURRENT_TEST`, which pytest
+    sets per test and so misses writes from module-level and fixture code.
+    """
+    if not _ENABLED:
+        return True
+    return "pytest" in sys.modules and not _ALLOW_IN_TESTS
 
 #: One warning, not one per call: a missing migration would otherwise fill the
 #: function logs with the same line for every request.
@@ -169,7 +190,7 @@ def record(
 ) -> None:
     """Write one provider call. Safe to call from anywhere; never raises."""
     global _warned
-    if not _ENABLED:
+    if _suppressed():
         return
     try:
         sb = runtime.get_supabase()
