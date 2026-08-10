@@ -67,29 +67,50 @@ class _Supabase:
     def table(self, name):
         if name == "chat_sessions":
             return _SessionTable(self.sessions, self._on_insert)
-        outer = self
+        # chat_messages has to read back what it stored: the divider dedupe
+        # works by looking at the last message, so a sink that always answers
+        # "empty" would let the test pass while the real check never ran.
+        return _MessageTable(self.message_inserts)
 
-        class _Sink:
-            def insert(self, row):
-                outer.message_inserts.append(row)
-                return self
 
-            def select(self, *_a, **_k):
-                return self
+class _MessageTable:
+    def __init__(self, store: list[dict]):
+        self._store = store
+        self._filters: dict = {}
+        self._desc = False
+        self._limit = None
+        self._pending = None
 
-            def eq(self, *_a, **_k):
-                return self
+    def insert(self, row):
+        self._pending = row
+        return self
 
-            def order(self, *_a, **_k):
-                return self
+    def select(self, *_a, **_k):
+        return self
 
-            def limit(self, *_a, **_k):
-                return self
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
 
-            def execute(self):
-                return SimpleNamespace(data=[])
+    def order(self, _col, desc=False, **_k):
+        self._desc = desc
+        return self
 
-        return _Sink()
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def execute(self):
+        if self._pending is not None:
+            row, self._pending = self._pending, None
+            self._store.append(row)
+            return SimpleNamespace(data=[row])
+        rows = [
+            r for r in self._store
+            if all(r.get(k) == v for k, v in self._filters.items())
+        ]
+        rows.sort(key=lambda r: r.get("created_at") or "", reverse=self._desc)
+        return SimpleNamespace(data=rows[: self._limit] if self._limit else rows)
 
 
 @pytest.fixture
@@ -132,6 +153,70 @@ def test_opening_a_card_does_not_start_a_second_conversation(monkeypatch, no_mod
     assert from_card["id"] == main_session["id"]
     assert len(sb.sessions) == 1
     assert not from_card.get("source_card_id")
+
+
+def test_opening_a_card_leaves_a_divider_carrying_the_card(monkeypatch, no_model):
+    """The marker is the divider the parent sees *and* where the reply path
+    reads card context from, now that no card has a session of its own."""
+    sb = _Supabase([])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    _start()
+    before = len(sb.message_inserts)
+    _start(card_id="learn_big_feelings")
+
+    markers = [
+        m for m in sb.message_inserts[before:]
+        if (m.get("transition") or {}).get("kind") == main.CARD_OPENED
+    ]
+    assert len(markers) == 1
+    assert markers[0]["transition"]["card_id"] == "learn_big_feelings"
+    # No text: it is a separator, and every prompt builder drops empty messages,
+    # so it never reaches the model as if the parent had said it.
+    assert markers[0]["text"] == ""
+
+
+def test_the_newest_marker_decides_the_card_context(monkeypatch):
+    """Two cards opened in one conversation: the turns after the second are
+    about the second, and `source_card_id` is only a legacy fallback."""
+    turn = SimpleNamespace(
+        session={},
+        msgs=[
+            {"role": "user", "text": "hi", "transition": None},
+            {"role": "ai", "text": "", "transition": {"kind": main.CARD_OPENED, "card_id": "learn_sleep_routine"}},
+            {"role": "user", "text": "睡眠的问题", "transition": None},
+            {"role": "ai", "text": "", "transition": {"kind": main.CARD_OPENED, "card_id": "learn_big_feelings"}},
+            {"role": "user", "text": "情绪呢", "transition": None},
+        ],
+    )
+    assert main._active_card_id(turn) == "learn_big_feelings"
+
+
+def test_card_context_falls_back_to_a_legacy_card_session(monkeypatch):
+    """Anonymous sessions created before this still carry source_card_id, and
+    must keep working."""
+    turn = SimpleNamespace(session={"source_card_id": "card_food_picky"}, msgs=[])
+    assert main._active_card_id(turn) == "card_food_picky"
+
+
+def test_a_conversation_with_no_card_has_no_card_context(monkeypatch):
+    turn = SimpleNamespace(session={}, msgs=[{"role": "user", "text": "hi"}])
+    assert main._active_card_id(turn) == ""
+
+
+def test_reopening_the_same_card_does_not_stack_dividers(monkeypatch, no_model):
+    """The home screen can fire the request several times for one tap — that is
+    exactly how the duplicate sessions were being created."""
+    sb = _Supabase([])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    _start()
+    _start(card_id="learn_big_feelings")
+    after_first = len(sb.message_inserts)
+    _start(card_id="learn_big_feelings")
+    _start(card_id="learn_big_feelings")
+
+    assert len(sb.message_inserts) == after_first
 
 
 def test_returning_costs_no_greeting(monkeypatch, no_model):

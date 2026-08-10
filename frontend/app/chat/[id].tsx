@@ -448,6 +448,25 @@ function MessageBubble({
 }) {
   const isAI = msg.role === "ai";
 
+  // A parent opened a feed card. There is only ever one conversation, so this
+  // marks where the subject changed instead of the card getting a chat of its
+  // own. It carries no text — it is a separator, not something anyone said —
+  // and without this branch it would render as an empty bubble.
+  if (msg.transition?.kind === "card_opened") {
+    return (
+      <View style={styles.cardDivider} testID="chat-card-divider">
+        <View style={styles.cardDividerLine} />
+        <View style={styles.cardDividerLabel}>
+          <Ionicons name="bookmark-outline" size={13} color={colors.brand} />
+          <Text style={styles.cardDividerText} numberOfLines={1}>
+            {msg.transition.title || "学习胶囊"}
+          </Text>
+        </View>
+        <View style={styles.cardDividerLine} />
+      </View>
+    );
+  }
+
   if (msg.transition?.kind === "task_suggestion") {
     const suggestedTasks = msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []);
     return (
@@ -714,6 +733,26 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
 
+  cardDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+  cardDividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  cardDividerLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    maxWidth: "62%",
+  },
+  cardDividerText: {
+    fontSize: type.sm,
+    color: colors.onSurfaceTertiary,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
   transitionCard: {
     flex: 1, gap: 12,
   },

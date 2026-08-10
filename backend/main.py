@@ -2737,6 +2737,78 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
         ) from exc
 
 
+#: Marks the point in the one conversation where a parent opened a feed card.
+#: Carries no text, so it renders as a divider and is skipped by every prompt
+#: builder (they all drop empty-text messages), while still being the record of
+#: which card the turns after it are about.
+CARD_OPENED = "card_opened"
+
+
+def _card_marker_message(session_id: str, card_id: str, gen_cards: list[dict]) -> dict:
+    title = ""
+    for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
+        if c["id"] == card_id:
+            title = c.get("title") or ""
+            break
+    return {
+        "id": str(uuid.uuid4()), "session_id": session_id,
+        "role": "ai", "text": "", "quick_replies": [],
+        "transition": {"kind": CARD_OPENED, "card_id": card_id, "title": title},
+        "created_at": _now(),
+    }
+
+
+def _active_card_id(turn: "_Turn") -> str:
+    """Which card the conversation is currently on.
+
+    Card context used to come from `session.source_card_id`, which worked only
+    because opening a card started its own session. Now that a parent has one
+    conversation, that field is empty and the card has to be read from the
+    conversation itself: the most recent marker wins, so opening a second card
+    moves the context and the turns before it keep theirs.
+
+    Falls back to the session field for the anonymous sessions that predate
+    this and still carry one.
+    """
+    for m in reversed(turn.msgs or []):
+        transition = m.get("transition") or {}
+        if transition.get("kind") == CARD_OPENED and transition.get("card_id"):
+            return str(transition["card_id"])
+    return turn.session.get("source_card_id") or ""
+
+
+async def _append_card_marker(session_id: str, card_id: str) -> None:
+    """Record that the parent opened this card, unless it is already current.
+
+    Re-opening the same card must not stack dividers: the home screen can send
+    the request more than once for a single tap, and three identical separators
+    in a row is not a record of anything.
+    """
+    gen_cards = await stores.get_gen_cards()
+    marker = _card_marker_message(session_id, card_id, gen_cards)
+    sb = _get_supabase()
+    if sb:
+        try:
+            recent = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages").select("transition")
+                .eq("session_id", session_id)
+                .order("created_at", desc=True).limit(1).execute()
+            )
+            last = ((recent.data or [{}])[0].get("transition") or {})
+            if last.get("kind") == CARD_OPENED and last.get("card_id") == card_id:
+                return
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages").insert(marker).execute()
+            )
+        except Exception as e:
+            print(f"[warn] card marker insert: {e}")
+        return
+    msgs = memstore.messages.setdefault(session_id, [])
+    last = (msgs[-1].get("transition") or {}) if msgs else {}
+    if not (last.get("kind") == CARD_OPENED and last.get("card_id") == card_id):
+        msgs.append(marker)
+
+
 async def _existing_session_for(uid: str) -> Optional[dict]:
     """The account's one conversation, if it has been created already."""
     sb = _get_supabase()
@@ -2772,6 +2844,13 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
     if uid:
         existing = await _existing_session_for(uid)
         if existing:
+            # Opening a card is a new subject inside the one conversation, so
+            # it leaves a marker rather than starting somewhere else. That
+            # marker is both the divider the parent sees and where the reply
+            # path reads the card context from — the job source_card_id did
+            # while every card had a session of its own.
+            if body.card_id:
+                await _append_card_marker(existing["id"], body.card_id)
             return existing
 
     card_id = body.card_id
@@ -3237,7 +3316,7 @@ async def _reply_context_four_model(
         context_hints=turn.context_hints,
         ports=_core_ports(),
         route_turn=route_turn,
-        source_card_id=turn.session.get("source_card_id") or "",
+        source_card_id=_active_card_id(turn),
         history_window=core_dialogue_reply.HISTORY_WINDOW,
         on_route_done=_on_route,
     )
@@ -3295,7 +3374,7 @@ async def _reply_context(
     if metrics:
         metrics.mark("context_ms", started)
     return _ReplyContext(
-        card=_card_ctx(turn.session.get("source_card_id") or "", gen_cards),
+        card=_card_ctx(_active_card_id(turn), gen_cards),
         # Appended to the memory block rather than given a heading of its own:
         # both answer "what does NURI already know about this family", and a
         # separate section invites the model to work through it as a checklist.
