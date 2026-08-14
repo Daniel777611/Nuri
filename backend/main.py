@@ -768,6 +768,12 @@ def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
 
 
 
+#: Arrive with fewshot_metrics_migration.sql. Stripped alongside the four-model
+#: columns on the retry below, so deploying ahead of the migration costs the two
+#: new numbers rather than the whole row.
+_FEWSHOT_COLUMNS = frozenset({"fewshot_msgs", "fewshot_chars"})
+
+
 class _TurnMetrics:
     """Collects one chat turn's cost while the turn runs.
 
@@ -791,11 +797,18 @@ class _TurnMetrics:
     def set(self, **fields) -> None:
         self.row.update(fields)
 
-    def record_prompt(self, msgs: list[dict], blocks: dict) -> None:
+    def record_prompt(self, msgs: list[dict], blocks: dict, *, fewshot: int = 0) -> None:
         system = msgs[0]["content"] if msgs else ""
-        history = msgs[1:]
+        # The few-shot pairs sit between the system message and the real
+        # conversation. Counted apart from it because history_chars is the
+        # number the history window is tuned against, and a block that grows
+        # with the exemplar set would make that reading wrong.
+        shots = msgs[1:1 + fewshot]
+        history = msgs[1 + fewshot:]
         self.row.update({
             "system_chars": len(system),
+            "fewshot_msgs": len(shots),
+            "fewshot_chars": sum(len(m.get("content") or "") for m in shots),
             "history_msgs": len(history),
             "history_chars": sum(len(m.get("content") or "") for m in history),
             "memory_chars": len(blocks.get("memory") or ""),
@@ -835,7 +848,8 @@ class _TurnMetrics:
             # including the ones that have been collected all along — so retry
             # with just the columns the linear pipeline already wrote.
             legacy = {k: v for k, v in self.row.items()
-                      if k not in core_provenance.TurnTrace.FLAT_COLUMNS}
+                      if k not in core_provenance.TurnTrace.FLAT_COLUMNS
+                      and k not in _FEWSHOT_COLUMNS}
             if len(legacy) == len(self.row):
                 return
             try:

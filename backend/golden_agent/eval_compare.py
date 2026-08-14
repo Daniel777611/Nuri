@@ -22,7 +22,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from backend.main import _nuri_reply_sync  # noqa: E402
+# Moved out of main.py by the decomposition; this import is what the module was
+# reaching for under its old private name.
+from backend.nuri_core.dialogue_reply import nuri_reply_sync  # noqa: E402
 
 PROC_DIR = os.path.join(os.path.dirname(__file__), "processed")
 TURNS_PATH = os.path.join(PROC_DIR, "turns.jsonl")
@@ -91,7 +93,7 @@ def main():
     results = []
     for i, row in enumerate(rows, 1):
         print(f"generating MVP reply {i}/{len(rows)} ({row['source_file']}) ...")
-        mvp = _nuri_reply_sync(row["history"])
+        mvp = nuri_reply_sync(row["history"])
         results.append({**row, "mvp_reply": mvp["text"]})
 
     with open(OUT_JSONL, "w", encoding="utf-8") as fh:
