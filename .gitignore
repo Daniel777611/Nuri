@@ -28,6 +28,10 @@ internelDatabase/
 backend/golden_agent/raw/
 backend/golden_agent/processed/
 
+# eval runs — model output, not fixtures. Committing one invites reading a
+# single sample as the truth, which is the exact mistake the eval exists to stop.
+backend/evals/out/
+
 # OS/editor
 .DS_Store
 Thumbs.db
