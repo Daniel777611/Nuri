@@ -34,7 +34,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from backend import llm_usage                                  # noqa: E402
+from backend import llm_usage, runtime                         # noqa: E402
 from backend.nuri_core import exemplars                        # noqa: E402
 from backend.nuri_core.dialogue_reply import nuri_reply_sync   # noqa: E402
 
@@ -139,7 +139,24 @@ def pctile(values: list[float], q: float) -> float:
     return v[min(int(len(v) * q), len(v) - 1)] if v else 0
 
 
-def run(reps: int, arms: tuple[str, ...]) -> list[dict]:
+def style_rules_ctx() -> str:
+    """The operator rules that go into every production turn.
+
+    Left out of the first version of this eval, which made every number it
+    produced optimistic: production ships 1,600 characters of always-on rules
+    that include 「先用编号列出 3-5 个具体问题」 and 「用条列，每条一件事」, and
+    measuring the register without them measures a prompt the app never sends.
+    """
+    sb = runtime.get_supabase()
+    if not sb:
+        return ""
+    rows = (sb.table("nuri_style_rules").select("rule")
+            .eq("active", True).order("created_at", desc=True)
+            .limit(50).execute().data) or []
+    return "\n".join(f"- {r['rule']}" for r in rows)
+
+
+def run(reps: int, arms: tuple[str, ...], style: str = "") -> list[dict]:
     results = []
     for i, q in enumerate(QUESTIONS, 1):
         history = history_for(q)
@@ -162,7 +179,7 @@ def run(reps: int, arms: tuple[str, ...]) -> list[dict]:
             for rep in range(reps):
                 print(f"  {q['id']:<20} {arm:>3}  {rep + 1}/{reps}", flush=True)
                 started = time.perf_counter()
-                reply = nuri_reply_sync(history)
+                reply = nuri_reply_sync(history, "", "", "", style)
                 samples.append({
                     "text": reply.get("text") or "",
                     "ms": int((time.perf_counter() - started) * 1000),
@@ -257,6 +274,9 @@ def main() -> None:
                     help="comma-separated: off (nothing), ceiling (the rule "
                          "alone), on (the exemplars, whose guard states it too)")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    ap.add_argument("--no-style-rules", action="store_true",
+                    help="omit the always-on operator rules; the prompt then "
+                         "differs from production, so say so when quoting results")
     args = ap.parse_args()
 
     arms = tuple(a.strip() for a in args.arms.split(",") if a.strip())
@@ -276,9 +296,13 @@ def main() -> None:
     llm_usage.new_request_id()
     llm_usage.set_user("eval:variance")
 
+    style = "" if args.no_style_rules else style_rules_ctx()
+    print(f"style rules in prompt: {len(style)} chars"
+          f"{' (OMITTED — not production-shaped)' if not style else ''}")
+
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    results = run(args.reps, arms)
+    results = run(args.reps, arms, style)
     report(results, arms, exemplars.MAX_CHARS)
 
     base = os.path.join(OUT_DIR, f"variance_{stamp}")
