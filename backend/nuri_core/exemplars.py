@@ -85,16 +85,43 @@ _SCRIPT_CLAUSE = {
 }
 
 
-def guard_for(parent_text: str) -> str:
+#: The same ceiling, stated to turns the corpus does not cover. Off by default
+#: and kept separate from GUARD because it is a weaker instrument and should be
+#: judged as one: GUARD arrives alongside two replies that demonstrate the
+#: length, this arrives alone. Sleep and feeding are most of what parents ask
+#: about and have no exemplars at all, so measured against `backend/evals/
+#: coherence.py --only sleep-flipflop` this is the question of whether a
+#: sentence can do what examples do.
+GLOBAL_CEILING = os.getenv("FEWSHOT_GLOBAL_CEILING", "0").lower() not in ("0", "false", "no")
+
+CEILING_RULE = (
+    f"这一轮没有可参考的回复范例，但长度要求不变：整段 text 控制在 {MAX_CHARS} 字以内，"
+    "写成一段话，不分点、不加粗。宁可只讲一个最重要的做法，也不要为了讲全而写长；"
+    "家长看不完的回复等于没有回复。"
+)
+
+
+def guard_for(parent_texts: Sequence[str]) -> str:
     """The guard, with the parent's script named outright when it can be read.
 
-    Measured: the generic clause above — follow the parent's language — held for
-    five turns and then lost, and the sixth reply came back wholly Traditional
-    to a parent who had written Simplified throughout. The examples are
-    Traditional, and an instruction that never says which side it is asking for
-    is weaker than six Traditional messages sitting in the same prompt.
+    `parent_texts` is newest first, and the newest readable one wins rather than
+    all of them pooled. Pooling looked reasonable and was wrong: a parent who
+    writes three Traditional messages and then switches to Simplified is still
+    majority Traditional in the pool, so the clause instructed Traditional at
+    exactly the turn the persona promises to switch. Older messages are only
+    consulted when the latest is too short to read — which is the case the
+    lookback existed for.
+
+    Measured before any of this: the generic clause above — follow the parent's
+    language — held for five turns and then lost, and the sixth reply came back
+    wholly Traditional to a parent who had written Simplified throughout. The
+    examples are Traditional, and an instruction that never says which side it
+    is asking for is weaker than four Traditional messages in the same prompt.
     """
-    clause = _SCRIPT_CLAUSE.get(script_of(parent_text), "")
+    if isinstance(parent_texts, str):  # tolerate a single message
+        parent_texts = [parent_texts]
+    script = next((s for s in (script_of(t) for t in parent_texts) if s), "")
+    clause = _SCRIPT_CLAUSE.get(script, "")
     return f"{GUARD}{clause}" if clause else GUARD
 
 

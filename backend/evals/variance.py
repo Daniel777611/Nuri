@@ -152,7 +152,12 @@ def run(reps: int, arms: tuple[str, ...]) -> list[dict]:
             "arms": {},
         }
         for arm in arms:
+            # `ceiling` is the arm that separates the sentence from the
+            # examples. The guard the exemplars carry has always stated the
+            # length, so "on" against "off" was never able to say which of the
+            # two was doing the work.
             exemplars.ENABLED = arm == "on"
+            exemplars.GLOBAL_CEILING = arm == "ceiling"
             samples = []
             for rep in range(reps):
                 print(f"  {q['id']:<20} {arm:>3}  {rep + 1}/{reps}", flush=True)
@@ -166,6 +171,7 @@ def run(reps: int, arms: tuple[str, ...]) -> list[dict]:
             row["arms"][arm] = samples
         results.append(row)
     exemplars.ENABLED = True
+    exemplars.GLOBAL_CEILING = False
     return results
 
 
@@ -247,14 +253,16 @@ parent could have got instead of what they did.</p>
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--reps", type=int, default=3, help="runs per question per arm")
-    ap.add_argument("--arms", default="off,on", help="comma-separated: off, on")
+    ap.add_argument("--arms", default="off,ceiling,on",
+                    help="comma-separated: off (nothing), ceiling (the rule "
+                         "alone), on (the exemplars, whose guard states it too)")
     ap.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     args = ap.parse_args()
 
     arms = tuple(a.strip() for a in args.arms.split(",") if a.strip())
     for a in arms:
-        if a not in ("off", "on"):
-            raise SystemExit(f"unknown arm {a!r}; use off and/or on")
+        if a not in ("off", "ceiling", "on"):
+            raise SystemExit(f"unknown arm {a!r}; use off, ceiling and/or on")
 
     calls = len(QUESTIONS) * len(arms) * args.reps
     print(f"{len(QUESTIONS)} questions x {len(arms)} arms x {args.reps} reps = "

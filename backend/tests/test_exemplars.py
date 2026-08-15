@@ -102,6 +102,26 @@ def test_off_topic_stays_shut_even_with_off_topic_history():
     assert exemplars.select("寶寶晚上一直哭", recent=["白天小睡很短", "他最近會翻身"]) == []
 
 
+def test_a_parent_who_switches_script_is_followed_immediately():
+    """Pooling the recent messages instructed Traditional at exactly the turn a
+    Traditional-then-Simplified parent switched — the persona promises to switch
+    with them, and the clause was arguing with it."""
+    switched = [
+        "我该怎么在家帮他练习说话？",          # newest, Simplified
+        "平常我跟他說話他聽得懂",
+        "他會說的詞很少，大概十幾個",
+        "我家孩子兩歲半，講話還是只有兩三個字",
+    ]
+    guard = exemplars.guard_for(switched)
+    assert "简体中文" in guard
+    assert "繁體中文" not in guard
+
+
+def test_older_messages_stand_in_when_the_latest_is_too_short():
+    guard = exemplars.guard_for(["嗯", "好", "我家孩子兩歲半，講話還是只有兩三個字"])
+    assert "繁體中文" in guard
+
+
 def test_the_guard_names_the_parents_script():
     """Measured: the generic 'follow the parent's language' clause held for five
     turns and then lost, and the sixth reply came back wholly Traditional to a

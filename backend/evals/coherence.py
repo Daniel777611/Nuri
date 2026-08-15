@@ -170,6 +170,11 @@ SCRIPT_MIN_SIGNAL = 4
 #: over a conversation, or starts adding bullets it did not open with, is the
 #: drift the register work exists to prevent, and it is only visible across a
 #: whole conversation.
+#:
+#: Growth is only a finding if it also ends up somewhere that matters. A ratio
+#: alone fires on 83 -> 134 characters, which is a conversation that never left
+#: the register at either end; requiring the back half to also clear the ceiling
+#: is what separates drift from ordinary variation at small numbers.
 DRIFT_GROWTH = 1.6
 DRIFT_NEW_BULLETS = 1.0
 
@@ -304,7 +309,8 @@ def report(runs: list[dict]) -> bool:
     print("=" * 88)
     for r in runs:
         d = drift(r["turns"])
-        grew = d["chars"][1] > d["chars"][0] * DRIFT_GROWTH
+        grew = (d["chars"][1] > d["chars"][0] * DRIFT_GROWTH
+                and d["chars"][1] > exemplars.MAX_CHARS)
         bulleted = d["list_items"][1] - d["list_items"][0] >= DRIFT_NEW_BULLETS
         ok = not (grew or bulleted)
         all_ok = all_ok and ok
