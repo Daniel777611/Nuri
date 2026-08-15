@@ -102,6 +102,34 @@ def test_off_topic_stays_shut_even_with_off_topic_history():
     assert exemplars.select("寶寶晚上一直哭", recent=["白天小睡很短", "他最近會翻身"]) == []
 
 
+def test_the_guard_names_the_parents_script():
+    """Measured: the generic 'follow the parent's language' clause held for five
+    turns and then lost, and the sixth reply came back wholly Traditional to a
+    parent writing Simplified."""
+    zhs = exemplars.guard_for("我家孩子两岁三个月，会说的词还是很少")
+    zht = exemplars.guard_for("我家孩子兩歲三個月，會說的詞還是很少")
+    assert "简体中文" in zhs and "繁體中文" not in zhs
+    assert "繁體中文" in zht
+    # The base guard is always present, so the rest of the contract holds.
+    assert exemplars.GUARD in zhs and exemplars.GUARD in zht
+
+
+def test_the_guard_says_nothing_when_the_script_is_unreadable():
+    """Guessing from 'ok' would be worse than staying quiet — the persona
+    already covers the ordinary case."""
+    assert exemplars.guard_for("好") == exemplars.GUARD
+    assert exemplars.guard_for("") == exemplars.GUARD
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("这个孩子还没开始说话，我们想问问", "zhs"),
+    ("這個孩子還沒開始說話，我們想問問", "zht"),
+    ("ok", ""),
+])
+def test_script_detection(text, expected):
+    assert exemplars.script_of(text) == expected
+
+
 def test_disabled_selects_nothing(monkeypatch):
     monkeypatch.setattr(exemplars, "ENABLED", False)
     assert exemplars.select("孩子講錯字要糾正嗎") == []

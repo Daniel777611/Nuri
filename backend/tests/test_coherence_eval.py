@@ -18,11 +18,48 @@ def _probes(kind):
             for t in c["turns"] if t.get("probe") == kind]
 
 
-def test_all_four_failure_modes_are_covered():
+def test_all_failure_modes_are_covered():
     kinds = {t.get("probe") for c in coherence.CONVERSATIONS for t in c["turns"]}
-    assert {"改口", "遗忘", "自相矛盾"} <= kinds
+    assert {"改口", "遗忘", "自相矛盾", "语言"} <= kinds
     # 人格漂移 has no probe — it is computed over every turn.
     assert coherence.drift([{"chars": 1, "list_items": 0, "bold": 0}] * 4)
+
+
+def test_both_the_guarded_and_unguarded_paths_are_covered():
+    """The exemplars only cover language. A suite that only tests language turns
+    would report a register that holds on the minority of real conversations."""
+    from backend.nuri_core import exemplars
+    opens = {c["id"] for c in coherence.CONVERSATIONS
+             if exemplars.select(c["turns"][0]["say"])}
+    assert opens, "no conversation exercises the guarded path"
+    assert set(c["id"] for c in coherence.CONVERSATIONS) - opens, \
+        "no conversation exercises the unguarded path"
+
+
+@pytest.mark.parametrize("text,zht,zhs", [
+    ("這個孩子還沒開始說話", True, False),
+    ("这个孩子还没开始说话", False, True),
+])
+def test_script_detection_separates_the_two(text, zht, zhs):
+    t, s = coherence.script_of(text)
+    assert (t > s) is zht
+    assert (s > t) is zhs
+
+
+def test_script_probe_targets_a_conversation_where_exemplars_fire():
+    """The script risk exists only when a Traditional example is in the prompt.
+    A Simplified probe on a turn with no exemplars would test nothing."""
+    from backend.nuri_core import exemplars
+    for c in coherence.CONVERSATIONS:
+        if any(t.get("script") for t in c["turns"]):
+            assert exemplars.select(c["turns"][0]["say"]), c["id"]
+
+
+def test_the_simplified_fixture_is_actually_simplified():
+    convo = next(c for c in coherence.CONVERSATIONS
+                 if any(t.get("script") == "zhs" for t in c["turns"]))
+    zht, zhs = coherence.script_of(" ".join(t["say"] for t in convo["turns"]))
+    assert zhs > zht, "a Simplified probe written in Traditional tests nothing"
 
 
 def test_every_probe_explains_itself():

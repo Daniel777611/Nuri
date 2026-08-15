@@ -59,6 +59,44 @@ GUARD = (
     "不要照搬范例里的内容，也不要跟着范例用繁体，文字仍然跟随这位家长自己在用的语言。"
 )
 
+#: Characters that exist in only one script, frequent enough that a sentence or
+#: two of either contains several. Counting them is enough for the one question
+#: being asked — which side is this written in — and needs no conversion table.
+_ZHT_ONLY = set("個們這說對時來麼樣覺應點沒開過還給讓歲學習慣媽問題語話講聽動嗎歡邊進體驗經驗發現兒實際輕鬆專對於當")
+_ZHS_ONLY = set("个们这说对时来么样觉应点没开过还给让岁学习惯妈问题语话讲听动吗欢边进体验经验发现儿实际轻松专对于当")
+
+#: Below this the message is too short to call, and guessing would be worse than
+#: saying nothing — the persona already covers the ordinary case.
+_SCRIPT_MIN_SIGNAL = 4
+
+
+def script_of(text: str) -> str:
+    """"zhs", "zht", or "" when the text does not say."""
+    zht = sum(1 for c in text or "" if c in _ZHT_ONLY)
+    zhs = sum(1 for c in text or "" if c in _ZHS_ONLY)
+    if zht + zhs < _SCRIPT_MIN_SIGNAL or zht == zhs:
+        return ""
+    return "zht" if zht > zhs else "zhs"
+
+
+_SCRIPT_CLAUSE = {
+    "zhs": "这位家长写的是简体中文，所以整段回复必须用简体中文，一个繁体字都不要出现。",
+    "zht": "這位家長寫的是繁體中文，所以整段回覆必須用繁體中文。",
+}
+
+
+def guard_for(parent_text: str) -> str:
+    """The guard, with the parent's script named outright when it can be read.
+
+    Measured: the generic clause above — follow the parent's language — held for
+    five turns and then lost, and the sixth reply came back wholly Traditional
+    to a parent who had written Simplified throughout. The examples are
+    Traditional, and an instruction that never says which side it is asking for
+    is weaker than six Traditional messages sitting in the same prompt.
+    """
+    clause = _SCRIPT_CLAUSE.get(script_of(parent_text), "")
+    return f"{GUARD}{clause}" if clause else GUARD
+
 
 @dataclass(frozen=True)
 class Exemplar:

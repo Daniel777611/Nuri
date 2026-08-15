@@ -241,7 +241,10 @@ def _assemble(system: str, history: list[dict], window: int) -> tuple[list[dict]
         # Only when a pair actually fires. An unconditional note about examples
         # that are not there is a rule the model has to reconcile against
         # nothing.
-        system = f"{system}\n\n{exemplars.GUARD}"
+        # Read across the parent's recent messages, not just the latest: the
+        # turn that lost the script was a five-character follow-up, which on its
+        # own says nothing about how they write.
+        system = f"{system}\n\n{exemplars.guard_for(' '.join(said))}"
     msgs = [{"role": "system", "content": system}]
     shots = exemplars.as_messages(chosen)
     msgs.extend(shots)

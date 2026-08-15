@@ -50,6 +50,7 @@ if REPO_ROOT not in sys.path:
 
 from backend import llm_usage                                  # noqa: E402
 from backend.evals.variance import score                       # noqa: E402
+from backend.nuri_core import exemplars                        # noqa: E402
 from backend.nuri_core.dialogue_reply import nuri_reply_sync   # noqa: E402
 from backend.runtime import oai                                # noqa: E402
 
@@ -87,6 +88,47 @@ CONVERSATIONS: tuple[dict, ...] = (
         ),
     },
     {
+        # Simplified throughout, and about language, so the exemplars fire on
+        # every turn. That combination is the one risk the register work
+        # introduced: the corpus is Traditional, and an example teaches its
+        # script along with its shape unless something stops it.
+        "id": "script-zhs",
+        "memory": "孩子当前状态：两岁三个月，词汇量还不多\n家长关注点：担心说话比同龄孩子慢",
+        "turns": (
+            {"say": "我家孩子两岁三个月，会说的词还是很少", "probe": "语言",
+             "script": "zhs", "why": "家长全程用简体，回复不能跟着繁体范例走"},
+            {"say": "他大概只会说十几个词，都是单个字"},
+            {"say": "平时我跟他说话他会看我，也听得懂"},
+            {"say": "婆婆说男孩子说话都比较晚，让我不用急"},
+            {"say": "但是同龄的孩子已经会说句子了"},
+            {"say": "我该怎么在家帮他？", "probe": "语言", "script": "zhs",
+             "why": "第六轮，范例已经连续注入五次，最容易被带偏的位置"},
+        ),
+    },
+    {
+        # Sleep: the gate stays shut for the whole conversation, so this is the
+        # unguarded path. Worth measuring precisely because it is most of what
+        # parents actually ask about, and nothing is holding the register there.
+        "id": "sleep-flipflop",
+        "memory": "孩子当前状态：四个月，夜里醒两三次\n家长关注点：在犹豫要不要开始睡眠训练",
+        "turns": (
+            {"say": "寶寶四個月，晚上會醒兩三次"},
+            {
+                "say": "需要開始訓練他自己睡嗎？",
+                "probe": "自相矛盾", "pair": "sleep-train",
+                "why": "睡眠是闸门关闭的话题，语域没人管，最容易前后不一致",
+            },
+            {"say": "他白天小睡都很短"},
+            {"say": "我還在親餵，半夜也要起來擠奶"},
+            {"say": "婆婆說抱著哄會寵壞他"},
+            {
+                "say": "所以到底要不要讓他哭一下自己睡？",
+                "probe": "自相矛盾", "pair": "sleep-train",
+                "why": "同一个决定，第二次问",
+            },
+        ),
+    },
+    {
         "id": "assessment-flipflop",
         "memory": "孩子当前状态：两岁半，主要还是两三个字的表达\n家长关注点：在犹豫要不要做语言评估",
         "turns": (
@@ -111,6 +153,25 @@ CONVERSATIONS: tuple[dict, ...] = (
         ),
     },
 )
+
+def script_of(text: str) -> tuple[int, int]:
+    """(traditional hits, simplified hits). Counted against the same character
+    sets the prompt builder uses, so the probe cannot pass a reply the runtime
+    would have judged differently."""
+    return (sum(1 for c in text if c in exemplars._ZHT_ONLY),
+            sum(1 for c in text if c in exemplars._ZHS_ONLY))
+
+
+#: Below this many script-bearing characters the reply is too short to call, so
+#: the probe passes rather than reporting a coin flip as a result.
+SCRIPT_MIN_SIGNAL = 4
+
+#: 人格漂移 thresholds. Not targets — alarms. A reply that grows by half again
+#: over a conversation, or starts adding bullets it did not open with, is the
+#: drift the register work exists to prevent, and it is only visible across a
+#: whole conversation.
+DRIFT_GROWTH = 1.6
+DRIFT_NEW_BULLETS = 1.0
 
 JUDGE_MODEL = "gpt-5.4-mini"
 JUDGE_SYSTEM = (
@@ -180,6 +241,15 @@ def run_conversation(convo: dict, arm: str, window: int) -> dict:
                 bad = re.search(turn["forbid"], text)
                 record["pass"] = not bad
                 record["detail"] = f"出现了「{bad.group(0)}」" if bad else "没有跑掉"
+            elif turn.get("script"):
+                zht, zhs = script_of(text)
+                want = turn["script"]
+                if zht + zhs < SCRIPT_MIN_SIGNAL:
+                    record["pass"] = True
+                    record["detail"] = f"太短，判不了（繁{zht}/简{zhs}）"
+                else:
+                    record["pass"] = (zhs > zht) if want == "zhs" else (zht > zhs)
+                    record["detail"] = f"繁体特征 {zht} / 简体特征 {zhs}，期望 {want}"
         turns.append(record)
 
     # Contradiction probes are scored in pairs, after both halves exist.
@@ -229,12 +299,19 @@ def report(runs: list[dict]) -> bool:
             print(f"         {t['why']}")
             print(f"         -> {t.get('detail', '')}")
     print("\n" + "=" * 88)
-    print("人格漂移 — 前半段 vs 后半段（字数 / 列表项 / 加粗）")
+    print(f"人格漂移 — 前半段 vs 后半段（字数增幅 <{DRIFT_GROWTH}x，"
+          f"新增列表项 <{DRIFT_NEW_BULLETS}）")
     print("=" * 88)
     for r in runs:
         d = drift(r["turns"])
-        print(f"  {r['id']:<22} {r['arm']:>6}  "
-              + "   ".join(f"{k} {v[0]}→{v[1]}" for k, v in d.items()))
+        grew = d["chars"][1] > d["chars"][0] * DRIFT_GROWTH
+        bulleted = d["list_items"][1] - d["list_items"][0] >= DRIFT_NEW_BULLETS
+        ok = not (grew or bulleted)
+        all_ok = all_ok and ok
+        why = " 变长" if grew else ""
+        why += " 开始分点" if bulleted else ""
+        print(f"  [{'PASS' if ok else 'FAIL'}] {r['id']:<22} {r['arm']:>6}  "
+              + "   ".join(f"{k} {v[0]}→{v[1]}" for k, v in d.items()) + why)
     return all_ok
 
 
