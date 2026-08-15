@@ -77,6 +77,31 @@ def test_a_thin_match_is_topped_up_rather_than_sent_short():
     assert chosen[1].id in exemplars._DEFAULT_IDS
 
 
+def test_a_keyword_free_follow_up_keeps_the_gate_open():
+    """Measured failure: judged one message at a time the gate shut mid-
+    conversation and the same exchange went from 108 to 442 characters."""
+    prior = ["孩子兩歲半，講話還是只有兩三個字"]
+    assert exemplars.select("所以我到底該不該帶他去做評估？") == []
+    assert exemplars.select("所以我到底該不該帶他去做評估？", recent=prior)
+
+
+def test_stickiness_expires():
+    """A conversation that has genuinely moved on stops pulling language
+    examples, rather than carrying them for the rest of the session."""
+    stale = ["閒聊一", "閒聊二", "閒聊三", "孩子講話還是只有兩三個字"]
+    assert exemplars.select("他最近很喜歡玩車子", recent=stale) == []
+
+
+def test_the_latest_message_still_leads_the_ranking():
+    prior = ["孩子兩歲半，講話還是只有兩三個字"]
+    chosen = exemplars.select("他看繪本一下就跑掉，還要繼續讀嗎？", recent=prior)
+    assert chosen[0].id == "J"
+
+
+def test_off_topic_stays_shut_even_with_off_topic_history():
+    assert exemplars.select("寶寶晚上一直哭", recent=["白天小睡很短", "他最近會翻身"]) == []
+
+
 def test_disabled_selects_nothing(monkeypatch):
     monkeypatch.setattr(exemplars, "ENABLED", False)
     assert exemplars.select("孩子講錯字要糾正嗎") == []

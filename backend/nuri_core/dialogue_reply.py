@@ -235,7 +235,8 @@ def _assemble(system: str, history: list[dict], window: int) -> tuple[list[dict]
     two that can be cached: the pairs stay adjacent to the system message, so a
     run of turns on the same topic shares the prefix.
     """
-    chosen = exemplars.select(_latest_user_text(history))
+    said = _user_texts(history)
+    chosen = exemplars.select(said[0] if said else "", recent=said[1:])
     if chosen:
         # Only when a pair actually fires. An unconditional note about examples
         # that are not there is a rule the model has to reconcile against
@@ -252,11 +253,17 @@ def _assemble(system: str, history: list[dict], window: int) -> tuple[list[dict]
     return msgs, len(shots)
 
 
-def _latest_user_text(history: list[dict]) -> str:
+def _user_texts(history: list[dict], limit: int = 4) -> list[str]:
+    """The parent's own messages, newest first. Only theirs: NURI's replies
+    restate the topic in her own words, which would hold the gate open on the
+    strength of what she said rather than what the parent asked."""
+    out = []
     for m in reversed(history or []):
         if m.get("role") == "user" and (m.get("text") or "").strip():
-            return m["text"]
-    return ""
+            out.append(m["text"])
+            if len(out) >= limit:
+                break
+    return out
 
 _TASK_REQUEST_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)

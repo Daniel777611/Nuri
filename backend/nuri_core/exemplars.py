@@ -98,6 +98,14 @@ _DOMAIN = tuple(
         r"[繪绘]本|共[讀读]|念故事|[講讲]故事",
         r"[發发]音|[疊叠][詞词]|[句句][子話话]|把[話话]",
         r"回答|[語语][遲迟]|[遲迟][語语]",
+        # Which language, rather than whether. A bilingual household asking
+        # 「我們家平常講國語，阿公阿嬤講台語」 is squarely on topic and used to
+        # read as off-topic, which shut the gate four turns into a conversation
+        # that was about nothing else.
+        r"[國国][語语]|台[語语]|客[語语]|英[語语文]|母[語语]|[雙双][語语]|方言",
+        # Comprehension and gesture are the other half of communication, and the
+        # corpus already answers about both (F on pointing, K on questions).
+        r"[聽听][得不]懂|[指指]令|[指指][東东]西|[指指][給给]|比[手手][勢势]",
     )
 )
 
@@ -351,13 +359,35 @@ def in_domain(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in _DOMAIN)
 
 
-def select(user_text: str, limit: int = COUNT) -> list[Exemplar]:
-    """Pick the exemplars worth showing for this turn. Pure and cheap."""
+#: How many earlier parent messages can hold the gate open. A language
+#: conversation is mostly follow-ups — 「所以我到底該不該帶他去做評估？」,
+#: 「我們家平常講國語」 — and those carry no keyword at all. Judged one message
+#: at a time the gate shuts in the middle of the conversation it should be
+#: governing, and the register reverts within the same exchange: measured at
+#: 108–119 characters on the turns that fired against 307–578 on the turns
+#: between them. Three is short enough that a conversation which has genuinely
+#: moved on to sleep stops pulling language examples after a turn or two.
+STICKY_TURNS = int(os.getenv("FEWSHOT_STICKY_TURNS", "3"))
+
+
+def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> list[Exemplar]:
+    """Pick the exemplars worth showing for this turn. Pure and cheap.
+
+    `recent` is the parent's earlier messages, newest first. It only decides
+    whether the gate opens; ranking still leads with what was just said.
+    """
     if not ENABLED or limit <= 0:
         return []
     text = " ".join((user_text or "").strip().split())
-    if not text or not in_domain(text):
+    if not text:
         return []
+    if not in_domain(text):
+        prior = next((t for t in list(recent)[:STICKY_TURNS] if in_domain(t or "")), "")
+        if not prior:
+            return []
+        # Scored against both, so a keyword-free follow-up still ranks on the
+        # scenario the parent actually raised.
+        text = f"{prior} {text}"
     scored = [(e.score(text), i, e) for i, e in enumerate(CORPUS)]
     hits = sorted(
         (s for s in scored if s[0] > 0),
