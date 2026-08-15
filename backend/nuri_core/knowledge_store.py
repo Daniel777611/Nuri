@@ -22,6 +22,7 @@ down must cost a turn its citations, not its reply.
 from __future__ import annotations
 
 import io
+import unicodedata
 from typing import List, Optional
 
 # A store raising an HTTP status is a layering seam this refactor has not
@@ -43,15 +44,51 @@ from backend.runtime import (
     oai,
 )
 
+#: Kangxi Radicals and CJK Radicals Supplement. Characters here look identical
+#: to the ordinary ideographs they stand for and are not them: ⼦ is U+2F26
+#: KANGXI RADICAL CHILD, 子 is U+5B50. Some PDF producers emit the radical form
+#: for common characters, and 93% of the chunks already in the `internal`
+#: namespace carry them — 2,000 occurrences of ⼦ alone, plus 一, 用, 自, 人, 母.
+#:
+#: Measured before assuming: embedding a corrupted chunk against its repaired
+#: self moves top-1 similarity by +0.006 to +0.023 on real questions, about
+#: +0.013 on average. text-embedding-3-large is more robust to this than it
+#: looks, so this is a data defect worth fixing and not the explanation for the
+#: internal namespace reaching only 13% of turns. That gap is a floor of 0.50
+#: sitting above where real questions land (median top-1 0.43) and 1,200-
+#: character chunks that mix topics — see backend/evals/internal_recall.py.
+_RADICAL_BLOCK = ("⺀", "⿟")
+
+
+def normalize_cjk(text: str) -> str:
+    """Fold radical-block characters back to the ideographs they stand for.
+
+    Deliberately narrower than NFKC over the whole string: that would also turn
+    ，and ：into ASCII, and these chunks are quoted into the prompt as 內部準則
+    where Chinese punctuation is what belongs.
+    """
+    if not text:
+        return text
+    return "".join(
+        unicodedata.normalize("NFKC", ch)
+        if _RADICAL_BLOCK[0] <= ch <= _RADICAL_BLOCK[1] else ch
+        for ch in text
+    )
+
+
 def read_pdf(pdf_bytes: bytes) -> str:
     if PdfReader is None:
         raise HTTPException(503, "pypdf not installed")
     reader = PdfReader(io.BytesIO(pdf_bytes))
     text = "\n".join(p.extract_text() or "" for p in reader.pages)
-    return text.replace("\x00", "")  # postgres text columns reject NUL bytes
+    text = text.replace("\x00", "")  # postgres text columns reject NUL bytes
+    return normalize_cjk(text)
 
 def chunk_text(text: str, size: int = 1200, overlap: int = 150) -> List[str]:
-    text = text.replace("\r\n", "\n")
+    # Also here, not only in read_pdf: this is the last funnel every path takes
+    # before embedding, and a chunk stored with radical codepoints is one that
+    # can never be retrieved by a parent typing ordinary characters.
+    text = normalize_cjk(text).replace("\r\n", "\n")
     chunks, start, n = [], 0, len(text)
     while start < n:
         end = min(start + size, n)

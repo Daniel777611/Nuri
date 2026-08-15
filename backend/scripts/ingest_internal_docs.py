@@ -21,7 +21,19 @@ doc_id is a sha1 hash of the file bytes (same scheme as the external /index
 route), so re-running this script is idempotent: unchanged files are skipped,
 and editing a file's content produces a new doc_id rather than silently
 clobbering the old chunks.
+
+That hash is of the *file*, not of what was extracted from it — so a change to
+the extraction or chunking code leaves every doc_id unchanged and this script
+skips all of them. Pass --reingest to delete a doc's existing chunks and rebuild
+them. That is the flag to use after the CJK radical normalisation landed in
+knowledge_store.read_pdf: 93% of the chunks in the internal namespace were
+embedded from text where 子 was the Kangxi radical ⼦. Worth about +0.013 top-1
+similarity — measured, not assumed — so this is a correctness fix rather than
+the answer to the namespace's low hit rate.
+
+    python backend/scripts/ingest_internal_docs.py --reingest
 """
+import argparse
 import hashlib
 import sys
 from pathlib import Path
@@ -42,14 +54,24 @@ def _iter_pdfs(folders: list[Path]):
         yield from sorted(folder.rglob("*.pdf"))
 
 
-def ingest_file(path: Path) -> None:
+def ingest_file(path: Path, reingest: bool = False) -> None:
     pdf_bytes = path.read_bytes()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
 
     already, total = backend_main._is_indexed(doc_id, namespace=backend_main.INTERNAL_NAMESPACE)
-    if already:
+    if already and not reingest:
         print(f"[skip] {path.name} (doc_id={doc_id}, already indexed, {total} chunks)")
         return
+    if already:
+        # Delete rather than upsert: the new extraction may produce a different
+        # number of chunks, and upsert keys on `{doc_id}-{i}`, so a shorter
+        # rebuild would leave the tail of the old one behind — still embedded
+        # from the broken text, still retrievable.
+        sb = backend_main._get_supabase()
+        sb.table(backend_main.VECTOR_TABLE).delete().eq(
+            "namespace", backend_main.INTERNAL_NAMESPACE
+        ).eq("doc_id", doc_id).execute()
+        print(f"[wipe] {path.name} (doc_id={doc_id}, removed {total} chunks)")
 
     text = backend_main._read_pdf(pdf_bytes)
     if not text.strip():
@@ -72,8 +94,13 @@ def main() -> None:
         print("OpenAI not configured (check OPENAI_API_KEY). Aborting.")
         sys.exit(1)
 
-    args = sys.argv[1:]
-    folders = [Path(a).resolve() for a in args] if args else [DEFAULT_SOURCE_DIR]
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("folders", nargs="*", help="defaults to <repo>/internelDatabase")
+    ap.add_argument("--reingest", action="store_true",
+                    help="delete and rebuild docs that are already indexed")
+    parsed = ap.parse_args()
+
+    folders = [Path(a).resolve() for a in parsed.folders] if parsed.folders else [DEFAULT_SOURCE_DIR]
     for f in folders:
         if not f.is_dir():
             print(f"[error] not a directory: {f}")
@@ -84,9 +111,11 @@ def main() -> None:
         print(f"No PDFs found under {[str(f) for f in folders]}")
         return
 
-    print(f"Found {len(pdfs)} PDF(s) under {[str(f) for f in folders]}. Namespace: {backend_main.INTERNAL_NAMESPACE}")
+    print(f"Found {len(pdfs)} PDF(s) under {[str(f) for f in folders]}. "
+          f"Namespace: {backend_main.INTERNAL_NAMESPACE}"
+          + ("  [REINGEST: existing chunks will be deleted]" if parsed.reingest else ""))
     for path in pdfs:
-        ingest_file(path)
+        ingest_file(path, reingest=parsed.reingest)
 
 
 if __name__ == "__main__":
