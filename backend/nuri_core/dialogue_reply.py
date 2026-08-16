@@ -326,9 +326,98 @@ _TASK_COUNT_WORDS = {
     "四": 4, "四个": 4, "四個": 4, "4": 4, "four": 4,
 }
 _TASK_TYPES = {"interaction", "observation", "care", "selfcare"}
+
+# The first block below names the catastrophe; the second describes it. A swept
+# set of 31 phrasings a frightened parent might actually type found the naming
+# half catching 8 — 不呼吸, 吞了纽扣电池, 叫不醒 — and the describing half
+# catching none: fell off the bed and is vomiting, fever of 40 and still
+# convulsing, swallowed grandmother's blood-pressure pills, purple spots that
+# do not blanch. Parents in the logs describe far more often than they diagnose.
+#
+# Tuned deliberately toward catching. The product's job in these turns is to get
+# the family to a clinician, not to answer well, so a false alarm costs an
+# unnecessary 「先打 119」 while a miss costs the gate that exists to produce it.
+# That is why no negation or hypothetical handling is added here: every such rule
+# is a way to talk the detector out of firing, and something that talks it out of
+# firing on 「如果孩子噎到了」 will eventually talk it out of firing on a real one.
+# The remaining false alarms are the price, and they are listed in
+# backend/evals/urgent_sweep.py rather than engineered away.
 _URGENT_TASK_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        # Head injury: the fall itself is ordinary, the fall plus a symptom is
+        # not. Kept as a pair so a grazed knee does not trip it.
+        # Sentence-final punctuation only in these separators, not the comma: a
+        # parent writes 「摔下來，頭著地，現在很想睡」 and the cause and the
+        # symptom land in different clauses of the same sentence almost every
+        # time. Excluding 「，」 cost four of the five remaining misses.
+        r"(?:摔|跌|掉|撞)[^。！？.!?\n]{0,16}(?:头|頭|額|额|後腦|后脑)",
+        r"(?:头|頭|額|额)(?:著|着)地",
+        r"(?:摔|跌|掉)[^。！？.!?\n]{0,20}"
+        r"(?:一直吐|吐了|想睡|嗜睡|叫不醒|昏|意識|意识|不對勁|不对劲)",
+        r"(?:头|頭)[^。！？.!?\n]{0,8}(?:很痛|好痛|痛得)[^。！？.!?\n]{0,12}(?:吐|嘔|呕)",
+        # Seizure, described.
+        r"(?:眼睛|眼球)[^，。！？,.!?\n]{0,6}(?:往上翻|上吊|翻白)|翻白眼|"
+        r"(?:全身|身體|身体|四肢)[^，。！？,.!?\n]{0,4}(?:僵硬|抽|软掉|軟掉|發抖不停)",
+        r"(?:还在抽|還在抽|一直抽|抽了|抽起来|抽起來)",
+        # Fever that is an emergency by age or by number.
+        r"(?:烧|燒|发烧|發燒|体温|體溫)[^，。！？,.!?\n]{0,10}(?:39|40|41|42)(?:\.\d)?\s*(?:度|℃)?",
+        r"(?:新生[儿兒]|满月|滿月|未满三个月|未滿三個月|[一二三1-3]\s*[个個]月)"
+        r"[^，。！？,.!?\n]{0,12}(?:发烧|發燒|烧|燒|发热|發熱)",
+        # Ingestion, generalised past the specific products named below.
+        r"(?:吃|喝|吞|咽|嚥)(?:下|了|掉)?[^。！？.!?\n]{0,12}"
+        r"(?:酒|磁[铁鐵]|硬[币幣]|樟腦丸|樟脑丸|殺蟲|杀虫|"
+        r"农药|農藥|老鼠药|老鼠藥|精油|指甲油|去光水)",
+        # Medicine needs more than the verb: 「不肯吃藥」 is one of the most
+        # common ordinary messages there is, and a detector that fires on it
+        # would be switched off within a week. So it takes a quantity, or
+        # somebody else's prescription — both of which say accident.
+        r"(?:药|藥)[^。！？.!?\n]{0,8}(?:吃|喝|吞|咽)(?:了|下|掉)?"
+        r"[^。！？.!?\n]{0,6}(?:[几幾]顆|[几幾]颗|好[几幾]|一把|一堆|整瓶|\d+\s*[颗顆粒片])"
+        r"|(?:吃|喝|吞|咽)(?:了|下|掉)?[^。！？.!?\n]{0,10}(?:药|藥)"
+        r"[^。！？.!?\n]{0,6}(?:[几幾]顆|[几幾]颗|好[几幾]|一把|一堆|整瓶|\d+\s*[颗顆粒片])",
+        r"(?:奶奶|爺爺|爷爷|外婆|外公|阿公|阿嬤|大人|媽媽|妈妈|爸爸|我)的"
+        r"[^。！？.!?\n]{0,6}(?:药|藥)[^。！？.!?\n]{0,8}(?:吃|吞|喝)",
+        # Bleeding that will not stop, and blood where there should be none.
+        r"(?:血流不止|一直流血|流血[^，。！？,.!?\n]{0,6}止不住|止不住[^，。！？,.!?\n]{0,4}血|"
+        r"(?:一直|不停)[^，。！？,.!?\n]{0,4}(?:渗血|滲血|出血))",
+        r"(?:便便|大便|便|尿)[^，。！？,.!?\n]{0,8}(?:有血|带血|帶血|血絲|血丝)|"
+        r"(?:吐血|便血|血便)",
+        r"(?:脐带|臍帶)[^，。！？,.!?\n]{0,8}(?:血|渗|滲)",
+        # Choking, described rather than named.
+        r"(?:噎到|嗆到|呛到|卡住|卡到)[^。！？.!?\n]{0,16}"
+        r"(?:咳不出|吐不出|說不出|说不出|脸红|臉紅|脸紫|臉紫|喘|哭不出)",
+        # Burns and bites.
+        r"(?:烫到|燙到|烫伤|燙傷|烧伤|燒傷)[^。！？.!?\n]{0,14}(?:水泡|起泡|脫皮|脱皮|整片|大片)",
+        r"(?:咬)[^，。！？,.!?\n]{0,12}(?:伤口|傷口)[^，。！？,.!?\n]{0,6}(?:很深|深|大)|"
+        r"(?:被狗|被貓|被猫|被蛇)[^，。！？,.!?\n]{0,6}咬",
+        # Dehydration and intractable vomiting.
+        r"(?:一整天|整天|一天|超过\d+小时|超過\d+小時|\d+\s*小时|\d+\s*小時)"
+        r"[^，。！？,.!?\n]{0,10}(?:没有尿|沒有尿|没尿|沒尿|尿布[^，。！？,.!?\n]{0,6}(?:乾|干))",
+        r"(?:吐了[^，。！？,.!?\n]{0,6}(?:[五六七八九十]|\d+)\s*(?:次|回)|"
+        r"(?:一直|不停|一直在)吐[^，。！？,.!?\n]{0,14}(?:喝不进|喝不進|吃不下|什麼都|什么都))",
+        # Shock / poor perfusion.
+        r"(?:脸色|臉色|嘴唇|手脚|手腳)[^。！？.!?\n]{0,8}"
+        r"(?:发白|發白|苍白|蒼白|冰冷|冰凉|冰涼)"
+        r"[^。！？.!?\n]{0,24}(?:没什么反应|沒什麼反應|没反应|沒反應|叫不醒|軟|软)",
+        # The non-blanching rash — the one presentation parents are told to
+        # look for by name and still describe instead.
+        r"(?:紫|瘀|出血)[^，。！？,.!?\n]{0,4}(?:點|点|斑|班)"
+        r"[^，。！？,.!?\n]{0,14}(?:不會退|不会退|不退|壓不退|压不退)|"
+        r"(?:壓下去|压下去)[^，。！？,.!?\n]{0,6}(?:不會退|不会退|不退)",
+        # English, same two axes.
+        r"\b(?:fell|fall|dropped|rolled)\b[^.?!\n]{0,40}\b(?:head|skull|forehead)\b",
+        r"\b(?:hit|banged|bumped)\b[^.?!\n]{0,20}\bhead\b[^.?!\n]{0,40}"
+        r"\b(?:vomit\w*|threw up|sleepy|drowsy|won'?t wake)\b",
+        r"\bfever\b[^.?!\n]{0,20}\b(?:10[2-9]|1[1-9]\d|39|40|41|42)\b",
+        r"\b(?:swallow(?:ed|ing)?|ate|drank|took)\b[^.?!\n]{0,40}"
+        r"\b(?:magnet|coin|pills?|medication|medicine|alcohol|nail polish|pesticide)\b",
+        r"\b(?:vomit\w*|throwing up)\b[^.?!\n]{0,40}"
+        r"\b(?:all day|can'?t keep (?:water|fluids|anything) down|won'?t keep)\b",
+        r"\b(?:not|hasn'?t|haven'?t|no)\b[^.?!\n]{0,20}"
+        r"\b(?:wet a diaper|wet diaper|urinat\w+|peed?)\b[^.?!\n]{0,20}\b(?:all day|\d+ hours)\b",
+        r"\b(?:rash|spots?|purple)\b[^.?!\n]{0,30}\b(?:do(?:es)?n'?t (?:fade|blanch)|non-?blanching)\b",
+        # — the original set, which names rather than describes —
         r"(?:喘不上气|喘不過氣|不能呼吸|無法呼吸|不呼吸|没(?:有)?呼吸|沒有呼吸|"
         r"呼吸停(?:止|了)|停止呼吸|呼吸困难|呼吸困難|窒息|嘴唇发紫|嘴唇發紫|"
         r"嘴唇发蓝|嘴唇發藍|脸色发青|臉色發青|脸色发蓝|臉色發藍|"

@@ -85,14 +85,19 @@ _SCRIPT_CLAUSE = {
 }
 
 
-#: The same ceiling, stated to turns the corpus does not cover. Off by default
-#: and kept separate from GUARD because it is a weaker instrument and should be
-#: judged as one: GUARD arrives alongside two replies that demonstrate the
-#: length, this arrives alone. Sleep and feeding are most of what parents ask
-#: about and have no exemplars at all, so measured against `backend/evals/
-#: coherence.py --only sleep-flipflop` this is the question of whether a
-#: sentence can do what examples do.
-GLOBAL_CEILING = os.getenv("FEWSHOT_GLOBAL_CEILING", "0").lower() not in ("0", "false", "no")
+#: The same ceiling, stated to turns the corpus does not cover — sleep, feeding,
+#: emotions, which are most of what parents ask about and have no exemplars at
+#: all. Kept separate from GUARD because it is the weaker instrument and had to
+#: be judged as one: GUARD arrives alongside two replies that demonstrate the
+#: length, this arrives alone.
+#:
+#: On by default since it was measured with the five list-and-multi-question
+#: style rules deactivated, which is the state production is now in. Those rows
+#: took the median reply from 496 to 190 characters on their own but left the
+#: tail — 9 of 18 replies still over the ceiling, 8 still bulleted. This closes
+#: it: 0 of 18 over, none bulleted, median 88, and the replies read whole rather
+#: than clipped. Set FEWSHOT_GLOBAL_CEILING=0 to take it back out.
+GLOBAL_CEILING = os.getenv("FEWSHOT_GLOBAL_CEILING", "1").lower() not in ("0", "false", "no")
 
 CEILING_RULE = (
     f"这一轮没有可参考的回复范例，但长度要求不变：整段 text 控制在 {MAX_CHARS} 字以内，"
