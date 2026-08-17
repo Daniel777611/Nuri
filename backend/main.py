@@ -1133,6 +1133,7 @@ async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
 async def get_personalized_feed(
     count: int = 4,
     presentation: Literal["topic_cards", "category_cards"] = "topic_cards",
+    client_refresh: str = "",
     uid: str = Depends(_req_uid),
 ):
     """Return learning topics tied to this parent's real main conversation."""
@@ -1156,7 +1157,17 @@ async def get_personalized_feed(
         context.get("info_source"),
         behavior_events,
     )
-    initial_content_category = weighted_category_for_window(uid, category_mix)
+    # The nonce the refresh button has always sent and nothing has ever read.
+    # `weighted_category_for_window` buckets on a six-hour window, so without it
+    # the primary exposure category is fixed for six hours and tapping refresh
+    # cannot change what the carousel leads with — the button looked broken
+    # because, from the server's side, it was not connected to anything. Mixing
+    # the nonce into the user key moves the draw without shortening the window
+    # for anyone who is not asking.
+    initial_content_category = weighted_category_for_window(
+        f"{uid}:{client_refresh}" if client_refresh else uid,
+        category_mix,
+    )
     requested_count = max(1, min(count, 3 if presentation == "category_cards" else 6))
     items, used_conversation = feed_signals.rank_learning_content(
         context.get("messages") or [],
