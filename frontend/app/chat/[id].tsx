@@ -23,6 +23,7 @@ import Toast from "@/src/components/Toast";
 import { api, isStreamUnsupported } from "@/src/api";
 import { taskTypeMeta } from "@/src/taskMeta";
 import { colors, radius, spacing, type } from "@/src/theme";
+import { useT } from "@/src/i18n";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 const taskApprovalId = (messageId: string, index: number) => `${messageId}-${index}`;
@@ -108,9 +109,10 @@ function RichText({ text, sources }: { text: string; sources: Source[] }) {
 // marked because the institution is the trust signal — "AAP" tells a parent
 // something that "healthychildren.org" does not.
 function SourceChips({ sources }: { sources: Source[] }) {
+  const { t } = useT();
   return (
     <View style={styles.sources}>
-      <Text style={styles.sourcesLabel}>参考来源</Text>
+      <Text style={styles.sourcesLabel}>{t("参考来源")}</Text>
       <View style={styles.sourceRow}>
         {sources.map((s) => (
           <Pressable
@@ -166,6 +168,7 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
+  const { t } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -249,7 +252,7 @@ export default function ChatDetail() {
     if (sendingRef.current) {
       if (!pendingHomeReturnRef.current) {
         pendingHomeReturnRef.current = true;
-        showToast("正在保存这轮对话，完成后会自动返回首页");
+        showToast(t("正在保存这轮对话，完成后会自动返回首页"));
       }
       return;
     }
@@ -306,7 +309,7 @@ export default function ChatDetail() {
       // resending would duplicate it — reload the thread instead of guessing.
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
       pendingHomeReturnRef.current = false;
-      showToast("发送失败，请重试");
+      showToast(t("发送失败，请重试"));
       await load().catch(() => {});
     } finally {
       setStreamingText("");
@@ -331,9 +334,9 @@ export default function ChatDetail() {
         suggestion_index: index,
       });
       setApprovedTaskIds((ids) => [...ids, approvalId]);
-      showToast("已添加至“我的任务”");
+      showToast(t("已添加至“我的任务”"));
     } catch {
-      showToast("任务添加失败，请重试");
+      showToast(t("任务添加失败，请重试"));
     } finally {
       addingTaskIdsRef.current.delete(approvalId);
     }
@@ -359,13 +362,13 @@ export default function ChatDetail() {
             onPress={requestHomeReturn}
             style={styles.backBtn}
             accessibilityRole="button"
-            accessibilityLabel="返回首页并更新推荐"
+            accessibilityLabel={t("返回首页并更新推荐")}
             accessibilityState={{ busy: sending }}
             testID="chat-back-btn"
           >
             <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
           </Pressable>
-          <Text style={styles.headerName}>我的对话</Text>
+          <Text style={styles.headerName}>{t("我的对话")}</Text>
         </View>
 
         <KeyboardAvoidingView
@@ -398,7 +401,7 @@ export default function ChatDetail() {
           <View style={styles.composer} testID="chat-composer">
             <View style={styles.inputPill}>
               <Pressable
-                onPress={() => showToast("图片上传功能即将上线")}
+                onPress={() => showToast(t("图片上传功能即将上线"))}
                 style={styles.iconBtn}
                 disabled={sending}
                 testID="chat-image-btn"
@@ -408,7 +411,7 @@ export default function ChatDetail() {
               <TextInput
                 value={input}
                 onChangeText={setInput}
-                placeholder="说点什么..."
+                placeholder={t("说点什么...")}
                 placeholderTextColor={colors.muted}
                 style={styles.input}
                 multiline
@@ -423,7 +426,7 @@ export default function ChatDetail() {
                 }}
                 testID="chat-input"
               />
-              <Pressable onPress={() => showToast("语音输入功能即将上线")} style={styles.micBtn} testID="chat-voice-btn">
+              <Pressable onPress={() => showToast(t("语音输入功能即将上线"))} style={styles.micBtn} testID="chat-voice-btn">
                 <Ionicons name="mic-outline" size={22} color="#3A2F5A" />
               </Pressable>
             </View>
@@ -446,6 +449,7 @@ function MessageBubble({
   onAddTask: (task: any, index: number) => void;
   isTaskAdded: (index: number) => boolean;
 }) {
+  const { t } = useT();
   const isAI = msg.role === "ai";
 
   // A parent opened a feed card. There is only ever one conversation, so this
@@ -459,7 +463,7 @@ function MessageBubble({
         <View style={styles.cardDividerLabel}>
           <Ionicons name="bookmark-outline" size={13} color={colors.brand} />
           <Text style={styles.cardDividerText} numberOfLines={1}>
-            {msg.transition.title || "学习胶囊"}
+            {msg.transition.title || t("学习胶囊")}
           </Text>
         </View>
         <View style={styles.cardDividerLine} />
@@ -481,18 +485,18 @@ function MessageBubble({
                 <LinearGradient colors={["#A6AEFF", "#FFD092"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.generatedCard}>
                   <Text style={styles.generatedType}>{taskType.prefix}：{task.title}</Text>
                   <View style={styles.generatedInner}>
-                    <Text style={styles.generatedSection}>任务介绍</Text>
+                    <Text style={styles.generatedSection}>{t("任务介绍")}</Text>
                     <Text style={styles.generatedBody}>{task.description}</Text>
-                    <Text style={styles.generatedSection}>频率：</Text>
-                    <Text style={styles.generatedBody}>{task.scope === "week" ? "本周持续" : "今天一次"}</Text>
-                    <Text style={styles.generatedSection}>做法：</Text>
+                    <Text style={styles.generatedSection}>{t("频率：")}</Text>
+                    <Text style={styles.generatedBody}>{task.scope === "week" ? t("本周持续") : t("今天一次")}</Text>
+                    <Text style={styles.generatedSection}>{t("做法：")}</Text>
                     {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
                     <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>
-                      <Text style={styles.addTaskText}>{added ? "已添加至任务" : "添加计划"}</Text>
+                      <Text style={styles.addTaskText}>{added ? t("已添加至任务") : t("添加计划")}</Text>
                     </Pressable>
                   </View>
                 </LinearGradient>
-                {added ? <Text style={styles.addedHint}>成功添加至“我的任务”</Text> : null}
+                {added ? <Text style={styles.addedHint}>{t("成功添加至“我的任务”")}</Text> : null}
               </View>;
             })}
           </ScrollView>
@@ -521,7 +525,7 @@ function MessageBubble({
             <Ionicons name="call-outline" size={16} color={colors.brand} />
             <View style={{ flex: 1 }}>
               <Text style={styles.hospitalName}>Nurse Hotline</Text>
-              <Text style={styles.hospitalMeta}>免费 · 24h · (800) 555-0144</Text>
+              <Text style={styles.hospitalMeta}>{t("免费 · 24h · (800) 555-0144")}</Text>
             </View>
           </View>
         </View>

@@ -21,6 +21,7 @@ import {
   parseDateOnly,
 } from "@/src/child-age";
 import { colors, radius, spacing, type } from "@/src/theme";
+import { useT } from "@/src/i18n";
 
 const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
   { key: "boy", label: "男孩" },
@@ -29,6 +30,7 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 ];
 
 export default function ChildEdit() {
+  const { t } = useT();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const isNew = id === "new";
@@ -56,11 +58,11 @@ export default function ChildEdit() {
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
-    ? "请输入孩子的出生日期"
+    ? t("请输入孩子的出生日期")
     : !parsedBirthDate
-      ? "请按 YYYY-MM-DD 填写有效日期"
+      ? t("请按 YYYY-MM-DD 填写有效日期")
       : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
-        ? "出生日期不能晚于今天"
+        ? t("出生日期不能晚于今天")
         : "";
   const ageMonths = completedAgeMonths(birthDate);
   const canSave = !!nickname.trim() && !birthDateError;
@@ -100,7 +102,7 @@ export default function ChildEdit() {
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.title}>
-          {isNew ? "添加孩子" : "编辑信息"}
+          {isNew ? t("添加孩子") : t("编辑信息")}
         </Text>
         <Pressable
           onPress={save}
@@ -121,7 +123,7 @@ export default function ChildEdit() {
               value={nickname}
               onChangeText={setNickname}
               style={styles.input}
-              placeholder="例如：小满"
+              placeholder={t("例如：小满")}
               placeholderTextColor={colors.muted}
               testID="child-nickname"
             />
@@ -142,16 +144,18 @@ export default function ChildEdit() {
               style={[styles.fieldHint, !!birthDateError && styles.errorText]}
               accessibilityLiveRegion="polite"
             >
-              {birthDateError || "保存完整生日，用于准确计算月龄"}
+              {birthDateError || t("保存完整生日，用于准确计算月龄")}
             </Text>
           </Field>
           <Field label="月龄（根据生日自动计算）">
             <View style={[styles.input, styles.readOnlyInput]} testID="child-months">
               <Text style={[styles.readOnlyText, ageMonths === null && styles.mutedText]}>
-                {ageMonths === null ? "请先填写有效的出生日期" : `${ageMonths} 个月`}
+                {ageMonths === null
+                  ? t("请先填写有效的出生日期")
+                  : t("{months} 个月", { months: ageMonths })}
               </Text>
             </View>
-            <Text style={styles.fieldHint}>月龄会随日期自动更新，不能单独修改</Text>
+            <Text style={styles.fieldHint}>{t("月龄会随日期自动更新，不能单独修改")}</Text>
           </Field>
           <Field label="性别">
             <View style={styles.row}>
@@ -170,7 +174,7 @@ export default function ChildEdit() {
                       gender === g.key && styles.chipTextActive,
                     ]}
                   >
-                    {g.label}
+                    {t(g.label)}
                   </Text>
                 </Pressable>
               ))}
@@ -181,7 +185,7 @@ export default function ChildEdit() {
               value={allergies}
               onChangeText={setAllergies}
               style={styles.input}
-              placeholder="逗号分隔"
+              placeholder={t("逗号分隔")}
               placeholderTextColor={colors.muted}
               testID="child-allergies"
             />
@@ -203,7 +207,7 @@ export default function ChildEdit() {
               testID="child-delete-btn"
             >
               <Ionicons name="trash-outline" size={16} color={colors.error} />
-              <Text style={styles.deleteText}>删除此孩子</Text>
+              <Text style={styles.deleteText}>{t("删除此孩子")}</Text>
             </Pressable>
           )}
         </ScrollView>
@@ -213,9 +217,10 @@ export default function ChildEdit() {
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  const { t } = useT();
   return (
     <View style={{ marginBottom: spacing.lg }}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.label}>{t(label)}</Text>
       {children}
     </View>
   );
