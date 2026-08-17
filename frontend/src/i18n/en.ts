@@ -295,4 +295,17 @@ export const en: Record<string, string> = {
   "18m · 西雅图": "18m · Seattle",
   "我们一开始太焦虑反而越喂越糟。后来跟AI聊了下，按建议每天只放一样新食物，慢慢就接受了。":
     "Our anxiety made mealtimes worse at first. NURI suggested introducing just one new food a day, and he came around.",
+  "早上好": "Good morning",
+  "下午好": "Good afternoon",
+  "晚上好": "Good evening",
+  "Hi！{greeting}，{nickname}。上次你说：“{excerpt}” 我们接着聊。": "{greeting}, {nickname}! Last time you said “{excerpt}” — let's pick up from there.",
+  "Hi！{greeting}，{nickname}。上次你分享了一张图片，我们可以从那里接着聊。": "{greeting}, {nickname}! Last time you shared a photo — we can pick up from there.",
+  "Hi！{greeting}，{nickname}。上次的对话暂时没能加载，点一下再试试。": "{greeting}, {nickname}! Your last conversation didn't load. Tap to try again.",
+  "Hi！{greeting}，{nickname}。正在整理我们上次的对话…": "{greeting}, {nickname}! Getting your last conversation ready…",
+  "Hi！{greeting}，{nickname}。今天想聊聊什么？我在这里陪你。": "{greeting}, {nickname}! What's on your mind today? I'm here.",
+  "重试加载": "Retry",
+  "开始对话": "Start chatting",
+  "对话暂时无法打开，请稍后再试": "Couldn't open the conversation. Please try again.",
+  "自我：今天给自己留30分钟独处": "Self: take 30 minutes alone today",
+  "亲子：每日户外活动20分钟": "Together: 20 minutes outdoors daily",
 };

@@ -30,6 +30,7 @@ import HeroCarousel, {
 } from "@/src/components/HeroCarousel";
 import { preparePersonalizedFeedOnce } from "@/src/feedPreparation";
 import { storeRecommendationDetailHandoff } from "@/src/recommendationDetailHandoff";
+import { useT } from "@/src/i18n";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
@@ -193,6 +194,9 @@ function DevSheet({
   name: string;
   onClose: () => void;
 }) {
+  // Its own hook call: this sheet is a sibling of Home, not a child, so it
+  // cannot borrow the translator from there.
+  const { t } = useT();
   if (!visible) return null;
   return (
     <View style={styles.sheetRoot}>
@@ -200,9 +204,9 @@ function DevSheet({
       <View style={styles.sheet} testID="dev-sheet">
         <View style={styles.sheetHandle} />
         <Text style={styles.sheetEmoji}>{emoji}</Text>
-        <Text style={styles.sheetTitle}>{name}即将上线，敬请期待</Text>
+        <Text style={styles.sheetTitle}>{t("{name}即将上线，敬请期待", { name })}</Text>
         <Pressable onPress={onClose} style={styles.sheetBtn} testID="dev-sheet-close">
-          <Text style={styles.sheetBtnText}>我知道了</Text>
+          <Text style={styles.sheetBtnText}>{t("我知道了")}</Text>
         </Pressable>
       </View>
     </View>
@@ -210,6 +214,7 @@ function DevSheet({
 }
 
 export default function Home() {
+  const { t } = useT();
   const router = useRouter();
   const isHomeFocused = useIsFocused();
   const { feed_refresh: feedRefreshParam } = useLocalSearchParams<{
@@ -602,7 +607,7 @@ export default function Home() {
       router.push(`/chat/${session.id}`);
       navigated = true;
     } catch {
-      showToast("对话暂时无法打开，请稍后再试");
+      showToast(t("对话暂时无法打开，请稍后再试"));
     } finally {
       if (!navigated) openingNuriChat.current = false;
     }
@@ -665,7 +670,9 @@ export default function Home() {
     }, [feedRefresh, loadPersonalizedFeed])
   );
 
-  const previewTasks = pendingTasks.length ? pendingTasks : DEFAULT_TASKS;
+  const previewTasks = pendingTasks.length
+    ? pendingTasks
+    : DEFAULT_TASKS.map((name) => t(name));
   const previewCount = pendingTasks.length ? pendingCount : 3;
   const hasLoadedPreview = !!nuriPreview;
   const lastUserExcerpt = nuriPreview?.hasLastUserMessage
@@ -674,19 +681,35 @@ export default function Home() {
   const nuriMemo =
     hasLoadedPreview && nuriPreview?.hasLastUserMessage
       ? lastUserExcerpt
-        ? `Hi！${dayGreeting()}，${nickname}。上次你说：“${lastUserExcerpt}” 我们接着聊。`
-        : `Hi！${dayGreeting()}，${nickname}。上次你分享了一张图片，我们可以从那里接着聊。`
+        ? t("Hi！{greeting}，{nickname}。上次你说：“{excerpt}” 我们接着聊。", {
+            greeting: t(dayGreeting()),
+            nickname,
+            excerpt: lastUserExcerpt,
+          })
+        : t("Hi！{greeting}，{nickname}。上次你分享了一张图片，我们可以从那里接着聊。", {
+            greeting: t(dayGreeting()),
+            nickname,
+          })
       : nuriPreviewStatus === "error"
-        ? `Hi！${dayGreeting()}，${nickname}。上次的对话暂时没能加载，点一下再试试。`
+        ? t("Hi！{greeting}，{nickname}。上次的对话暂时没能加载，点一下再试试。", {
+            greeting: t(dayGreeting()),
+            nickname,
+          })
         : nuriPreviewStatus === "loading"
-          ? `Hi！${dayGreeting()}，${nickname}。正在整理我们上次的对话…`
-          : `Hi！${dayGreeting()}，${nickname}。今天想聊聊什么？我在这里陪你。`;
+          ? t("Hi！{greeting}，{nickname}。正在整理我们上次的对话…", {
+              greeting: t(dayGreeting()),
+              nickname,
+            })
+          : t("Hi！{greeting}，{nickname}。今天想聊聊什么？我在这里陪你。", {
+              greeting: t(dayGreeting()),
+              nickname,
+            });
   const nuriActionText =
     nuriPreviewStatus === "error" && !nuriPreview
-      ? "重试加载"
+      ? t("重试加载")
       : nuriPreview?.hasLastUserMessage
-        ? "继续对话"
-        : "开始对话";
+        ? t("继续对话")
+        : t("开始对话");
 
   const trackHeroImpression = useCallback(
     (card: HeroCard, position: number) => {
@@ -804,7 +827,7 @@ export default function Home() {
             resizeMode="contain"
           />
           <Text style={styles.welcome} numberOfLines={1}>
-            欢迎，{nickname}！
+            {t("欢迎，{nickname}！", { nickname })}
           </Text>
           <Pressable
             onPress={() => router.push("/(tabs)/profile")}
@@ -839,17 +862,17 @@ export default function Home() {
             onPress={() => router.push("/(tabs)/tasks")}
             testID="home-tasks-card"
           >
-            <Text style={styles.moduleTitle}>今日任务</Text>
+            <Text style={styles.moduleTitle}>{t("今日任务")}</Text>
             <Text style={styles.moduleSub}>
-              您已坚持打卡{STREAK_DAYS}天！加油！
+              {t("您已坚持打卡{days}天！加油！", { days: STREAK_DAYS })}
             </Text>
             <View style={[styles.innerCard, { flex: 1 }]}>
-              <Text style={styles.taskCount}>{previewCount} 件任务正在进行</Text>
-              {previewTasks.map((t, i) => (
+              <Text style={styles.taskCount}>{t("{count} 件任务正在进行", { count: previewCount })}</Text>
+              {previewTasks.map((name, i) => (
                 <View key={i} style={styles.taskRow}>
                   <View style={styles.checkbox} />
                   <Text style={styles.taskName} numberOfLines={1}>
-                    {t}
+                    {name}
                   </Text>
                 </View>
               ))}
@@ -860,7 +883,7 @@ export default function Home() {
                 style={styles.primaryBtn}
                 testID="home-remind-btn"
               >
-                <Text style={styles.primaryBtnText}>开启提醒</Text>
+                <Text style={styles.primaryBtnText}>{t("开启提醒")}</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -876,7 +899,7 @@ export default function Home() {
               end={{ x: 1, y: 1 }}
               style={styles.nuriCard}
             >
-              <Text style={styles.moduleTitle}>Nuri的家</Text>
+              <Text style={styles.moduleTitle}>{t("Nuri的家")}</Text>
               <Text style={styles.nuriMemo} numberOfLines={5} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
@@ -904,7 +927,7 @@ export default function Home() {
               onPress={() => setDevSheet({ emoji: "🌱", name: "知识图书馆" })}
               testID="home-library-card"
             >
-              <Text style={styles.moduleTitle}>知识图书馆</Text>
+              <Text style={styles.moduleTitle}>{t("知识图书馆")}</Text>
             </Pressable>
 
             <Pressable
@@ -912,15 +935,15 @@ export default function Home() {
               onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
               testID="home-myhome-card"
             >
-              <Text style={styles.moduleTitle}>我的家</Text>
-              <Text style={styles.moduleSub}>灵感：试着写下今天的心情。</Text>
+              <Text style={styles.moduleTitle}>{t("我的家")}</Text>
+              <Text style={styles.moduleSub}>{t("灵感：试着写下今天的心情。")}</Text>
               <View style={{ height: 12 }} />
               <Pressable
                 onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
                 style={styles.primaryBtn}
                 testID="home-record-btn"
               >
-                <Text style={styles.primaryBtnText}>记录当下</Text>
+                <Text style={styles.primaryBtnText}>{t("记录当下")}</Text>
               </Pressable>
             </Pressable>
           </View>
@@ -930,12 +953,12 @@ export default function Home() {
             onPress={() => setDevSheet({ emoji: "🌻", name: "社区中心" })}
             testID="home-community-card"
           >
-            <Text style={styles.moduleTitle}>社区中心</Text>
-            <Text style={styles.moduleSub}>您上次关于牙医的回答得到了17个人的赞！</Text>
+            <Text style={styles.moduleTitle}>{t("社区中心")}</Text>
+            <Text style={styles.moduleSub}>{t("您上次关于牙医的回答得到了17个人的赞！")}</Text>
             <View style={{ flex: 1 }} />
             <View style={styles.innerCard}>
               <Text style={styles.communityTopic}>
-                “宝宝18个月饮食”的问题也许可以和他们交流
+                {t("“宝宝18个月饮食”的问题也许可以和他们交流")}
               </Text>
               <View style={styles.avatarRow}>
                 {["#F5A855", "#7B8FE8", "#A87CC5"].map((color, i) => (
