@@ -15,6 +15,7 @@ import { BlurView } from "expo-blur";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
+import { useT } from "@/src/i18n";
 import {
   TaskItem,
   TASK_TYPES,
@@ -31,6 +32,7 @@ import Toast from "@/src/components/Toast";
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 export default function Tasks() {
+  const { t } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -86,7 +88,7 @@ export default function Tasks() {
     if (!updated) return;
     if (rating) {
       api.updateTask(updated.id, { mood: rating });
-      showToast("已记录你的感受 ✓");
+      showToast(t("已记录你的感受 ✓"));
     }
     if (updated.completed_at) {
       // 淡出 + 轻微下移动效后归入「已完成」
@@ -100,10 +102,10 @@ export default function Tasks() {
     }
   };
 
-  const backfill = async (t: TaskItem) => {
-    const updated = await api.updateTask(t.id, { done: true, backfilled: true });
+  const backfill = async (task: TaskItem) => {
+    const updated = await api.updateTask(task.id, { done: true, backfilled: true });
     applyUpdate(toTaskItem(updated));
-    showToast("已补全打卡");
+    showToast(t("已补全打卡"));
   };
 
   const onConfirm = async () => {
@@ -145,7 +147,7 @@ export default function Tasks() {
             style={styles.doneHeader}
             testID="tasks-completed-toggle"
           >
-            <Text style={styles.doneHeaderText}>已完成（{completed.length}）</Text>
+            <Text style={styles.doneHeaderText}>{t("已完成（{count}）", { count: completed.length })}</Text>
             <Ionicons
               name={completedOpen ? "chevron-up" : "chevron-down"}
               size={18}
@@ -167,7 +169,7 @@ export default function Tasks() {
             style={styles.clearBtn}
             testID="tasks-clear-completed"
           >
-            <Text style={styles.clearText}>清空已完成任务</Text>
+            <Text style={styles.clearText}>{t("清空已完成任务")}</Text>
           </Pressable>
         </>
       ) : null}
@@ -197,12 +199,12 @@ export default function Tasks() {
           onLongPress={() => {
             const next = !debugFastCleanup;
             setDebugFastCleanup(next);
-            showToast(next ? "演示模式：30分钟自动清理已完成" : "已恢复：7天自动清理");
+            showToast(next ? t("演示模式：30分钟自动清理已完成") : t("已恢复：7天自动清理"));
           }}
           delayLongPress={600}
           testID="tasks-title"
         >
-          <Text style={styles.h1}>我的任务</Text>
+          <Text style={styles.h1}>{t("我的任务")}</Text>
         </Pressable>
       </View>
 
@@ -221,7 +223,7 @@ export default function Tasks() {
             <Text
               style={[styles.filterText, filters.length === 0 && styles.filterTextActive]}
             >
-              全部
+              {t("全部")}
             </Text>
           </Pressable>
           {FILTER_TYPES.map((k) => {
@@ -246,7 +248,7 @@ export default function Tasks() {
       <View style={styles.dateRow}>
         <Text style={styles.dateBig}>{formatSlashDate(today)}</Text>
         <View>
-          <Text style={styles.dateSmall}>今日</Text>
+          <Text style={styles.dateSmall}>{t("今日")}</Text>
           <Text style={styles.dateSmall} testID="tasks-pending-count">
             您有{pendingTotal}项任务待办
           </Text>
@@ -265,8 +267,8 @@ export default function Tasks() {
                 style={{ width: 36, height: 36 }}
                 resizeMode="contain"
               />
-              <Text style={styles.emptyTitle}>没有待办任务</Text>
-              <Text style={styles.emptySub}>先去和AI聊一聊，TA会帮你生成清单</Text>
+              <Text style={styles.emptyTitle}>{t("没有待办任务")}</Text>
+              <Text style={styles.emptySub}>{t("先去和AI聊一聊，TA会帮你生成清单")}</Text>
             </View>
           ) : null
         }
@@ -292,11 +294,11 @@ export default function Tasks() {
 
       <ConfirmDialog
         visible={!!confirm}
-        title={confirm?.kind === "delete" ? "删除这个任务？" : "清空已完成任务？"}
+        title={confirm?.kind === "delete" ? t("删除这个任务？") : t("清空已完成任务？")}
         message={
-          confirm?.kind === "delete" ? "删除后无法恢复" : "已收藏的任务不会被清除"
+          confirm?.kind === "delete" ? t("删除后无法恢复") : t("已收藏的任务不会被清除")
         }
-        confirmText={confirm?.kind === "delete" ? "删除" : "清空"}
+        confirmText={confirm?.kind === "delete" ? t("删除") : t("清空")}
         danger
         onConfirm={onConfirm}
         onCancel={() => setConfirm(null)}

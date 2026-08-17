@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 
 import { colors, radius, spacing, type } from "@/src/theme";
+import { useT } from "@/src/i18n";
 
 const POSTS = [
   {
@@ -30,6 +31,7 @@ const POSTS = [
 ];
 
 export default function Community() {
+  const { t } = useT();
   const router = useRouter();
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -41,14 +43,14 @@ export default function Community() {
         >
           <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.title}>家长们的经验</Text>
+        <Text style={styles.title}>{t("家长们的经验")}</Text>
         <View style={{ width: 36 }} />
       </View>
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.note} testID="community-mock-banner">
           <Ionicons name="information-circle-outline" size={16} color={colors.muted} />
           <Text style={styles.noteText}>
-            这是社群的预览版本，仅展示其他家长匿名分享的经验，暂不开放互动。
+            {t("这是社群的预览版本，仅展示其他家长匿名分享的经验，暂不开放互动。")}
           </Text>
         </View>
         {POSTS.map((p, i) => (
