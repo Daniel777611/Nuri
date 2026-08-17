@@ -1097,6 +1097,61 @@ def _has_parenting_domain_signal(topic: str) -> bool:
     return False
 
 
+#: How many of the parent's recent messages can supply the subject when the
+#: latest one does not name it. A conversation is mostly follow-ups —
+#: 「明天想給他吃地瓜泥看看」, 「他都用手指，不太願意說出來」 — and the topic
+#: excerpt is the latest message alone, so the domain gate below was reading a
+#: sentence with no keyword in it and refusing to build a card for a
+#: conversation that had been about 副食品 for three turns. The homepage then
+#: never showed anything but the fixed library.
+DYNAMIC_TOPIC_LOOKBACK = 4
+
+
+def _recent_user_texts(messages: list[dict], limit: int = DYNAMIC_TOPIC_LOOKBACK) -> list[str]:
+    """The parent's own recent messages, newest first, current session first.
+
+    Only theirs: NURI restates the subject in her own words every turn, so
+    counting her replies would hold the gate open on the strength of what she
+    said rather than what the family asked about.
+    """
+    out: list[str] = []
+    for scope_wanted in (True, False):
+        for message in reversed(messages or []):
+            if message.get("role") != "user":
+                continue
+            is_current = message.get("context_scope") != "account_history"
+            if is_current is not scope_wanted:
+                continue
+            text = clean_parenting_signal(str(message.get("text") or ""))
+            if not text or _is_acknowledgement_only(text):
+                continue
+            out.append(text)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _dynamic_topic(messages: list[dict], limit: int = 84) -> str:
+    """The subject to research, which is not always the last thing said.
+
+    The latest message wins when it names its own subject. When it does not —
+    which is most follow-ups — the nearest recent message that does stands in,
+    because that is what the follow-up is a follow-up to. Researching
+    「明天想給他吃地瓜泥看看」 on its own would produce a card about sweet potato.
+    """
+    topic = _conversation_topic_excerpt(messages, limit)
+    if topic and _has_parenting_domain_signal(topic):
+        return topic
+    for text in _recent_user_texts(messages):
+        if _has_parenting_domain_signal(text):
+            subject = " ".join(redact_conversation_text(text, 240).split())
+            subject = subject.strip(" \t\r\n，。！？,.!?；;：:")
+            if len(subject) > limit:
+                subject = f"{subject[: limit - 1].rstrip()}…"
+            return subject
+    return topic
+
+
 def _is_dynamic_topic_candidate(topic: str) -> bool:
     if _is_acknowledgement_only(topic):
         return False
@@ -1161,7 +1216,7 @@ def _build_dynamic_research_card(
     quality threshold is met.
     """
 
-    topic = _conversation_topic_excerpt(messages)
+    topic = _dynamic_topic(messages)
     if not _is_dynamic_topic_candidate(topic):
         return None
     card_id = _dynamic_research_card_id(session_id=session_id, topic=topic)
@@ -1254,11 +1309,64 @@ def restore_dynamic_research_card_from_snapshot(
     return card
 
 
+#: Every match term in the library is written in Simplified, and a large share
+#: of these families write Traditional. 「孩子兩歲半，講話還是只有兩三個字」 matched
+#: nothing at all — not even learn_language_milestones, whose terms are 说话,
+#: 语言, 表达 — while the same sentence in Simplified matched it immediately.
+#: Sleep and picky-eating happened to work because 夜醒, 哄睡, 挑食 and 蔬菜 are
+#: written identically in both, and 大情绪 turned up in every conversation
+#: because its term list contains the single character 哭, which is also shared.
+#: That combination is the whole of "the homepage always shows the same cards".
+#:
+#: Folded rather than duplicated into the term lists: one table serves all 184
+#: terms, and a new term cannot be added in a script the matcher does not
+#: understand. Character-level and 1:1, so positions are preserved and the
+#: occurrence scoring below is unaffected.
+_SIMPLIFIED_BY_TRADITIONAL = {
+    t: s for s, t in (
+        ("东", "東"), ("个", "個"), ("么", "麼"), ("会", "會"), ("伤", "傷"),
+        ("体", "體"), ("儿", "兒"), ("关", "關"), ("养", "養"), ("击", "擊"),
+        ("发", "發"), ("发", "髮"), ("动", "動"), ("势", "勢"), ("压", "壓"),
+        ("声", "聲"), ("复", "復"), ("复", "複"), ("妈", "媽"), ("学", "學"),
+        ("宝", "寶"), ("岁", "歲"), ("应", "應"), ("开", "開"), ("时", "時"),
+        ("汇", "匯"), ("汇", "彙"), ("沟", "溝"), ("没", "沒"), ("溃", "潰"),
+        ("爱", "愛"), ("电", "電"), ("离", "離"), ("绘", "繪"), ("绝", "絕"),
+        ("绪", "緒"), ("节", "節"), ("药", "藥"), ("营", "營"), ("虑", "慮"),
+        ("觉", "覺"), ("认", "認"), ("词", "詞"), ("话", "話"), ("语", "語"),
+        ("说", "說"), ("读", "讀"), ("边", "邊"), ("达", "達"), ("运", "運"),
+        ("连", "連"), ("键", "鍵"), ("门", "門"), ("间", "間"), ("阶", "階"),
+        ("随", "隨"), ("静", "靜"), ("顾", "顧"), ("饭", "飯"), ("龄", "齡"),
+        ("细", "細"), ("规", "規"), ("轮", "輪"), ("辅", "輔"), ("烫", "燙"),
+        ("气", "氣"), ("泼", "潑"), ("担", "擔"), ("护", "護"), ("抚", "撫"),
+        ("戏", "戲"), ("听", "聽"), ("则", "則"), ("亲", "親"), ("里", "裡"),
+        ("里", "裏"), ("系", "繫"), ("系", "係"), ("绍", "紹"), ("练", "練"),
+        ("经", "經"), ("给", "給"), ("让", "讓"), ("过", "過"), ("还", "還"),
+        ("这", "這"), ("为", "為"), ("对", "對"), ("来", "來"), ("样", "樣"),
+        ("点", "點"), ("们", "們"), ("长", "長"), ("问", "問"), ("题", "題"),
+        ("现", "現"), ("进", "進"), ("远", "遠"), ("变", "變"), ("独", "獨"),
+        ("兴", "興"), ("谈", "談"), ("结", "結"), ("数", "數"), ("续", "續"),
+    )
+}
+
+
+def fold_to_simplified(text: str) -> str:
+    """Fold Traditional characters to Simplified for term matching only.
+
+    Never applied to anything shown to a parent — the reply and the card copy
+    stay in whatever they were written in. This exists so a Traditional message
+    can find a Simplified term.
+    """
+    if not text:
+        return text
+    return "".join(_SIMPLIFIED_BY_TRADITIONAL.get(ch, ch) for ch in text)
+
+
 def _term_occurrences(text: str, term: str) -> list[tuple[int, int]]:
     """Find complete English terms and literal CJK phrases."""
 
     if not text or not term:
         return []
+    text = fold_to_simplified(text)
     normalized_term = term.casefold()
     if re.fullmatch(r"[a-z0-9][a-z0-9 '\-]*", normalized_term):
         pattern = re.compile(
@@ -1281,6 +1389,9 @@ def _term_occurrences(text: str, term: str) -> list[tuple[int, int]]:
 def _term_is_present(text: str, term: str) -> bool:
     """Return True when at least one occurrence is not locally negated."""
 
+    # Folded here too, and only here: the offsets returned by _term_occurrences
+    # index the folded string, and the fold is 1:1 so they still line up.
+    text = fold_to_simplified(text)
     for start, end in _term_occurrences(text, term):
         clause_start = 0
         clause_end = len(text)
