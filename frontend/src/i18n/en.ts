@@ -308,4 +308,10 @@ export const en: Record<string, string> = {
   "对话暂时无法打开，请稍后再试": "Couldn't open the conversation. Please try again.",
   "自我：今天给自己留30分钟独处": "Self: take 30 minutes alone today",
   "亲子：每日户外活动20分钟": "Together: 20 minutes outdoors daily",
+  "欢迎来到NURI:": "Welcome to NURI:",
+  "{year} 年 {month} 月 {day} 日": "{year}-{month}-{day}",
+  "出生日期不能晚于今天": "Birth date cannot be in the future",
+  "请选择孩子的出生年、月、日": "Select year, month and day",
+  "请选择完整的出生年、月、日": "Select the full birth date",
+  "选择出生日期": "Select birth date",
 };
