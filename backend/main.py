@@ -1639,22 +1639,62 @@ async def prepare_feed_research(
 
     pair_options_by_category = build_pair_options(option_pool)
 
-    # There used to be a loop here that searched up to two further bundles so a
-    # later "换一个" could switch between prepared pairs instead of waiting.
+    # One reserve bundle, so a later "换一个" is a switch between prepared pairs
+    # rather than a wait. This is what the detail screen's swap button is gated
+    # on: it renders when `card.refresh_available` or `alternate_resource_pairs`
+    # is non-empty, and `alternate_resource_pairs` is `pair_pool[1:]`. With no
+    # reserve there is no second pair, so the button never appeared — which is
+    # what "the refresh button is gone" was.
     #
-    # It was removed because it fired on nearly every preparation and was not
-    # actually in the background. A pair is one article crossed with one video,
-    # and the primary bundle's floor is exactly one of each per category, so
-    # `len(options) < 2` held unless the model returned a third item in all
-    # three categories — the maximum bundle. Each iteration was another full
-    # research run (a bundle plus up to two repair passes), awaited inside the
-    # request, which put up to six extra provider calls on a request that had
-    # already published a complete set.
+    # It was removed for a real reason and comes back in a cheaper shape. Two
+    # differences from the original:
     #
-    # The alternative it existed to avoid is not that bad: with no second pair,
-    # the refresh route below falls through to a live search. That pays for one
-    # research run when a parent actually taps, instead of pre-paying for six on
-    # every preparation against the chance that someone might.
+    #   * one attempt, not two. A pair is one article crossed with one video and
+    #     the primary bundle's floor is one of each per category, so the
+    #     `len(options) < 2` trigger holds on nearly every preparation. Halving
+    #     the loop halves a worst case that is paid often.
+    #
+    #   * `retry_failed` rather than `force=True`. `force` discarded cached
+    #     successes as well as failures, so every preparation paid full price for
+    #     the same topic. The research cache keys on the card id, and a dynamic
+    #     card's id hashes the session and the normalised topic — so with the
+    #     cache reachable, the second and later preparations of a topic hit it
+    #     instead of searching. That is what keeps this from being a per-reply
+    #     cost without touching the snapshot binding.
+    #
+    # Still best effort throughout: a reserve that fails must never roll back the
+    # primary bundle that has already been published.
+    if (
+        not reviewed_fallback_used
+        and any(len(options) < 2 for options in pair_options_by_category.values())
+    ):
+        excluded_option_urls = [
+            str(resource.get("url") or "") for resource in option_pool
+        ]
+        try:
+            reserve = await feed_delivery.research_card_detail_resources(
+                card=card,
+                context=context,
+                uid=uid,
+                retry_failed=True,
+                extra_excluded_urls=excluded_option_urls,
+                call_label="reserve",
+            )
+        except Exception as exc:
+            print(f"[warn] reserve content preparation stopped: {type(exc).__name__}")
+            reserve = None
+        reserve_resources = list((reserve or {}).get("resources") or [])
+        if reserve_resources:
+            known_urls = {str(resource.get("url") or "") for resource in option_pool}
+            additions = [
+                resource
+                for resource in reserve_resources
+                if str(resource.get("url") or "") not in known_urls
+            ]
+            if additions:
+                option_pool.extend(additions)
+                option_pool = feed_delivery.attach_featured_evidence_anchor(option_pool)
+                pair_options_by_category = build_pair_options(option_pool)
 
     if any(not options for options in pair_options_by_category.values()):
         print(
