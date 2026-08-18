@@ -1175,6 +1175,7 @@ async def get_personalized_feed(
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
+        preferred_locale=context.get("preferred_locale"),
         behavior_events=behavior_events,
     )
     first_match = next(
@@ -1451,6 +1452,7 @@ async def prepare_feed_research(
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
+        preferred_locale=context.get("preferred_locale"),
         include_detail=True,
         behavior_events=behavior_events,
     )
@@ -1944,6 +1946,7 @@ async def get_card_detail(
             session_id=context.get("session_id"),
             context_created_at=context.get("context_created_at"),
             context_state=context.get("state", "no_history"),
+            preferred_locale=context.get("preferred_locale"),
             include_detail=True,
             behavior_events=(
                 await core_outcome_store.get_events(uid)
@@ -2191,6 +2194,7 @@ async def get_card_research(
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
         context_state=context.get("state", "no_history"),
+        preferred_locale=context.get("preferred_locale"),
         include_detail=True,
         behavior_events=(
             await core_outcome_store.get_events(uid)

@@ -508,4 +508,5 @@ export const en: Record<string, string> = {
   "这个育儿问题": "this parenting question",
   "这个问题": "this question",
   "这组内容把可靠结论转成今天就能尝试的做法，并优先照顾你的现实时间限制。": "This set turns reliable conclusions into something you can try today, and respects the time you actually have.",
+  "来源：{source}": "Source: {source}",
 };

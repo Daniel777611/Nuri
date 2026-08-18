@@ -512,7 +512,9 @@ def _compact_stage_label(card: dict) -> str:
     raw = str(card.get("child_age_context") or "").strip()
     if "：" in raw:
         raw = raw.split("：", 1)[1]
-    return raw[:80] or "当前发展阶段"
+    return raw[:80] or locales.phrase(
+        "stage.unknown", card.get("preferred_locale")
+    )
 
 
 def _delivery_title(card: dict, content_category: str, resources: list[dict]) -> str:
@@ -521,22 +523,19 @@ def _delivery_title(card: dict, content_category: str, resources: list[dict]) ->
         (resource for resource in resources if resource.get("kind") == "article"),
         {},
     )
-    topic = str(card.get("topic_label") or card.get("topic") or "这个问题").strip()
+    topic = locales.topic_label(
+        card.get("topic_label") or card.get("topic") or "这个问题", locale
+    )
+    # English leads with the article's own title where there is one: the topic
+    # label is composed in Chinese and reads oddly inside an English sentence.
     if locale == "en":
-        source_title = str(article.get("title") or topic).strip()
-        prefixes = {
-            "authority": "What the evidence says",
-            "featured": "A practical method to try today",
-            "case": "How a similar family approached it",
-        }
-        return f"{prefixes[content_category]}: {source_title}"[:180]
-    stage = _compact_stage_label(card)
-    templates = {
-        "authority": f"{stage}的“{topic}”：哪些进展值得观察",
-        "featured": f"今天就能做：把“{topic}”变成一个日常小练习",
-        "case": f"相似家庭如何一步步面对“{topic}”",
-    }
-    return templates[content_category][:180]
+        topic = str(article.get("title") or topic).strip()
+    return locales.phrase(
+        f"title.{content_category}",
+        locale,
+        topic=topic,
+        stage=_compact_stage_label(card),
+    )[:180]
 
 
 def decorate_delivery_card(card: dict, resources: list[dict]) -> None:
@@ -568,14 +567,18 @@ def decorate_delivery_card(card: dict, resources: list[dict]) -> None:
         or card.get("topic")
         or "这个问题"
     ).strip()
-    category_intro = {
-        "authority": "先用权威依据判断当前阶段值得观察什么，再决定是否需要进一步咨询。",
-        "featured": "这组内容把可靠结论转成今天就能尝试的做法，并优先照顾你的现实时间限制。",
-        "case": "这个真实家庭案例用于理解过程和调整方法，不代表普遍效果或医学建议。",
-    }[category]
-    card["guide"] = (
-        f"这组内容围绕你最近提到的“{focus[:80]}”，并结合"
-        f"{_compact_stage_label(card)}筛选。{category_intro}"
+    # Composed with the family's own words inside it, so the frontend cannot
+    # translate it: it arrives finished and matches no key. The locale is the
+    # one the settings screen already saves — `_delivery_title` above has
+    # branched on it all along, which is why the card could show an English
+    # title over a Simplified guide.
+    locale = card.get("preferred_locale")
+    card["guide"] = locales.phrase(
+        "guide",
+        locale,
+        focus=focus[:80],
+        stage=_compact_stage_label(card),
+        intro=locales.phrase(f"intro.{category}", locale),
     )[:300]
     card["action_steps"] = list(_DELIVERY_ACTION_STEPS[category])
 

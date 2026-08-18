@@ -979,7 +979,7 @@ export default function Detail() {
               { color: TAG_FG[card.type] || TAG_FG.tip },
             ]}
           >
-            {deliveryMeta.label}
+            {t(deliveryMeta.label)}
           </Text>
         </View>
         <Text style={styles.title}>{card.delivery_title || card.title}</Text>
@@ -987,7 +987,7 @@ export default function Detail() {
           <View style={styles.deliverySourceRow}>
             <Ionicons name={deliveryMeta.icon} size={16} color="#4F4B9C" />
             <Text style={styles.deliverySourceText} numberOfLines={2}>
-              来源：{sourceLabel}
+              {t("来源：{source}", { source: sourceLabel })}
             </Text>
           </View>
           <View style={styles.deliveryMetaChips}>

@@ -1476,8 +1476,16 @@ def rank_learning_content(
     context_state: str = "ready",
     include_detail: bool = False,
     behavior_events: Optional[list[dict]] = None,
+    preferred_locale: Optional[str] = None,
 ) -> tuple[list[dict], bool]:
-    """Rank candidates by conversation relevance, affinity, and freshness."""
+    """Rank candidates by conversation relevance, affinity, and freshness.
+
+    `preferred_locale` is only for the reason lines, which are composed with
+    the family's own words and so cannot be translated downstream. Defaulted
+    rather than required: the ranking itself is language-agnostic, and a
+    caller that omits it gets Simplified, which is what every caller got
+    before this existed.
+    """
 
     raw_current_user_texts = [
         str(message.get("text") or "").strip()
@@ -1745,31 +1753,47 @@ def rank_learning_content(
                 )
             elif action_intent and safe_focus:
                 continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你提到的"
-                reason = (
-                    f"你现在想要{action_intent}，{continuity}“{safe_focus}”；"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
+                reason = locales.phrase(
+                    "reason.intent",
+                    preferred_locale,
+                    intent=action_intent,
+                    continuity=continuity,
+                    focus=safe_focus,
+                    topic=card["topic_label"],
                 )
             elif inherit_prior_context and safe_focus:
-                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你之前提到的"
-                reason = (
-                    f"{continuity}“{safe_focus}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
+                continuity = locales.phrase(
+                    "continuity.history"
+                    if focus_scope == "account_history"
+                    else "continuity.current",
+                    preferred_locale,
+                )
+                reason = locales.phrase(
+                    "reason.inherited",
+                    preferred_locale,
+                    continuity=continuity,
+                    focus=safe_focus,
+                    topic=card["topic_label"],
                 )
             elif reason_term:
-                reason = (
-                    f"因为你最近重点聊到“{reason_term}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
+                reason = locales.phrase(
+                    "reason.focus",
+                    preferred_locale,
+                    term=reason_term,
+                    topic=card["topic_label"],
                 )
             else:
-                reason = f"因为你最近和 NURI 聊到了“{card['topic_label']}”"
+                reason = locales.phrase(
+                    "reason.topic", preferred_locale, topic=card["topic_label"]
+                )
             related_session_id = session_id
             is_match = True
         elif context_state == "privacy_off":
-            reason = "你已关闭对话个性化，这是 NURI 的可信来源精选"
+            reason = locales.phrase("reason.privacy_off", preferred_locale)
             related_session_id = None
             is_match = False
         elif context_state == "unavailable":
-            reason = "近期对话暂时无法读取，这是 NURI 的可信来源精选"
+            reason = locales.phrase("reason.unavailable", preferred_locale)
             related_session_id = None
             is_match = False
         elif not user_texts:
