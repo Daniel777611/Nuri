@@ -86,8 +86,16 @@ export function resourceLanguageLabel(
   return cleanText(resource.language);
 }
 
+export type LabelTranslator = (
+  source: string,
+  vars?: Record<string, string | number>,
+) => string;
+
+const identity: LabelTranslator = (source) => source;
+
 export function recommendationLanguageLabel(
   card: RecommendationPresentationCard,
+  t: LabelTranslator = identity,
 ): string {
   const article = card.resources?.find((resource) => resource.kind === "article");
   const video = card.resources?.find((resource) => resource.kind === "video");
@@ -95,7 +103,7 @@ export function recommendationLanguageLabel(
     article?.translation_type === "nuri_guide" ||
     video?.translation_type === "nuri_guide"
   ) {
-    return "英文原文 · NURI 中文导读";
+    return t("英文原文 · NURI 中文导读");
   }
   const explicit = cleanText(card.language_label);
   if (explicit) return explicit;
@@ -103,17 +111,18 @@ export function recommendationLanguageLabel(
   const articleLanguage = cleanText(article?.language);
   const spokenLanguage = cleanText(video?.spoken_language);
   if (articleLanguage && spokenLanguage === "mandarin") {
-    return `${articleLanguage} · 普通话`;
+    return t("{language} · 普通话", { language: articleLanguage });
   }
   if (articleLanguage && spokenLanguage === "english") {
-    return `${articleLanguage} · 英语视频`;
+    return t("{language} · 英语视频", { language: articleLanguage });
   }
   if (articleLanguage) return articleLanguage;
-  return LOCALE_LABELS[card.preferred_locale || ""] || "偏好语言";
+  return t(LOCALE_LABELS[card.preferred_locale || ""] || "偏好语言");
 }
 
 export function recommendationTimeLabel(
   card: RecommendationPresentationCard,
+  t: LabelTranslator = identity,
 ): string {
   const explicit = cleanText(card.estimated_time_label);
   if (explicit) return explicit;
@@ -121,7 +130,9 @@ export function recommendationTimeLabel(
     .map(resourceMinutes)
     .filter((value): value is number => value !== null)
     .reduce((total, value) => total + value, 0);
-  return minutes > 0 ? `约 ${minutes} 分钟` : "约 6–10 分钟";
+  return minutes > 0
+    ? t("约 {minutes} 分钟", { minutes })
+    : t("约 6–10 分钟");
 }
 
 export function recommendationStageLabel(

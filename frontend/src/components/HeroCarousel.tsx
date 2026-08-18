@@ -358,8 +358,8 @@ export default function HeroCarousel({
           // These four return the Simplified source as a key; they are
           // module-level and cannot reach the hook themselves.
           const sourceLabel = t(recommendationSourceLabel(card));
-          const languageLabel = t(recommendationLanguageLabel(card));
-          const timeLabel = t(recommendationTimeLabel(card));
+          const languageLabel = recommendationLanguageLabel(card, t);
+          const timeLabel = recommendationTimeLabel(card, t);
           const stageLabel = t(recommendationStageLabel(card));
           const colors =
             card.colors ||

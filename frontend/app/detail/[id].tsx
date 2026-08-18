@@ -955,10 +955,10 @@ export default function Detail() {
       (resource) => resource.translation_type === "nuri_guide",
     );
     const deliveryMeta = deliveryCategoryMeta(activeCategory);
-    const sourceLabel = recommendationSourceLabel(card);
-    const languageLabel = recommendationLanguageLabel(card);
-    const estimatedTimeLabel = recommendationTimeLabel(card);
-    const stageLabel = recommendationStageLabel(card);
+    const sourceLabel = t(recommendationSourceLabel(card));
+    const languageLabel = recommendationLanguageLabel(card, t);
+    const estimatedTimeLabel = recommendationTimeLabel(card, t);
+    const stageLabel = t(recommendationStageLabel(card));
     const actionSteps = recommendationActionSteps(card);
     const guideText = card.guide || card.body;
     return (
@@ -1024,7 +1024,7 @@ export default function Detail() {
         {guideText ? (
           <>
             <Text style={styles.sectionTitle}>{t("NURI 内容导读")}</Text>
-            <Text style={styles.body}>{guideText}</Text>
+            <Text style={styles.body}>{t(guideText)}</Text>
           </>
         ) : null}
 
@@ -1037,7 +1037,7 @@ export default function Detail() {
                   <View style={styles.actionNumber}>
                     <Text style={styles.actionNumberText}>{index + 1}</Text>
                   </View>
-                  <Text style={styles.actionText}>{action}</Text>
+                  <Text style={styles.actionText}>{t(action)}</Text>
                 </View>
               ))}
             </View>
@@ -1288,7 +1288,7 @@ export default function Detail() {
                         </View>
                         {resourceLanguageLabel(resource) ? (
                           <Text style={styles.resourceLanguage}>
-                            {resourceLanguageLabel(resource)}
+                            {t(resourceLanguageLabel(resource))}
                           </Text>
                         ) : null}
                         {resource.estimated_minutes ? (
