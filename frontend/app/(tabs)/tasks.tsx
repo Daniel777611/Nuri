@@ -236,7 +236,7 @@ export default function Tasks() {
                 testID={`tasks-filter-${k}`}
               >
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>
-                  {TASK_TYPES[k].label}
+                  {t(TASK_TYPES[k].label)}
                 </Text>
               </Pressable>
             );

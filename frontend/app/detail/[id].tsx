@@ -43,6 +43,7 @@ import {
   recommendationTimeLabel,
 } from "@/src/recommendationPresentation";
 import { colors, radius, spacing, type } from "@/src/theme";
+import { useT } from "@/src/i18n";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DETAIL_FRAME_WIDTH = 402;
@@ -298,6 +299,7 @@ function guideFromHandoff(
 }
 
 export default function Detail() {
+  const { t } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const {
@@ -602,10 +604,10 @@ export default function Detail() {
     try {
       const result = await api.toggleFavorite(id as string);
       setFavorited(result.favorited);
-      showToast(result.favorited ? "已收藏" : "已取消收藏");
+      showToast(result.favorited ? t("已收藏") : t("已取消收藏"));
       trackRecommendation("favorite", { value: result.favorited ? 1 : 0 }).catch(() => {});
     } catch {
-      showToast("收藏暂时没有保存，请稍后再试");
+      showToast(t("收藏暂时没有保存，请稍后再试"));
     }
   };
 
@@ -620,13 +622,13 @@ export default function Detail() {
       const session = await api.startSession({ card_id: card.id, title: card.title });
       router.push(`/chat/${session.id}`);
     } catch {
-      showToast("对话暂时无法打开，请稍后再试");
+      showToast(t("对话暂时无法打开，请稍后再试"));
     }
   };
 
   const openResource = async (resource: LearningResource, position: number) => {
     if (!/^https:\/\//i.test(resource.url || "")) {
-      showToast("这个外部链接暂时不可用");
+      showToast(t("这个外部链接暂时不可用"));
       return;
     }
     flushDwell();
@@ -646,7 +648,7 @@ export default function Detail() {
         await WebBrowser.openBrowserAsync(resource.url);
       }
     } catch {
-      showToast("外部内容暂时无法打开，请稍后再试");
+      showToast(t("外部内容暂时无法打开，请稍后再试"));
     }
   };
 
@@ -669,14 +671,14 @@ export default function Detail() {
       });
       if (result?.accepted === false) {
         setFeedbackReasonOpen(false);
-        showToast("个性化已关闭，这次选择不会保存");
+        showToast(t("个性化已关闭，这次选择不会保存"));
         return;
       }
       setContentFeedback(value);
       setFeedbackReason(reason || null);
       setFeedbackReasonOpen(false);
     } catch {
-      showToast("反馈暂时没有保存，请再试一次");
+      showToast(t("反馈暂时没有保存，请再试一次"));
     } finally {
       setFeedbackSubmitting(false);
     }
@@ -738,7 +740,7 @@ export default function Detail() {
       // The visual swap is synchronous. Persist the exact pair in the
       // background so reopening the detail keeps the user's selection; a
       // network failure never rolls the visible pair back.
-      showToast("已为你换好一篇文章和一个视频");
+      showToast(t("已为你换好一篇文章和一个视频"));
       try {
         const persisted: any = await api.getNextResourcePair(
           id as string,
@@ -772,7 +774,7 @@ export default function Detail() {
           locale: card?.preferred_locale || undefined,
           content_category: activeCategory,
         }).catch(() => {});
-        showToast("内容已切换，但暂时没有同步到其他设备");
+        showToast(t("内容已切换，但暂时没有同步到其他设备"));
       } finally {
         resourceSwitchInFlight.current = false;
         if (contentRequestId.current === requestId) {
@@ -832,7 +834,7 @@ export default function Detail() {
         setFeedbackReason(null);
         setFeedbackReasonOpen(false);
         setResourceRefreshState("idle");
-        showToast("已为你换了一组");
+        showToast(t("已为你换了一组"));
         return;
       }
       if (result?.refresh_status === "no_alternative") {
@@ -842,11 +844,11 @@ export default function Detail() {
       // A timeout, provider outage, incomplete response, or any other
       // retryable status must leave the currently reviewed pair untouched.
       setResourceRefreshState("idle");
-      showToast("暂时没能换新内容，请稍后再试");
+      showToast(t("暂时没能换新内容，请稍后再试"));
     } catch {
       if (contentRequestId.current !== requestId) return;
       setResourceRefreshState("idle");
-      showToast("暂时没能换新内容，请稍后再试");
+      showToast(t("暂时没能换新内容，请稍后再试"));
     } finally {
       resourceSwitchInFlight.current = false;
     }
@@ -871,17 +873,17 @@ export default function Detail() {
           />
           <Text style={styles.stateTitle}>
             {recommendationPreparing
-              ? "内容仍在准备"
+              ? t("内容仍在准备")
               : recommendationExpired
-                ? "这条个性化推荐已更新"
-                : "内容暂时没有加载出来"}
+                ? t("这条个性化推荐已更新")
+                : t("内容暂时没有加载出来")}
           </Text>
           <Text style={styles.stateText}>
             {recommendationPreparing
-              ? "请返回首页稍后再试。NURI 会在文章和视频都准备好后再开放这张卡片。"
+              ? t("请返回首页稍后再试。NURI 会在文章和视频都准备好后再开放这张卡片。")
               : recommendationExpired
-                ? "可以根据你现在的对话，重新查看这个学习主题。"
-                : "可以返回首页，或在网络恢复后重试。"}
+                ? t("可以根据你现在的对话，重新查看这个学习主题。")
+                : t("可以返回首页，或在网络恢复后重试。")}
           </Text>
           <Pressable
             onPress={() => {
@@ -906,10 +908,10 @@ export default function Detail() {
           >
             <Text style={styles.retryBtnText}>
               {recommendationPreparing
-                ? "返回首页"
+                ? t("返回首页")
                 : recommendationExpired
-                  ? "查看当前主题"
-                  : "重新加载"}
+                  ? t("查看当前主题")
+                  : t("重新加载")}
             </Text>
           </Pressable>
         </View>
@@ -919,7 +921,7 @@ export default function Detail() {
       return (
         <View style={styles.stateBox}>
           <ActivityIndicator color={colors.brand} />
-          <Text style={styles.stateText}>正在打开已准备好的内容…</Text>
+          <Text style={styles.stateText}>{t("正在打开已准备好的内容…")}</Text>
         </View>
       );
     }
@@ -948,7 +950,7 @@ export default function Detail() {
       (card.resource_readiness === "preparing" ||
         card.resource_readiness === "retryable");
     const activeResourceLocaleLabel =
-      RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言";
+      t(RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言");
     const hasNuriGuidedOriginal = visibleResources.some(
       (resource) => resource.translation_type === "nuri_guide",
     );
@@ -989,7 +991,7 @@ export default function Detail() {
             </Text>
           </View>
           <View style={styles.deliveryMetaChips}>
-            {[languageLabel, estimatedTimeLabel, stageLabel, "内容已准备好"].map((label) => (
+            {[languageLabel, estimatedTimeLabel, stageLabel, t("内容已准备好")].map((label) => (
               <View key={label} style={styles.deliveryMetaChip}>
                 <Text style={styles.deliveryMetaChipText}>{label}</Text>
               </View>
@@ -1003,7 +1005,7 @@ export default function Detail() {
               <Ionicons name="sparkles" size={17} color="#4F4B9C" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.reasonLabel}>为什么推荐给你</Text>
+              <Text style={styles.reasonLabel}>{t("为什么推荐给你")}</Text>
               <Text style={styles.reasonText}>{card.personalization_reason}</Text>
             </View>
           </View>
@@ -1021,14 +1023,14 @@ export default function Detail() {
         {card.summary ? <Text style={styles.lead}>{card.summary}</Text> : null}
         {guideText ? (
           <>
-            <Text style={styles.sectionTitle}>NURI 内容导读</Text>
+            <Text style={styles.sectionTitle}>{t("NURI 内容导读")}</Text>
             <Text style={styles.body}>{guideText}</Text>
           </>
         ) : null}
 
         {actionSteps.length > 0 ? (
           <View style={styles.actionsSection} testID="detail-action-steps">
-            <Text style={styles.sectionTitle}>今天可以先做</Text>
+            <Text style={styles.sectionTitle}>{t("今天可以先做")}</Text>
             <View style={styles.actionsCard}>
               {actionSteps.map((action, index) => (
                 <View key={`${index}:${action}`} style={styles.actionRow}>
@@ -1046,7 +1048,7 @@ export default function Detail() {
           <View style={styles.resourcesSection} testID="detail-learning-resources">
             <View style={styles.resourcesTitleRow}>
               <Text style={[styles.sectionTitle, styles.resourcesTitle]}>
-                推荐给你的文章与视频
+                {t("推荐给你的文章与视频")}
               </Text>
               {(card.refresh_available ||
                 queuedAlternatePairs.length > 0 ||
@@ -1064,7 +1066,7 @@ export default function Detail() {
                       styles.refreshResourcesButtonPressed,
                   ]}
                   accessibilityRole="button"
-                  accessibilityLabel="更换下面的一篇文章和一个视频"
+                  accessibilityLabel={t("更换下面的一篇文章和一个视频")}
                   accessibilityState={{
                     disabled: resourceRefreshState !== "idle",
                     busy: resourceRefreshState === "loading",
@@ -1092,12 +1094,12 @@ export default function Detail() {
                     ]}
                   >
                     {resourceRefreshState === "loading"
-                      ? "正在换一组…"
+                      ? t("正在换一组…")
                       : resourceRefreshState === "exhausted"
-                        ? "暂无更多"
+                        ? t("暂无更多")
                         : queuedAlternatePairs.length > 0
                           ? `换一个 · 还有 ${queuedAlternatePairs.length} 组`
-                          : "换一个"}
+                          : t("换一个")}
                   </Text>
                 </Pressable>
               ) : null}
@@ -1108,7 +1110,7 @@ export default function Detail() {
                 accessibilityLiveRegion="polite"
                 testID="detail-refresh-exhausted"
               >
-                目前没有更多同时符合孩子阶段、当前话题、类别和语言的组合。
+                {t("目前没有更多同时符合孩子阶段、当前话题、类别和语言的组合。")}
               </Text>
             ) : null}
             <View
@@ -1117,9 +1119,9 @@ export default function Detail() {
             >
               <View style={styles.resourceGroupHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.resourceGroupEyebrow}>{categoryMeta.eyebrow}</Text>
-                  <Text style={styles.resourceGroupTitle}>{categoryMeta.title}</Text>
-                  <Text style={styles.resourceGroupDescription}>{categoryMeta.description}</Text>
+                  <Text style={styles.resourceGroupEyebrow}>{t(categoryMeta.eyebrow)}</Text>
+                  <Text style={styles.resourceGroupTitle}>{t(categoryMeta.title)}</Text>
+                  <Text style={styles.resourceGroupDescription}>{t(categoryMeta.description)}</Text>
                 </View>
                 <View style={styles.preferenceBadge}>
                   <Ionicons name="sparkles-outline" size={14} color="#4F4B9C" />
@@ -1136,11 +1138,11 @@ export default function Detail() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
                     {card.resource_readiness === "preparing"
-                      ? "导读已可阅读，正在准备文章和视频"
-                      : "导读已可阅读，文章和视频需要重试"}
+                      ? t("导读已可阅读，正在准备文章和视频")
+                      : t("导读已可阅读，文章和视频需要重试")}
                   </Text>
                   <Text style={styles.researchStatusText}>
-                    NURI 只会在一篇文章和一个视频都通过主题、语言与来源核验后显示外部链接。
+                    {t("NURI 只会在一篇文章和一个视频都通过主题、语言与来源核验后显示外部链接。")}
                   </Text>
                   {card.resource_readiness === "retryable" ? (
                     <Pressable
@@ -1157,7 +1159,7 @@ export default function Detail() {
                       testID="detail-prepare-retry"
                     >
                       <Ionicons name="refresh-outline" size={16} color="#4F4B9C" />
-                      <Text style={styles.refreshResourcesButtonText}>重新准备</Text>
+                      <Text style={styles.refreshResourcesButtonText}>{t("重新准备")}</Text>
                     </Pressable>
                   ) : null}
                 </View>
@@ -1167,13 +1169,13 @@ export default function Detail() {
                 <Ionicons name="search" size={16} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
-                    已按你的语言偏好选好文章和视频
+                    {t("已按你的语言偏好选好文章和视频")}
                   </Text>
                   <Text style={styles.researchStatusText}>
                     {card.research_status === "hybrid"
-                      ? "实时检索与人工审核资料共同组成这次推荐；不合格链接没有展示。"
+                      ? t("实时检索与人工审核资料共同组成这次推荐；不合格链接没有展示。")
                       : card.research_editor_note ||
-                        "NURI 已结合你们刚聊到的情境，从公开网络中核验这一篇文章和一个视频。"}
+                        t("NURI 已结合你们刚聊到的情境，从公开网络中核验这一篇文章和一个视频。")}
                   </Text>
                 </View>
               </View>
@@ -1183,12 +1185,12 @@ export default function Detail() {
                 <Ionicons name="shield-checkmark-outline" size={17} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
-                    {resourcePairComplete ? "当前使用人工审核资料" : "暂未找到完整且可核验的组合"}
+                    {resourcePairComplete ? t("当前使用人工审核资料") : t("暂未找到完整且可核验的组合")}
                   </Text>
                   <Text style={styles.researchStatusText}>
                     {resourcePairComplete
-                      ? "这一篇文章和一个视频均来自审核资料库，并与当前卡片类别和语言一致。"
-                      : "NURI 不会用错误类别或错误语言补位；稍后重新打开即可再试。"}
+                      ? t("这一篇文章和一个视频均来自审核资料库，并与当前卡片类别和语言一致。")
+                      : t("NURI 不会用错误类别或错误语言补位；稍后重新打开即可再试。")}
                   </Text>
                 </View>
               </View>
@@ -1196,11 +1198,11 @@ export default function Detail() {
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <Ionicons name="lock-closed-outline" size={17} color="#4F4B9C" />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.researchStatusLabel}>外部个性化检索尚未开启</Text>
+                  <Text style={styles.researchStatusLabel}>{t("外部个性化检索尚未开启")}</Text>
                   <Text style={styles.researchStatusText}>
                     {resourcePairComplete
-                      ? "当前文章和视频均来自人工审核资料库，并已使用你的账户语言偏好。"
-                      : "这个新话题尚未对外检索。只有你在“我的”隐私设置中明确开启后，NURI 才会使用结构化、脱敏后的主题信息检索公开网页。"}
+                      ? t("当前文章和视频均来自人工审核资料库，并已使用你的账户语言偏好。")
+                      : t("这个新话题尚未对外检索。只有你在“我的”隐私设置中明确开启后，NURI 才会使用结构化、脱敏后的主题信息检索公开网页。")}
                   </Text>
                 </View>
               </View>
@@ -1208,11 +1210,11 @@ export default function Detail() {
               <View style={styles.researchStatusCard} testID="detail-research-status">
                 <Ionicons name="alert-circle-outline" size={17} color={colors.error} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.researchStatusLabel}>紧急情境不会启动内容检索</Text>
+                  <Text style={styles.researchStatusLabel}>{t("紧急情境不会启动内容检索")}</Text>
                   <Text style={styles.researchStatusText}>
                     {resources.length
-                      ? "请优先联系当地急救、医疗或紧急支持服务；这里仅保留审核资料，不用文章或案例延误求助。"
-                      : "请优先联系当地急救、医疗或紧急支持服务；NURI 不会在此显示文章或案例，以免延误求助。"}
+                      ? t("请优先联系当地急救、医疗或紧急支持服务；这里仅保留审核资料，不用文章或案例延误求助。")
+                      : t("请优先联系当地急救、医疗或紧急支持服务；NURI 不会在此显示文章或案例，以免延误求助。")}
                   </Text>
                 </View>
               </View>
@@ -1222,7 +1224,7 @@ export default function Detail() {
                 {hasNuriGuidedOriginal
                   ? `已按你的${activeResourceLocaleLabel}偏好整理：英文原文保留原始链接，并附 NURI 中文导读。`
                   : `已自动使用最适合你的${activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。`}
-                点击具体条目后才会打开外部内容。
+                {t("点击具体条目后才会打开外部内容。")}
               </Text>
             ) : null}
                 {resourcePairComplete ? visibleResources.map((resource, resourceIndex) => (
@@ -1234,8 +1236,8 @@ export default function Detail() {
                       pressed && styles.resourceCardPressed,
                     ]}
                     accessibilityRole="link"
-                    accessibilityLabel={`${resourceCategoryLabel(resource)}，${resource.language ? `${resource.language}，` : ""}${resourceKindLabel(resource)}：${resource.title}，来源：${resource.publisher}`}
-                    accessibilityHint={`将在新标签页打开外部${resourceKindLabel(resource)}`}
+                    accessibilityLabel={`${t(resourceCategoryLabel(resource))}，${resource.language ? `${resource.language}，` : ""}${t(resourceKindLabel(resource))}：${resource.title}，${t("来源：")}${resource.publisher}`}
+                    accessibilityHint={t("将在新标签页打开外部{kind}", { kind: t(resourceKindLabel(resource)) })}
                     testID={`detail-resource-${resource.id}`}
                   >
                     <View
@@ -1264,7 +1266,7 @@ export default function Detail() {
                               resource.kind === "video" && styles.videoResourceKindBadgeText,
                             ]}
                           >
-                            {resourceKindLabel(resource)}
+                            {t(resourceKindLabel(resource))}
                           </Text>
                         </View>
                         <View
@@ -1281,7 +1283,7 @@ export default function Detail() {
                                 styles.curatedResourceTierBadgeText,
                             ]}
                           >
-                            {resourceBadgeLabel(resource)}
+                            {t(resourceBadgeLabel(resource))}
                           </Text>
                         </View>
                         {resourceLanguageLabel(resource) ? (
@@ -1309,19 +1311,19 @@ export default function Detail() {
                       ) : null}
                       {resource.translation_type === "nuri_guide" && resource.chinese_guide ? (
                         <View style={styles.resourceChineseGuide}>
-                          <Text style={styles.resourceChineseGuideTitle}>NURI 中文导读</Text>
+                          <Text style={styles.resourceChineseGuideTitle}>{t("NURI 中文导读")}</Text>
                           <Text style={styles.resourceChineseGuideText}>
                             {resource.chinese_guide}
                           </Text>
                           <Text style={styles.resourceChineseGuideDisclaimer}>
                             {resource.translation_disclaimer ||
-                              "这是 NURI 对英文原文的中文导读，不是发布机构的官方翻译；重要结论请以原文为准。"}
+                              t("这是 NURI 对英文原文的中文导读，不是发布机构的官方翻译；重要结论请以原文为准。")}
                           </Text>
                         </View>
                       ) : null}
                       {resource.kind === "video" && resource.spoken_language_evidence ? (
                         <Text style={styles.resourceLanguageEvidence}>
-                          <Text style={styles.resourceTrustNoteLabel}>口语核验：</Text>
+                          <Text style={styles.resourceTrustNoteLabel}>{t("口语核验：")}</Text>
                           {resource.spoken_language_evidence}
                         </Text>
                       ) : null}
@@ -1347,19 +1349,19 @@ export default function Detail() {
                       ) : null}
                       {resource.trust_note ? (
                         <Text style={styles.resourceTrustNote}>
-                          <Text style={styles.resourceTrustNoteLabel}>可信依据：</Text>
+                          <Text style={styles.resourceTrustNoteLabel}>{t("可信依据：")}</Text>
                           {resource.trust_note}
                         </Text>
                       ) : null}
                       {resource.selection_reason ? (
                         <Text style={styles.resourceSelectionReason}>
-                          <Text style={styles.resourceSelectionReasonLabel}>入选理由：</Text>
+                          <Text style={styles.resourceSelectionReasonLabel}>{t("入选理由：")}</Text>
                           {resource.selection_reason}
                         </Text>
                       ) : null}
                       <View style={styles.resourceOpenRow}>
                         <Text style={styles.resourceOpenText}>
-                          {resource.kind === "video" ? "打开外部视频" : "打开外部文章"}
+                          {resource.kind === "video" ? t("打开外部视频") : t("打开外部文章")}
                         </Text>
                         <Ionicons name="open-outline" size={16} color={colors.brand} />
                       </View>
@@ -1369,8 +1371,8 @@ export default function Detail() {
                 <View style={styles.emptyResourceGroup}>
                   <Text style={styles.emptyResourceGroupText}>
                     {resourcePreparationPending
-                      ? "文章和视频仍在核验中；你可以先阅读上面的导读。"
-                      : "暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。"}
+                      ? t("文章和视频仍在核验中；你可以先阅读上面的导读。")
+                      : t("暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。")}
                   </Text>
                 </View>
               )}
@@ -1380,8 +1382,8 @@ export default function Detail() {
 
         {resourcePairComplete ? (
           <View style={styles.feedbackCard} testID="detail-content-feedback">
-            <Text style={styles.feedbackTitle}>这次推荐贴合吗？</Text>
-            <Text style={styles.feedbackSubtitle}>你的选择只会帮助 NURI 调整后续推荐。</Text>
+            <Text style={styles.feedbackTitle}>{t("这次推荐贴合吗？")}</Text>
+            <Text style={styles.feedbackSubtitle}>{t("你的选择只会帮助 NURI 调整后续推荐。")}</Text>
             <View style={styles.feedbackActions}>
               <Pressable
                 onPress={() => submitContentFeedback("helpful")}
@@ -1406,7 +1408,7 @@ export default function Detail() {
                     contentFeedback === "helpful" && styles.feedbackButtonTextSelected,
                   ]}
                 >
-                  有帮助
+                  {t("有帮助")}
                 </Text>
               </Pressable>
               <Pressable
@@ -1445,13 +1447,13 @@ export default function Detail() {
                       styles.feedbackButtonTextSelected,
                   ]}
                 >
-                  需要调整
+                  {t("需要调整")}
                 </Text>
               </Pressable>
             </View>
             {feedbackReasonOpen && !contentFeedback ? (
               <View style={styles.feedbackReasons} testID="detail-feedback-reasons">
-                <Text style={styles.feedbackReasonPrompt}>是哪一方面？</Text>
+                <Text style={styles.feedbackReasonPrompt}>{t("是哪一方面？")}</Text>
                 <View style={styles.feedbackReasonOptions}>
                   {FEEDBACK_REASONS.map((option) => (
                     <Pressable
@@ -1462,7 +1464,7 @@ export default function Detail() {
                       accessibilityRole="button"
                       testID={`detail-feedback-reason-${option.value}`}
                     >
-                      <Text style={styles.feedbackReasonButtonText}>{option.label}</Text>
+                      <Text style={styles.feedbackReasonButtonText}>{t(option.label)}</Text>
                     </Pressable>
                   ))}
                 </View>
@@ -1471,10 +1473,10 @@ export default function Detail() {
             {contentFeedback ? (
               <Text style={styles.feedbackThanks} accessibilityLiveRegion="polite">
                 {contentFeedback === "helpful"
-                  ? "收到了，之后会多推荐这类内容。"
+                  ? t("收到了，之后会多推荐这类内容。")
                   : `已记录“${
-                      FEEDBACK_REASONS.find((option) => option.value === feedbackReason)?.label ||
-                      "需要调整"
+                      t(FEEDBACK_REASONS.find((option) => option.value === feedbackReason)?.label ?? "") ||
+                      t("需要调整")
                     }”，之后会按这个原因调整推荐。`}
               </Text>
             ) : null}
@@ -1505,19 +1507,19 @@ export default function Detail() {
           <Pressable
             onPress={() => router.back()}
             style={styles.iconBtn}
-            accessibilityLabel="返回"
+            accessibilityLabel={t("返回")}
             testID="detail-back-btn"
           >
             <Ionicons name="chevron-back" size={22} color={colors.onSurface} />
           </Pressable>
-          <Text style={styles.headerTitle}>NURI 学习内容</Text>
+          <Text style={styles.headerTitle}>{t("NURI 学习内容")}</Text>
           <View style={{ flex: 1 }} />
           {card ? (
             <>
               <Pressable
                 onPress={toggleFavorite}
                 style={styles.iconBtn}
-                accessibilityLabel={favorited ? "取消收藏" : "收藏"}
+                accessibilityLabel={favorited ? t("取消收藏") : t("收藏")}
                 testID="detail-fav-btn"
               >
                 <Ionicons
@@ -1529,7 +1531,7 @@ export default function Detail() {
               <Pressable
                 onPress={() => setShareOpen(true)}
                 style={styles.iconBtn}
-                accessibilityLabel="分享"
+                accessibilityLabel={t("分享")}
                 testID="detail-share-btn"
               >
                 <Ionicons name="share-outline" size={21} color={colors.onSurface} />
@@ -1547,7 +1549,7 @@ export default function Detail() {
           >
             <Pressable onPress={askAI} style={styles.askBtn} testID="detail-ask-ai-btn">
               <Ionicons name="sparkles" size={16} color="#fff" />
-              <Text style={styles.askBtnText}>和 NURI 继续聊这个话题</Text>
+              <Text style={styles.askBtnText}>{t("和 NURI 继续聊这个话题")}</Text>
             </Pressable>
           </View>
         ) : null}
@@ -1568,18 +1570,18 @@ export default function Detail() {
         <Pressable style={styles.sheetBackdrop} onPress={() => setShareOpen(false)} />
         <View style={styles.shareSheet} testID="share-sheet">
           <View style={styles.sheetHandle} />
-          <Text style={styles.sheetTitle}>分享到</Text>
+          <Text style={styles.sheetTitle}>{t("分享到")}</Text>
           {[
-            { label: "复制链接", icon: "link-outline" as const },
-            { label: "微信", icon: "logo-wechat" as const },
-            { label: "短信", icon: "chatbox-outline" as const },
-            { label: "更多…", icon: "ellipsis-horizontal" as const },
+            { label: t("复制链接"), icon: "link-outline" as const },
+            { label: t("微信"), icon: "logo-wechat" as const },
+            { label: t("短信"), icon: "chatbox-outline" as const },
+            { label: t("更多…"), icon: "ellipsis-horizontal" as const },
           ].map((option) => (
             <Pressable
               key={option.label}
               onPress={() => {
                 setShareOpen(false);
-                showToast("分享功能即将完善");
+                showToast(t("分享功能即将完善"));
                 api
                   .trackEvent("share", { card_id: card?.id, card_type: card?.type })
                   .catch(() => {});

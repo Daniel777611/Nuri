@@ -625,11 +625,18 @@ export default function Home() {
           const pending = ts.filter((t) => !t.completed_at);
           setPendingCount(pending.length);
           setPendingTasks(
-            pending.slice(0, 2).map((t) => `${taskTypeMeta(t.task_type).prefix}：${t.title}`)
+            pending
+              .slice(0, 2)
+              .map((task) =>
+                t("{prefix}：{title}", {
+                  prefix: t(taskTypeMeta(task.task_type).prefix),
+                  title: task.title,
+                }),
+              )
           );
         })
         .catch(() => {});
-    }, [])
+    }, [t])
   );
 
   useFocusEffect(

@@ -10,6 +10,7 @@ import {
   isOverdue,
   progressRatio,
 } from "@/src/taskMeta";
+import { useT } from "@/src/i18n";
 
 /**
  * 任务卡片（设计稿复刻）：
@@ -33,6 +34,7 @@ export default function TaskCard({
   onBackfill?: () => void;
   onDelete?: () => void;
 }) {
+  const { t } = useT();
   const meta = taskTypeMeta(task.task_type);
   const overdue = isOverdue(task);
   const ratio = progressRatio(task);
@@ -58,7 +60,7 @@ export default function TaskCard({
       <Pressable onPress={onPressBody} testID={`task-card-${task.id}`}>
         <View style={styles.doneCard}>
           <Text style={styles.doneTitle} numberOfLines={1}>
-            {meta.prefix}：{task.title}
+            {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
           </Text>
         </View>
       </Pressable>
@@ -77,7 +79,7 @@ export default function TaskCard({
       <Pressable onPress={onPressBody} style={styles.cardBody} testID={`task-body-${task.id}`}>
         {/* 任务名（类型前缀+标题） */}
         <Text style={styles.title} numberOfLines={2}>
-          {meta.prefix}：{task.title}
+          {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
         </Text>
 
         {/* 频率小字 */}
@@ -94,7 +96,7 @@ export default function TaskCard({
         <View style={styles.statusRow}>
           {overdue ? (
             <Text style={styles.overdueText} testID={`task-overdue-${task.id}`}>
-              已过期
+              {t("已过期")}
             </Text>
           ) : task.due_date ? (
             <Text style={styles.dueText}>截止：{formatCNDate(task.due_date)}</Text>
@@ -124,7 +126,7 @@ export default function TaskCard({
             style={styles.backfillBtn}
             testID={`task-backfill-${task.id}`}
           >
-            <Text style={styles.backfillText}>补全打卡</Text>
+            <Text style={styles.backfillText}>{t("补全打卡")}</Text>
           </Pressable>
         ) : (
           <Pressable
@@ -132,7 +134,7 @@ export default function TaskCard({
             style={styles.checkinBtn}
             testID={`task-check-${task.id}`}
           >
-            <Text style={styles.checkinText}>立刻打卡</Text>
+            <Text style={styles.checkinText}>{t("立刻打卡")}</Text>
           </Pressable>
         )}
       </View>
