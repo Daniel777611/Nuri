@@ -1247,11 +1247,24 @@ def _build_dynamic_research_card(
         "type_label": "对话精选",
         "cta": "为这次对话检索内容",
         "publisher": "NURI 个性化内容研究",
-        "title": f"继续了解：{topic}",
-        "summary": (
-            "NURI 会依据这次对话，分别核验权威内容、精彩解读和真实家庭案例。"
+        "title": locales.phrase("dynamic.title", "zh-CN", topic=topic),
+        "summary": locales.phrase("dynamic.summary", "zh-CN"),
+        "personalization_reason": locales.phrase(
+            "reason.topic", "zh-CN", topic=topic
         ),
-        "personalization_reason": f"因为你最近和 NURI 聊到“{topic}”",
+        # The topic is the family's own words, so it is the same in all three —
+        # only the sentence around it changes.
+        "text_i18n": {
+            candidate: {
+                "title": locales.phrase("dynamic.title", candidate, topic=topic),
+                "summary": locales.phrase("dynamic.summary", candidate),
+            }
+            for candidate in sorted(locales.SUPPORTED_PREFERRED_LOCALES)
+        },
+        "personalization_reason_i18n": {
+            candidate: locales.phrase("reason.topic", candidate, topic=topic)
+            for candidate in sorted(locales.SUPPORTED_PREFERRED_LOCALES)
+        },
         "is_conversation_match": True,
         "is_dynamic_research_card": True,
         "related_session_id": session_id,
@@ -1741,69 +1754,92 @@ def rank_learning_content(
             and has_conversation_match
             and not behavior.get("explicit_negative")
         ):
-            if latest_meta_only and safe_focus:
-                continuity = (
-                    "结合你最近其他对话里提到的"
-                    if focus_scope == "account_history"
-                    else "延续你之前提到的"
-                )
-                reason = (
-                    f"{continuity}“{safe_focus}”，"
-                    f"这篇内容与“{card['topic_label']}”直接相关"
-                )
-            elif action_intent and safe_focus:
-                continuity = "结合你最近其他对话里提到的" if focus_scope == "account_history" else "延续你提到的"
-                reason = locales.phrase(
-                    "reason.intent",
-                    preferred_locale,
-                    intent=action_intent,
-                    continuity=continuity,
-                    focus=safe_focus,
-                    topic=card["topic_label"],
-                )
-            elif inherit_prior_context and safe_focus:
-                continuity = locales.phrase(
-                    "continuity.history"
-                    if focus_scope == "account_history"
-                    else "continuity.current",
-                    preferred_locale,
-                )
-                reason = locales.phrase(
-                    "reason.inherited",
-                    preferred_locale,
-                    continuity=continuity,
-                    focus=safe_focus,
-                    topic=card["topic_label"],
-                )
-            elif reason_term:
-                reason = locales.phrase(
-                    "reason.focus",
-                    preferred_locale,
-                    term=reason_term,
-                    topic=card["topic_label"],
-                )
-            else:
-                reason = locales.phrase(
-                    "reason.topic", preferred_locale, topic=card["topic_label"]
-                )
+            # Which sentence applies depends on what the family said, not on
+            # what language they read it in — so the choice is made once and the
+            # wording is looked up per locale.
+            def _reason(for_locale: object) -> str:
+                topic = locales.topic_label(card["topic_label"], for_locale)
+                if latest_meta_only and safe_focus:
+                    return locales.phrase(
+                        "reason.inherited",
+                        for_locale,
+                        continuity=locales.phrase(
+                            "continuity.history"
+                            if focus_scope == "account_history"
+                            else "continuity.current",
+                            for_locale,
+                        ),
+                        focus=safe_focus,
+                        topic=topic,
+                    )
+                if action_intent and safe_focus:
+                    return locales.phrase(
+                        "reason.intent",
+                        for_locale,
+                        intent=action_intent,
+                        continuity=locales.phrase(
+                            "continuity.history"
+                            if focus_scope == "account_history"
+                            else "continuity.current_short",
+                            for_locale,
+                        ),
+                        focus=safe_focus,
+                        topic=topic,
+                    )
+                if inherit_prior_context and safe_focus:
+                    return locales.phrase(
+                        "reason.inherited",
+                        for_locale,
+                        continuity=locales.phrase(
+                            "continuity.history"
+                            if focus_scope == "account_history"
+                            else "continuity.current",
+                            for_locale,
+                        ),
+                        focus=safe_focus,
+                        topic=topic,
+                    )
+                if reason_term:
+                    return locales.phrase(
+                        "reason.focus", for_locale, term=reason_term, topic=topic
+                    )
+                return locales.phrase("reason.topic", for_locale, topic=topic)
+
             related_session_id = session_id
             is_match = True
         elif context_state == "privacy_off":
-            reason = locales.phrase("reason.privacy_off", preferred_locale)
+            def _reason(for_locale: object) -> str:
+                return locales.phrase("reason.privacy_off", for_locale)
+
             related_session_id = None
             is_match = False
         elif context_state == "unavailable":
-            reason = locales.phrase("reason.unavailable", preferred_locale)
+            def _reason(for_locale: object) -> str:
+                return locales.phrase("reason.unavailable", for_locale)
+
             related_session_id = None
             is_match = False
         elif not user_texts:
-            reason = "还没有足够的近期对话，这是 NURI 的可信来源精选"
+            def _reason(for_locale: object) -> str:
+                return locales.phrase("reason.no_history", for_locale)
+
             related_session_id = None
             is_match = False
         else:
-            reason = "NURI 从可信育儿来源中为你补充精选"
+            def _reason(for_locale: object) -> str:
+                return locales.phrase("reason.supplement", for_locale)
+
             related_session_id = None
             is_match = False
+
+        reason = _reason(preferred_locale)
+        # Composed for every language at generation, because the card is frozen
+        # into a snapshot: without this a family that switches language keeps
+        # reading the old one until something re-prepares the card.
+        reason_i18n = {
+            candidate: _reason(candidate)
+            for candidate in sorted(locales.SUPPORTED_PREFERRED_LOCALES)
+        }
 
         hidden_fields = {"match_terms"}
         if not include_detail:
@@ -1812,6 +1848,11 @@ def rank_learning_content(
         public_card.update(
             {
                 "personalization_reason": reason,
+                "personalization_reason_i18n": reason_i18n,
+                "topic_label_i18n": {
+                    candidate: locales.topic_label(card["topic_label"], candidate)
+                    for candidate in sorted(locales.SUPPORTED_PREFERRED_LOCALES)
+                },
                 "is_conversation_match": is_match,
                 "related_session_id": related_session_id,
             }

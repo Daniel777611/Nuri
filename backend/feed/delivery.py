@@ -573,14 +573,40 @@ def decorate_delivery_card(card: dict, resources: list[dict]) -> None:
     # branched on it all along, which is why the card could show an English
     # title over a Simplified guide.
     locale = card.get("preferred_locale")
-    card["guide"] = locales.phrase(
-        "guide",
-        locale,
-        focus=focus[:80],
-        stage=_compact_stage_label(card),
-        intro=locales.phrase(f"intro.{category}", locale),
-    )[:300]
+    stage = _compact_stage_label(card)
+
+    def _guide(for_locale: str) -> str:
+        return locales.phrase(
+            "guide",
+            for_locale,
+            focus=focus[:80],
+            stage=stage,
+            intro=locales.phrase(f"intro.{category}", for_locale),
+        )[:300]
+
+    card["guide"] = _guide(str(locale or "zh-CN"))
     card["action_steps"] = list(_DELIVERY_ACTION_STEPS[category])
+
+    # Every language at once, because composing costs nothing here and the
+    # alternative is worse than it sounds: a prepared card is frozen into a
+    # snapshot, so a family that switches language keeps reading the old one
+    # until something re-prepares it. The flat fields above stay exactly as they
+    # were for any client that has not learned to read this.
+    #
+    # Only what this file composes. Resource titles, publishers and descriptions
+    # are the publisher's words in the publisher's language, and the delivery
+    # gate already picks *different resources* per locale — so there is no one
+    # card here to render three ways, only one wrapper around three selections.
+    card["text_i18n"] = {
+        candidate: {
+            "delivery_title": _delivery_title(
+                {**card, "preferred_locale": candidate}, category, pair
+            ),
+            "guide": _guide(candidate),
+            "applicable_stage": stage,
+        }
+        for candidate in sorted(locales.SUPPORTED_PREFERRED_LOCALES)
+    }
 
 
 def resource_blueprint(

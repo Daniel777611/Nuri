@@ -44,6 +44,7 @@ import {
 } from "@/src/recommendationPresentation";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
+import { cardReason, cardText } from "@/src/cardText";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DETAIL_FRAME_WIDTH = 402;
@@ -299,7 +300,7 @@ function guideFromHandoff(
 }
 
 export default function Detail() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const {
@@ -982,7 +983,9 @@ export default function Detail() {
             {t(deliveryMeta.label)}
           </Text>
         </View>
-        <Text style={styles.title}>{card.delivery_title || card.title}</Text>
+        <Text style={styles.title}>
+          {cardText(card, "delivery_title", locale) || card.title}
+        </Text>
         <View style={styles.deliverySummary} testID="detail-delivery-summary">
           <View style={styles.deliverySourceRow}>
             <Ionicons name={deliveryMeta.icon} size={16} color="#4F4B9C" />
@@ -1006,7 +1009,7 @@ export default function Detail() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.reasonLabel}>{t("为什么推荐给你")}</Text>
-              <Text style={styles.reasonText}>{card.personalization_reason}</Text>
+              <Text style={styles.reasonText}>{cardReason(card, locale)}</Text>
             </View>
           </View>
         ) : null}
@@ -1024,7 +1027,9 @@ export default function Detail() {
         {guideText ? (
           <>
             <Text style={styles.sectionTitle}>{t("NURI 内容导读")}</Text>
-            <Text style={styles.body}>{t(guideText)}</Text>
+            <Text style={styles.body}>
+              {t(cardText(card, "guide", locale) || guideText)}
+            </Text>
           </>
         ) : null}
 

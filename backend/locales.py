@@ -88,6 +88,21 @@ _PHRASES: dict[str, dict[str, str]] = {
         "zh-TW": "相似家庭如何一步步面對「{topic}」",
         "en": "How a similar family approached it: {topic}",
     },
+    "dynamic.title": {
+        "zh-CN": "继续了解：{topic}",
+        "zh-TW": "繼續了解：{topic}",
+        "en": "More on: {topic}",
+    },
+    "dynamic.summary": {
+        "zh-CN": "NURI 会依据这次对话，分别核验权威内容、精彩解读和真实家庭案例。",
+        "zh-TW": "NURI 會依據這次對話，分別核驗權威內容、精彩解讀和真實家庭案例。",
+        "en": "NURI will check an authoritative source, a well-explained take and a real family's story against this conversation.",
+    },
+    "dynamic.cta": {
+        "zh-CN": "为这次对话检索内容",
+        "zh-TW": "為這次對話檢索內容",
+        "en": "Search for this conversation",
+    },
     "guide": {
         "zh-CN": "这组内容围绕你最近提到的“{focus}”，并结合{stage}筛选。{intro}",
         "zh-TW": "這組內容圍繞你最近提到的「{focus}」，並結合{stage}篩選。{intro}",
@@ -142,6 +157,21 @@ _PHRASES: dict[str, dict[str, str]] = {
         "zh-CN": "延续你之前提到的",
         "zh-TW": "延續你之前提到的",
         "en": "continuing from what you raised earlier:",
+    },
+    "continuity.current_short": {
+        "zh-CN": "延续你提到的",
+        "zh-TW": "延續你提到的",
+        "en": "following on from",
+    },
+    "reason.no_history": {
+        "zh-CN": "还没有足够的近期对话，这是 NURI 的可信来源精选",
+        "zh-TW": "還沒有足夠的近期對話，這是 NURI 的可信來源精選",
+        "en": "Not enough recent conversation yet, so these are NURI's trusted-source picks",
+    },
+    "reason.supplement": {
+        "zh-CN": "NURI 从可信育儿来源中为你补充精选",
+        "zh-TW": "NURI 從可信育兒來源中為你補充精選",
+        "en": "A selection NURI added from trusted parenting sources",
     },
     "reason.privacy_off": {
         "zh-CN": "你已关闭对话个性化，这是 NURI 的可信来源精选",

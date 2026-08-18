@@ -15,6 +15,7 @@ import {
   recommendationTimeLabel,
 } from "@/src/recommendationPresentation";
 import { useT } from "@/src/i18n";
+import { cardReason } from "@/src/cardText";
 
 export type HeroCard = {
   id: string;
@@ -215,7 +216,7 @@ export default function HeroCarousel({
   visibilityScope?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 }) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const isRefreshing = feedState === "refreshing";
   // Only the fallbacks are translated. A real card's title and publisher
   // arrive from the server already in the family's language, and they take
@@ -408,7 +409,7 @@ export default function HeroCarousel({
                   {card.delivery_title || card.title}
                 </Text>
                 <Text style={styles.heroSub} numberOfLines={2}>
-                  {card.personalization_reason || card.summary || card.publisher}
+                  {cardReason(card, locale) || card.summary || card.publisher}
                 </Text>
                 <View style={styles.sourceRow}>
                   <Ionicons
