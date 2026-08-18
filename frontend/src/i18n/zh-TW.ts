@@ -329,4 +329,6 @@ export const zhTW: Record<string, string> = {
   "请先填写有效的出生日期": "請先填寫有效的出生日期",
   "请按 YYYY-MM-DD 填写有效日期": "請按 YYYY-MM-DD 填寫有效日期",
   "请输入孩子的出生日期": "請輸入孩子的出生日期",
+  "{prefix}：{title}": "{prefix}：{title}",
+  "{value} 日": "{value} 日",
 };

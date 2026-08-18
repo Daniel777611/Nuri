@@ -18,7 +18,7 @@ export const en: Record<string, string> = {
   "立即注册": "Sign up",
   "已有账号，登陆": "Already have an account? Sign in",
   "欢迎来到NURI: ": "Welcome to NURI: ",
-  "大家庭": "",
+  "大家庭": " family",
   "让我们一起探索孩子的未来。": "Let's explore your child's future together.",
   "创建账号": "Create an account",
   "邮箱+密码，保护你的家人和隐私数据。注册后还需要一分钟完善基本信息。":
@@ -330,4 +330,5 @@ export const en: Record<string, string> = {
   "请先填写有效的出生日期": "Enter a valid birth date first",
   "请按 YYYY-MM-DD 填写有效日期": "Use YYYY-MM-DD",
   "请输入孩子的出生日期": "Enter your child's birth date",
+  "{value} 日": "Day {value}",
 };
