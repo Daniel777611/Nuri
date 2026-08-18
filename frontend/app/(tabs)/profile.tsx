@@ -136,7 +136,7 @@ export default function Profile() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.childName}>{c.nickname}</Text>
                 <Text style={styles.childMeta}>
-                  {ageLabel(c.birth_date)}
+                  {(({ key, vars }) => t(key, vars))(ageLabel(c.birth_date))}
                   {c.allergies?.length ? ` · 过敏：${c.allergies.join(", ")}` : ""}
                 </Text>
               </View>
@@ -191,19 +191,19 @@ export default function Profile() {
               color={colors.brand}
             />
               <Text style={styles.policyText}>
-              对话个性化只在 NURI 内部选择相关主题。只有你另外开启“外部内容检索”后，NURI 才会先去除明显身份信息，再把必要的主题与家庭情境用于公开网页检索。我们不会出售对话，也不用于训练公共模型。
+              {t("对话个性化只在 NURI 内部选择相关主题。只有你另外开启“外部内容检索”后，NURI 才会先去除明显身份信息，再把必要的主题与家庭情境用于公开网页检索。我们不会出售对话，也不用于训练公共模型。")}
             </Text>
           </View>
           {privacyUnavailable ? (
             <View style={styles.privacyUnavailable} testID="privacy-unavailable-message">
               <Ionicons name="cloud-offline-outline" size={16} color={colors.error} />
               <Text style={styles.privacyUnavailableText}>
-                隐私设置暂时无法读取。为保护你的隐私，NURI 当前不会使用对话历史；恢复后请重新查看。
+                {t("隐私设置暂时无法读取。为保护你的隐私，NURI 当前不会使用对话历史；恢复后请重新查看。")}
               </Text>
             </View>
           ) : null}
           <Toggle
-            label="允许使用对话历史个性化建议与学习资源"
+            label={t("允许使用对话历史个性化建议与学习资源")}
             value={privacy.allow_history_training}
             onChange={(v) =>
               updatePrivacy(
@@ -219,7 +219,7 @@ export default function Profile() {
             disabled={privacyUnavailable}
           />
           <Toggle
-            label="允许将脱敏后的对话主题用于外部内容检索"
+            label={t("允许将脱敏后的对话主题用于外部内容检索")}
             value={privacy.allow_external_content_research === true}
             onChange={(v) =>
               updatePrivacy({ allow_external_content_research: v })
@@ -228,14 +228,14 @@ export default function Profile() {
             disabled={privacyUnavailable || !privacy.allow_history_training}
           />
           <Toggle
-            label="接收每日推送提醒"
+            label={t("接收每日推送提醒")}
             value={privacy.daily_push}
             onChange={(v) => updatePrivacy({ daily_push: v })}
             testID="privacy-toggle-push"
             disabled={privacyUnavailable}
           />
           <Toggle
-            label="允许匿名分享我的经验到社群"
+            label={t("允许匿名分享我的经验到社群")}
             value={privacy.anonymous_community_share}
             onChange={(v) =>
               updatePrivacy({ anonymous_community_share: v })
@@ -282,7 +282,7 @@ export default function Profile() {
             </View>
           </View>
           <Pressable style={styles.logoutRow} testID="profile-logout-btn" onPress={logout}>
-            <Text style={styles.logoutText}>登出</Text>
+            <Text style={styles.logoutText}>{t("登出")}</Text>
           </Pressable>
         </Section>
         </ScrollView>
@@ -347,7 +347,9 @@ function Toggle({
 
 function ageLabel(birthDate: string) {
   const months = completedAgeMonths(birthDate);
-  return months === null ? "出生日期待确认" : `${months} 月龄`;
+  return months === null
+    ? { key: "出生日期待确认" as const, vars: undefined }
+    : { key: "{months} 月龄" as const, vars: { months } };
 }
 
 const styles = StyleSheet.create({

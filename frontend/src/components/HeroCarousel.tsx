@@ -14,6 +14,7 @@ import {
   recommendationStageLabel,
   recommendationTimeLabel,
 } from "@/src/recommendationPresentation";
+import { useT } from "@/src/i18n";
 
 export type HeroCard = {
   id: string;
@@ -214,9 +215,26 @@ export default function HeroCarousel({
   visibilityScope?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 }) {
+  const { t } = useT();
   const isRefreshing = feedState === "refreshing";
+  // Only the fallbacks are translated. A real card's title and publisher
+  // arrive from the server already in the family's language, and they take
+  // the same render path, so this is the one place the two can be told apart.
   const visibleCards =
-    feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
+    feedState === "curated" && cards.length === 0
+      ? FALLBACK_CARDS.map((card) => ({
+          ...card,
+          title: t(card.title),
+          publisher: card.publisher ? t(card.publisher) : card.publisher,
+          topic_label: card.topic_label ? t(card.topic_label) : card.topic_label,
+          content_category_label: card.content_category_label
+            ? t(card.content_category_label)
+            : card.content_category_label,
+          personalization_reason: card.personalization_reason
+            ? t(card.personalization_reason)
+            : card.personalization_reason,
+        }))
+      : cards;
   const cardSignature = useMemo(
     () => visibleCards.map(cardIdentity).join("|"),
     [visibleCards]
@@ -283,7 +301,7 @@ export default function HeroCarousel({
       <View
         style={styles.loadingWrap}
         accessibilityLiveRegion="polite"
-        accessibilityLabel="正在根据最近对话准备推荐"
+        accessibilityLabel={t("正在根据最近对话准备推荐")}
         testID="home-hero-loading"
       >
         <View style={[styles.loadingCard, { width }]}>
@@ -292,7 +310,7 @@ export default function HeroCarousel({
           <View style={[styles.skeletonLine, styles.skeletonTitleShort]} />
           <View style={[styles.skeletonLine, styles.skeletonReason]} />
           <View style={{ flex: 1 }} />
-          <Text style={styles.loadingText}>正在根据最近对话挑选内容…</Text>
+          <Text style={styles.loadingText}>{t("正在根据最近对话挑选内容…")}</Text>
         </View>
         <View style={styles.dots}>
           <View style={[styles.dot, styles.dotLoading]} />
@@ -337,10 +355,12 @@ export default function HeroCarousel({
           const cardPreparing = card.resource_readiness === "preparing";
           const cardRetryable = card.resource_readiness === "retryable";
           const categoryMeta = deliveryCategoryMeta(card.content_category);
-          const sourceLabel = recommendationSourceLabel(card);
-          const languageLabel = recommendationLanguageLabel(card);
-          const timeLabel = recommendationTimeLabel(card);
-          const stageLabel = recommendationStageLabel(card);
+          // These four return the Simplified source as a key; they are
+          // module-level and cannot reach the hook themselves.
+          const sourceLabel = t(recommendationSourceLabel(card));
+          const languageLabel = t(recommendationLanguageLabel(card));
+          const timeLabel = t(recommendationTimeLabel(card));
+          const stageLabel = t(recommendationStageLabel(card));
           const colors =
             card.colors ||
             CATEGORY_COLORS[card.content_category || ""] ||
@@ -379,9 +399,9 @@ export default function HeroCarousel({
                 <View style={styles.decoCloudThree} />
                 <View style={styles.categoryRow}>
                   <Ionicons name={categoryMeta.icon} size={14} color="#FFFFFF" />
-                  <Text style={styles.eyebrow}>{categoryMeta.label}</Text>
+                  <Text style={styles.eyebrow}>{t(categoryMeta.label)}</Text>
                   <Text style={styles.categoryPromise} numberOfLines={1}>
-                    {categoryMeta.promise}
+                    {t(categoryMeta.promise)}
                   </Text>
                 </View>
                 <Text style={styles.heroTitle} numberOfLines={2}>
@@ -413,18 +433,18 @@ export default function HeroCarousel({
                 <View style={styles.cardFooter}>
                   <View style={styles.resourceStatus}>
                     <Text style={styles.resourceStatusText} numberOfLines={1}>
-                      {deliveryStatusText(card, feedState)}
+                      {t(deliveryStatusText(card, feedState))}
                     </Text>
                   </View>
                   <View style={[styles.heroBtn, !cardReady && styles.heroBtnDisabled]}>
                     <Text style={[styles.heroBtnText, !cardReady && styles.heroBtnTextDisabled]}>
                       {cardPreparing
-                        ? "查看导读"
+                        ? t("查看导读")
                         : card.resource_readiness === "retryable"
-                          ? "打开当前内容"
+                          ? t("打开当前内容")
                           : card.resource_readiness === "unavailable"
-                            ? "查看内容导读"
-                            : "打开学习胶囊"}
+                            ? t("查看内容导读")
+                            : t("打开学习胶囊")}
                     </Text>
                   </View>
                 </View>
@@ -444,7 +464,7 @@ export default function HeroCarousel({
               page === 0 && styles.arrowButtonDisabled,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="上一条推荐"
+            accessibilityLabel={t("上一条推荐")}
             accessibilityState={{ disabled: page === 0 }}
             testID="hero-carousel-prev"
           >
@@ -460,7 +480,7 @@ export default function HeroCarousel({
                 styles.arrowButtonDisabled,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="下一条推荐"
+            accessibilityLabel={t("下一条推荐")}
             accessibilityState={{
               disabled: page === visibleCards.length - 1,
             }}
@@ -479,7 +499,7 @@ export default function HeroCarousel({
         >
           <Ionicons name="sync-outline" size={13} color="#4F4B9C" />
           <Text style={styles.backgroundUpdateText}>
-            正在后台准备最新推荐，当前内容仍可打开
+            {t("正在后台准备最新推荐，当前内容仍可打开")}
           </Text>
         </View>
       ) : null}
