@@ -39,3 +39,8 @@ Thumbs.db
 .idea/
 .vercel
 .env*
+
+# expo web export output
+frontend/dist/
+frontend/dist2/
+frontend/dist3/
