@@ -23,15 +23,32 @@ def _ids(chosen):
 # ── the domain gate ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text", [
-    "宝宝晚上一直哭，怎么哄都不睡",          # 哭 is a tag in L
-    "他每次吃饭都说不要，一口都不吃",          # 不要 is a tag in H
-    "四个月的宝宝要开始吃副食品了吗",
+    "今天天氣真好",
+    "你們公司在哪裡",
     "谢谢",
+    "嗯嗯",
 ])
-def test_off_topic_turns_get_no_exemplars(text):
-    """The tags alone are ordinary words elsewhere. Without the domain gate a
-    sleep question would be answered in the voice of a language answer."""
+def test_messages_about_nothing_in_particular_get_no_exemplars(text):
+    """The gate still shuts on a message that is not about parenting at all.
+    What changed is that a sleep or feeding question is no longer one of those —
+    it has its own examples now."""
     assert exemplars.select(text) == []
+
+
+@pytest.mark.parametrize("text,topic", [
+    ("寶寶晚上一直夜醒，怎麼哄都不睡", "sleep"),
+    ("副食品他一直吐出來", "feeding"),
+    ("一不順他的意就倒地大哭", "emotion"),
+    ("五個月了還不會翻身", "development"),
+    ("我真的好累，快撐不住了", "parent"),
+    ("孩子講話還是只有兩三個字", "language"),
+])
+def test_every_topic_has_its_own_warm_examples(text, topic):
+    """The requirement in one test: whatever the family is asking about, the
+    reply is written from an example rather than from an instruction."""
+    chosen = exemplars.select(text)
+    assert chosen, text
+    assert all(e.topic == topic for e in chosen), [e.id for e in chosen]
 
 
 @pytest.mark.parametrize("text", [
@@ -57,10 +74,13 @@ def test_simplified_and_traditional_both_match():
            _ids(exemplars.select("孩子講錯字，我要一直糾正他嗎？"))
 
 
-def test_in_domain_but_unmatched_falls_back_to_the_general_pair():
-    """A language question no scenario covers still gets a register anchor."""
+def test_in_domain_but_unmatched_falls_back_to_that_topic_s_general_pair():
+    """A question the topic covers but no scenario names still gets an anchor,
+    and it comes from the right topic."""
     chosen = exemplars.select("孩子的語言發展需要注意什麼？")
     assert _ids(chosen) == ["A", "E"]
+    sleep = exemplars.select("他的睡眠作息要怎麼安排？")
+    assert all(e.topic == "sleep" for e in sleep), _ids(sleep)
 
 
 def test_respects_the_count_ceiling():
@@ -68,13 +88,13 @@ def test_respects_the_count_ceiling():
     assert exemplars.select("孩子很少主動說話", limit=0) == []
 
 
-def test_a_thin_match_is_topped_up_rather_than_sent_short():
-    """One pair shifts the register less reliably than two, and the fillers are
-    in-domain by construction."""
+def test_a_thin_match_is_topped_up_from_its_own_topic():
+    """One pair shifts the register less reliably than two, and the filler has
+    to come from the same subject or it answers a different question."""
     chosen = exemplars.select("孩子看繪本一下就跑掉，還要繼續讀嗎？")
     assert len(chosen) == 2
     assert chosen[0].id == "J"
-    assert chosen[1].id in exemplars._DEFAULT_IDS
+    assert chosen[1].id in exemplars._DEFAULT_IDS["language"]
 
 
 def test_a_keyword_free_follow_up_keeps_the_gate_open():
@@ -98,8 +118,20 @@ def test_the_latest_message_still_leads_the_ranking():
     assert chosen[0].id == "J"
 
 
-def test_off_topic_stays_shut_even_with_off_topic_history():
-    assert exemplars.select("寶寶晚上一直哭", recent=["白天小睡很短", "他最近會翻身"]) == []
+def test_topics_never_cross():
+    """The reason the gate exists. A sleep question answered out of a feeding
+    example is the wrong advice in the right voice, which is worse than no
+    example at all."""
+    for text in ("寶寶晚上一直夜醒", "副食品他一直吐出來", "他一直打人"):
+        topics = {e.topic for e in exemplars.select(text)}
+        assert len(topics) == 1, (text, topics)
+
+
+def test_a_stale_topic_does_not_follow_the_conversation():
+    """Stickiness carries a subject across a keyword-free follow-up, not across
+    a change of subject."""
+    stale = ["閒聊一", "閒聊二", "閒聊三", "孩子講話還是只有兩三個字"]
+    assert exemplars.select("今天天氣真好", recent=stale) == []
 
 
 def test_a_parent_who_switches_script_is_followed_immediately():
@@ -187,8 +219,18 @@ def test_replies_look_like_the_target_register():
     for e in exemplars.CORPUS:
         lines = [line for line in e.reply.split("\n") if line.strip()]
         assert "**" not in e.reply, e.id
-        assert not re.search(r"[1-9][.\u3001)]\s|[\u00b7\u2022]", e.reply), e.id
-        assert 2 <= len(lines) <= 4, (e.id, len(lines))
+        # Numbered *steps* are allowed — a sequence with a real order is what
+        # was asked for. A numbered *question* is not: that is the five-question
+        # form this register work exists to remove, and the digit was never the
+        # thing wrong with it.
+        numbered = [l for l in lines if re.match(r"\s*[1-9][.\u3001)]", l)]
+        assert not any("\uff1f" in l for l in numbered), e.id
+        assert "\u2022" not in e.reply and "\u00b7 " not in e.reply, e.id
+        # Not a fixed shape: only the first line and the last are required.
+        # A reply that carries numbered steps needs more room than one that
+        # does not, and forcing both into the same line count was how the
+        # steps got banned in the first place.
+        assert 2 <= len(lines) <= 7, (e.id, len(lines))
         # Ends on exactly one question, which is what keeps the conversation
         # going. A trailing emoji is not the end of the sentence.
         assert e.reply.rstrip().rstrip("\U0001F60A\U0001F49B\U0001F604\U0001F90D ").endswith(
@@ -205,11 +247,19 @@ def test_replies_look_like_the_target_register():
         assert len(e.reply.replace("\n", "")) <= exemplars.MAX_CHARS, e.id
 
 
-def test_every_exemplar_is_reachable():
-    """A tag set that never matches its own question is a dead row."""
+def test_every_exemplar_is_reachable_from_its_own_question():
+    """A tag set that never matches its own question is a dead row, and a topic
+    gate that does not recognise its own exemplars is a dead branch."""
     for e in exemplars.CORPUS:
         assert e.score(e.question) > 0, e.id
-        assert exemplars.in_domain(e.question), e.id
+        assert exemplars.topic_of(e.question) == e.topic, (e.id, e.topic)
+
+
+def test_every_topic_has_defaults_that_exist():
+    for topic, ids in exemplars._DEFAULT_IDS.items():
+        assert ids, topic
+        for exemplar_id in ids:
+            assert exemplars._BY_ID[exemplar_id].topic == topic, exemplar_id
 
 
 # ── injection into the prompt ────────────────────────────────────────────────
@@ -230,7 +280,10 @@ def test_injected_between_system_and_history():
 
 
 def test_no_exemplars_leaves_the_prompt_untouched():
-    history = [{"role": "user", "text": "宝宝晚上一直哭，怎么哄都不睡"}]
+    """The sleep question this used to use now has its own examples, which is
+    the point of the change. Something genuinely outside parenting still gets
+    nothing."""
+    history = [{"role": "user", "text": "你們公司在哪裡？"}]
     msgs, fewshot = nuri_messages(history)
     assert fewshot == 0
     assert exemplars.GUARD not in msgs[0]["content"]

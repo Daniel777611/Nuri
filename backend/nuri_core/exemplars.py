@@ -68,8 +68,9 @@ GUARD = (
     "1. 先接住家长刚说的这句话——具体到只有他适用，不要「你做得很好」这种套话；\n"
     "2. 给一个可以马上试的做法，带一个具体例子；\n"
     "3. 用一个开放式问句收尾，让他愿意接着说。\n"
-    "分成两到四个短句，句子之间换行；不要编号、不要加粗、不要一次问好几个问题——"
-    "问一个就好，但一定要问。可以用一两个 emoji 表达温度，不要当装饰堆在每一句。"
+    "句子之间换行，不要加粗。做法有先后顺序时可以用 1. 2. 3. 分步写，每步一行、"
+    "一句话说完；没有顺序就不要硬编号。问题永远不编号，也不要一次问好几个——"
+    "问一个就好，但一定要问，而且放在最后。可以用一两个 emoji 表达温度，不要每句都堆。"
     f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
     "不要照搬范例里的内容，也不要跟着范例用繁体，文字仍然跟随这位家长自己在用的语言。"
 )
@@ -117,8 +118,8 @@ GLOBAL_CEILING = os.getenv("FEWSHOT_GLOBAL_CEILING", "1").lower() not in ("0", "
 CEILING_RULE = (
     "这一轮没有可参考的回复范例，但写法不变：先接住家长刚说的这句话，"
     "再给一个可以马上试的做法，最后用一个开放式问句收尾。"
-    "分成两到四个短句，句子之间换行；不要编号、不要加粗、不要一次问好几个问题——"
-    "问一个就好，但一定要问。"
+    "句子之间换行，不要加粗。做法有先后顺序时可以用 1. 2. 3. 分步写，每步一行；"
+    "问题永远不编号，也不要一次问好几个——问一个就好，但一定要问，而且放在最后。"
     f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
 )
 
@@ -158,6 +159,8 @@ class Exemplar:
     id: str
     question: str
     reply: str
+    #: Which gate this entry sits behind. Selection never crosses topics.
+    topic: str = "language"
     tags: tuple[str, ...] = ()
     quick_replies: tuple[str, ...] = ()
     suggest_tasks: bool = False
@@ -175,7 +178,24 @@ class Exemplar:
 #: Bare 說/講 is deliberately not on the list — 「醫生說」 appears in every kind of
 #: conversation. What is on the list is 說/講 in the shapes a language question
 #: actually takes: 只會講、不肯說、講錯、說不出.
-_DOMAIN = tuple(
+#: One gate per topic. A turn is matched to a subject first and to an exemplar
+#: second, because 「哭」 belongs to a sleep conversation as readily as to an
+#: emotional one and 「不要」 to a mealtime as readily as to a tantrum.
+_TOPIC_DOMAIN: dict[str, tuple] = {}
+
+# Checked in insertion order, and `parent` leads on purpose: 「半夜還要起來擠奶，
+# 快撐不下去」 names a feed but is not a question about milk. Whoever the family
+# is worried about is who the reply should be for.
+_TOPIC_DOMAIN["parent"] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"(?:好|很|真的?|太|超)[累累]|我.{0,4}[累累]了|撐不[住下]|撑不[住下]|快[崩崩][潰溃]",
+        r"[壓压]力[很好大]|沒有自己的[時时][間间]|没有自己的[时时][间间]|[產产][後后][憂忧][鬱郁]",
+        r"婆婆|[長长][輩辈]|老公|另一半|[隊队]友|[觀观]念不同|沒人[幫帮]",
+    )
+)
+
+_TOPIC_DOMAIN["language"] = tuple(
     re.compile(pattern)
     for pattern in (
         r"[語语][言彙汇]|[詞词][彙汇]?|字[彙汇]",
@@ -196,10 +216,56 @@ _DOMAIN = tuple(
     )
 )
 
-#: Used when the turn is clearly about language but matches no exemplar in
-#: particular, and to top a thin match up to `COUNT`. Both are general-purpose
-#: answers, so they anchor register without dragging in a specific technique.
-_DEFAULT_IDS = ("A", "E")
+_TOPIC_DOMAIN["sleep"] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"[睡睡](?:[覺觉]|眠|不[著着]|回[籠笼]|得回去|不[安安][穩稳])|哄睡|入睡",
+        r"夜醒|夜[裡里]醒|半夜|[晚晚][上上].{0,6}醒|醒[兩两三3幾几][次次]|不[睡睡]",
+        r"小睡|午睡|作息|[睡睡]前|睡[過过]夜|接[覺觉]|[趴趴]睡|翻身[吵吵]醒",
+        r"(?:早|晚)[上上][睡睡]|幾[點点][睡睡]|几[点点][睡睡]|[醒醒][來来]好[幾几]次",
+    )
+)
+
+_TOPIC_DOMAIN["feeding"] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"副食品|[輔辅]食|米[糊精]|果泥|菜泥|[試试]敏|[過过]敏原|食材",
+        r"[喝喝]奶|奶[量瓶粉]|母奶|母乳|配方奶|[親亲][餵喂]|[瓶瓶][餵喂]|[擠挤]奶|[厭厌]奶",
+        r"吃[飯饭]|挑食|不[愛爱]吃|不肯吃|[餵喂][飯饭]|[飯饭][量量]|加餐|[斷断]奶",
+    )
+)
+
+_TOPIC_DOMAIN["emotion"] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"[鬧闹][脾脾][氣气]|大哭|哭[鬧闹]|崩[潰溃]|尖叫|倒地|[歇歇]斯底里",
+        r"情[緒绪]|生[氣气]|[發发][脾脾][氣气]|不[順顺]他的意|[安安][撫抚]|哄不好",
+        r"分離焦[慮虑]|分离焦[慮虑]|黏人|怕生|[打打]人|咬人",
+    )
+)
+
+_TOPIC_DOMAIN["development"] = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"翻身|[會会]爬|爬行|[會会]坐|扶站|走路|站起[來来]|抬[頭头]",
+        r"里程碑|[發发]展|[月月][齡龄]|同[齡龄]|[比比][別别]人[慢慢]|落[後后]",
+        r"[趴趴][著着]|[趴趴]睡[練练]|大[動动]作|精[細细][動动]作",
+    )
+)
+
+
+#: Used when a turn is clearly about a subject but matches no exemplar in
+#: particular, and to top a thin match up to `COUNT`. One pair per topic, chosen
+#: because they are the most general answer that topic has — they anchor the
+#: register without dragging in a technique the parent did not ask about.
+_DEFAULT_IDS: dict[str, tuple[str, ...]] = {
+    "language": ("A", "E"),
+    "sleep": ("SLP1", "SLP2"),
+    "feeding": ("FED1", "FED2"),
+    "emotion": ("EMO1", "EMO2"),
+    "development": ("DEV1", "DEV3"),
+    "parent": ("PAR1", "PAR3"),
+}
 
 CORPUS: tuple[Exemplar, ...] = (
     Exemplar(
@@ -237,7 +303,7 @@ CORPUS: tuple[Exemplar, ...] = (
         id="E",
         question="孩子很少主動跟我說話，怎麼辦？",
         reply=(
-            "他不太主動開口，你心裡一定有點著急吧。😊\n"
+            "你有在留意他主動說話的次數，這個觀察很有用。😊\n"
             "可以先增加「需要他表達」的機會，而不是一直問問題。像他想喝水時，先拿著水杯等一下，讓他用聲音或手勢表達；他說「水」，你就接成「我要喝水」。\n"
             "他平常想要東西的時候，通常會怎麼讓你知道呢？"
         ),
@@ -267,7 +333,7 @@ CORPUS: tuple[Exemplar, ...] = (
         id="G",
         question="孩子講錯字，我要一直糾正他嗎？",
         reply=(
-            "會猶豫要不要糾正，表示你很怕給他壓力。😊\n"
+            "你會先想「這樣會不會給他壓力」，這份細心很難得。😊\n"
             "不用每次都直接糾正，可以用自然重述示範正確說法——他說「狗狗吃飯飯」，你就回「對，狗狗在吃飯」。先讓他願意表達，再慢慢累積正確的示範。\n"
             "他被糾正的時候，會不會就不想說了呢？"
         ),
@@ -281,7 +347,7 @@ CORPUS: tuple[Exemplar, ...] = (
         id="H",
         question="孩子每次都只回答「不要」，怎麼跟他溝通？",
         reply=(
-            "一直被回「不要」，你大概也覺得有點無力吧。😄\n"
+            "你沒有硬碰硬，而是先來問怎麼溝通，這一步很棒。😄\n"
             "2～3 歲常用「不要」表達自主性，不一定是真的拒絕。可以把開放式問題換成二選一——不問「你要穿什麼」，而是問「你要穿藍色還是黃色」。\n"
             "他是所有事情都說不要，還是某些時候特別明顯呢？"
         ),
@@ -339,7 +405,7 @@ CORPUS: tuple[Exemplar, ...] = (
         id="L",
         question="孩子一著急就只會哭，不肯說要什麼，怎麼辦？",
         reply=(
-            "看他哭得那麼急，你一定也跟著著急。💛\n"
+            "你能看出他是著急而不是在鬧，這件事很多人做不到。💛\n"
             "情緒很強的時候本來就比較難組織語言。可以先幫他把需求說出來——「你想要那台車，可是拿不到，所以很著急」。等他穩定一點，再教他一句「幫幫我」。\n"
             "他著急的時候，抱一下會比較快平靜嗎？"
         ),
@@ -428,19 +494,357 @@ CORPUS: tuple[Exemplar, ...] = (
             r"[猜猜]他要什[麼么]|接[話话]",
         ),
     ),
+    Exemplar(
+        id="SLP1",
+        topic="sleep",
+        question="寶寶四個月，晚上會醒兩三次，怎麼哄都不睡",
+        reply=(
+            "你半夜還願意一次次去哄他，真的很不容易。💛\n"
+            "三、四個月正是睡眠週期開始改變的階段，有些寶寶會變得比較容易完全醒來。可以先分辨他是真的醒了，還是只是翻身、短暫躁動。\n"
+            "他醒來的時候，眼睛是張開的，還是閉著的呢？"
+        ),
+        tags=(
+            r"夜醒|半夜醒|[醒醒][來来]好[幾几]次",
+            r"[哄哄]不[睡睡]|怎[麼么][哄哄]都",
+            r"[四4]?[個个]?月.{0,6}[睡睡]",
+        ),
+        quick_replies=("拍一拍又睡",),
+    ),
+    Exemplar(
+        id="SLP2",
+        topic="sleep",
+        question="他白天小睡都很短，三十分鐘就醒",
+        reply=(
+            "你連小睡多久都記得，這樣的觀察很有幫助。😊\n"
+            "一個睡眠週期差不多就是三、四十分鐘，很多寶寶醒來後還沒學會自己接下去。可以在他快醒的時候先在旁邊，輕拍看看能不能接回去。\n"
+            "他小睡醒來的時候，是有精神的，還是還在哭鬧呢？"
+        ),
+        tags=(
+            r"小睡|午睡|白天.{0,4}[睡睡]",
+            r"[三3][十0]分[鐘钟]|[睡睡]很短|[睡睡]不[久长長]",
+            r"接[覺觉]",
+        ),
+    ),
+    Exemplar(
+        id="SLP3",
+        topic="sleep",
+        question="需要開始做睡眠訓練嗎？",
+        reply=(
+            "你會先問「需不需要」而不是直接做，這很負責任。💛\n"
+            "四個月前我不會建議做強度高的訓練。可以先從溫和的方向開始：固定睡前流程、放下時他還醒著、哭了先等幾十秒再進去安撫。\n"
+            "你們現在睡前大概是什麼樣的流程呢？"
+        ),
+        tags=(
+            r"[睡睡]眠[訓训][練练]|[訓训][練练].{0,4}[睡睡]",
+            r"哭[睡睡]|[讓让]他哭|[要要]不[要要][訓训][練练]",
+        ),
+    ),
+    Exemplar(
+        id="SLP4",
+        topic="sleep",
+        question="他半夜一定要喝奶才睡得回去",
+        reply=(
+            "你有注意到他是靠喝奶才能睡回去，這個線索很關鍵。😊\n"
+            "有些寶寶是真的餓，有些是把喝奶和入睡連在一起了。可以先試著在他醒來時換一種安撫方式，看看不喝奶能不能睡回去。\n"
+            "他半夜醒來時，距離上一次喝奶大概多久了呢？"
+        ),
+        tags=(
+            r"半夜.{0,6}[喝喝]奶|[喝喝]奶才.{0,4}[睡睡]",
+            r"[夜夜]奶|[奶奶][睡睡]",
+        ),
+    ),
+    Exemplar(
+        id="FED1",
+        topic="feeding",
+        question="餵四個月的寶寶吃副食品，他很抗拒一直吐出來",
+        reply=(
+            "你願意慢慢試、沒有硬餵，這樣的耐心對他很重要。💛\n"
+            "剛滿四個月常常還有明顯的吐舌反射，食物被推出來不一定是不喜歡。這階段奶還是主要營養，副食品可以先當成短短幾分鐘的練習，不用看吃進多少。\n"
+            "他看到湯匙靠近的時候，會張嘴嗎？"
+        ),
+        tags=(
+            r"副食品|[輔辅]食|米[糊精]",
+            r"吐出[來来]|抗拒|不肯吃",
+            r"[四4][個个]月.{0,8}(?:吃|[餵喂])",
+        ),
+        quick_replies=("願意張嘴但會吐掉",),
+    ),
+    Exemplar(
+        id="FED2",
+        topic="feeding",
+        question="他最近奶量突然變少，是不是厭奶？",
+        reply=(
+            "你有把奶量的變化記下來，這在判斷原因時特別有用。😊\n"
+            "四到六個月很常出現一段時間對喝奶興趣下降，如果體重仍在成長曲線上、精神和尿量都正常，通常不用太緊張，可以先看一整天的總量而不是單餐。\n"
+            "他這幾天的尿布量，跟之前差不多嗎？"
+        ),
+        tags=(
+            r"奶量|[厭厌]奶|[喝喝]奶.{0,4}[變变]少",
+            r"不[愛爱][喝喝]奶|不肯[喝喝]",
+        ),
+    ),
+    Exemplar(
+        id="FED3",
+        topic="feeding",
+        question="他很挑食，青菜都不吃",
+        reply=(
+            "你沒有逼他吃，而是先來問方法，這對他的胃口反而更好。💛\n"
+            "這個年紀的挑食很常見。可以先把「吃完」的壓力拿掉，讓同一種菜用不同做法多出現幾次；他願意摸一摸、聞一聞、舔一口，都算進展。\n"
+            "他平常比較願意接受哪一種口感呢？"
+        ),
+        tags=(
+            r"挑食|不吃[青菜蔬]|[青菜蔬].{0,4}不吃",
+            r"只吃|不[愛爱]吃|[餵喂][飯饭].{0,6}[難难]",
+        ),
+    ),
+    Exemplar(
+        id="FED4",
+        topic="feeding",
+        question="想給他換新食材，要注意什麼？",
+        reply=(
+            "你會先問再換，這種謹慎在試敏這件事上很值得。😊\n"
+            "可以一次只加一種新食材、量從很少開始，連續吃三天左右再換下一種。這樣萬一有反應，你會很清楚是哪一種造成的。\n"
+            "他之前吃過哪些食材已經沒問題了呢？"
+        ),
+        tags=(
+            r"[試试]敏|新食材|[換换].{0,4}食材",
+            r"[過过]敏.{0,4}(?:原|反[應应])",
+        ),
+    ),
+    Exemplar(
+        id="EMO1",
+        topic="emotion",
+        question="兩歲的孩子一不順他的意就倒地大哭",
+        reply=(
+            "你能忍住不立刻制止，先來問方法，這一點很不容易。💛\n"
+            "兩歲的孩子情緒來得又快又強，當下講道理他其實聽不進去。可以先蹲下來陪著、幫他把感覺說出來：「你很想要那個，拿不到很生氣。」等他平靜一點再說接下來怎麼辦。\n"
+            "他哭的時候，是比較希望你抱著，還是想自己待一下呢？"
+        ),
+        tags=(
+            r"倒地|大哭|哭[鬧闹]|[鬧闹][脾脾][氣气]",
+            r"不[順顺].{0,4}意|一不[順顺]",
+        ),
+        quick_replies=("他都要人抱",),
+    ),
+    Exemplar(
+        id="EMO2",
+        topic="emotion",
+        question="他最近很黏人，我一離開就哭",
+        reply=(
+            "他會這麼黏你，正說明你是他最有安全感的人。💛\n"
+            "這個階段的分離焦慮很常見。可以建立一個固定又簡短的告別方式，說「我等一下就回來」然後真的回來；偷偷走反而會讓他更不安。\n"
+            "你離開的時候，通常是先說一聲，還是趁他不注意呢？"
+        ),
+        tags=(
+            r"黏人|一[離离][開开]就哭|分離焦[慮虑]|分离焦[慮虑]",
+            r"怕生|不[讓让].{0,4}[走走]",
+        ),
+    ),
+    Exemplar(
+        id="EMO3",
+        topic="emotion",
+        question="在賣場大哭尖叫，我完全不知道怎麼辦",
+        reply=(
+            "在那種場合還能保持冷靜，你已經做得比想像中好。😊\n"
+            "當下他的大腦是「淹沒」狀態，說理沒有用。可以先把他帶到人少一點的地方，蹲下來、聲音放低、先陪著；等情緒下來，再簡短說一句下次可以怎麼做。\n"
+            "他在外面崩潰，通常是在什麼情況下發生的呢？"
+        ),
+        tags=(
+            r"[賣卖][場场]|外面.{0,6}(?:大哭|尖叫|崩[潰溃])",
+            r"尖叫|崩[潰溃]",
+        ),
+    ),
+    Exemplar(
+        id="EMO4",
+        topic="emotion",
+        question="他生氣的時候會打人，要處罰嗎？",
+        reply=(
+            "你會先問而不是直接處罰，這對他學會控制很有幫助。💛\n"
+            "這個年紀打人多半是情緒太滿、還沒有別的表達方式。可以立刻用平靜但明確的一句話停下來：「不可以打人」，同時幫他說出感覺，再示範一個可以做的動作。\n"
+            "他通常是在什麼時候動手的呢？"
+        ),
+        tags=(
+            r"[打打]人|咬人|[動动]手",
+            r"[處处][罰罚]|要不要[罰罚]",
+        ),
+    ),
+    Exemplar(
+        id="DEV1",
+        topic="development",
+        question="五個月了還不會翻身，正常嗎？",
+        reply=(
+            "你有在留意他的進度，這樣的關心很重要。😊\n"
+            "翻身的時間本來就有不小的差異。平常可以多讓他趴著玩，這能練到頸部和核心的力量，也是翻身需要的基礎；一次幾分鐘、一天多幾次就好。\n"
+            "他趴著的時候，可以自己把頭抬起來多久呢？"
+        ),
+        tags=(
+            r"翻身|[會会][翻翻]",
+            r"[五5678][個个]月.{0,8}(?:不[會会]|還沒)",
+        ),
+        quick_replies=("趴著會抬頭",),
+    ),
+    Exemplar(
+        id="DEV2",
+        topic="development",
+        question="同齡的孩子都會爬了，他還不會",
+        reply=(
+            "你會拿來比較，是因為你真的很在意他，這份心很好。💛\n"
+            "同月齡之間的差距其實比想像中大，而且有些孩子會跳過爬直接站。比起單一項目，更值得看的是他整體有沒有持續往前，例如力氣、翻身、想移動的意願。\n"
+            "他有沒有想往前移動、但方式跟爬不太一樣呢？"
+        ),
+        tags=(
+            r"同[齡龄]|[別别]人.{0,4}[會会]|人家.{0,4}[會会]",
+            r"[會会]爬|爬行|還不[會会]",
+        ),
+    ),
+    Exemplar(
+        id="DEV3",
+        topic="development",
+        question="里程碑落後多少要擔心？",
+        reply=(
+            "你會主動了解警訊，這比很多人都早一步。😊\n"
+            "偶爾比別人慢一點通常不用太緊張，比較值得留意的是：完全沒有進展、原本會的又退回去、或是對聲音和互動反應很少。有這幾種情況再安排評估會比較踏實。\n"
+            "他最近有沒有學會什麼新的動作呢？"
+        ),
+        tags=(
+            r"里程碑|落[後后]|[發发]展.{0,4}(?:慢|遲|迟)",
+            r"要不要.{0,4}[擔担]心|警[訊讯]",
+        ),
+    ),
+    Exemplar(
+        id="DEV4",
+        topic="development",
+        question="他會爬但還不會坐，順序不對嗎？",
+        reply=(
+            "你連順序都注意到了，觀察得很仔細。😊\n"
+            "動作發展的順序本來就有個別差異，跳過或顛倒都不少見。比較重要的是他有沒有在累積力量和平衡，而不是照著課本的次序走。\n"
+            "他被扶著坐的時候，可以撐住多久呢？"
+        ),
+        tags=(
+            r"[順顺]序|先[會会].{0,6}才[會会]",
+            r"[會会]坐|扶[坐坐]|[會会]站",
+        ),
+    ),
+    Exemplar(
+        id="PAR1",
+        topic="parent",
+        question="我真的好累，快撐不住了",
+        reply=(
+            "你能說出來，就已經是在照顧自己了，這很重要。💛\n"
+            "帶小孩的累是真的累，不是你不夠好。可以先找一件最小的事幫自己減負，哪怕只是今天有人接手三十分鐘、或是把一頓飯換成最簡單的。\n"
+            "這幾天有沒有哪一段時間，是可以真的休息一下的呢？"
+        ),
+        tags=(
+            r"(?:好|很|真的?|太|超)[累累]|撐不住|撑不住|快[崩崩][潰溃]",
+            r"[壓压]力[很好大]|喘不[過过][氣气]",
+        ),
+    ),
+    Exemplar(
+        id="PAR2",
+        topic="parent",
+        question="半夜還要起來擠奶，覺得快撐不下去",
+        reply=(
+            "一邊照顧他一邊半夜擠奶，你真的辛苦了。💛\n"
+            "很多媽媽在這個階段最耗的其實是清洗和消毒。可以先想想哪一段能省：睡前擠好放冰箱、配件多備一組、或是接受某幾餐用配方奶，這些都不是放棄。\n"
+            "現在最讓你耗神的，是擠奶本身還是後續的清洗呢？"
+        ),
+        tags=(
+            r"[擠挤]奶.{0,10}(?:累|撐|撑|辛苦)|半夜.{0,6}[擠挤]奶",
+            r"[餵喂]奶.{0,8}(?:累|辛苦|撐不住)",
+        ),
+    ),
+    Exemplar(
+        id="PAR3",
+        topic="parent",
+        question="婆婆說抱久了會寵壞他，我很有壓力",
+        reply=(
+            "你會在兩邊之間找平衡，這件事本身就很不容易。😊\n"
+            "一歲以內的寶寶還沒有能力用哭來「操控」大人，及時回應反而讓他更有安全感。你可以不用爭對錯，先講你觀察到的：抱起來之後他多快就安定下來。\n"
+            "家裡目前是誰陪他的時間最多呢？"
+        ),
+        tags=(
+            r"婆婆|[長长][輩辈]|公婆|[媽妈]媽[說说]",
+            r"[寵宠][壞坏]|[觀观]念不同|意[見见]不合",
+        ),
+    ),
+    Exemplar(
+        id="SLP5",
+        topic="sleep",
+        question="睡前流程要怎麼安排比較好？",
+        reply=(
+            "你會想先把流程固定下來，這個方向很對。💛\n"
+            "順序比長度重要，每天一樣就好：\n"
+            "1. 洗澡、換睡衣，燈光調暗\n"
+            "2. 餵奶或喝水，但不要餵到睡著\n"
+            "3. 放進床裡時他還醒著，讓他自己接最後一段\n"
+            "你們現在通常是在哪一步他就已經睡著了呢？"
+        ),
+        tags=(
+            r"[睡睡]前.{0,4}(?:流程|[儀仪]式|[習习][慣惯])",
+            r"怎[麼么][安安]排.{0,6}[睡睡]|[睡睡].{0,4}流程",
+        ),
+    ),
+    Exemplar(
+        id="FED5",
+        topic="feeding",
+        question="第一次餵副食品要怎麼開始？",
+        reply=(
+            "你願意先問清楚再開始，這樣的準備很好。😊\n"
+            "可以照這個順序來：\n"
+            "1. 選他精神好、不太餓也不太飽的時候\n"
+            "2. 一次只給一種新食材，量從一兩小口開始\n"
+            "3. 同一種連續吃三天，再換下一種\n"
+            "你打算先從哪一種食材開始呢？"
+        ),
+        tags=(
+            r"第一次.{0,6}副食品|怎[麼么][開开]始.{0,6}副食品",
+            r"副食品.{0,6}(?:怎[麼么][開开]始|[順顺]序|步[驟骤])",
+        ),
+    ),
+    Exemplar(
+        id="EMO5",
+        topic="emotion",
+        question="他情緒上來的時候，我該怎麼做？",
+        reply=(
+            "你想先穩住自己再處理他，這一步很關鍵。💛\n"
+            "當下可以照這三步走：\n"
+            "1. 蹲下來到他的高度，先不說道理\n"
+            "2. 幫他把感覺說出來：「你很生氣，因為……」\n"
+            "3. 等他平靜一點，再一起想下次可以怎麼辦\n"
+            "他情緒上來的時候，比較能接受你靠近還是需要一點距離呢？"
+        ),
+        tags=(
+            r"情[緒绪].{0,6}(?:上[來来]|[爆爆][發发])|[該该]怎[麼么][做做]",
+            r"怎[麼么][安安][撫抚]|如何.{0,4}[安安][撫抚]",
+        ),
+    ),
+
 )
 
 _BY_ID = {e.id: e for e in CORPUS}
 
 
-def in_domain(text: str) -> bool:
-    """Whether the parent's message is about language or communication at all.
+def topic_of(text: str) -> str:
+    """Which subject this message is about, or "" when none of them.
 
-    The gate exists because tags like 「不要」 and 「哭」 are ordinary words in a
-    sleep or feeding conversation. Without it a bedtime question pulls in a
-    語言發展 exemplar and the model answers the wrong question in the right voice.
+    First match wins on `_TOPIC_DOMAIN`'s insertion order, which is deliberate:
+    language leads because its patterns are the most specific, and a message
+    that trips two gates is nearly always the more specific one's.
     """
-    return any(pattern.search(text or "") for pattern in _DOMAIN)
+    for topic, patterns in _TOPIC_DOMAIN.items():
+        if any(pattern.search(text or "") for pattern in patterns):
+            return topic
+    return ""
+
+
+def in_domain(text: str) -> bool:
+    """Whether any topic recognises this message.
+
+    The gate exists because tags like 「不要」 and 「哭」 are ordinary words outside
+    their own subject. Without it a bedtime question pulls in a 語言發展 exemplar
+    and the model answers the wrong question in the right voice.
+    """
+    return bool(topic_of(text))
 
 
 #: How many earlier parent messages can hold the gate open. A language
@@ -465,14 +869,19 @@ def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> li
     text = " ".join((user_text or "").strip().split())
     if not text:
         return []
-    if not in_domain(text):
-        prior = next((t for t in list(recent)[:STICKY_TURNS] if in_domain(t or "")), "")
+    topic = topic_of(text)
+    if not topic:
+        prior = next((t for t in list(recent)[:STICKY_TURNS] if topic_of(t or "")), "")
         if not prior:
             return []
+        topic = topic_of(prior)
         # Scored against both, so a keyword-free follow-up still ranks on the
         # scenario the parent actually raised.
         text = f"{prior} {text}"
-    scored = [(e.score(text), i, e) for i, e in enumerate(CORPUS)]
+    # Never across topics: an exemplar from the wrong subject answers the wrong
+    # question in the right voice, which reads worse than no example at all.
+    candidates = [e for e in CORPUS if e.topic == topic]
+    scored = [(e.score(text), i, e) for i, e in enumerate(candidates)]
     hits = sorted(
         (s for s in scored if s[0] > 0),
         # Best match first; ties keep corpus order, which is the order the
@@ -483,7 +892,7 @@ def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> li
     # One exemplar shifts the register less reliably than two, so a thin match
     # is topped up rather than sent short. The fillers are in-domain by
     # construction, which is why this is safe here and would not be off-domain.
-    for fid in _DEFAULT_IDS:
+    for fid in _DEFAULT_IDS.get(topic, ()):
         if len(chosen) >= limit:
             break
         if _BY_ID[fid] not in chosen:
