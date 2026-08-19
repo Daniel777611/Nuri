@@ -171,17 +171,38 @@ def test_pairs_alternate_and_the_reply_matches_the_response_schema():
         assert payload["task_proposals"] == []
 
 
+#: An emoji, in the ranges the transcript actually uses.
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF]")
+
+
 def test_replies_look_like_the_target_register():
-    """The corpus is the specification of the register, so it is worth asserting
-    that no entry has drifted into the report style it exists to replace."""
+    """The corpus is the specification of the register, so every property that
+    was asked for is asserted here rather than hoped for.
+
+    Three beats — acknowledge, advise, ask — which is why several short lines
+    are required and a single block is not. That is the distinction the first
+    version of this test got wrong: it banned newlines in order to ban bulleted
+    reports, and banned the transcript's actual shape along with them.
+    """
     for e in exemplars.CORPUS:
-        assert "**" not in e.reply, e.id            # no bold
-        assert "\n" not in e.reply, e.id            # one paragraph
-        assert not re.search(r"[1-9][.、)]\s|[·•]", e.reply), e.id   # no list
-        # The whole corpus currently runs 112–129 characters. The ceiling is a
-        # drift alarm, not a target: an entry that needs 200 has become the
-        # report these exist to replace.
-        assert len(e.reply) <= 150, e.id
+        lines = [line for line in e.reply.split("\n") if line.strip()]
+        assert "**" not in e.reply, e.id
+        assert not re.search(r"[1-9][.\u3001)]\s|[\u00b7\u2022]", e.reply), e.id
+        assert 2 <= len(lines) <= 4, (e.id, len(lines))
+        # Ends on exactly one question, which is what keeps the conversation
+        # going. A trailing emoji is not the end of the sentence.
+        assert e.reply.rstrip().rstrip("\U0001F60A\U0001F49B\U0001F604\U0001F90D ").endswith(
+            "\uff1f"
+        ), e.id
+        # Counted on the closing line only: the advice above may quote a
+        # question NURI suggests the parent try, and that is not a second
+        # question being asked of them.
+        assert lines[-1].count("？") == 1, e.id
+        # Warmth carried, not decorative: present, and not on every line.
+        assert _EMOJI.search(e.reply), e.id
+        assert len(_EMOJI.findall(e.reply)) <= 2, e.id
+        # Measured without the newlines, the way the ceiling is applied.
+        assert len(e.reply.replace("\n", "")) <= exemplars.MAX_CHARS, e.id
 
 
 def test_every_exemplar_is_reachable():

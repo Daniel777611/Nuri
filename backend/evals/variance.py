@@ -108,20 +108,43 @@ HISTORIES: dict[str, tuple[tuple[str, str], ...]] = {
 _LIST = re.compile(r"^\s*(?:[0-9０-９]+[.、)）]|[一二三四五六七八九十]+[.、)）]|[-*·•])", re.M)
 _EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿\U0001F900-\U0001F9FF]")
 
+#: Does the reply open by answering the parent rather than by stating a fact?
+#:
+#: The signal is structural, not a word list: the first line is *about them*
+#: — it says 你, or it is one of the acknowledgements the transcript opens on.
+#: A keyword list was tried first and called eight warm openers cold, because
+#: 「你還願意繼續讀，這件事本身就很好」 is warmth without any of its words in it.
+#: Structural also means it cannot be gamed by dropping in 「辛苦了」 and
+#: carrying on coldly, which a sentiment score would have rewarded.
+_WARM_OPENER = re.compile(
+    "[你妳您]|^(?:哈哈|哇|原來|原来|謝謝|谢谢|聽起來|听起来|我懂|我能理解|看得出|辛苦)"
+)
+
+
 #: Reported in this order, and the first is the one the ceiling is set on.
-METRICS = ("chars", "paragraphs", "list_items", "bold", "questions", "emoji", "task_cards")
+METRICS = (
+    "chars", "paragraphs", "list_items", "bold", "questions", "emoji",
+    "task_cards", "ends_q", "warm_open",
+)
 
 
 def score(reply: dict) -> dict:
     text = reply.get("text") or ""
+    lines = [p for p in text.split("\n") if p.strip()]
+    closing = lines[-1] if lines else ""
+    opening = lines[0] if lines else ""
     return {
-        "chars": len(text),
-        "paragraphs": len([p for p in text.split("\n") if p.strip()]),
+        # Newlines excluded, the way the ceiling is applied — the register uses
+        # several short lines, so counting them would penalise its own shape.
+        "chars": len(text.replace("\n", "")),
+        "paragraphs": len(lines),
         "list_items": len(_LIST.findall(text)),
         "bold": text.count("**") // 2,
         "questions": text.count("？") + text.count("?"),
         "emoji": len(_EMOJI.findall(text)),
         "task_cards": len(reply.get("task_proposals") or []),
+        "ends_q": 1 if closing.rstrip().rstrip("😊💛😄🤍 ").endswith(("？", "?")) else 0,
+        "warm_open": 1 if _WARM_OPENER.search(opening) else 0,
     }
 
 
