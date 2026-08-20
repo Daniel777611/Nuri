@@ -43,6 +43,12 @@ def test_there_is_a_noise_floor_question():
     difference was ever the change."""
     shut = [q for q in variance.QUESTIONS if not exemplars.select(q["text"])]
     assert shut, "no off-domain question left to measure sampling spread with"
+    # Guards the way this last went stale: the control was a sleep question
+    # until sleep got exemplars, and a control that quietly starts firing is
+    # worse than none, because the eval keeps reporting a noise floor it is no
+    # longer measuring.
+    assert all(not exemplars.topic_of(q["text"]) for q in shut), \
+        [q["id"] for q in shut]
 
 
 def test_the_gate_opens_for_the_rest():

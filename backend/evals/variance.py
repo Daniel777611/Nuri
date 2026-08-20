@@ -36,7 +36,7 @@ if REPO_ROOT not in sys.path:
 
 from backend import llm_usage, runtime                         # noqa: E402
 from backend.nuri_core import exemplars                        # noqa: E402
-from backend.nuri_core.dialogue_reply import nuri_reply_sync   # noqa: E402
+from backend.nuri_core.dialogue_reply import NURI_FALLBACK, nuri_reply_sync  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
@@ -80,8 +80,12 @@ QUESTIONS: tuple[dict, ...] = (
         # Off-domain: the gate must stay shut, and this arm doubles as the noise
         # floor — its two arms send an identical prompt, so any difference
         # between them is sampling, not the change.
-        "id": "sleep-control",
-        "text": "寶寶晚上一直哭，怎麼哄都不睡，需要調整作息嗎？",
+        #
+        # Screen time rather than sleep. Sleep was the control until it got its
+        # own exemplars; a control that stopped being a control was measuring
+        # the change against itself.
+        "id": "screen-control",
+        "text": "一天可以讓他看多久平板？我怕看太多對眼睛不好",
     },
 )
 
@@ -123,9 +127,18 @@ _WARM_OPENER = re.compile(
 
 #: Reported in this order, and the first is the one the ceiling is set on.
 METRICS = (
-    "chars", "paragraphs", "list_items", "bold", "questions", "emoji",
+    "chars", "paragraphs", "list_items", "numbered_q", "bold", "questions", "emoji",
     "task_cards", "ends_q", "warm_open",
 )
+
+
+#: A call the API refused comes back as this exact string, so a dead run is
+#: identifiable rather than inferred from suspiciously tidy numbers.
+_FALLBACK_TEXT = (NURI_FALLBACK.get("text") or "").strip()
+
+
+def is_fallback(reply: dict) -> bool:
+    return bool(_FALLBACK_TEXT) and (reply.get("text") or "").strip() == _FALLBACK_TEXT
 
 
 def score(reply: dict) -> dict:
@@ -137,8 +150,18 @@ def score(reply: dict) -> dict:
         # Newlines excluded, the way the ceiling is applied — the register uses
         # several short lines, so counting them would penalise its own shape.
         "chars": len(text.replace("\n", "")),
+        #: Excluded from every statistic below. Scoring the apology string as a
+        #: reply is how a fully-failed run once reported a perfect register.
+        "failed": is_fallback(reply),
         "paragraphs": len(lines),
         "list_items": len(_LIST.findall(text)),
+        # A numbered *step* is wanted; a numbered *question* is the five-question
+        # report this work exists to remove. Only the second is a defect, so the
+        # two cannot share a counter.
+        "numbered_q": sum(
+            1 for line in text.splitlines()
+            if _LIST.match(line) and "\uff1f" in line
+        ),
         "bold": text.count("**") // 2,
         "questions": text.count("？") + text.count("?"),
         "emoji": len(_EMOJI.findall(text)),
@@ -236,15 +259,30 @@ def report(results: list[dict], arms: tuple[str, ...], ceiling: int) -> None:
     # register numbers — nothing was injected, so they measure only sampling.
     fired = [r for r in results if r["exemplars"]]
     for arm in arms:
-        flat = [x for r in fired for x in r["arms"][arm]]
+        flat = [x for r in fired for x in r["arms"][arm] if not x.get("failed")]
         if not flat:
+            print(f"  [{arm}] no reply survived — every call failed")
             continue
         chars = [x["chars"] for x in flat]
-        struct = sum(1 for x in flat if x["bold"] or x["list_items"])
+        struct = sum(1 for x in flat if x["bold"] or x["numbered_q"])
         over = sum(1 for x in flat if x["chars"] > ceiling)
+        steps = sum(1 for x in flat if x["list_items"])
         print(f"  [{arm}] n={len(flat):<4} median {st.median(chars):>5.0f}  "
               f"p90 {pctile(chars, .9):>5.0f}  max {max(chars):>5.0f}   "
-              f"over {ceiling}: {over}/{len(flat)}   bold-or-list: {struct}/{len(flat)}")
+              f"over {ceiling}: {over}/{len(flat)}   "
+              f"bold-or-numbered-q: {struct}/{len(flat)}   steps: {steps}/{len(flat)}")
+
+    # Said before the table rather than after it, because the table is what gets
+    # screenshotted.
+    every = [x for r in results for arm in r["arms"] for x in r["arms"][arm]]
+    dead = sum(1 for x in every if x.get("failed"))
+    if dead:
+        share = dead / max(len(every), 1)
+        print(f"\n  !! {dead}/{len(every)} calls returned the fallback string "
+              f"({share:.0%}). Those rows are excluded from every number above.")
+        if share > 0.2:
+            print("  !! Too many to call this a measurement. Nothing here is a "
+                  "result — fix the API access and run it again.")
 
     for r in results:
         if r["exemplars"]:

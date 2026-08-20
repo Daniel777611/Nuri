@@ -106,9 +106,10 @@ CONVERSATIONS: tuple[dict, ...] = (
         ),
     },
     {
-        # Sleep: the gate stays shut for the whole conversation, so this is the
-        # unguarded path. Worth measuring precisely because it is most of what
-        # parents actually ask about, and nothing is holding the register there.
+        # Sleep used to be the unguarded path. It has its own exemplars now, so
+        # what this conversation tests is the opposite of what it once did:
+        # that a subject the register only just reached holds together across
+        # ten turns as well as language always did.
         "id": "sleep-flipflop",
         "memory": "孩子当前状态：四个月，夜里醒两三次\n家长关注点：在犹豫要不要开始睡眠训练",
         "turns": (
@@ -125,6 +126,37 @@ CONVERSATIONS: tuple[dict, ...] = (
                 "say": "所以到底要不要讓他哭一下自己睡？",
                 "probe": "自相矛盾", "pair": "sleep-train",
                 "why": "同一个决定，第二次问",
+            },
+        ),
+    },
+    {
+        # The ungated path, which is now everything outside the six topics with
+        # exemplars — screen time, toilet training, childcare, vaccines. No
+        # example is holding the register here, only the prose ceiling, so this
+        # is where the warmth is most likely to quietly drain back out.
+        "id": "screen-time-ungated",
+        "memory": "孩子当前状态：两岁八个月，最近很爱看平板\n家长关注点：担心看太多影响视力和专注力",
+        "turns": (
+            {"say": "他最近很愛看平板，一天大概看兩個小時"},
+            {
+                "say": "這樣會不會太多？",
+                "probe": "自相矛盾", "pair": "screen-limit",
+                "why": "闸门外没有范例托着，只有散文上限，最容易前后不一",
+            },
+            {"say": "通常是我在煮飯的時候給他看"},
+            {"say": "他看的是那種兒歌跟動物的影片"},
+            {"say": "收起來的時候會大哭，要鬧很久"},
+            {"say": "阿公阿嬤覺得沒差，看得開心就好"},
+            {
+                "say": "所以到底一天多久才算合理？",
+                "probe": "自相矛盾", "pair": "screen-limit",
+                "why": "同一个决定，第二次问，中间隔着五轮",
+            },
+            {
+                "say": "你還記得他平常都在什麼時候看嗎？",
+                "probe": "遗忘",
+                "require": r"煮[飯饭]|[做做][飯饭]|吃[飯饭]",
+                "why": "第 3 轮说过是煮饭时间，考它有没有把家长自己讲的事留住",
             },
         ),
     },

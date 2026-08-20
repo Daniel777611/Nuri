@@ -26,8 +26,10 @@ def test_all_failure_modes_are_covered():
 
 
 def test_both_the_guarded_and_unguarded_paths_are_covered():
-    """The exemplars only cover language. A suite that only tests language turns
-    would report a register that holds on the minority of real conversations."""
+    """Exemplars cover six topics, not everything. A suite that only tested
+    covered subjects would report a register that holds wherever it is being
+    held up, and say nothing about the subjects running on the prose ceiling
+    alone — which is where it is most likely to slip."""
     from backend.nuri_core import exemplars
     opens = {c["id"] for c in coherence.CONVERSATIONS
              if exemplars.select(c["turns"][0]["say"])}
