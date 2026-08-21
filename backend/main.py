@@ -3374,6 +3374,7 @@ def _core_ports() -> CorePorts:
             gen_cards=stores.get_gen_cards,
             # 横切 Safety Layer
             is_urgent=core_dialogue_reply.urgent_task_suppressed,
+            is_crisis=core_dialogue_reply.crisis_detected,
         )
     return _core_ports_singleton
 

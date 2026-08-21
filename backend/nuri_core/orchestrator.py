@@ -70,7 +70,8 @@ async def run_turn_context(
         core = family.core(context_hints, ports, uid)
     with trace.stage("safety"):
         verdict = safety.assess(
-            user_text, family=core, is_urgent=ports.is_urgent, is_medical=False,
+            user_text, family=core, is_urgent=ports.is_urgent,
+            is_crisis=ports.is_crisis, is_medical=False,
         )
     trace.note(
         risk_tier=verdict.tier,

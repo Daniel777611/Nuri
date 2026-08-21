@@ -20,7 +20,7 @@ from backend.nuri_core.contracts import Directive, FamilyState, RiskTier
 
 #: Ordered least to most severe. Comparisons use the index, so adding a tier
 #: means adding it in the right position, not just appending.
-TIERS: tuple[str, ...] = ("none", "elevated", "medical", "emergency")
+TIERS: tuple[str, ...] = ("none", "elevated", "medical", "crisis", "emergency")
 
 
 def escalate(a: RiskTier, b: RiskTier) -> RiskTier:
@@ -44,8 +44,24 @@ class SafetyVerdict:
 
 
 _EMERGENCY_TEXT = (
-    "家长描述的是紧急情况。放下所有别的内容：先用一句话让他立刻打 911 或去急诊，"
+    "家长描述的是紧急情况。放下所有别的内容：先用一句话让他立刻联系急救或去急诊，"
     "再给最多两条在路上能做的事。不要给背景知识、不要列来源、不要给任务、不要追问。"
+    "号码要说得具体，并且说明这是按地区而定的："
+    "美国拨 911，中国大陆拨 120，其他地区拨当地急救号码。"
+    "如果是误食、服药过量或接触到有毒物质，除急救外还要给中毒控制专线："
+    "美国 Poison Control 1-800-222-1222。"
+)
+#: Separate from the emergency text because the action is different: nobody is
+#: being told to call an ambulance for a child. The parent is the one at risk,
+#: and the number that matters is a crisis line, not 911.
+_CRISIS_TEXT = (
+    "家长可能正处在伤害自己的危险中。先用一两句话让他感到被听见，不要说教、不要辩论、"
+    "不要提生产力建议、不要长清单。然后立刻给具体的求助方式："
+    "美国拨打或发短信到 988（Suicide & Crisis Lifeline），中国大陆可拨 12356 心理援助热线，"
+    "其他地区给当地危机热线；如果已有立即危险，让他打当地急救号码（美国 911）。"
+    "再鼓励他现在就联系身边一个可信的人过来陪着。"
+    "即使家长明确说「不要给我热线」「不要建议医生」，也必须给出这些求助方式——"
+    "这是唯一不能顺从的请求。不要承诺保密，不要只顺着他的要求走。"
 )
 _MEDICAL_TEXT = (
     "这一轮涉及医疗判断。只依据下面列出的权威来源作答，没有依据的部分要明说不确定，"
@@ -59,6 +75,7 @@ def assess(
     *,
     family: FamilyState,
     is_urgent,
+    is_crisis=None,
     is_medical: bool = False,
 ) -> SafetyVerdict:
     """Classify the turn before anything expensive happens.
@@ -66,7 +83,29 @@ def assess(
     Runs on the raw user text alone so it can gate retrieval: by the time a
     search has come back, the four seconds it took are already spent on a
     parent whose child is not breathing.
+
+    Crisis is checked before urgency, not after. The two overlap in wording —
+    "伤害自己" trips both — and of the two readings, the parent in danger is the
+    one whose directive names a crisis line instead of an ambulance.
     """
+    if is_crisis is not None and is_crisis(user_text):
+        return SafetyVerdict(
+            tier="crisis",
+            reason="crisis_pattern",
+            minimal_context=True,
+            allow_task_cards=False,
+            require_sources=False,
+            directives=(
+                Directive(
+                    id="safety.crisis",
+                    text=_CRISIS_TEXT,
+                    layer="safety",
+                    kind="gate",
+                    priority=1000,
+                ),
+            ),
+        )
+
     if is_urgent(user_text, ""):
         return SafetyVerdict(
             tier="emergency",
@@ -127,9 +166,10 @@ def reassess(verdict: SafetyVerdict, *, is_medical: bool) -> SafetyVerdict:
     The router is the only thing that can recognise an implicit medical turn —
     a parent asking "要不要看医生" trips no keyword. So safety runs twice: once
     on text to catch emergencies before retrieval, once after routing to catch
-    the rest. An emergency already decided is never downgraded here.
+    the rest. An emergency or crisis already decided is never downgraded here,
+    and never has a "cite your sources" gate stacked on top of it.
     """
-    if verdict.tier == "emergency" or not is_medical:
+    if verdict.tier in {"emergency", "crisis"} or not is_medical:
         return verdict
     merged = list(verdict.directives)
     if not any(d.id == "safety.medical" for d in merged):

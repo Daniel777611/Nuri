@@ -85,6 +85,10 @@ class CorePorts:
     # ── 横切 Safety Layer ─────────────────────────────────────────────────
     #: (user_text, ai_text) -> True when the turn describes an emergency.
     is_urgent: Callable[..., bool] = _false
+    #: (user_text) -> True when the parent describes danger to themselves.
+    #: Separate from is_urgent because the handoff is different: a crisis line,
+    #: not an ambulance for the child.
+    is_crisis: Callable[..., bool] = _false
 
     # ── tuning ────────────────────────────────────────────────────────────
     settings: dict = field(default_factory=dict)
