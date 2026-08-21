@@ -875,7 +875,9 @@ def _pick_card_image(card_type: str, card_id: str = "") -> str:
     return f"https://picsum.photos/seed/{seed}/600/400"
 
 def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
-    if not oai:
+    # Paused: this is a gpt-5.5 call per batch, and the static feed covers the
+    # screen without it. See KNOWLEDGE_CARDS_ENABLED in backend/runtime.py.
+    if not oai or not runtime.KNOWLEDGE_CARDS_ENABLED:
         return []
     type_labels = {"tip": "科普", "news": "热点", "product": "推荐"}
     resp = oai.chat.completions.create(
@@ -1823,7 +1825,11 @@ async def search_feed(q: str = "", type: Optional[str] = None):
 @api.post("/feed/generate")
 async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
     feed_mode = await stores.get_feed_mode()
-    if feed_mode == "alt":
+    # The curated pool is also what a paused card generator serves. Answering
+    # with it rather than an empty list keeps the home screen populated, and
+    # returns before the keyword extraction call — which costs tokens even
+    # when the generation it feeds is switched off.
+    if feed_mode == "alt" or not runtime.KNOWLEDGE_CARDS_ENABLED:
         pool = list(FEED_CARDS + ALT_FEED_CARDS)
         random.shuffle(pool)
         return pool[:body.count]
@@ -4737,7 +4743,12 @@ async def admin_get_daily_push(_: None = Depends(_require_admin)):
         except Exception as e:
             print(f"[warn] admin_get_daily_push: {e}")
     return {
-        "enabled": enabled,
+        # The stored toggle stays whatever the admin last chose; the deploy-level
+        # pause is reported separately so turning the switch back on does not
+        # look like it should have worked.
+        "enabled": enabled and runtime.DAILY_PUSH_ENABLED,
+        "stored_enabled": enabled,
+        "paused": not runtime.DAILY_PUSH_ENABLED,
         "last_sent": last_sent,
         "smtp_configured": bool(SMTP_USER and SMTP_PASSWORD),
     }
@@ -4757,6 +4768,11 @@ async def admin_set_daily_push(body: DailyPushToggle, _: None = Depends(_require
 
 @app.post("/admin/daily-push/trigger")
 async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
+    if not runtime.DAILY_PUSH_ENABLED:
+        raise HTTPException(
+            503,
+            "每日推送已暂停（DAILY_PUSH_ENABLED=0）。如需恢复，请在服务器环境变量中设置 DAILY_PUSH_ENABLED=1。",
+        )
     if not SMTP_USER or not SMTP_PASSWORD:
         raise HTTPException(400, "SMTP 未配置，请先在服务器环境变量中设置 SMTP_USER / SMTP_PASSWORD")
     if not oai:

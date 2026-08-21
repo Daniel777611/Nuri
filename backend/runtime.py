@@ -105,6 +105,26 @@ OPENAI_CONTENT_RESEARCH_CONCURRENCY = int(
 )
 OPENAI_MAX_RETRIES     = int(os.getenv("OPENAI_MAX_RETRIES", "1"))
 
+
+# ── Paused subsystems ────────────────────────────────────────────────────────
+# Card research and the daily push are the two largest LLM line items outside
+# the chat turn, and neither is on the critical path. Both are paused by
+# default so a deploy is enough to stop the spend; set the variable to 1 in the
+# environment to bring either back without a code change.
+#
+# Paused card research is not a broken feed: `content_research_oai is None` is
+# a branch the delivery layer already takes, and it serves the reviewed
+# library instead of live web research.
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+KNOWLEDGE_CARDS_ENABLED = _env_flag("KNOWLEDGE_CARDS_ENABLED", False)
+DAILY_PUSH_ENABLED = _env_flag("DAILY_PUSH_ENABLED", False)
+
 # Every blocking call (Supabase queries and OpenAI alike) shares anyio's
 # process-wide thread limiter, which defaults to 40. A handful of in-flight LLM
 # calls would otherwise hold every token and stall unrelated DB queries, so a
@@ -129,7 +149,7 @@ content_research_oai = (
         timeout=OPENAI_CONTENT_RESEARCH_TIMEOUT_S,
         max_retries=0,
     )
-    if OPENAI_API_KEY
+    if OPENAI_API_KEY and KNOWLEDGE_CARDS_ENABLED
     else None
 )
 content_research_limiter = anyio.CapacityLimiter(
