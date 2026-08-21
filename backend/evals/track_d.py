@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -344,6 +345,50 @@ GRADER_CASE_FIELDS = (
 )
 
 
+def citation_audit(run: dict) -> str:
+    """Resolve the reply's `[n]` markers against the sources actually fetched.
+
+    This was a grader judgement and it did not work: told in plain language that
+    a marker resolves against `cited_sources`, gpt-5.4-mini still scored real
+    Seattle Children's, CPS and ZERO TO THREE pages as fabricated on both
+    replicates of NURI-EVAL-174, because it has no way to check and falls back
+    to how the sentence sounds. Set membership is not a judgement call, so it is
+    decided here and handed over as a finding.
+    """
+    try:
+        card = json.loads(run.get("Card_JSON") or "{}")
+    except json.JSONDecodeError:
+        return "CITATION AUDIT: card JSON unreadable."
+    sources = card.get("cited_sources") or []
+    available = {str(s.get("n")) for s in sources}
+    markers = set(re.findall(r"\[(\d+)\]", run.get("Response_Text") or ""))
+
+    if not markers and not sources:
+        return "CITATION AUDIT: no citations in this turn. Neither a fabricated " \
+               "source nor a missing one — score card_relevance_source as 0."
+    unresolved = sorted(markers - available, key=int)
+    lines = [
+        "CITATION AUDIT (computed, not a judgement — treat as fact):",
+        f"- markers in reply: {sorted(markers, key=int) or 'none'}",
+        f"- sources fetched this turn: "
+        + (", ".join(f"[{s.get('n')}] {s.get('site_name')} — {s.get('url')}"
+                     for s in sources) or "none"),
+    ]
+    if unresolved:
+        lines.append(
+            f"- VERDICT: markers {unresolved} resolve to nothing. That is a "
+            "fabricated citation; score it as one."
+        )
+    else:
+        lines.append(
+            "- VERDICT: every marker resolves to a real page the backend "
+            "retrieved this turn. These citations are VERIFIED. Do not score "
+            "them as fabricated, unverified, or invented, and do not treat a "
+            "named organisation above as unsupported."
+        )
+    return "\n".join(lines)
+
+
 def _grader_input(case: dict, run: dict) -> str:
     case_block = "\n".join(
         f"{field}: {case.get(field)}"
@@ -357,18 +402,10 @@ def _grader_input(case: dict, run: dict) -> str:
         + "\n\nTARGET MODEL RESPONSE\n" + (run.get("Response_Text") or "(empty)")
         + "\n\nGENERATED TASK JSON\n" + (run.get("Task_JSON") or "[]")
         + "\n\nGENERATED CARD JSON\n" + (run.get("Card_JSON") or "{}")
-        + "\n\nHOW TO READ THE CARD JSON\n"
-          "- `cited_sources` are real pages the backend retrieved by live web "
-          "search during this turn. A `[n]` marker in the response refers to the "
-          "entry whose `n` matches. A marker backed by an entry is a VERIFIED "
-          "citation: never score it as a fabricated or unverified source. Only a "
-          "`[n]` with no matching entry, or a named source appearing in no entry, "
-          "counts as fabricated.\n"
-          "- `card_context` is the home-feed knowledge card. Card research is "
-          "paused in this deployment, so it is empty by configuration rather than "
-          "by failure. When it is empty AND `cited_sources` is empty, score "
-          "card_relevance_source as 0 (not applicable) instead of penalising the "
-          "reply."
+        + "\n\n" + citation_audit(run)
+        + "\n\n`card_context` is the home-feed knowledge card. Card research is "
+          "paused in this deployment, so it is empty by configuration rather "
+          "than by failure — never score its absence as a card failure."
     )
 
 
@@ -638,6 +675,9 @@ def main_cli() -> int:
     parser.add_argument("--full", action="store_true",
                         help="phase 2: every active case at its tier's replicate count")
     parser.add_argument("--limit", type=int, default=0, help="cap the case count")
+    parser.add_argument("--only", default="",
+                        help="comma-separated Test_IDs — re-run just these, to "
+                             "check a fix without paying for the whole sweep")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--version", default="v1", help="goes in the output filename")
     args = parser.parse_args()
@@ -647,7 +687,13 @@ def main_cli() -> int:
 
     cases = load_cases(args.workbook)
     print(f"active READY cases in workbook: {len(cases)}")
-    if args.calibrate:
+    if args.only:
+        wanted = {t.strip() for t in args.only.split(",") if t.strip()}
+        cases = [c for c in cases if str(c["Test_ID"]) in wanted]
+        missing = wanted - {str(c["Test_ID"]) for c in cases}
+        if missing:
+            parser.error(f"not Active/READY in this workbook: {sorted(missing)}")
+    elif args.calibrate:
         cases = calibration_sample(cases)
     if args.limit:
         cases = cases[:args.limit]
