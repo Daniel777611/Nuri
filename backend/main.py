@@ -3027,7 +3027,7 @@ async def _load_owned_session(session_id: str, uid: Optional[str], sb) -> dict:
         except Exception as e:
             print(f"[warn] _load_owned_session: {e}")
     if not session:
-        session = _sessions.get(session_id)
+        session = memstore.sessions.get(session_id)
     if not session:
         raise HTTPException(404, "session not found")
     owner = session.get("user_id")
