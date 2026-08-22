@@ -49,7 +49,7 @@ if REPO_ROOT not in sys.path:
 # costing us".
 os.environ["LLM_USAGE_LOGGING"] = "0"
 
-from backend import main, runtime                                    # noqa: E402
+from backend import llm_usage, main, runtime                         # noqa: E402
 from backend.nuri_core import dialogue_reply as core_dialogue_reply  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
@@ -212,51 +212,68 @@ async def run_case(case: dict, replicate: int) -> dict:
         "Prompt_Version": getattr(runtime, "NURI_PIPELINE", ""),
         "Temperature_or_Effort": os.getenv("REPLY_REASONING_EFFORT", "low"),
     }
-    try:
-        rc = await main._reply_context(turn, body, metrics)
-        system_prompt, history_window = main._plan_prompt(rc)
-        reply = await asyncio.to_thread(
-            core_dialogue_reply.nuri_reply_sync,
-            turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-            rc.internal, rc.sources, metrics, system_prompt, history_window,
-        )
-        ai_text = reply.get("text") or ""
-        sources = main._cited_sources(reply.get("cited"), rc.search_results, metrics)
-        transition = await main._task_suggestion(
-            reply, turn.msgs, user_text, ai_text, metrics,
-            allow=rc.plan.allow_task_cards if rc.plan else True,
-        )
-        record.update({
-            "API_Status": "200",
-            "Response_Text": ai_text,
-            "Task_JSON": json.dumps((transition or {}).get("tasks") or [], ensure_ascii=False),
-            # "Card" in this product is what the reply attaches: the cited
-            # sources, plus the conversation's source card when one seeded it.
-            "Card_JSON": json.dumps(
-                {"cited_sources": sources, "card_context": rc.card or ""},
-                ensure_ascii=False,
-            ),
-            "Safety_Filter_Triggered": "Yes" if core_dialogue_reply.urgent_task_suppressed(
-                user_text, ai_text
-            ) else "No",
-            "Execution_Error": "",
-            "Observed_Risk_Tier": getattr(rc.evidence, "risk_tier", "") or "",
-            "Observed_Topic": getattr(rc.evidence, "topic", "") or "",
-            "Task_Cards_Allowed": bool(rc.plan.allow_task_cards) if rc.plan else True,
-            "Search_Hits": len(rc.search_results),
-        })
-    except Exception as exc:                    # noqa: BLE001 - recorded, not raised
-        record.update({
-            "API_Status": "error",
-            "Response_Text": "",
-            "Task_JSON": "[]",
-            "Card_JSON": "{}",
-            "Safety_Filter_Triggered": "",
-            "Execution_Error": f"{type(exc).__name__}: {exc}",
-        })
+    # Wraps the whole attempt, including the failure path: a turn that died
+    # after the router had already been billed still cost what the router cost.
+    with llm_usage.collecting() as calls:
+        try:
+            rc = await main._reply_context(turn, body, metrics)
+            system_prompt, history_window = main._plan_prompt(rc)
+            reply = await asyncio.to_thread(
+                core_dialogue_reply.nuri_reply_sync,
+                turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                rc.internal, rc.sources, metrics, system_prompt, history_window,
+                rc.state,
+            )
+            ai_text = reply.get("text") or ""
+            sources = main._cited_sources(reply.get("cited"), rc.search_results, metrics)
+            transition = await main._task_suggestion(
+                reply, turn.msgs, user_text, ai_text, metrics,
+                allow=rc.plan.allow_task_cards if rc.plan else True,
+            )
+            record.update({
+                "API_Status": "200",
+                "Response_Text": ai_text,
+                "Task_JSON": json.dumps(
+                    (transition or {}).get("tasks") or [], ensure_ascii=False,
+                ),
+                # "Card" in this product is what the reply attaches: the cited
+                # sources, plus the conversation's source card when one seeded it.
+                "Card_JSON": json.dumps(
+                    {"cited_sources": sources, "card_context": rc.card or ""},
+                    ensure_ascii=False,
+                ),
+                "Safety_Filter_Triggered": "Yes" if core_dialogue_reply.urgent_task_suppressed(
+                    user_text, ai_text
+                ) else "No",
+                "Execution_Error": "",
+                "Observed_Risk_Tier": getattr(rc.evidence, "risk_tier", "") or "",
+                "Observed_Topic": getattr(rc.evidence, "topic", "") or "",
+                "Task_Cards_Allowed": bool(rc.plan.allow_task_cards) if rc.plan else True,
+                "Search_Hits": len(rc.search_results),
+            })
+        except Exception as exc:            # noqa: BLE001 - recorded, not raised
+            record.update({
+                "API_Status": "error",
+                "Response_Text": "",
+                "Task_JSON": "[]",
+                "Card_JSON": "{}",
+                "Safety_Filter_Triggered": "",
+                "Execution_Error": f"{type(exc).__name__}: {exc}",
+            })
     record["Latency_ms"] = int((time.perf_counter() - started) * 1000)
-    record["Input_Tokens"] = metrics.row.get("prompt_tokens")
-    record["Output_Tokens"] = metrics.row.get("completion_tokens")
+    # Every provider call the turn made, not just the reply. The earlier version
+    # read metrics.row, which only ever sees `chat.reply` — so it reported a
+    # per-turn cost missing the router, the embedding, the task fallback and
+    # memory extraction, and those are the calls nobody was watching.
+    rollup = llm_usage.totals(calls)
+    record["Input_Tokens"] = rollup["total"]["prompt_tokens"]
+    record["Output_Tokens"] = rollup["total"]["completion_tokens"]
+    record["Cached_Tokens"] = rollup["total"]["cached_prompt_tokens"]
+    record["Provider_Calls"] = rollup["total"]["calls"]
+    record["Cost_By_Call_Site"] = json.dumps(
+        rollup["by_call_site"], ensure_ascii=False
+    )
+    record["Reply_Input_Tokens"] = metrics.row.get("prompt_tokens")
     record["System_Prompt_Hash"] = str(metrics.row.get("system_chars") or "")
     return record
 
@@ -655,6 +672,7 @@ AI_RUNS_COLUMNS = [
 
 EXTRA_COLUMNS = [
     "AI_Grader_Confidence", "AI_Grader_Notes",
+    "Provider_Calls", "Cached_Tokens", "Reply_Input_Tokens", "Cost_By_Call_Site",
     "Observed_Risk_Tier", "Observed_Topic", "Task_Cards_Allowed", "Search_Hits",
 ]
 

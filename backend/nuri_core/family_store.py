@@ -28,6 +28,7 @@ from typing import Optional
 
 import anyio
 
+from backend.nuri_core import context_budget
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
@@ -595,9 +596,27 @@ async def mark_follow_up_asked(follow_up_id: str) -> None:
         print(f"[warn] mark_follow_up_asked {follow_up_id}: {e}")
 
 
-async def get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
-    """Fetch active long-term memories for the Context Builder, grouped by category
-    so the prompt reads as a stable profile block rather than a flat dump."""
+#: How many rows to fetch before ranking. Wider than what ships in the prompt
+#: because the top three are picked by relevance to *this* question, and a
+#: recency-ordered fetch of exactly three would pre-empt that choice.
+MEMORY_FETCH_LIMIT = 40
+
+
+async def get_memory_context(
+    user_id: Optional[str], query: str = "", limit: int = MEMORY_FETCH_LIMIT,
+) -> str:
+    """The few long-term memories that bear on this question.
+
+    Was: the twelve most recently updated, always, grouped by category. Two
+    problems with that. Recency makes it a second short history rather than a
+    profile, duplicating what the recent-message window already carries; and
+    twelve unbounded values is a block with no ceiling sitting in front of every
+    single turn.
+
+    Now: fetch a wider set, rank against the parent's current message, keep the
+    top three, cap each. Grouping by category is kept — it reads as a profile
+    rather than a list of overheard remarks — but only over what survives.
+    """
     if not user_id:
         return ""
     sb = runtime.get_supabase()
@@ -605,7 +624,7 @@ async def get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
         return ""
     try:
         res = await anyio.to_thread.run_sync(
-            lambda: sb.table("user_memories").select("category,key,value")
+            lambda: sb.table("user_memories").select("category,key,value,updated_at")
             .eq("user_id", user_id).eq("status", "active")
             .order("updated_at", desc=True).limit(limit).execute()
         )
@@ -615,8 +634,17 @@ async def get_memory_context(user_id: Optional[str], limit: int = 12) -> str:
         return ""
     if not rows:
         return ""
+    picked = context_budget.select_memories(
+        [
+            {"text": r["value"], "category": r["category"],
+             "updated_at": r.get("updated_at") or ""}
+            for r in rows
+            if (r.get("value") or "").strip()
+        ],
+        query,
+    )
     grouped: dict[str, list[str]] = {}
-    for r in rows:
-        label = MEMORY_CATEGORY_LABELS.get(r["category"], "其他信息")
-        grouped.setdefault(label, []).append(r["value"])
+    for m in picked:
+        label = MEMORY_CATEGORY_LABELS.get(m["category"], "其他信息")
+        grouped.setdefault(label, []).append(m["text"])
     return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())

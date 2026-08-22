@@ -32,7 +32,7 @@ import asyncio
 import time
 from typing import Any, Optional, Sequence
 
-from backend.nuri_core import dialogue, family, knowledge, outcome, safety
+from backend.nuri_core import context_budget, dialogue, family, knowledge, outcome, safety
 from backend.nuri_core.contracts import (
     DialoguePlan,
     EvidenceDecision,
@@ -57,7 +57,8 @@ async def run_turn_context(
     ports: CorePorts,
     route_turn,
     source_card_id: str = "",
-    history_window: int = 20,
+    session_id: str = "",
+    history_window: int = context_budget.RECENT_MESSAGES,
     on_route_done=None,
     trace: Optional[TurnTrace] = None,
 ) -> TurnBundle:
@@ -85,6 +86,9 @@ async def run_turn_context(
         _stage(trace, "outcome", outcome.policy(uid, ports), LearnedPolicy()),
         _stage(trace, "directives", dialogue.load_directives(ports), []),
         _stage(trace, "card", _card(source_card_id, ports), ""),
+        # In wave 1 with the rest: a single indexed read, and the reply must
+        # never wait on it serially.
+        _stage(trace, "state", _state(session_id, ports), ""),
         _stage(
             trace, "knowledge",
             knowledge.decide(
@@ -94,7 +98,7 @@ async def run_turn_context(
             (EvidenceDecision(risk_tier=verdict.tier), verdict),
         ),
     )
-    enriched, policy, directives, card_block, (evidence, verdict) = results
+    enriched, policy, directives, card_block, state_block, (evidence, verdict) = results
 
     # Attributed here rather than inside knowledge, so the numbers line up with
     # what the linear pipeline reported under the same names.
@@ -120,6 +124,7 @@ async def run_turn_context(
             verdict=verdict,
             directives=directives,
             card_block=card_block,
+            state_block=state_block,
             history_window=history_window,
         )
     trace.directive_ids = [d.id for d in plan.directives]
@@ -139,6 +144,7 @@ async def run_turn_context(
         card=card_block,
         memory=_body(plan, dialogue.HEADINGS["memory"]),
         profile=enriched.profile_block,
+        state=state_block,
         style=_body(plan, dialogue.HEADINGS["always"]),
         internal=evidence.internal_block,
         sources=evidence.sources_block,
@@ -169,6 +175,14 @@ async def _stage(trace: TurnTrace, name: str, coro, fallback):
         return fallback
     finally:
         trace.mark(name, started)
+
+
+async def _state(session_id: str, ports: CorePorts) -> str:
+    """The conversation summary carrying everything the recent window drops."""
+    if not session_id:
+        return ""
+    summary, _covered = await ports.conversation_state(session_id)
+    return summary or ""
 
 
 async def _card(source_card_id: str, ports: CorePorts) -> str:

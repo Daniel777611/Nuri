@@ -58,6 +58,7 @@ from backend.nuri_core import knowledge_store as core_knowledge_store
 from backend.nuri_core import outcome as core_outcome
 from backend.nuri_core import outcome_store as core_outcome_store
 from backend.nuri_core import provenance as core_provenance
+from backend.nuri_core import state_store as core_state_store
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
     get_provider as get_search_provider,
@@ -3275,14 +3276,18 @@ class _ReplyContext(NamedTuple):
     Field-compatible with nuri_core.TurnBundle on purpose: both pipelines hand
     the same names to the same reply call, so switching between them changes
     what is in the system prompt and nothing else about the turn."""
-    card: str
-    memory: str
-    profile: str
-    style: str
-    internal: str
-    sources: str                       # rendered allow-list, "" when not searching
-    route: "TurnRoute"
-    search_results: list               # SearchResult objects behind `sources`
+    # All defaulted, so adding a block here cannot break a caller that names
+    # the fields it cares about — which is how `state` arriving turned an
+    # unrelated test into a TypeError.
+    card: str = ""
+    memory: str = ""
+    profile: str = ""
+    state: str = ""
+    style: str = ""
+    internal: str = ""
+    sources: str = ""                  # rendered allow-list, "" when not searching
+    route: "TurnRoute" = None
+    search_results: list = ()          # SearchResult objects behind `sources`
     #: Set only by the four-model pipeline. When present the dialogue model has
     #: already rendered the system prompt and the blocks above are duplicates
     #: kept for logging and for the A/B comparison.
@@ -3372,6 +3377,7 @@ def _core_ports() -> CorePorts:
             style_rules=core_dialogue_reply.get_style_rules_ctx,
             card_ctx=_card_ctx,
             gen_cards=stores.get_gen_cards,
+            conversation_state=core_state_store.load,
             # 横切 Safety Layer
             is_urgent=core_dialogue_reply.urgent_task_suppressed,
             is_crisis=core_dialogue_reply.crisis_detected,
@@ -3401,6 +3407,7 @@ async def _reply_context_four_model(
         ports=_core_ports(),
         route_turn=route_turn,
         source_card_id=_active_card_id(turn),
+        session_id=turn.session.get("id") or "",
         history_window=core_dialogue_reply.HISTORY_WINDOW,
         on_route_done=_on_route,
     )
@@ -3425,6 +3432,7 @@ async def _reply_context_four_model(
         card=bundle.card,
         memory=bundle.memory,
         profile=bundle.profile,
+        state=bundle.state,
         style=bundle.style,
         internal=bundle.internal,
         sources=bundle.sources,
@@ -3446,15 +3454,20 @@ async def _reply_context(
         return await _reply_context_four_model(turn, body, metrics)
     started = time.perf_counter()
     profile_ctx = core_family_store.profile_ctx(turn.context_hints, turn.context_hints.get("children"))
-    gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, routed = await asyncio.gather(
+    user_text = body.text or ""
+    gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, state, routed = await asyncio.gather(
         stores.get_gen_cards(),
-        core_family_store.get_memory_context(turn.owner_uid),
+        # Ranked against this turn's question, not by recency — see
+        # family_store.get_memory_context.
+        core_family_store.get_memory_context(turn.owner_uid, user_text),
         core_family_store.get_follow_up_context(turn.owner_uid),
         core_dialogue_reply.get_style_rules_ctx(),
-        anyio.to_thread.run_sync(core_knowledge_store.internal_rules_ctx, body.text or ""),
+        anyio.to_thread.run_sync(core_knowledge_store.internal_rules_ctx, user_text),
+        core_state_store.load(turn.session.get("id") or ""),
         _route_and_search(turn, profile_ctx, metrics),
     )
     route, results = routed
+    state_summary, _covered = state
     if metrics:
         metrics.mark("context_ms", started)
     return _ReplyContext(
@@ -3464,6 +3477,7 @@ async def _reply_context(
         # separate section invites the model to work through it as a checklist.
         memory=(memory_ctx + ("\n\n" + follow_ctx if follow_ctx else "")),
         profile=profile_ctx,
+        state=state_summary,
         style=style_ctx,
         internal=internal_ctx,
         sources=sources_prompt_block(results),
@@ -3474,10 +3488,20 @@ async def _reply_context(
 
 def _plan_prompt(rc: _ReplyContext) -> tuple[Optional[str], Optional[int]]:
     """The system message the dialogue model rendered, or (None, None) to let
-    core_dialogue_reply.nuri_messages concatenate the blocks the old way."""
+    core_dialogue_reply.nuri_messages assemble the blocks itself.
+
+    Returned as one string with the cache seams marked rather than as three
+    pieces, so the four-model branch keeps the same two-value contract the
+    linear one has. `nuri_messages` splits it back apart; the alternative was a
+    third parameter that only one of the two pipelines ever sets.
+    """
     if rc.plan is None:
         return None, None
-    return rc.plan.system_prompt(core_dialogue_reply.NURI_PERSONA + core_dialogue_reply.NURI_JSON_SUFFIX), rc.plan.history_window
+    persona = core_dialogue_reply.NURI_PERSONA + core_dialogue_reply.NURI_JSON_SUFFIX
+    return (
+        core_dialogue_reply.CACHE_SEAM.join(rc.plan.system_parts(persona)),
+        rc.plan.history_window,
+    )
 
 
 async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
@@ -3504,6 +3528,10 @@ async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
     await core_provenance.persist(
         rc.trace, session_id=session_id, user_id=turn.owner_uid, ports=ports,
     )
+    # Third optional write, and the one that pays for the short window: fold
+    # what has fallen out of it into the session summary. Only fires once the
+    # dropped span passes the refresh threshold, so most turns do nothing.
+    await core_state_store.refresh_if_needed(session_id, turn.msgs)
 
 
 async def _task_suggestion(
@@ -3645,6 +3673,7 @@ async def post_message(
             lambda: core_dialogue_reply.nuri_reply_sync(
                 turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                 rc.internal, rc.sources, metrics, system_prompt, history_window,
+                rc.state,
             )
         )
         ai_text = reply["text"]
@@ -3711,6 +3740,7 @@ async def post_message_stream(
                 async for kind, value in core_dialogue_reply.nuri_reply_stream(
                     turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                     rc.internal, rc.sources, metrics, system_prompt, history_window,
+                    rc.state,
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})

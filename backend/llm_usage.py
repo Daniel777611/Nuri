@@ -29,11 +29,12 @@ Three constraints shaped it:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import uuid
 from contextvars import ContextVar
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 import anyio
 
@@ -77,6 +78,60 @@ def _suppressed() -> bool:
 #: One warning, not one per call: a missing migration would otherwise fill the
 #: function logs with the same line for every request.
 _warned = False
+
+#: In-process sink, independent of the database write below. The eval harness
+#: runs with LLM_USAGE_LOGGING=0 so a sweep is never billed to the spend table
+#: as if it were parent traffic — but that also meant it could only see the one
+#: call it made itself, `chat.reply`, and reported a per-turn cost missing the
+#: router, the embedding, the task fallback and memory extraction. Those were
+#: never uninstrumented; they were unreadable from outside the process.
+_collector: ContextVar[Optional[list]] = ContextVar("llm_collector", default=None)
+
+
+@contextlib.contextmanager
+def collecting() -> Iterator[list[dict]]:
+    """Capture every provider call made inside the block.
+
+    Fills before the suppression check, so it works with logging off and under
+    pytest — the two situations where measuring is most wanted and the database
+    write is least wanted. anyio copies the context into worker threads, so the
+    calls `to_thread.run_sync` makes land here too.
+    """
+    sink: list[dict] = []
+    token = _collector.set(sink)
+    try:
+        yield sink
+    finally:
+        _collector.reset(token)
+
+
+#: Summed by `totals`. `cached_prompt_tokens` is the one that answers "is the
+#: prefix cache actually working" — it is a subset of prompt_tokens, billed at a
+#: fraction, so a run where it stays at zero is a run paying full price for the
+#: same persona every turn.
+_SUMMED = ("prompt_tokens", "completion_tokens", "cached_prompt_tokens")
+
+
+def totals(calls: Iterable[dict]) -> dict:
+    """Roll a captured list up by call site, plus a grand total."""
+    by_site: dict[str, dict] = {}
+    grand = dict.fromkeys(_SUMMED, 0)
+    grand["calls"] = 0
+    for call in calls:
+        row = by_site.setdefault(
+            call["call_site"],
+            {"calls": 0, "model": call.get("model") or "", **dict.fromkeys(_SUMMED, 0)},
+        )
+        row["calls"] += 1
+        grand["calls"] += 1
+        for key in _SUMMED:
+            value = int(call.get(key) or 0)
+            row[key] += value
+            grand[key] += value
+    cached = grand["cached_prompt_tokens"]
+    prompt = grand["prompt_tokens"]
+    grand["cache_hit_rate"] = round(100 * cached / prompt, 1) if prompt else 0.0
+    return {"by_call_site": by_site, "total": grand}
 
 
 def new_request_id() -> str:
@@ -190,6 +245,16 @@ def record(
 ) -> None:
     """Write one provider call. Safe to call from anywhere; never raises."""
     global _warned
+    sink = _collector.get()
+    if sink is not None:
+        try:
+            sink.append({
+                "call_site": call_site, "model": model or "", "api": api,
+                "status": status, "duration_ms": duration_ms,
+                **usage_fields(usage),
+            })
+        except Exception:  # pragma: no cover - measuring must not raise either
+            pass
     if _suppressed():
         return
     try:

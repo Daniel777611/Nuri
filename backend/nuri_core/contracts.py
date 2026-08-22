@@ -14,6 +14,8 @@ dialogue model renders the ones that apply; the outcome model moves the weights.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+
+from backend.nuri_core import context_budget
 from typing import Any, Mapping, Optional, Sequence
 
 #: Where a directive came from, which is also the order they render in. Earlier
@@ -194,15 +196,46 @@ class DialoguePlan:
     #: remembering to ask after you.
     proactive: str = ""
     allow_task_cards: bool = True
-    history_window: int = 20
+    #: Recent messages this turn is allowed to replay. Defaults to the shared
+    #: budget rather than a literal, so a plan and the assembler cannot disagree
+    #: about what "the window" is.
+    history_window: int = context_budget.RECENT_MESSAGES
+
+    #: How many leading `sections` hold still while one family talks to NURI.
+    #: The boundary is the only lever on the provider's prefix cache, which
+    #: matches the longest identical prefix of a request: everything before the
+    #: first block that moves is cached, everything after is paid in full. The
+    #: dialogue model orders `sections` for that, and this records where it put
+    #: the seam so the assembler does not have to guess.
+    stable_sections: int = 0
 
     def system_prompt(self, persona: str) -> str:
-        out = persona
-        for heading, body in self.sections:
-            if not body:
-                continue
-            out += f"\n\n{heading}\n{body}" if heading else f"\n\n{body}"
-        return out
+        return "\n\n".join(p for p in self.system_parts(persona) if p)
+
+    def system_parts(self, persona: str) -> tuple[str, str, str]:
+        """(global, per-family, per-turn), as three separate system messages.
+
+        Global is the persona and the operator rules — byte-identical for every
+        parent, so one cache entry serves all traffic. Per-family is the child
+        profile and the conversation summary, which hold still for many turns.
+        Per-turn is what this question pulled in.
+        """
+        rendered = [
+            f"{heading}\n{body}" if heading else body
+            for heading, body in self.sections
+            if body
+        ]
+        # Recomputed against the filtered list: `stable_sections` counts
+        # sections the dialogue model emitted, and empty ones drop out above.
+        kept_stable = sum(
+            1 for i, (_, body) in enumerate(self.sections)
+            if body and i < self.stable_sections
+        )
+        return (
+            persona,
+            "\n\n".join(rendered[:kept_stable]),
+            "\n\n".join(rendered[kept_stable:]),
+        )
 
 
 # ── 4 结果学习模型 ────────────────────────────────────────────────────────────
@@ -251,6 +284,11 @@ class TurnBundle:
     card: str = ""
     memory: str = ""
     profile: str = ""
+    #: Rolling summary of everything older than the recent-message window.
+    #: Sits with `profile` on the per-family side of the cache boundary: both
+    #: hold still for many turns, unlike `memory`, which is re-ranked against
+    #: each question.
+    state: str = ""
     style: str = ""
     internal: str = ""
     sources: str = ""

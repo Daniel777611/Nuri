@@ -32,6 +32,7 @@ from backend.nuri_core.contracts import (
     FamilyState,
     LearnedPolicy,
 )
+from backend.nuri_core import context_budget
 from backend.nuri_core.ports import CorePorts
 from backend.nuri_core.safety import SafetyVerdict
 
@@ -49,6 +50,7 @@ _cache: tuple[list[Directive], float] | None = None
 HEADINGS = {
     "always": "运营团队根据实际反馈持续积累的回复规则，必须遵守：",
     "profile": "这位家长的基本情况（来自注册信息）：",
+    "state": "这次对话到目前为止（摘要）：",
     "memory": "关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：",
     "card": "本次对话相关内容：",
     "conditional": "这一轮额外适用的规则（根据家庭情况和话题命中，优先级高于上面的通则）：",
@@ -180,7 +182,8 @@ def plan(
     verdict: SafetyVerdict,
     directives: Sequence[Directive],
     card_block: str = "",
-    history_window: int = 20,
+    state_block: str = "",
+    history_window: int = context_budget.RECENT_MESSAGES,
 ) -> DialoguePlan:
     """Assemble the turn. Pure — every input is already resolved.
 
@@ -228,9 +231,16 @@ def plan(
         # separate section invites the model to work through it as a checklist.
         memory = f"{memory}\n\n{proactive}" if memory else proactive
 
+    # Ordered most stable first. The first three hold still while one family
+    # talks — operator rules are global, the profile changes when a birthday
+    # passes, the summary a few times per conversation — so `stable_sections`
+    # below marks the seam the prefix cache can reach. Memory moved after them
+    # because it is now re-ranked against each question rather than fetched by
+    # recency, which makes it per-turn content.
     sections: list[tuple[str, str]] = [
         (HEADINGS["always"], _render(always)),
         (HEADINGS["profile"], family.profile_block),
+        (HEADINGS["state"], state_block),
         (HEADINGS["memory"], memory),
         (HEADINGS["card"], card_block),
         (HEADINGS["conditional"], _render(conditional)),
@@ -247,6 +257,8 @@ def plan(
         proactive=proactive,
         allow_task_cards=verdict.allow_task_cards,
         history_window=history_window,
+        # always + profile + state: everything above `memory` in the list.
+        stable_sections=3,
     )
 
 

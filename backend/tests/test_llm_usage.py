@@ -311,3 +311,78 @@ def test_a_test_run_never_writes_to_the_real_table(monkeypatch):
     # No `writes_allowed` fixture: this is what an ordinary test looks like.
     llm_usage.record("content_research.prepare", "gpt-5.4-mini")
     assert written == []
+
+
+# ── The in-process collector ─────────────────────────────────────────────────
+# Added because the eval harness could only see the one call it made itself.
+# Running with LLM_USAGE_LOGGING=0 keeps a sweep out of the spend table, and
+# that same switch made the router, the embedding, the task fallback and memory
+# extraction invisible — so the reported per-turn cost was the cheapest slice of
+# the turn presented as the whole of it.
+
+
+def test_collector_captures_calls_that_are_never_written():
+    """The two situations where measuring matters most — logging off, and under
+    pytest — are exactly the two where the database write is suppressed."""
+    with llm_usage.collecting() as calls:
+        llm_usage.record(
+            "chat.router", "gpt-5-mini",
+            usage=SimpleNamespace(prompt_tokens=600, completion_tokens=12),
+        )
+        llm_usage.record(
+            "chat.reply", "gpt-5.5",
+            usage=SimpleNamespace(prompt_tokens=2400, completion_tokens=230),
+        )
+    assert [c["call_site"] for c in calls] == ["chat.router", "chat.reply"]
+    assert calls[0]["prompt_tokens"] == 600
+
+
+def test_collector_is_scoped_to_its_block():
+    with llm_usage.collecting() as calls:
+        llm_usage.record("chat.reply", "gpt-5.5")
+    llm_usage.record("chat.router", "gpt-5-mini")
+    assert len(calls) == 1
+
+
+def test_totals_roll_up_by_call_site():
+    with llm_usage.collecting() as calls:
+        for _ in range(2):
+            llm_usage.record(
+                "chat.router", "gpt-5-mini",
+                usage=SimpleNamespace(prompt_tokens=500, completion_tokens=10),
+            )
+        llm_usage.record(
+            "chat.reply", "gpt-5.5",
+            usage=SimpleNamespace(prompt_tokens=2000, completion_tokens=200),
+        )
+    rolled = llm_usage.totals(calls)
+    assert rolled["by_call_site"]["chat.router"]["calls"] == 2
+    assert rolled["by_call_site"]["chat.router"]["prompt_tokens"] == 1000
+    assert rolled["total"]["calls"] == 3
+    assert rolled["total"]["prompt_tokens"] == 3000
+
+
+def test_cache_hit_rate_is_reported():
+    """The number that answers "is the prefix cache actually working". A run
+    where it stays at zero is a run paying full price for the same persona on
+    every turn."""
+    with llm_usage.collecting() as calls:
+        llm_usage.record(
+            "chat.reply", "gpt-5.5",
+            usage=SimpleNamespace(
+                prompt_tokens=2000,
+                completion_tokens=200,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=1500),
+            ),
+        )
+    assert llm_usage.totals(calls)["total"]["cache_hit_rate"] == 75.0
+
+
+def test_a_broken_usage_object_cannot_take_the_turn_down():
+    class Hostile:
+        def __getattr__(self, name):
+            raise RuntimeError("boom")
+
+    with llm_usage.collecting() as calls:
+        llm_usage.record("chat.reply", "gpt-5.5", usage=Hostile())
+    assert llm_usage.totals(calls)["total"]["calls"] == len(calls)

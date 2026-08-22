@@ -30,6 +30,10 @@ async def _empty_list_async(*_args, **_kwargs) -> list:
     return []
 
 
+async def _empty_state_async(*_args, **_kwargs) -> tuple[str, int]:
+    return "", 0
+
+
 async def _empty_profile_async(*_args, **_kwargs) -> tuple[dict, list]:
     return {}, []
 
@@ -81,6 +85,9 @@ class CorePorts:
     style_rules: Callable[..., Awaitable[str]] = _empty_str_async
     card_ctx: Callable[..., str] = _empty_str
     gen_cards: Callable[[], Awaitable[list]] = _empty_list_async
+    #: (session_id) -> (summary, tokens it covers). The rolling summary that
+    #: lets the recent-message window stay short.
+    conversation_state: Callable[..., Awaitable[tuple]] = _empty_state_async
 
     # ── 横切 Safety Layer ─────────────────────────────────────────────────
     #: (user_text, ai_text) -> True when the turn describes an emergency.

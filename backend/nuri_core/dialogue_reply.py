@@ -25,7 +25,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import exemplars, knowledge_store
+from backend.nuri_core import context_budget, exemplars, knowledge_store
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
@@ -110,15 +110,25 @@ cited（你在正文里引用了哪几条来源）：
 
 # 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
-# 更早的重要信息依赖 memory_ctx（user_memories，每轮都在后台持续提炼）保留，
-# 而不是逐字重放整段历史。
-# Turns of raw history resent with every call. Halved from 40 after the logs
-# showed prompt tokens running 15x completion — 8,206 against 554 per turn —
-# because every call replays the window in full and NURI's replies are long.
-# The window overlaps with what user_memories exists to do: distil the older
-# conversation so it need not be replayed verbatim. Twenty turns still reaches
-# well past anything the parent is still holding in mind.
-HISTORY_WINDOW = int(os.getenv("CHAT_HISTORY_WINDOW", "20"))
+# 更早的内容由 conversation state（本次对话摘要）和 user_memories（长期信息）
+# 承载，而不是逐字重放整段历史。
+#
+# Was 20, then 40 before that, and the halving never fixed the ratio it was
+# aimed at: the eval sweep still measured 2,687 prompt tokens against 235
+# completion. A turn count alone cannot — eight turns of a pasted clinic report
+# is not eight turns of "好的" — so the count is now paired with a token ceiling
+# in `context_budget`, and everything older is carried by the state summary
+# instead of replayed. CHAT_HISTORY_WINDOW still overrides, for one deployment
+# that wants the old behaviour back without a code change.
+HISTORY_WINDOW = int(
+    os.getenv("CHAT_HISTORY_WINDOW", str(context_budget.RECENT_MESSAGES))
+)
+
+#: Marks where one rendered system prompt should be cut into separate system
+#: messages. A private control string rather than a third return value, so the
+#: two pipelines keep the same (prompt, window) contract into nuri_messages.
+#: Never appears in model-visible text: it is split out before the call.
+CACHE_SEAM = "\x1e\x1e"
 
 NURI_RESPONSE_FORMAT = {
     "type": "json_schema",
@@ -231,61 +241,82 @@ def nuri_messages(
     history: list[dict], card_ctx: str = "", memory_ctx: str = "",
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
     sources_ctx: str = "", system_prompt: Optional[str] = None,
-    history_window: Optional[int] = None,
+    history_window: Optional[int] = None, state_ctx: str = "",
 ) -> tuple[list[dict], int]:
-    """Assemble the system prompt, few-shot pairs and history window. Shared by
-    the blocking and streaming reply paths so the two can't drift apart.
+    """Assemble the prompt: system messages, few-shot pairs, recent turns.
 
-    Returns the messages and how many of them are few-shot exemplars, so the
-    turn metrics can keep `history_chars` meaning what it has always meant.
+    Shared by the blocking and streaming reply paths so the two can't drift
+    apart. Returns the messages and how many of them are few-shot exemplars, so
+    the turn metrics keep `history_chars` meaning what it has always meant.
+
+    The system prompt is emitted as up to three messages rather than one
+    concatenated string, ordered global -> per-family -> per-turn. That
+    boundary is the only lever on the provider's prefix cache, and merging them
+    back into one string would put a block that changes every turn in front of
+    2,100 characters that never change. See `context_budget`.
 
     `system_prompt` is the four-model pipeline's seam: when the dialogue model
     has already rendered its directive set into a finished system message, the
-    block concatenation below is skipped rather than duplicated. The history
-    window is still applied here either way, so the two pipelines can only
-    differ in the system message — which is the whole comparison.
+    block assembly below is skipped rather than duplicated. The recent-message
+    budget is applied here either way, so the two pipelines can only differ in
+    the system message — which is the whole comparison.
     """
     if system_prompt is not None:
-        return _assemble(system_prompt, history, history_window or HISTORY_WINDOW)
+        # The four-model branch marks its own cache seams (see
+        # DialoguePlan.system_parts); an older caller passing a plain string
+        # simply has no seams and lands in one message, as before.
+        parts = system_prompt.split(CACHE_SEAM)
+        parts += [""] * (3 - len(parts))
+        return _assemble(
+            parts[0], history, history_window,
+            per_family=parts[1], per_turn=parts[2],
+        )
 
-    system = NURI_PERSONA + NURI_JSON_SUFFIX
-    # Ordered most stable first, most per-turn last. OpenAI caches the longest
-    # identical prefix across calls, so a block that changes every turn placed
-    # early truncates the cache to whatever precedes it. style and profile
-    # barely move; internal_ctx is retrieved per question and sources are
-    # fetched fresh, so both belong at the end.
+    # Global first — persona, output contract and the operator style rules are
+    # identical for every parent, so this whole message is one cache prefix
+    # shared across all traffic.
+    shared = NURI_PERSONA + NURI_JSON_SUFFIX
     if style_ctx:
-        system += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
-    if profile_ctx:
-        system += f"\n\n这位家长的基本情况（来自注册信息）：\n{profile_ctx}"
-    if memory_ctx:
-        system += f"\n\n关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：\n{memory_ctx}"
-    if card_ctx:
-        system += f"\n\n本次对话相关内容：\n{card_ctx}"
-    if internal_ctx:
-        system += f"\n\n{internal_ctx}"
-    if sources_ctx:
-        # Last, and after the internal rules on purpose: external pages are the
-        # weakest tier of context NURI has, and the block itself says so.
-        system += f"\n\n{sources_ctx}"
-    return _assemble(system, history, history_window or HISTORY_WINDOW)
+        shared += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
+
+    per_family, per_turn = context_budget.build_sections(
+        child_profile=profile_ctx,
+        conversation_state=state_ctx,
+        memory=memory_ctx,
+        card=card_ctx,
+        internal=internal_ctx,
+        sources=sources_ctx,
+    )
+    return _assemble(
+        shared, history, history_window,
+        per_family=context_budget.render(per_family),
+        per_turn=context_budget.render(per_turn),
+    )
 
 
-def _assemble(system: str, history: list[dict], window: int) -> tuple[list[dict], int]:
-    """System message, few-shot pairs and the history window.
+def _assemble(
+    system: str, history: list[dict], window: Optional[int] = None,
+    per_family: str = "", per_turn: str = "",
+) -> tuple[list[dict], int]:
+    """System messages, few-shot pairs and the recent-message window.
 
     Shared by both branches above so the four-model pipeline and the linear one
     can still only differ in the system message.
 
-    The pairs go in front of the history window rather than next to the question
-    being answered. The obvious worry says otherwise: the window replays up to
-    twenty of NURI's own past replies, all of them written in the long bulleted
-    register the exemplars exist to replace, and they sit nearer the end. That
-    was measured against a history of real prior replies, and it does not
-    happen — both placements held 12/12 within the ceiling, and this one ran
-    shorter (median 108 characters against 134). It is also the only one of the
-    two that can be cached: the pairs stay adjacent to the system message, so a
-    run of turns on the same topic shares the prefix.
+    `window`, when given, overrides the turn count from `context_budget`; the
+    token ceiling always applies. The four-model pipeline's DialoguePlan carries
+    its own window, and a plan that has decided this turn needs less history
+    should not have that decision silently widened here.
+
+    The exemplar pairs go in front of the recent messages rather than next to
+    the question being answered. The obvious worry says otherwise: the window
+    replays NURI's own past replies, written in the long bulleted register the
+    exemplars exist to replace, and they sit nearer the end. That was measured
+    against a history of real prior replies, and it does not happen — both
+    placements held 12/12 within the ceiling, and this one ran shorter (median
+    108 characters against 134). It is also the only one of the two that can be
+    cached: the pairs stay adjacent to the system message, so a run of turns on
+    the same topic shares the prefix.
     """
     said = _user_texts(history)
     chosen = exemplars.select(said[0] if said else "", recent=said[1:])
@@ -298,14 +329,22 @@ def _assemble(system: str, history: list[dict], window: int) -> tuple[list[dict]
         system = f"{system}\n\n{exemplars.guard_for(said)}"
     elif exemplars.GLOBAL_CEILING:
         system = f"{system}\n\n{exemplars.CEILING_RULE}"
+    # Three messages, most stable first. Splitting rather than concatenating is
+    # the entire caching change: the first is identical across all traffic, the
+    # second across one family's turns, and only the third moves per question.
     msgs = [{"role": "system", "content": system}]
+    for block in (per_family, per_turn):
+        if block:
+            msgs.append({"role": "system", "content": block})
     shots = exemplars.as_messages(chosen)
     msgs.extend(shots)
-    for m in history[-window:]:
-        role = "user" if m["role"] == "user" else "assistant"
-        content = m.get("text") or ""
-        if content:
-            msgs.append({"role": role, "content": content})
+    for m in context_budget.recent_messages(
+        history, count=window or context_budget.RECENT_MESSAGES,
+    ):
+        msgs.append({
+            "role": "user" if m["role"] == "user" else "assistant",
+            "content": m.get("text") or "",
+        })
     return msgs, len(shots)
 
 
@@ -684,6 +723,7 @@ def nuri_reply_sync(
     metrics: Optional["_TurnMetrics"] = None,
     system_prompt: Optional[str] = None,
     history_window: Optional[int] = None,
+    state_ctx: str = "",
 ) -> dict:
     if not oai:
         return {
@@ -693,7 +733,8 @@ def nuri_reply_sync(
             "task_proposals": [],
         }
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
-                                  internal_ctx, sources_ctx, system_prompt, history_window)
+                                  internal_ctx, sources_ctx, system_prompt, history_window,
+                                  state_ctx)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -805,6 +846,7 @@ async def nuri_reply_stream(
     metrics: Optional["_TurnMetrics"] = None,
     system_prompt: Optional[str] = None,
     history_window: Optional[int] = None,
+    state_ctx: str = "",
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
@@ -816,7 +858,8 @@ async def nuri_reply_stream(
         }
         return
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
-                                  internal_ctx, sources_ctx, system_prompt, history_window)
+                                  internal_ctx, sources_ctx, system_prompt, history_window,
+                                  state_ctx)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
