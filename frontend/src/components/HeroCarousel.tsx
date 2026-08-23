@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Image,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+
 import type {
   PreparedLearningResource,
   PreparedResourcePair,
   ResourceReadiness,
 } from "@/src/api";
-import {
-  deliveryCategoryMeta,
-  recommendationLanguageLabel,
-  recommendationSourceLabel,
-  recommendationStageLabel,
-  recommendationTimeLabel,
-} from "@/src/recommendationPresentation";
 import { useT } from "@/src/i18n";
-import { cardReason } from "@/src/cardText";
 
 export type HeroCard = {
   id: string;
@@ -61,142 +62,110 @@ export type HeroCard = {
 };
 
 export type HeroFeedState = "loading" | "refreshing" | "personalized" | "curated";
+export type DailySelectionResource = PreparedLearningResource & { url: string };
 
 const EMPTY_CARDS: HeroCard[] = [];
-const FALLBACK_REASON =
-  "个性化推荐暂时不可用，以下是不限定孩子月龄的通用育儿资料";
+const CARD_GAP = 10;
 
-// These IDs all exist in the backend's reviewed content library. They are only
-// shown after personalization fails; loading has its own neutral skeleton so a
-// parent never sees an unrelated recommendation flash before the real result.
+// Used only when the personalized feed cannot produce a complete package. The
+// direct-link interaction remains usable without changing the backend shape.
 const FALLBACK_CARDS: HeroCard[] = [
   {
     id: "learn_serve_and_return",
-    title: "从观察和回应开始，建立日常亲子互动",
+    title: "用五个步骤理解亲子来回互动",
     publisher: "哈佛大学儿童发展中心",
-    topic: "connection",
-    topic_label: "亲子互动",
     content_category: "authority",
     content_category_label: "权威来源",
-    personalization_reason: FALLBACK_REASON,
-    resource_status: "reviewed",
-    resource_readiness: "unavailable",
+    resource_readiness: "ready",
     resource_pair_complete: false,
+    resources: [
+      {
+        id: "fallback-harvard-serve-return",
+        kind: "article",
+        title: "促进大脑发育的“发球与回球”互动：五个步骤",
+        publisher: "哈佛大学儿童发展中心",
+        language: "英文文章",
+        url: "https://developingchild.harvard.edu/resources/briefs/5-steps-for-brain-building-serve-and-return/",
+      },
+    ],
   },
   {
-    id: "learn_serve_and_return",
-    title: "把高质量陪伴放进每天的小片段",
-    publisher: "NURI 编辑精选",
-    topic: "connection",
-    topic_label: "亲子互动",
+    id: "learn_emotion_regulation",
+    title: "孩子崩溃尖叫时，父母可以怎么回应",
+    publisher: "亲子天下",
     content_category: "featured",
     content_category_label: "精选内容",
-    personalization_reason: FALLBACK_REASON,
-    resource_status: "reviewed",
-    resource_readiness: "unavailable",
+    resource_readiness: "ready",
     resource_pair_complete: false,
+    resources: [
+      {
+        id: "fallback-parenting-tantrum",
+        kind: "article",
+        title: "小孩崩溃尖叫怎么办？四句诀处理幼儿尖叫",
+        publisher: "亲子天下",
+        language: "繁体中文",
+        url: "https://www.parenting.com.tw/article/5087348",
+      },
+    ],
   },
   {
-    id: "learn_serve_and_return",
-    title: "看看其他家庭怎样在日常里回应孩子",
-    publisher: "NURI 真实家庭案例",
-    topic: "connection",
-    topic_label: "亲子互动",
+    id: "learn_child_connection",
+    title: "在家就能开始的亲子互动游戏",
+    publisher: "创作型育儿家庭",
     content_category: "case",
     content_category_label: "真实案例",
-    personalization_reason: FALLBACK_REASON,
-    resource_status: "reviewed",
-    resource_readiness: "unavailable",
+    resource_readiness: "ready",
     resource_pair_complete: false,
+    resources: [
+      {
+        id: "fallback-family-play-video",
+        kind: "video",
+        title: "在家玩什么？一到六岁孩子发展游戏",
+        publisher: "创作型育儿家庭",
+        language: "普通话视频",
+        url: "https://www.youtube.com/watch?v=6oEc7lrSTeA",
+      },
+    ],
   },
 ];
-
-const TOPIC_COLORS: Record<string, readonly [string, string]> = {
-  emotion: ["#4F4B9C", "#ADD2FD"],
-  sleep: ["#4B72B9", "#9ED8F0"],
-  food: ["#9A5B83", "#F3B992"],
-  language: ["#8861B1", "#E8B7D1"],
-  behavior: ["#52685E", "#B7D6AF"],
-  connection: ["#385E87", "#9FC5DD"],
-  safety: ["#7B526A", "#E7A8A8"],
-};
-
-const CATEGORY_COLORS: Record<string, readonly [string, string]> = {
-  authority: ["#426FA8", "#8AC9E2"],
-  featured: ["#6256A8", "#A5BCEF"],
-  case: ["#A55D74", "#F0A58F"],
-};
-
-const FALLBACK_COLORS: readonly [readonly [string, string], ...readonly [string, string][]] = [
-  ["#4F4B9C", "#ADD2FD"],
-  ["#4B72B9", "#9ED8F0"],
-  ["#8861B1", "#E8B7D1"],
-  ["#52685E", "#B7D6AF"],
-];
-
-function reviewedResourceCount(card: HeroCard): number {
-  const categories = card.resource_summary?.categories;
-  if (!categories) return 0;
-  return Object.values(categories).reduce(
-    (total, formats) =>
-      total + Object.values(formats).reduce((subtotal, count) => subtotal + count, 0),
-    0,
-  );
-}
-
-function resourceStatusText(card: HeroCard, feedState: HeroFeedState): string {
-  if (card.resource_readiness === "preparing") {
-    return "正在为你准备文章与视频";
-  }
-  if (card.resource_readiness === "retryable") {
-    return "准备稍有延迟，正在自动重试";
-  }
-  if (card.resource_readiness === "unavailable") {
-    return "暂未找到完整的文章与视频";
-  }
-  if (
-    card.resource_readiness === "ready" &&
-    card.resource_pair_complete === true
-  ) {
-    return "已准备 · 1 篇文章 · 1 个视频";
-  }
-  if (card.content_category) {
-    const formats = card.resource_summary?.categories?.[card.content_category];
-    if ((formats?.article || 0) > 0 && (formats?.video || 0) > 0) {
-      return "1 篇文章 · 1 个视频";
-    }
-    return card.resource_status === "research_on_open"
-      ? "打开后为你核验文章与视频"
-      : "正在补齐文章与视频";
-  }
-  if (feedState === "curated") return "已审校 · 可信精选";
-  if (card.resource_status === "research_on_open") return "打开后为你实时精选";
-  if (card.resource_status === "consent_required") return "已审校资源 · 可直接阅读";
-  if (card.resource_status === "urgent_suppressed") return "优先查看安全建议";
-  if (card.resource_status === "unavailable") return "已审校资源 · 可直接阅读";
-  const reviewedCount = reviewedResourceCount(card);
-  return reviewedCount > 0 ? `已审校 ${reviewedCount} 项资源` : "可信文章与视频";
-}
-
-function isCardReady(card: HeroCard): boolean {
-  return (
-    card.resource_readiness === "ready" &&
-    card.resource_pair_complete === true
-  );
-}
-
-function deliveryStatusText(card: HeroCard, feedState: HeroFeedState): string {
-  if (card.resource_readiness === "ready" && card.resource_pair_complete === true) {
-    return "内容已准备好 · 文章 + 视频";
-  }
-  if (card.resource_readiness === "preparing") return "正在准备文章与视频";
-  if (card.resource_readiness === "retryable") return "旧内容可读 · 新内容后台重试";
-  if (card.resource_readiness === "unavailable") return "暂未找到完整内容包";
-  return resourceStatusText(card, feedState);
-}
 
 function cardIdentity(card: HeroCard): string {
   return card.recommendation_id || `${card.id}:${card.content_category || "topic"}`;
+}
+
+function safeResources(card: HeroCard): DailySelectionResource[] {
+  return (card.resources || []).filter(
+    (resource): resource is DailySelectionResource =>
+      typeof resource?.url === "string" && /^https:\/\//i.test(resource.url),
+  );
+}
+
+/**
+ * A prepared recommendation currently contains one article and one video. The
+ * homepage card represents one external item, so alternate the preferred
+ * format by lane while preserving a deterministic single-kind fallback.
+ */
+export function dailySelectionResource(
+  card: HeroCard,
+  index: number,
+): DailySelectionResource | undefined {
+  const resources = safeResources(card);
+  if (!resources.length) return undefined;
+  const preferredKind = index % 2 === 1 ? "video" : "article";
+  return resources.find((resource) => resource.kind === preferredKind) || resources[0];
+}
+
+function ArrowIcon() {
+  if (Platform.OS === "web") {
+    return (
+      <Image
+        source={{ uri: "/homepage/daily-card-arrow.svg" }}
+        style={styles.arrowAsset}
+        resizeMode="contain"
+      />
+    );
+  }
+  return <Ionicons name="chevron-forward" size={28} color="#3A2F5A" />;
 }
 
 export default function HeroCarousel({
@@ -211,34 +180,33 @@ export default function HeroCarousel({
   width: number;
   cards?: HeroCard[];
   feedState?: HeroFeedState;
-  onCardPress: (card: HeroCard) => void;
+  onCardPress: (
+    card: HeroCard,
+    resource: DailySelectionResource | undefined,
+    position: number,
+  ) => void;
   onCardVisible?: (card: HeroCard, position: number) => void;
   visibilityScope?: string;
   initialContentCategory?: "authority" | "featured" | "case";
 }) {
-  const { t, locale } = useT();
+  const { t } = useT();
   const isRefreshing = feedState === "refreshing";
-  // Only the fallbacks are translated. A real card's title and publisher
-  // arrive from the server already in the family's language, and they take
-  // the same render path, so this is the one place the two can be told apart.
   const visibleCards =
-    feedState === "curated" && cards.length === 0
-      ? FALLBACK_CARDS.map((card) => ({
-          ...card,
-          title: t(card.title),
-          publisher: card.publisher ? t(card.publisher) : card.publisher,
-          topic_label: card.topic_label ? t(card.topic_label) : card.topic_label,
-          content_category_label: card.content_category_label
-            ? t(card.content_category_label)
-            : card.content_category_label,
-          personalization_reason: card.personalization_reason
-            ? t(card.personalization_reason)
-            : card.personalization_reason,
-        }))
-      : cards;
+    feedState === "curated" && cards.length === 0 ? FALLBACK_CARDS : cards;
+  const selections = useMemo(
+    () =>
+      visibleCards.map((card, index) => ({
+        card,
+        resource: dailySelectionResource(card, index),
+      })),
+    [visibleCards],
+  );
   const cardSignature = useMemo(
-    () => visibleCards.map(cardIdentity).join("|"),
-    [visibleCards]
+    () =>
+      selections
+        .map(({ card, resource }) => `${cardIdentity(card)}:${resource?.id || "pending"}`)
+        .join("|"),
+    [selections],
   );
   const initialIndex = Math.max(
     0,
@@ -252,12 +220,16 @@ export default function HeroCarousel({
   const page =
     pageState.signature === exposureSignature ? pageState.index : initialIndex;
   const setPage = (index: number) =>
-    setPageState({ signature: exposureSignature, index });
+    setPageState((current) =>
+      current.signature === exposureSignature && current.index === index
+        ? current
+        : { signature: exposureSignature, index },
+    );
   const scrollRef = useRef<ScrollView>(null);
   const onCardVisibleRef = useRef(onCardVisible);
   const lastVisibilityKeyRef = useRef("");
   const visibilityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pageWidth = width + 12;
+  const pageWidth = width + CARD_GAP;
 
   useEffect(() => {
     onCardVisibleRef.current = onCardVisible;
@@ -276,7 +248,7 @@ export default function HeroCarousel({
     if (feedState === "loading") return;
     const visibleCard = visibleCards[page];
     if (!visibleCard) return;
-    const visibilityKey = `${visibilityScope}:${cardSignature}:${page}:${visibleCard.recommendation_id || visibleCard.id}`;
+    const visibilityKey = `${visibilityScope}:${cardSignature}:${page}:${cardIdentity(visibleCard)}`;
     if (lastVisibilityKeyRef.current === visibilityKey) return;
     visibilityTimerRef.current = setTimeout(() => {
       lastVisibilityKeyRef.current = visibilityKey;
@@ -291,12 +263,6 @@ export default function HeroCarousel({
     };
   }, [cardSignature, feedState, page, visibilityScope, visibleCards]);
 
-  const goToPage = (index: number) => {
-    const clamped = Math.max(0, Math.min(visibleCards.length - 1, index));
-    scrollRef.current?.scrollTo({ x: clamped * pageWidth, animated: true });
-    setPage(clamped);
-  };
-
   if (feedState === "loading") {
     return (
       <View
@@ -305,17 +271,18 @@ export default function HeroCarousel({
         accessibilityLabel={t("正在根据最近对话准备推荐")}
         testID="home-hero-loading"
       >
-        <View style={[styles.loadingCard, { width }]}>
-          <View style={[styles.skeletonLine, styles.skeletonEyebrow]} />
+        <LinearGradient
+          colors={["#FFE1D6", "#FFF9F3", "#DFE3FF"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.loadingCard, { width }]}
+        >
+          <View style={[styles.skeletonLine, styles.skeletonTag]} />
           <View style={[styles.skeletonLine, styles.skeletonTitle]} />
           <View style={[styles.skeletonLine, styles.skeletonTitleShort]} />
-          <View style={[styles.skeletonLine, styles.skeletonReason]} />
           <View style={{ flex: 1 }} />
           <Text style={styles.loadingText}>{t("正在根据最近对话挑选内容…")}</Text>
-        </View>
-        <View style={styles.dots}>
-          <View style={[styles.dot, styles.dotLoading]} />
-        </View>
+        </LinearGradient>
       </View>
     );
   }
@@ -323,130 +290,75 @@ export default function HeroCarousel({
   if (visibleCards.length === 0) return null;
 
   return (
-    <View>
+    <View style={styles.carouselWrap}>
       <ScrollView
         ref={scrollRef}
         horizontal
         showsHorizontalScrollIndicator={false}
         snapToInterval={pageWidth}
+        snapToAlignment="start"
         decelerationRate="fast"
         disableIntervalMomentum
-        scrollEnabled
-        contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+        contentContainerStyle={styles.carouselContent}
         onScroll={(event) =>
           setPage(
             Math.max(
               0,
               Math.min(
                 visibleCards.length - 1,
-                Math.round(event.nativeEvent.contentOffset.x / pageWidth)
-              )
-            )
+                Math.round(event.nativeEvent.contentOffset.x / pageWidth),
+              ),
+            ),
           )
         }
-        onMomentumScrollEnd={(event) => {
-          if (Platform.OS === "web") {
-            goToPage(Math.round(event.nativeEvent.contentOffset.x / pageWidth));
-          }
-        }}
         scrollEventThrottle={16}
+        testID="home-daily-selection-carousel"
       >
-        {visibleCards.map((card, index) => {
-          const cardReady = isCardReady(card);
-          const cardPreparing = card.resource_readiness === "preparing";
-          const cardRetryable = card.resource_readiness === "retryable";
-          const categoryMeta = deliveryCategoryMeta(card.content_category);
-          // These four return the Simplified source as a key; they are
-          // module-level and cannot reach the hook themselves.
-          const sourceLabel = t(recommendationSourceLabel(card));
-          const languageLabel = recommendationLanguageLabel(card, t);
-          const timeLabel = recommendationTimeLabel(card, t);
-          const stageLabel = t(recommendationStageLabel(card));
-          const colors =
-            card.colors ||
-            CATEGORY_COLORS[card.content_category || ""] ||
-            TOPIC_COLORS[card.topic || ""] ||
-            FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+        {selections.map(({ card, resource }, index) => {
+          const cardReady = Boolean(resource);
+          const title = resource?.title || card.delivery_title || card.title;
+          const tag = resource
+            ? resource.kind === "video"
+              ? t("精选视频")
+              : t("精选文章")
+            : t("内容准备中");
           return (
             <Pressable
-              key={cardIdentity(card)}
-              onPress={() => onCardPress(card)}
+              key={`${cardIdentity(card)}:${resource?.id || "pending"}`}
+              onPress={() => onCardPress(card, resource, index + 1)}
+              disabled={!cardReady}
               style={{ width }}
-              accessibilityRole="button"
+              accessibilityRole="link"
               accessibilityLabel={
-                isRefreshing
-                  ? `打开当前显示的内容：${card.title}`
-                  : cardPreparing
-                    ? `正在准备内容：${card.title}`
-                    : cardRetryable
-                      ? `重试准备内容：${card.title}`
-                    : cardReady
-                      ? `浏览内容：${card.title}`
-                      : `内容暂不可用：${card.title}`
+                cardReady ? `${tag}：${title}` : `${t("内容准备中")}：${title}`
               }
-              accessibilityState={{
-                busy: cardPreparing,
-              }}
+              accessibilityState={{ disabled: !cardReady, busy: !cardReady }}
               testID={`home-hero-card-${card.id}-${card.content_category || "topic"}`}
             >
               <LinearGradient
-                colors={colors}
+                colors={["#FFE0D4", "#FFF9F3", "#DDE2FF"]}
+                locations={[0, 0.56, 1]}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
+                end={{ x: 1, y: 1 }}
                 style={styles.heroCard}
               >
-                <View style={styles.decoCloudOne} />
-                <View style={styles.decoCloudTwo} />
-                <View style={styles.decoCloudThree} />
-                <View style={styles.categoryRow}>
-                  <Ionicons name={categoryMeta.icon} size={14} color="#FFFFFF" />
-                  <Text style={styles.eyebrow}>{t(categoryMeta.label)}</Text>
-                  <Text style={styles.categoryPromise} numberOfLines={1}>
-                    {t(categoryMeta.promise)}
-                  </Text>
+                <View style={styles.tagPill}>
+                  <Text style={styles.tagText}>{tag}</Text>
                 </View>
-                <Text style={styles.heroTitle} numberOfLines={2}>
-                  {card.delivery_title || card.title}
+                <Text style={styles.heroTitle} numberOfLines={3}>
+                  {title}
                 </Text>
-                <Text style={styles.heroSub} numberOfLines={2}>
-                  {cardReason(card, locale) || card.summary || card.publisher}
-                </Text>
-                <View style={styles.sourceRow}>
-                  <Ionicons
-                    name="business-outline"
-                    size={12}
-                    color="rgba(255,255,255,0.9)"
-                  />
-                  <Text style={styles.sourceText} numberOfLines={1}>
-                    {sourceLabel}
-                  </Text>
-                </View>
-                <View style={styles.metaChips}>
-                  {[languageLabel, timeLabel, stageLabel].map((label) => (
-                    <View key={label} style={styles.metaChip}>
-                      <Text style={styles.metaChipText} numberOfLines={1}>
-                        {label}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
                 <View style={{ flex: 1 }} />
                 <View style={styles.cardFooter}>
-                  <View style={styles.resourceStatus}>
-                    <Text style={styles.resourceStatusText} numberOfLines={1}>
-                      {t(deliveryStatusText(card, feedState))}
-                    </Text>
-                  </View>
-                  <View style={[styles.heroBtn, !cardReady && styles.heroBtnDisabled]}>
-                    <Text style={[styles.heroBtnText, !cardReady && styles.heroBtnTextDisabled]}>
-                      {cardPreparing
-                        ? t("查看导读")
-                        : card.resource_readiness === "retryable"
-                          ? t("打开当前内容")
-                          : card.resource_readiness === "unavailable"
-                            ? t("查看内容导读")
-                            : t("打开学习胶囊")}
-                    </Text>
+                  <Text style={styles.ctaText}>
+                    {cardReady ? t("点击查看更多") : t("正在准备内容")}
+                  </Text>
+                  <View style={[styles.arrowButton, !cardReady && styles.arrowButtonDisabled]}>
+                    {cardReady ? (
+                      <ArrowIcon />
+                    ) : (
+                      <Ionicons name="hourglass-outline" size={22} color="#8A839F" />
+                    )}
                   </View>
                 </View>
               </LinearGradient>
@@ -454,280 +366,134 @@ export default function HeroCarousel({
           );
         })}
       </ScrollView>
-      {visibleCards.length > 1 ? (
-        <View pointerEvents="box-none" style={styles.arrowLayer}>
-          <Pressable
-            onPress={() => goToPage(page - 1)}
-            disabled={page === 0}
-            hitSlop={8}
-            style={[
-              styles.arrowButton,
-              page === 0 && styles.arrowButtonDisabled,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={t("上一条推荐")}
-            accessibilityState={{ disabled: page === 0 }}
-            testID="hero-carousel-prev"
-          >
-            <Ionicons name="chevron-back" size={18} color="#302A56" />
-          </Pressable>
-          <Pressable
-            onPress={() => goToPage(page + 1)}
-            disabled={page === visibleCards.length - 1}
-            hitSlop={8}
-            style={[
-              styles.arrowButton,
-              page === visibleCards.length - 1 &&
-                styles.arrowButtonDisabled,
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={t("下一条推荐")}
-            accessibilityState={{
-              disabled: page === visibleCards.length - 1,
-            }}
-            testID="hero-carousel-next"
-          >
-            <Ionicons name="chevron-forward" size={18} color="#302A56" />
-          </Pressable>
-        </View>
-      ) : null}
       {isRefreshing ? (
         <View
           pointerEvents="none"
-          style={styles.backgroundUpdatePill}
+          style={styles.refreshPill}
           accessibilityLiveRegion="polite"
           testID="home-hero-refreshing"
         >
-          <Ionicons name="sync-outline" size={13} color="#4F4B9C" />
-          <Text style={styles.backgroundUpdateText}>
-            {t("正在后台准备最新推荐，当前内容仍可打开")}
-          </Text>
+          <Text style={styles.refreshText}>{t("正在更新每日精选…")}</Text>
         </View>
       ) : null}
-      <View style={styles.dots}>
-        {visibleCards.map((card, index) => (
-          <View key={cardIdentity(card)} style={[styles.dot, page === index && styles.dotActive]} />
-        ))}
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  carouselWrap: {
+    width: "100%",
+    overflow: "visible",
+  },
+  carouselContent: {
+    paddingLeft: 17,
+    paddingRight: 17,
+    gap: CARD_GAP,
+  },
   loadingWrap: {
-    paddingHorizontal: 16,
+    paddingLeft: 17,
   },
   loadingCard: {
-    minHeight: 252,
-    borderRadius: 12,
-    padding: 23,
-    backgroundColor: "#DCE2F0",
+    height: 236,
+    borderRadius: 36,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.10)",
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 8,
     overflow: "hidden",
   },
   skeletonLine: {
-    borderRadius: 5,
-    backgroundColor: "rgba(255,255,255,0.68)",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.78)",
   },
-  skeletonEyebrow: { width: 118, height: 9 },
-  skeletonTitle: { width: "76%", height: 22, marginTop: 15 },
-  skeletonTitleShort: { width: "56%", height: 22, marginTop: 7 },
-  skeletonReason: { width: "68%", height: 11, marginTop: 14 },
+  skeletonTag: { width: 107, height: 34 },
+  skeletonTitle: { width: "88%", height: 24, marginTop: 18 },
+  skeletonTitleShort: { width: "62%", height: 24, marginTop: 8 },
   loadingText: {
-    color: "#555A78",
-    fontSize: 12,
-    fontWeight: "600",
+    color: "#5B5272",
+    fontFamily: "NotoSansSC_600SemiBold",
+    fontSize: 13,
   },
-  dotLoading: { width: 41, backgroundColor: "rgba(90,92,130,0.28)" },
   heroCard: {
-    minHeight: 252,
-    borderRadius: 12,
-    padding: 23,
+    height: 236,
+    borderRadius: 36,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.10)",
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 8,
     overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 2, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
+    shadowColor: "#000000",
+    shadowOffset: { width: -2, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
     elevation: 2,
   },
-  backgroundUpdatePill: {
-    minHeight: 28,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 7,
-    paddingHorizontal: 11,
-    paddingVertical: 5,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#D8D2F2",
-    backgroundColor: "rgba(247,245,255,0.96)",
-  },
-  backgroundUpdateText: {
-    color: "#4F4B9C",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  arrowLayer: {
-    position: "absolute",
-    top: 104,
-    left: 8,
-    right: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  arrowButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+  tagPill: {
+    width: 107,
+    minHeight: 34,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.92)",
-    shadowColor: "#241F48",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.16,
-    shadowRadius: 4,
-    elevation: 3,
+    backgroundColor: "#FFF9F3",
   },
-  arrowButtonDisabled: { opacity: 0.32 },
-  decoCloudOne: {
-    position: "absolute",
-    right: -20,
-    top: -4,
-    width: 132,
-    height: 96,
-    borderRadius: 52,
-    backgroundColor: "rgba(50,72,175,0.28)",
-  },
-  decoCloudTwo: {
-    position: "absolute",
-    right: 18,
-    top: 32,
-    width: 110,
-    height: 100,
-    borderRadius: 55,
-    backgroundColor: "rgba(56,64,160,0.32)",
-  },
-  decoCloudThree: {
-    position: "absolute",
-    right: 46,
-    top: 15,
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "rgba(255,255,255,0.15)",
-  },
-  eyebrow: {
-    color: "#FFFFFF",
-    fontSize: 11,
-    fontWeight: "800",
-  },
-  categoryRow: {
-    maxWidth: 286,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  categoryPromise: {
-    flexShrink: 1,
-    paddingLeft: 6,
-    borderLeftWidth: 1,
-    borderLeftColor: "rgba(255,255,255,0.45)",
-    color: "rgba(255,255,255,0.82)",
-    fontSize: 9,
-    fontWeight: "600",
+  tagText: {
+    color: "#261B45",
+    fontFamily: "NotoSansSC_400Regular",
+    fontSize: 12,
+    lineHeight: 18,
   },
   heroTitle: {
-    color: "#FFFFFF",
+    marginTop: 12,
+    color: "#261B45",
+    fontFamily: "NotoSansSC_400Regular",
     fontSize: 20,
-    fontWeight: "700",
-    lineHeight: 24,
-    marginTop: 8,
-    maxWidth: 270,
+    lineHeight: 28,
   },
-  heroSub: {
-    color: "rgba(255,255,255,0.88)",
-    fontSize: 11,
-    lineHeight: 16,
-    marginTop: 4,
-    maxWidth: 235,
-  },
-  sourceRow: {
-    maxWidth: 254,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 6,
-  },
-  sourceText: {
-    flexShrink: 1,
-    color: "rgba(255,255,255,0.92)",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  metaChips: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    marginTop: 7,
-    maxWidth: 300,
-  },
-  metaChip: {
-    minWidth: 0,
-    maxWidth: 108,
-    flexShrink: 1,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.17)",
-  },
-  metaChipText: {
-    color: "rgba(255,255,255,0.94)",
-    fontSize: 9,
-    fontWeight: "600",
-  },
-  heroBtn: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  heroBtnDisabled: {
-    backgroundColor: "rgba(255,255,255,0.66)",
-  },
-  heroBtnText: { color: "#1A1A2E", fontSize: 12, fontWeight: "700" },
-  heroBtnTextDisabled: { color: "#555A78" },
   cardFooter: {
-    marginTop: 8,
+    minHeight: 55,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
   },
-  resourceStatus: {
-    flexShrink: 1,
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    backgroundColor: "rgba(255,255,255,0.17)",
+  ctaText: {
+    flex: 1,
+    color: "#3A2F5A",
+    fontFamily: "NotoSansSC_700Bold",
+    fontSize: 14,
+    lineHeight: 20,
+    letterSpacing: 0.56,
   },
-  resourceStatusText: {
-    color: "rgba(255,255,255,0.94)",
-    fontSize: 10,
-    fontWeight: "600",
-  },
-  dots: {
-    flexDirection: "row",
+  arrowButton: {
+    width: 55,
+    height: 55,
+    borderRadius: 28,
+    alignItems: "center",
     justifyContent: "center",
-    gap: 2,
-    marginTop: 8,
-    marginBottom: 2,
+    backgroundColor: "#FFFFFF",
   },
-  dot: {
-    width: 41,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: "rgba(218,218,218,0.63)",
+  arrowButtonDisabled: {
+    opacity: 0.66,
   },
-  dotActive: { backgroundColor: "#3A2F5A" },
+  arrowAsset: {
+    width: 12,
+    height: 27,
+  },
+  refreshPill: {
+    position: "absolute",
+    left: 38,
+    bottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,243,0.92)",
+  },
+  refreshText: {
+    color: "#5B5272",
+    fontFamily: "NotoSansSC_600SemiBold",
+    fontSize: 10,
+  },
 });

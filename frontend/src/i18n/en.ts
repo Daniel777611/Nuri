@@ -96,6 +96,31 @@ export const en: Record<string, string> = {
 
   // ── Home ───────────────────────────────────────────────────────────────────
   "欢迎，{nickname}！": "Welcome, {nickname}!",
+  "欢迎！{nickname}": "Welcome! {nickname}",
+  "每日精选": "Daily Selection",
+  "NURI之家": "NURI's Home",
+  "精选文章": "Selected Article",
+  "精选视频": "Selected Video",
+  "点击查看更多": "Tap to learn more",
+  "正在准备内容": "Preparing content",
+  "内容准备中": "Content is being prepared",
+  "正在更新每日精选…": "Refreshing your daily selections…",
+  "正在更新每日精选...": "Refreshing your daily selections...",
+  "和我聊聊": "Talk with me",
+  "对话": "Chat",
+  "任务": "Tasks",
+  "社区": "Community",
+  "你还记得我们上次谈到“{excerpt}”吗？最近怎么样？":
+    "Do you remember when we last talked about “{excerpt}”? How has it been going?",
+  "你还记得我们上次分享的那张图片吗？最近怎么样？":
+    "Do you remember the image we shared last time? How has it been going?",
+  "上次的对话暂时没能加载，点一下再试试。":
+    "Our last conversation could not load just now. Tap to try again.",
+  "正在整理我们上次的对话…": "Getting our last conversation ready…",
+  "今天想聊聊什么？我在这里陪你。": "What would you like to talk about today? I'm here.",
+  "这项每日精选还在准备中，请稍后再试":
+    "This daily selection is still being prepared. Please try again shortly.",
+  "个人资料": "Profile",
   "今日任务": "Today's tasks",
   "您已坚持打卡{days}天！加油！": "{days} days in a row. Keep going!",
   "完成一件任务，就开始打卡啦！": "Finish one task to start your streak!",

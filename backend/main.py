@@ -59,6 +59,7 @@ from backend.nuri_core import outcome as core_outcome
 from backend.nuri_core import outcome_store as core_outcome_store
 from backend.nuri_core import provenance as core_provenance
 from backend.nuri_core import state_store as core_state_store
+from backend.nuri_core import temporal as core_temporal
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
     get_provider as get_search_provider,
@@ -479,9 +480,27 @@ class StartChatRequest(BaseModel):
     title:      Optional[str] = None
     script_key: Optional[str] = None
 
+class ClientContext(BaseModel):
+    timezone: str = core_temporal.DEFAULT_TIMEZONE
+    # Diagnostic mirrors of the client clock.  The server never trusts these
+    # for date arithmetic; `timezone` + the frozen server clock above is the
+    # authority.  Keeping the declared contract prevents silently discarding
+    # the fields newer clients already send.
+    utc_offset_minutes: Optional[int] = Field(None, ge=-14 * 60, le=14 * 60)
+    locale: Optional[str] = Field(None, max_length=32)
+    local_datetime: Optional[str] = Field(None, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        return core_temporal.validate_timezone(value)
+
 class UserMessageIn(BaseModel):
     text:         Optional[str] = ""
     image_base64: Optional[str] = None
+    # Optional for backward compatibility. Old clients get an explicit UTC
+    # timeline rather than an inferred timezone based on city or locale.
+    client_context: Optional[ClientContext] = None
 
 class TaskCreate(BaseModel):
     title:       str
@@ -3104,6 +3123,7 @@ class _Turn(NamedTuple):
     msgs: list
     context_hints: dict
     fix_text: Optional[str]
+    temporal: core_temporal.TemporalContext
 
 
 async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
@@ -3111,12 +3131,21 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
     session = await _load_owned_session(session_id, uid, sb)
     owner_uid = uid or session.get("user_id")
 
+    requested_timezone = (
+        body.client_context.timezone if body.client_context else None
+    )
+    turn_now = core_temporal.parse_created_at(_now())
+    temporal_context = core_temporal.build_context(
+        requested_timezone, now_utc=turn_now,
+    )
+
     user_msg = {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "user",
         "text": body.text or ("[图片]" if body.image_base64 else ""),
         "image_base64": body.image_base64,
-        "quick_replies": [], "transition": None, "created_at": _now(),
+        "quick_replies": [], "transition": None,
+        "created_at": temporal_context.server_utc.isoformat(),
     }
 
     profile, children = await core_family_store.load_profile(owner_uid)
@@ -3138,7 +3167,7 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
             await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(user_msg).execute())
             mr = await anyio.to_thread.run_sync(
                 lambda: sb.table("chat_messages")
-                .select("role,text,transition")
+                .select("role,text,transition,created_at")
                 .eq("session_id", session_id)
                 .order("created_at", desc=False)
                 .execute()
@@ -3160,7 +3189,10 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
 
     user_turns = sum(1 for m in msgs if m["role"] == "user")
     await _maybe_set_title(session, session_id, body, fix_text, user_turns)
-    return _Turn(session, owner_uid, user_msg, msgs, context_hints, fix_text)
+    return _Turn(
+        session, owner_uid, user_msg, msgs, context_hints, fix_text,
+        temporal_context,
+    )
 
 
 async def _maybe_set_title(
@@ -3315,7 +3347,8 @@ async def _route_and_search(
     """
     started = time.perf_counter()
     route = await route_turn(
-        turn.msgs, client=aoai, child_context=profile_ctx,
+        core_temporal.annotate_history(turn.msgs, turn.temporal),
+        client=aoai, child_context=profile_ctx,
     )
     if metrics:
         metrics.mark("route_ms", started)
@@ -3400,7 +3433,9 @@ async def _reply_context_four_model(
             metrics.set(**route_metrics(route))
 
     bundle: TurnBundle = await run_turn_context(
-        history=turn.msgs,
+        # The router/knowledge branch must see the same trusted timeline as
+        # the final reply model.  The stored transcript remains untouched.
+        history=core_temporal.annotate_history(turn.msgs, turn.temporal),
         user_text=body.text or "",
         uid=turn.owner_uid,
         context_hints=turn.context_hints,
@@ -3505,33 +3540,35 @@ def _plan_prompt(rc: _ReplyContext) -> tuple[Optional[str], Optional[int]]:
 
 
 async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
-    """Close the four-model loop once the reply has already been delivered.
+    """Close the learning loop once the reply has already been delivered.
 
-    Two writes, both optional. `outcome.record` opens a learning row that a
+    The four-model-only writes are optional. `outcome.record` opens a learning row that a
     later signal — a `#fix`, an adopted task, a "没帮上忙" — attaches itself to;
     `provenance.persist` stores the trace this branch exists to compare. Either
     can fail without the parent noticing, which is why both run here and not on
-    the reply path.
+    the reply path. The rolling conversation summary is shared by both reply
+    pipelines, so it must not sit behind the four-model trace guard.
     """
-    if rc.plan is None or rc.trace is None:
-        return
-    ports = _core_ports()
-    await core_outcome.record(
-        uid=turn.owner_uid,
-        session_id=session_id,
-        turn_id=rc.trace.turn_id,
-        topic=getattr(rc.evidence, "topic", "") or "",
-        risk_tier=getattr(rc.evidence, "risk_tier", "none"),
-        directive_ids=rc.trace.directive_ids,
-        ports=ports,
-    )
-    await core_provenance.persist(
-        rc.trace, session_id=session_id, user_id=turn.owner_uid, ports=ports,
-    )
-    # Third optional write, and the one that pays for the short window: fold
+    if rc.plan is not None and rc.trace is not None:
+        ports = _core_ports()
+        await core_outcome.record(
+            uid=turn.owner_uid,
+            session_id=session_id,
+            turn_id=rc.trace.turn_id,
+            topic=getattr(rc.evidence, "topic", "") or "",
+            risk_tier=getattr(rc.evidence, "risk_tier", "none"),
+            directive_ids=rc.trace.directive_ids,
+            ports=ports,
+        )
+        await core_provenance.persist(
+            rc.trace, session_id=session_id, user_id=turn.owner_uid, ports=ports,
+        )
+    # This write pays for the short window: fold
     # what has fallen out of it into the session summary. Only fires once the
     # dropped span passes the refresh threshold, so most turns do nothing.
-    await core_state_store.refresh_if_needed(session_id, turn.msgs)
+    await core_state_store.refresh_if_needed(
+        session_id, turn.msgs, temporal_context=turn.temporal,
+    )
 
 
 async def _task_suggestion(
@@ -3674,6 +3711,7 @@ async def post_message(
                 turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                 rc.internal, rc.sources, metrics, system_prompt, history_window,
                 rc.state,
+                temporal_context=turn.temporal,
             )
         )
         ai_text = reply["text"]
@@ -3699,7 +3737,9 @@ async def post_message(
 
     if oai and turn.owner_uid:
         background_tasks.add_task(
-            core_family.extract_and_upsert_memories, turn.msgs + [ai_msg], turn.owner_uid, session_id
+            core_family.extract_and_upsert_memories,
+            turn.msgs + [ai_msg], turn.owner_uid, session_id,
+            temporal_context=turn.temporal,
         )
 
     return {"user_message": turn.user_msg, "ai_messages": [ai_msg]}
@@ -3741,6 +3781,7 @@ async def post_message_stream(
                     turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                     rc.internal, rc.sources, metrics, system_prompt, history_window,
                     rc.state,
+                    temporal_context=turn.temporal,
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})
@@ -3774,7 +3815,10 @@ async def post_message_stream(
             if aoai and not turn.fix_text:
                 finished["metrics_reply"] = ai_text
             if oai and turn.owner_uid:
-                finished["memory_args"] = (turn.msgs + [ai_msg], turn.owner_uid, session_id)
+                finished["memory_args"] = (
+                    turn.msgs + [ai_msg], turn.owner_uid, session_id,
+                )
+                finished["memory_kwargs"] = {"temporal_context": turn.temporal}
         except Exception as e:
             print(f"[error] post_message_stream failed: {type(e).__name__}: {e}")
             metrics.set(status="error", error=f"{type(e).__name__}: {e}"[:500])
@@ -3795,7 +3839,9 @@ async def post_message_stream(
             await _after_turn(rc, turn, session_id)
         args = finished.get("memory_args")
         if args:
-            await core_family.extract_and_upsert_memories(*args)
+            await core_family.extract_and_upsert_memories(
+                *args, **finished.get("memory_kwargs", {}),
+            )
 
     return StreamingResponse(
         events(),

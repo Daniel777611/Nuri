@@ -29,7 +29,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import family_store
+from backend.nuri_core import family_store, temporal
 from backend.nuri_core.contracts import FamilyState
 from backend.nuri_core.ports import CorePorts
 
@@ -179,6 +179,7 @@ async def enrich(
 
 async def extract_and_upsert_memories(
     history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
+    *, temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> None:
     """Learn what this turn revealed about the family, and drop the cache.
 
@@ -195,7 +196,7 @@ async def extract_and_upsert_memories(
         return
     try:
         extracted = await anyio.to_thread.run_sync(
-            lambda: family_store.extract_memories_sync(history)
+            lambda: family_store.extract_memories_sync(history, temporal_context)
         )
         memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
         await family_store.upsert_memories(
@@ -204,7 +205,8 @@ async def extract_and_upsert_memories(
         )
         if isinstance(extracted, dict):
             await family_store.upsert_follow_ups(
-                extracted.get("follow_ups", []), user_id=user_id, source_id=source_id,
+                extracted.get("follow_ups", []), user_id=user_id,
+                source_id=source_id, temporal_context=temporal_context,
             )
         invalidate(user_id)
     except Exception as e:

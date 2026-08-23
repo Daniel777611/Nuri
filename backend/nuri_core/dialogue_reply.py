@@ -25,7 +25,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import context_budget, exemplars, knowledge_store
+from backend.nuri_core import context_budget, exemplars, knowledge_store, temporal
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
@@ -242,6 +242,7 @@ def nuri_messages(
     profile_ctx: str = "", style_ctx: str = "", internal_ctx: str = "",
     sources_ctx: str = "", system_prompt: Optional[str] = None,
     history_window: Optional[int] = None, state_ctx: str = "",
+    temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> tuple[list[dict], int]:
     """Assemble the prompt: system messages, few-shot pairs, recent turns.
 
@@ -267,9 +268,14 @@ def nuri_messages(
         # simply has no seams and lands in one message, as before.
         parts = system_prompt.split(CACHE_SEAM)
         parts += [""] * (3 - len(parts))
+        per_turn = parts[2]
+        if temporal_context is not None:
+            clock = temporal.prompt_block(temporal_context)
+            per_turn = f"{per_turn}\n\n{clock}" if per_turn else clock
         return _assemble(
             parts[0], history, history_window,
-            per_family=parts[1], per_turn=parts[2],
+            per_family=parts[1], per_turn=per_turn,
+            temporal_context=temporal_context,
         )
 
     # Global first — persona, output contract and the operator style rules are
@@ -287,16 +293,22 @@ def nuri_messages(
         internal=internal_ctx,
         sources=sources_ctx,
     )
+    per_turn_text = context_budget.render(per_turn)
+    if temporal_context is not None:
+        clock = temporal.prompt_block(temporal_context)
+        per_turn_text = f"{per_turn_text}\n\n{clock}" if per_turn_text else clock
     return _assemble(
         shared, history, history_window,
         per_family=context_budget.render(per_family),
-        per_turn=context_budget.render(per_turn),
+        per_turn=per_turn_text,
+        temporal_context=temporal_context,
     )
 
 
 def _assemble(
     system: str, history: list[dict], window: Optional[int] = None,
     per_family: str = "", per_turn: str = "",
+    temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> tuple[list[dict], int]:
     """System messages, few-shot pairs and the recent-message window.
 
@@ -338,12 +350,21 @@ def _assemble(
             msgs.append({"role": "system", "content": block})
     shots = exemplars.as_messages(chosen)
     msgs.extend(shots)
-    for m in context_budget.recent_messages(
+    recent = context_budget.recent_messages(
         history, count=window or context_budget.RECENT_MESSAGES,
-    ):
+    )
+    for index, m in enumerate(recent):
+        content = m.get("text") or ""
+        if temporal_context is not None:
+            content = temporal.annotate_message(
+                content,
+                m.get("created_at"),
+                temporal_context,
+                current=(index == len(recent) - 1 and m.get("role") == "user"),
+            )
         msgs.append({
             "role": "user" if m["role"] == "user" else "assistant",
-            "content": m.get("text") or "",
+            "content": content,
         })
     return msgs, len(shots)
 
@@ -724,6 +745,7 @@ def nuri_reply_sync(
     system_prompt: Optional[str] = None,
     history_window: Optional[int] = None,
     state_ctx: str = "",
+    temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> dict:
     if not oai:
         return {
@@ -734,7 +756,7 @@ def nuri_reply_sync(
         }
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
                                   internal_ctx, sources_ctx, system_prompt, history_window,
-                                  state_ctx)
+                                  state_ctx, temporal_context)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {
@@ -847,6 +869,7 @@ async def nuri_reply_stream(
     system_prompt: Optional[str] = None,
     history_window: Optional[int] = None,
     state_ctx: str = "",
+    temporal_context: Optional[temporal.TemporalContext] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
@@ -859,7 +882,7 @@ async def nuri_reply_stream(
         return
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
                                   internal_ctx, sources_ctx, system_prompt, history_window,
-                                  state_ctx)
+                                  state_ctx, temporal_context)
     if metrics:
         metrics.set(model="gpt-5.5")
         metrics.record_prompt(msgs, {

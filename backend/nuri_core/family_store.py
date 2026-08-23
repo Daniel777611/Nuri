@@ -28,7 +28,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import context_budget
+from backend.nuri_core import context_budget, temporal
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
@@ -281,20 +281,27 @@ async def save_normalized_input(
     except Exception as e:
         print(f"[warn] save_normalized_input: {e}")
 
-def extract_memories_sync(history: list[dict]) -> dict:
+def extract_memories_sync(
+    history: list[dict],
+    temporal_context: Optional[temporal.TemporalContext] = None,
+) -> dict:
     """Ask a small model whether this conversation contains stable, reusable facts."""
     if not oai:
         return {"memories": [], "follow_ups": []}
+    recent = history[-8:]
+    if temporal_context is not None:
+        recent = temporal.annotate_history(recent, temporal_context)
     convo = "\n".join(
         f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
-        for m in history[-8:] if m.get("text")
+        for m in recent if m.get("text")
     )
     if not convo.strip():
         return {"memories": [], "follow_ups": []}
     system = (
         "从下面这段育儿助手对话里提取两种东西。两者都没有就都返回空数组，不要勉强凑数。\n\n"
         "memories：值得长期记住的、稳定的事实——长期偏好、过敏史、育儿理念上的坚持、"
-        "孩子的持续性状态。不要提取一次性的、当下情绪化的、或还不确定的内容。\n\n"
+        "孩子的持续性状态。不要提取一次性的、当下情绪化的、或还不确定的内容。"
+        "如果 value 中必须保留时间，把相对时间改成绝对日期或明确持续时长；无法确定就写具体日期未确认。\n\n"
         "follow_ups：过一段时间值得回头关心一次的事。包括家长提到的有日期的安排"
         "（几号开始托婴、哪天回诊、下周满两岁），也包括正在进行、需要一段时间才看得出结果的事"
         "（在戒尿布、刚换睡眠作息、在试新食材），以及 NURI 自己刚承诺过要之后再看的事。\n"
@@ -306,6 +313,12 @@ def extract_memories_sync(history: list[dict]) -> dict:
         "（例如同时提到「7/30 签约」和「9/1 开始托婴」，要问的是入托适应，就填 9/1）\n"
         "- 纯粹的情绪倾诉、已经解决完的事、不需要再追问的闲聊，不要放进来"
     )
+    if temporal_context is not None:
+        system += (
+            "\n\n" + temporal.prompt_block(temporal_context) +
+            "\n- 提取 memories.value、follow_up.note 和 due_date 时，将相对日期规范化为用户当地的绝对日期。"
+            "无法从时间标注确定的日期不要猜，due_date 留空。"
+        )
     try:
         resp = oai.chat.completions.create(
             model="gpt-5.4-mini",
@@ -380,7 +393,7 @@ async def upsert_memories(
     sb = runtime.get_supabase()
     if not sb or not memories:
         return
-    now = now()
+    now_iso = now()
     for m in memories:
         key = (m.get("key") or "").strip()
         value = (m.get("value") or "").strip()
@@ -395,7 +408,11 @@ async def upsert_memories(
             if existing.data:
                 row_id = existing.data[0]["id"]
                 old_confidence = existing.data[0].get("confidence") or 0
-                updates = {"source_id": source_id, "last_confirmed_at": now, "updated_at": now}
+                updates = {
+                    "source_id": source_id,
+                    "last_confirmed_at": now_iso,
+                    "updated_at": now_iso,
+                }
                 if confidence >= old_confidence:
                     updates["value"] = value
                     updates["confidence"] = confidence
@@ -405,7 +422,8 @@ async def upsert_memories(
                     "id": str(uuid.uuid4()), "user_id": user_id, "child_id": child_id,
                     "category": category, "key": key, "value": value, "confidence": confidence,
                     "source_type": source_type, "source_id": source_id, "status": "active",
-                    "created_at": now, "updated_at": now, "last_confirmed_at": now,
+                    "created_at": now_iso, "updated_at": now_iso,
+                    "last_confirmed_at": now_iso,
                 }
                 await anyio.to_thread.run_sync(lambda: sb.table("user_memories").insert(row).execute())
         except Exception as e:
@@ -455,27 +473,50 @@ FOLLOW_UP_DEFAULT_DAYS = int(os.getenv("FOLLOW_UP_DEFAULT_DAYS", "7"))
 FOLLOW_UP_EXPIRE_DAYS = int(os.getenv("FOLLOW_UP_EXPIRE_DAYS", "30"))
 
 
-def follow_up_due_at(item: dict) -> tuple[str, str]:
+def follow_up_due_at(
+    item: dict,
+    temporal_context: Optional[temporal.TemporalContext] = None,
+) -> tuple[str, str]:
     """Resolve when to come back to something, and record where the date came
     from. A parent-stated date is used as given; otherwise the topic decides."""
     stated = (item.get("due_date") or "").strip()
+    local_today = (
+        temporal_context.user_local.date()
+        if temporal_context is not None else date.today()
+    )
     if stated:
         try:
             d = date.fromisoformat(stated[:10])
             # A date already in the past was probably mentioned as history
             # rather than as a plan; check in tomorrow instead of never.
-            if d < date.today():
-                d = date.today() + timedelta(days=1)
-            return datetime.combine(d, dt_time(9, 0), tzinfo=timezone.utc).isoformat(), "stated"
+            if d < local_today:
+                d = local_today + timedelta(days=1)
+            target_zone = (
+                temporal_context.user_local.tzinfo
+                if temporal_context is not None else timezone.utc
+            )
+            local_due = datetime.combine(d, dt_time(9, 0), tzinfo=target_zone)
+            return local_due.astimezone(timezone.utc).isoformat(), "stated"
         except (ValueError, TypeError):
             pass
     topic = (item.get("topic") or "") + (item.get("note") or "")
     days = next((v for k, v in FOLLOW_UP_INTERVALS.items() if k in topic), FOLLOW_UP_DEFAULT_DAYS)
+    if temporal_context is not None:
+        # Follow-ups are a user-facing local-day concept, not a fixed number of
+        # elapsed UTC hours. Scheduling at 09:00 on the target local date keeps
+        # them natural across DST transitions (where +N*24h would drift by an
+        # hour) and consistent with explicitly stated dates above.
+        target_date = local_today + timedelta(days=days)
+        local_due = datetime.combine(
+            target_date, dt_time(9, 0), tzinfo=temporal_context.user_local.tzinfo,
+        )
+        return local_due.astimezone(timezone.utc).isoformat(), "inferred"
     return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(), "inferred"
 
 
 async def upsert_follow_ups(
     items: list[dict], *, user_id: str, source_id: Optional[str],
+    temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> None:
     """One open follow-up per topic. A parent who mentions 托嬰 across four turns
     should be asked once, not four times — the partial unique index enforces it,
@@ -483,12 +524,12 @@ async def upsert_follow_ups(
     sb = runtime.get_supabase()
     if not sb or not items:
         return
-    now = now()
+    now_iso = now()
     for item in items[:3]:
         topic = (item.get("topic") or "").strip()
         if not topic:
             continue
-        due_at, due_source = follow_up_due_at(item)
+        due_at, due_source = follow_up_due_at(item, temporal_context)
         try:
             existing = await anyio.to_thread.run_sync(
                 lambda: sb.table("follow_ups").select("id,due_source")
@@ -497,7 +538,10 @@ async def upsert_follow_ups(
             if existing.data:
                 row_id = existing.data[0]["id"]
                 # Never let an inferred date overwrite one the parent gave.
-                patch = {"note": (item.get("note") or "").strip(), "updated_at": now}
+                patch = {
+                    "note": (item.get("note") or "").strip(),
+                    "updated_at": now_iso,
+                }
                 if not (existing.data[0].get("due_source") == "stated" and due_source == "inferred"):
                     patch.update({"due_at": due_at, "due_source": due_source})
                 await anyio.to_thread.run_sync(
@@ -509,7 +553,7 @@ async def upsert_follow_ups(
                     "topic": topic, "note": (item.get("note") or "").strip(),
                     "due_at": due_at, "due_source": due_source,
                     "source_message_id": source_id, "status": "pending",
-                    "created_at": now, "updated_at": now,
+                    "created_at": now_iso, "updated_at": now_iso,
                 }
                 await anyio.to_thread.run_sync(
                     lambda: sb.table("follow_ups").insert(row).execute()
@@ -586,10 +630,13 @@ async def mark_follow_up_asked(follow_up_id: str) -> None:
     if not sb:
         return
     try:
-        now = now()
+        now_iso = now()
         await anyio.to_thread.run_sync(
             lambda: sb.table("follow_ups")
-            .update({"status": "asked", "asked_at": now, "updated_at": now})
+            .update({
+                "status": "asked", "asked_at": now_iso,
+                "updated_at": now_iso,
+            })
             .eq("id", follow_up_id).execute()
         )
     except Exception as e:

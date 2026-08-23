@@ -6,11 +6,13 @@ import {
   ScrollView,
   Pressable,
   Image,
+  Linking,
+  Platform,
   useWindowDimensions,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { BlurView } from "expo-blur";
+import * as WebBrowser from "expo-web-browser";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -22,43 +24,30 @@ import {
   type PreparedLearningResource,
   type ResourceReadiness,
 } from "@/src/api";
-import { taskTypeMeta } from "@/src/taskMeta";
 import Toast from "@/src/components/Toast";
 import HeroCarousel, {
+  type DailySelectionResource,
   type HeroCard,
   type HeroFeedState,
 } from "@/src/components/HeroCarousel";
 import { preparePersonalizedFeedOnce } from "@/src/feedPreparation";
-import { storeRecommendationDetailHandoff } from "@/src/recommendationDetailHandoff";
 import { useT } from "@/src/i18n";
 
-const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
+const mascotImage = require("@/assets/images/homepage/mascot.png");
+const nativeLogoImage = require("@/assets/images/nuri-logo.png");
 
-// 主页配色（复刻高保真设计稿）
 const C = {
-  bg: "#EEF0F8",
-  text: "#1A1A2E",
-  sub: "#5A5A7A",
-  cardFrom: "#4B6FE8",
-  cardTo: "#7B5CE7",
-  taskBg: "#DCE8F8",
-  nuriFrom: "#F5A855",
-  nuriTo: "#F07A9A",
-  btn: "#2D2080",
-  taskPreview: "#3A3A5A",
-  streak: "#5A7AC8",
+  canvas: "#FFF9F3",
+  text: "#261B45",
+  purple: "#4C368C",
+  purpleLight: "#7751E4",
+  purpleDark: "#422D7E",
 };
 
 const FIGMA_FRAME_WIDTH = 402;
 const PREPARATION_RETRY_BASE_DELAY_MS = 30000;
 const PREPARATION_RETRY_MAX_DELAY_MS = 300000;
 const PREPARATION_RETRY_MAX_EXPONENT = 7;
-
-// 坚持打卡天数（mock 默认 17）
-const STREAK_DAYS = 17;
-
-// 任务预览默认 mock（任务数据为空时展示）
-const DEFAULT_TASKS = ["自我：今天给自己留30分钟独处", "亲子：每日户外活动20分钟"];
 
 type NuriPreview = {
   sessionId: string;
@@ -167,7 +156,7 @@ function mergePreparedCard(card: HeroCard, prepared: PreparedFeedItem | undefine
   };
 }
 
-const conversationExcerpt = (text: string, maxLength = 26) => {
+const conversationExcerpt = (text: string, maxLength = 18) => {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized || normalized === "[图片]") return "";
   return normalized.length > maxLength
@@ -175,12 +164,31 @@ const conversationExcerpt = (text: string, maxLength = 26) => {
     : normalized;
 };
 
-const dayGreeting = () => {
-  const hour = new Date().getHours();
-  if (hour < 11) return "早上好";
-  if (hour < 18) return "下午好";
-  return "晚上好";
+type HomeNavigationIconName = "knowledge" | "chat" | "tasks" | "community";
+
+const HOME_NAVIGATION_ICONS: Record<
+  HomeNavigationIconName,
+  { asset: string; fallback: keyof typeof Ionicons.glyphMap }
+> = {
+  knowledge: { asset: "navigation-knowledge.svg", fallback: "library-outline" },
+  chat: { asset: "navigation-chat.svg", fallback: "sparkles-outline" },
+  tasks: { asset: "navigation-tasks.svg", fallback: "calendar-outline" },
+  community: { asset: "navigation-community.svg", fallback: "people-outline" },
 };
+
+function HomeNavigationIcon({ name }: { name: HomeNavigationIconName }) {
+  const icon = HOME_NAVIGATION_ICONS[name];
+  if (Platform.OS === "web") {
+    return (
+      <Image
+        source={{ uri: `/homepage/${icon.asset}` }}
+        style={styles.navigationIcon}
+        resizeMode="contain"
+      />
+    );
+  }
+  return <Ionicons name={icon.fallback} size={25} color={C.text} />;
+}
 
 // 待开发占位 bottom sheet（统一规范）
 function DevSheet({
@@ -216,6 +224,7 @@ function DevSheet({
 export default function Home() {
   const { t } = useT();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
   const { feed_refresh: feedRefreshParam } = useLocalSearchParams<{
     feed_refresh?: string;
@@ -225,10 +234,9 @@ export default function Home() {
   // Keep the same content geometry as the 402px Figma phone frame. On a real
   // phone the frame shrinks with the viewport; on desktop it remains centered.
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const carouselWidth = phoneWidth - 32;
+  const dailyCardWidth = Math.max(280, phoneWidth - 60);
   const [nickname, setNickname] = useState("Momo妈妈");
-  const [pendingTasks, setPendingTasks] = useState<string[]>([]);
-  const [pendingCount, setPendingCount] = useState(0);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
@@ -617,26 +625,17 @@ export default function Home() {
     useCallback(() => {
       api
         .me()
-        .then((me: any) => me?.nickname && setNickname(me.nickname))
-        .catch(() => {});
-      api
-        .listTasks()
-        .then((ts: any[]) => {
-          const pending = ts.filter((t) => !t.completed_at);
-          setPendingCount(pending.length);
-          setPendingTasks(
-            pending
-              .slice(0, 2)
-              .map((task) =>
-                t("{prefix}：{title}", {
-                  prefix: t(taskTypeMeta(task.task_type).prefix),
-                  title: task.title,
-                }),
-              )
+        .then((me: any) => {
+          if (me?.nickname) setNickname(me.nickname);
+          const candidate = me?.avatar_url || me?.photo_url || me?.picture;
+          setAvatarUrl(
+            typeof candidate === "string" && /^https:\/\//i.test(candidate)
+              ? candidate
+              : null,
           );
         })
         .catch(() => {});
-    }, [t])
+    }, [])
   );
 
   useFocusEffect(
@@ -677,10 +676,6 @@ export default function Home() {
     }, [feedRefresh, loadPersonalizedFeed])
   );
 
-  const previewTasks = pendingTasks.length
-    ? pendingTasks
-    : DEFAULT_TASKS.map((name) => t(name));
-  const previewCount = pendingTasks.length ? pendingCount : 3;
   const hasLoadedPreview = !!nuriPreview;
   const lastUserExcerpt = nuriPreview?.hasLastUserMessage
     ? conversationExcerpt(nuriPreview.lastUserMessage)
@@ -688,35 +683,19 @@ export default function Home() {
   const nuriMemo =
     hasLoadedPreview && nuriPreview?.hasLastUserMessage
       ? lastUserExcerpt
-        ? t("Hi！{greeting}，{nickname}。上次你说：“{excerpt}” 我们接着聊。", {
-            greeting: t(dayGreeting()),
-            nickname,
+        ? t("你还记得我们上次谈到“{excerpt}”吗？最近怎么样？", {
             excerpt: lastUserExcerpt,
           })
-        : t("Hi！{greeting}，{nickname}。上次你分享了一张图片，我们可以从那里接着聊。", {
-            greeting: t(dayGreeting()),
-            nickname,
-          })
+        : t("你还记得我们上次分享的那张图片吗？最近怎么样？")
       : nuriPreviewStatus === "error"
-        ? t("Hi！{greeting}，{nickname}。上次的对话暂时没能加载，点一下再试试。", {
-            greeting: t(dayGreeting()),
-            nickname,
-          })
+        ? t("上次的对话暂时没能加载，点一下再试试。")
         : nuriPreviewStatus === "loading"
-          ? t("Hi！{greeting}，{nickname}。正在整理我们上次的对话…", {
-              greeting: t(dayGreeting()),
-              nickname,
-            })
-          : t("Hi！{greeting}，{nickname}。今天想聊聊什么？我在这里陪你。", {
-              greeting: t(dayGreeting()),
-              nickname,
-            });
+          ? t("正在整理我们上次的对话…")
+          : t("今天想聊聊什么？我在这里陪你。");
   const nuriActionText =
     nuriPreviewStatus === "error" && !nuriPreview
       ? t("重试加载")
-      : nuriPreview?.hasLastUserMessage
-        ? t("继续对话")
-        : t("开始对话");
+      : t("和我聊聊");
 
   const trackHeroImpression = useCallback(
     (card: HeroCard, position: number) => {
@@ -740,28 +719,29 @@ export default function Home() {
   );
 
   const openHeroCard = useCallback(
-    (card: HeroCard) => {
-      const position =
-        card.rank ||
-        Math.max(
-          1,
-          heroCards.findIndex(
-            (item) =>
-              (item.recommendation_id || `${item.id}:${item.content_category}`) ===
-              (card.recommendation_id || `${card.id}:${card.content_category}`),
-          ) + 1,
-        );
-      const preparationItems = heroCards
-        .filter(
-          (item): item is HeroCard & { recommendation_id: string } =>
-            Boolean(item.recommendation_id),
-        )
-        .map((item) => ({
-          card_id: item.id,
-          recommendation_id: item.recommendation_id,
-        }));
-      const handoffKey = storeRecommendationDetailHandoff(card, preparationItems);
-      api
+    (
+      card: HeroCard,
+      resource: DailySelectionResource | undefined,
+      carouselPosition: number,
+    ) => {
+      if (!resource || !/^https:\/\//i.test(resource.url)) {
+        showToast(t("这项每日精选还在准备中，请稍后再试"));
+        return;
+      }
+      const position = card.rank || carouselPosition;
+      // Open inside the original user-activation call stack. Awaiting analytics
+      // first makes Safari/Chrome treat the new tab as an unsolicited popup.
+      try {
+        const opening =
+          Platform.OS === "web"
+            ? Linking.openURL(resource.url)
+            : WebBrowser.openBrowserAsync(resource.url);
+        void opening.catch(() => showToast(t("这个外部链接暂时不可用")));
+      } catch {
+        showToast(t("这个外部链接暂时不可用"));
+        return;
+      }
+      void api
         .trackRecommendationEvent({
           event: "card_open",
           card_id: card.id,
@@ -772,219 +752,174 @@ export default function Home() {
           position,
         })
         .catch(() => {});
-      router.push({
-        pathname: "/detail/[id]",
-        params: {
-          id: card.id,
-          ...(card.content_category
-            ? { content_category: card.content_category }
-            : {}),
-          ...(card.related_session_id ? { session_id: card.related_session_id } : {}),
-          ...(card.context_created_at
-            ? { context_created_at: card.context_created_at }
-            : {}),
-          ...(card.recommendation_id
-            ? { recommendation_id: card.recommendation_id }
-            : {}),
-          ...(card.prepared_content_set_id
-            ? { prepared_content_set_id: card.prepared_content_set_id }
-            : {}),
-          ...(heroFeedMeta.feedRequestId
-            ? { feed_request_id: heroFeedMeta.feedRequestId }
-            : {}),
-          handoff_key: handoffKey,
-          rank: String(position),
-        },
-      });
-      if (
-        !isReadyHeroCard(card) &&
-        card.resource_readiness !== "unavailable" &&
-        preparationItems.length > 0
-      ) {
-        // Navigation is never held hostage by research. Detail immediately
-        // paints the guide handoff and observes this shared request in place.
-        preparationRetryAttempt.current = 0;
-        void preparePersonalizedFeedOnce(preparationItems).catch((error) => {
-          console.warn("[home-feed] background preparation after open failed", {
-            errorName: error instanceof Error ? error.name : typeof error,
-            requestedCount: preparationItems.length,
-          });
-        });
-      }
+      void api
+        .trackRecommendationEvent({
+          event: "external_resource_click",
+          card_id: card.id,
+          recommendation_id: card.recommendation_id || undefined,
+          feed_request_id: heroFeedMeta.feedRequestId,
+          resource_id: resource.id,
+          resource_kind: resource.kind,
+          locale: card.resource_summary?.preferred_locale,
+          content_category: card.content_category,
+          position,
+        })
+        .catch(() => {});
     },
-    [heroCards, heroFeedMeta.feedRequestId, router],
+    [heroFeedMeta.feedRequestId, showToast, t],
   );
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-      <Image source={blurredTaskBackground} style={styles.backgroundImage} resizeMode="cover" />
-      <View pointerEvents="none" style={styles.haloBlue} />
-      <View pointerEvents="none" style={styles.haloRed} />
-      <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 32 }}
-      >
-        {/* 顶部栏：logo + 欢迎语 + 头像 */}
-        <View style={styles.topBar}>
-          <Image
-            source={require("../../assets/images/nuri-logo.png")}
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          <Text style={styles.welcome} numberOfLines={1}>
-            {t("欢迎，{nickname}！", { nickname })}
-          </Text>
-          <Pressable
-            onPress={() => router.push("/(tabs)/profile")}
-            testID="home-avatar"
-            hitSlop={6}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{nickname.slice(0, 1)}</Text>
-            </View>
-          </Pressable>
-        </View>
-
-        {/* 内容推荐轮播 */}
-        <HeroCarousel
-          width={carouselWidth}
-          cards={heroCards}
-          feedState={
-            heroFeedRefreshing || heroPublicationState === "preparing"
-              ? "refreshing"
-              : heroFeedState
-          }
-          onCardPress={openHeroCard}
-          onCardVisible={trackHeroImpression}
-          visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}
-          initialContentCategory={heroFeedMeta.initialContentCategory}
-        />
-
-        {/* 第一行：今日任务 + Nuri的家 */}
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.moduleCard, { backgroundColor: C.taskBg }]}
-            onPress={() => router.push("/(tabs)/tasks")}
-            testID="home-tasks-card"
-          >
-            <Text style={styles.moduleTitle}>{t("今日任务")}</Text>
-            <Text style={styles.moduleSub}>
-              {t("您已坚持打卡{days}天！加油！", { days: STREAK_DAYS })}
+        <ScrollView
+          style={styles.scroll}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 94 + insets.bottom }}
+        >
+          <View style={styles.topBar}>
+            <Image
+              source={
+                Platform.OS === "web"
+                  ? { uri: "/homepage/nuri-mark.svg" }
+                  : nativeLogoImage
+              }
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.welcome} numberOfLines={1}>
+              {t("欢迎！{nickname}", { nickname })}
             </Text>
-            <View style={[styles.innerCard, { flex: 1 }]}>
-              <Text style={styles.taskCount}>{t("{count} 件任务正在进行", { count: previewCount })}</Text>
-              {previewTasks.map((name, i) => (
-                <View key={i} style={styles.taskRow}>
-                  <View style={styles.checkbox} />
-                  <Text style={styles.taskName} numberOfLines={1}>
-                    {name}
-                  </Text>
-                </View>
-              ))}
-              <Text style={styles.taskEllipsis}>……</Text>
-              <View style={{ flex: 1, minHeight: 8 }} />
-              <Pressable
-                onPress={() => showToast("提醒功能即将上线")}
-                style={styles.primaryBtn}
-                testID="home-remind-btn"
-              >
-                <Text style={styles.primaryBtnText}>{t("开启提醒")}</Text>
-              </Pressable>
-            </View>
-          </Pressable>
+            <Pressable
+              onPress={() => router.push("/(tabs)/profile")}
+              testID="home-avatar"
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={t("个人资料")}
+            >
+              <View style={styles.avatar}>
+                {avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+                ) : (
+                  <Text style={styles.avatarText}>{nickname.slice(0, 1)}</Text>
+                )}
+              </View>
+            </Pressable>
+          </View>
 
-          <Pressable
-            style={styles.moduleCardNoBg}
-            onPress={openNuriChat}
-            testID="home-nuri-card"
-          >
+          <View style={styles.sectionHeading}>
+            {Platform.OS === "web" ? (
+              <Image
+                source={{ uri: "/homepage/daily-selection-icon.svg" }}
+                style={styles.dailySectionIcon}
+                resizeMode="contain"
+              />
+            ) : (
+              <Ionicons name="stats-chart" size={25} color={C.text} />
+            )}
+            <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
+          </View>
+
+          <HeroCarousel
+            width={dailyCardWidth}
+            cards={heroCards}
+            feedState={
+              heroFeedRefreshing || heroPublicationState === "preparing"
+                ? "refreshing"
+                : heroFeedState
+            }
+            onCardPress={openHeroCard}
+            onCardVisible={trackHeroImpression}
+            visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}
+            initialContentCategory={heroFeedMeta.initialContentCategory}
+          />
+
+          <View style={[styles.sectionHeading, styles.nuriSectionHeading]}>
+            {Platform.OS === "web" ? (
+              <Image
+                source={{ uri: "/homepage/nuri-home-icon.svg" }}
+                style={styles.nuriSectionIcon}
+                resizeMode="contain"
+              />
+            ) : (
+              <Ionicons name="home-outline" size={22} color={C.text} />
+            )}
+            <Text style={styles.sectionHeadingText}>{t("NURI之家")}</Text>
+          </View>
+
+          <View style={styles.nuriStage} testID="home-nuri-card">
             <LinearGradient
-              colors={[C.nuriFrom, C.nuriTo]}
+              colors={[C.purpleLight, C.purpleDark]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.nuriCard}
             >
-              <Text style={styles.moduleTitle}>{t("Nuri的家")}</Text>
-              <Text style={styles.nuriMemo} numberOfLines={5} testID="home-nuri-memo">
+              <Text style={styles.nuriMemo} numberOfLines={4} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
-              <View style={{ flex: 1 }} />
-              <View style={styles.continueCard}>
-                <View style={styles.continueRow}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Ionicons name="chatbox-ellipses-outline" size={18} color={C.text} />
-                    <Text style={styles.continueText} testID="home-nuri-action-label">
-                      {nuriActionText}
-                    </Text>
-                  </View>
-                  <Ionicons name="arrow-forward" size={18} color={C.text} />
-                </View>
-              </View>
-            </LinearGradient>
-          </Pressable>
-        </View>
-
-        {/* 第二/三行：左列（知识图书馆 + 我的家）、右列（社区中心） */}
-        <View style={styles.row}>
-          <View style={{ flex: 1, gap: 12 }}>
-            <Pressable
-              style={[styles.moduleCard, styles.lightCard, { minHeight: 88 }]}
-              onPress={() => setDevSheet({ emoji: "🌱", name: "知识图书馆" })}
-              testID="home-library-card"
-            >
-              <Text style={styles.moduleTitle}>{t("知识图书馆")}</Text>
-            </Pressable>
-
-            <Pressable
-              style={[styles.moduleCard, styles.lightCard]}
-              onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
-              testID="home-myhome-card"
-            >
-              <Text style={styles.moduleTitle}>{t("我的家")}</Text>
-              <Text style={styles.moduleSub}>{t("灵感：试着写下今天的心情。")}</Text>
-              <View style={{ height: 12 }} />
               <Pressable
-                onPress={() => setDevSheet({ emoji: "🏡", name: "我的家" })}
-                style={styles.primaryBtn}
-                testID="home-record-btn"
+                onPress={openNuriChat}
+                style={styles.nuriButton}
+                testID="home-nuri-action"
+                accessibilityRole="button"
               >
-                <Text style={styles.primaryBtnText}>{t("记录当下")}</Text>
+                <Text style={styles.nuriButtonText} testID="home-nuri-action-label">
+                  {nuriActionText}
+                </Text>
               </Pressable>
-            </Pressable>
-          </View>
-
-          <Pressable
-            style={[styles.moduleCard, { backgroundColor: C.taskBg, flex: 1 }]}
-            onPress={() => setDevSheet({ emoji: "🌻", name: "社区中心" })}
-            testID="home-community-card"
-          >
-            <Text style={styles.moduleTitle}>{t("社区中心")}</Text>
-            <Text style={styles.moduleSub}>{t("您上次关于牙医的回答得到了17个人的赞！")}</Text>
-            <View style={{ flex: 1 }} />
-            <View style={styles.innerCard}>
-              <Text style={styles.communityTopic}>
-                {t("“宝宝18个月饮食”的问题也许可以和他们交流")}
-              </Text>
-              <View style={styles.avatarRow}>
-                {["#F5A855", "#7B8FE8", "#A87CC5"].map((color, i) => (
-                  <View
-                    key={i}
-                    style={[
-                      styles.miniAvatar,
-                      { backgroundColor: color, marginLeft: i === 0 ? 0 : -10 },
-                    ]}
-                  />
-                ))}
-                <View style={styles.plusAvatar}>
-                  <Ionicons name="add" size={18} color={C.btn} />
-                </View>
-              </View>
+            </LinearGradient>
+            <View pointerEvents="none" style={styles.mascotCrop}>
+              <Image source={mascotImage} style={styles.mascot} resizeMode="contain" />
             </View>
+          </View>
+        </ScrollView>
+
+        <View
+          style={[
+            styles.bottomNavigation,
+            {
+              minHeight: 74 + insets.bottom,
+              paddingBottom:
+                Platform.OS === "web"
+                  ? ("env(safe-area-inset-bottom)" as unknown as number)
+                  : insets.bottom,
+            },
+          ]}
+          testID="home-bottom-navigation"
+        >
+          <Pressable
+            style={styles.navigationItem}
+            onPress={() => setDevSheet({ emoji: "🌱", name: t("知识图书馆") })}
+            accessibilityRole="button"
+            accessibilityLabel={t("知识图书馆")}
+          >
+            <HomeNavigationIcon name="knowledge" />
+          </Pressable>
+          <Pressable
+            style={styles.navigationItem}
+            onPress={() => router.push("/(tabs)/chats")}
+            accessibilityRole="button"
+            accessibilityLabel={t("对话")}
+          >
+            <HomeNavigationIcon name="chat" />
+          </Pressable>
+          <Pressable
+            style={styles.navigationItem}
+            onPress={() => router.push("/(tabs)/tasks")}
+            accessibilityRole="button"
+            accessibilityLabel={t("任务")}
+          >
+            <HomeNavigationIcon name="tasks" />
+          </Pressable>
+          <Pressable
+            style={styles.navigationItem}
+            onPress={() => router.push("/community")}
+            accessibilityRole="button"
+            accessibilityLabel={t("社区")}
+          >
+            <HomeNavigationIcon name="community" />
           </Pressable>
         </View>
-      </ScrollView>
       </View>
 
       <DevSheet
@@ -999,104 +934,163 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#F6F4FA" },
-  phoneCanvas: { alignSelf: "center", flex: 1, overflow: "hidden" },
-  backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
-  // 两枚居中的超大椭圆营造上蓝下红、带弧度的日落式背景。
-  haloBlue: { position: "absolute", width: 520, height: 300, borderRadius: 260, backgroundColor: "rgba(123,166,255,0.68)", left: "50%", marginLeft: -260, top: -155 },
-  haloRed: { position: "absolute", width: 520, height: 300, borderRadius: 260, backgroundColor: "rgba(255,118,139,0.62)", left: "50%", marginLeft: -260, bottom: -155 },
+  safe: {
+    flex: 1,
+    backgroundColor: "#F4F1F9",
+  },
+  phoneCanvas: {
+    alignSelf: "center",
+    flex: 1,
+    position: "relative",
+    overflow: "hidden",
+    backgroundColor: C.canvas,
+  },
+  scroll: {
+    flex: 1,
+  },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 12,
-    gap: 10,
+    minHeight: 78,
+    paddingHorizontal: 17,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 18,
   },
   logo: { width: 39, height: 46 },
-  welcome: { flex: 1, fontSize: 24, fontWeight: "900", color: "#3A2F5A" },
+  welcome: {
+    flex: 1,
+    color: C.text,
+    fontFamily: "NotoSansSC_500Medium",
+    fontSize: 20,
+    lineHeight: 28,
+  },
   avatar: {
-    width: 33,
-    height: 33,
-    borderRadius: 17,
-    backgroundColor: "#7B5CE7",
-    borderWidth: 2,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: "hidden",
+    backgroundColor: "#7355E7",
+    borderWidth: 1,
     borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarText: { color: "#fff", fontSize: 14, fontWeight: "700" },
-  row: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    gap: 12,
-    marginTop: 12,
+  avatarImage: {
+    width: "100%",
+    height: "100%",
   },
-  moduleCard: { flex: 1, borderRadius: 12, padding: 14, shadowColor: "#000", shadowOffset: { width: -2, height: 1 }, shadowOpacity: 0.08, shadowRadius: 5, elevation: 2 },
-  moduleCardNoBg: { flex: 1 },
-  lightCard: { backgroundColor: "#FFFFFF" },
-  nuriCard: { flex: 1, borderRadius: 12, padding: 14, minHeight: 224 },
-  moduleTitle: { fontSize: 14, fontWeight: "700", color: C.text },
-  moduleSub: { fontSize: 10, color: C.sub, marginTop: 5, lineHeight: 15 },
-  innerCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 10,
+  avatarText: {
+    color: "#FFFFFF",
+    fontFamily: "NotoSansSC_700Bold",
+    fontSize: 17,
   },
-  taskCount: { fontSize: 11, fontWeight: "700", color: C.text },
-  taskRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 7 },
-  checkbox: {
-    width: 11,
-    height: 11,
-    borderRadius: 3,
-    borderWidth: 1.2,
-    borderColor: "#9AA2B8",
-  },
-  taskName: { flex: 1, fontSize: 10, color: C.taskPreview, lineHeight: 14 },
-  taskEllipsis: { fontSize: 10, color: C.taskPreview, marginTop: 3, marginLeft: 17 },
-  primaryBtn: {
-    backgroundColor: C.btn,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    alignItems: "center",
-    alignSelf: "flex-start",
-  },
-  primaryBtnText: { color: "#FFFFFF", fontSize: 11, fontWeight: "600" },
-  nuriMemo: { fontSize: 10, color: "#3A2A3E", lineHeight: 15, marginTop: 7 },
-  continueCard: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 12,
-    marginTop: 10,
-  },
-  continueRow: {
+  sectionHeading: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 9,
+    minHeight: 26,
+    marginLeft: 17,
+    marginTop: 6,
+    marginBottom: 12,
   },
-  continueText: { fontSize: 12, fontWeight: "700", color: C.text },
-  communityTopic: { fontSize: 10, color: C.taskPreview, lineHeight: 15 },
-  avatarRow: { flexDirection: "row", alignItems: "center", marginTop: 10 },
-  miniAvatar: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
+  dailySectionIcon: {
+    width: 25,
+    height: 24,
   },
-  plusAvatar: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 1.2,
-    borderColor: C.btn,
+  nuriSectionIcon: {
+    width: 22,
+    height: 22,
+  },
+  sectionHeadingText: {
+    color: C.text,
+    fontFamily: "NotoSansSC_700Bold",
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  nuriSectionHeading: {
+    marginTop: 25,
+    marginBottom: 15,
+  },
+  nuriStage: {
+    height: 322,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    position: "relative",
+    overflow: "visible",
+  },
+  nuriCard: {
+    height: 312,
+    borderRadius: 36,
+    paddingHorizontal: 28,
+    paddingTop: 22,
+    paddingBottom: 20,
+    overflow: "hidden",
+  },
+  nuriMemo: {
+    maxWidth: 326,
+    color: "#FFFFFF",
+    fontFamily: "NotoSansSC_600SemiBold",
+    fontSize: 24,
+    lineHeight: 34,
+    letterSpacing: 0.2,
+  },
+  nuriButton: {
+    position: "absolute",
+    left: 28,
+    bottom: 27,
+    width: 145,
+    minHeight: 56,
+    borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
-    marginLeft: 8,
     backgroundColor: "#FFFFFF",
+  },
+  nuriButtonText: {
+    color: C.text,
+    fontFamily: "NotoSansSC_700Bold",
+    fontSize: 13,
+    lineHeight: 20,
+    letterSpacing: 0.5,
+  },
+  mascotCrop: {
+    position: "absolute",
+    right: -2,
+    top: 126,
+    width: 170,
+    height: 201,
+    overflow: "hidden",
+  },
+  mascot: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    width: 170,
+    height: 255,
+  },
+  bottomNavigation: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    backgroundColor: C.canvas,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(38,27,69,0.14)",
+    paddingTop: 9,
+  },
+  navigationItem: {
+    flex: 1,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  navigationIcon: {
+    width: 25,
+    height: 26,
   },
   sheetRoot: {
     ...StyleSheet.absoluteFillObject,
@@ -1124,7 +1118,7 @@ const styles = StyleSheet.create({
   sheetTitle: { fontSize: 16, fontWeight: "700", color: C.text },
   sheetBtn: {
     marginTop: 10,
-    backgroundColor: C.btn,
+    backgroundColor: C.purple,
     borderRadius: 10,
     paddingVertical: 12,
     alignSelf: "stretch",

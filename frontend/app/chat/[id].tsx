@@ -21,6 +21,7 @@ import { BlurView } from "expo-blur";
 import * as WebBrowser from "expo-web-browser";
 import Toast from "@/src/components/Toast";
 import { api, isStreamUnsupported } from "@/src/api";
+import { buildChatMessagePayload } from "@/src/chatClientContext";
 import { taskTypeMeta } from "@/src/taskMeta";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
@@ -37,6 +38,7 @@ type Msg = {
   id: string;
   role: "ai" | "user";
   text: string;
+  created_at?: string;
   image_base64?: string | null;
   quick_replies?: string[];
   transition?: any;
@@ -168,7 +170,7 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -271,12 +273,13 @@ export default function ChatDetail() {
       id: `tmp-${Date.now()}`,
       role: "user",
       text: text || "[图片]",
+      created_at: new Date().toISOString(),
       image_base64: imageBase64 || null,
     };
     setMessages((p) => [...p, optimistic]);
 
     setTyping(true);
-    const payload = { text, image_base64: imageBase64 || null };
+    const payload = buildChatMessagePayload(text, imageBase64 || null, locale);
     try {
       let res;
       try {

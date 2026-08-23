@@ -21,7 +21,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import context_budget
+from backend.nuri_core import context_budget, temporal
 from backend import llm_usage, runtime
 from backend.runtime import OPENAI_FAST_TIMEOUT_S, oai
 
@@ -38,6 +38,7 @@ _PROMPT = """把下面这段育儿对话压缩成一份「对话状态」，供 
 - 还没解决、家长仍然在意的事
 
 不要写寒暄，不要复述原话，不要加入对话里没有的推测。
+时间规则：如果输入消息带有可信发送时间标注，就据此把“今天、昨天、刚才、前几天”改写成能确定的绝对日期或明确持续时长；没有时间标注或无法确定时写“具体日期未确认”，绝不能把旧消息里的相对时间当成生成摘要当天。
 用第三人称陈述，{limit} 字以内，直接输出正文。
 
 对话：
@@ -127,6 +128,7 @@ def summarize_sync(transcript: str, previous: str = "") -> str:
 
 async def refresh_if_needed(
     session_id: str, history: list[dict], kept: Optional[list[dict]] = None,
+    *, temporal_context: Optional[temporal.TemporalContext] = None,
 ) -> None:
     """Re-summarise when enough conversation has fallen out of the window.
 
@@ -144,7 +146,8 @@ async def refresh_if_needed(
     if dropped_tokens - covered < context_budget.STATE_REFRESH_TOKENS:
         return
     transcript = "\n".join(
-        f"{'家长' if m.get('role') == 'user' else 'NURI'}：{m.get('text') or ''}"
+        f"{'家长' if m.get('role') == 'user' else 'NURI'}："
+        f"{temporal.annotate_message(m.get('text') or '', m.get('created_at'), temporal_context) if temporal_context else (m.get('text') or '')}"
         for m in dropped
         if (m.get("text") or "").strip()
     )

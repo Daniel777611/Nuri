@@ -483,7 +483,7 @@ async def list_collections(uid: str) -> list:
     return memstore.collections.get(uid, [])
 
 async def create_collection(uid: str, name: str) -> dict:
-    now = now()
+    now_iso = now()
     sb = runtime.get_supabase()
     if sb:
         try:
@@ -493,7 +493,7 @@ async def create_collection(uid: str, name: str) -> dict:
             return res.data[0]
         except Exception as e:
             print(f"[warn] create_collection: {e}")
-    col = {"id": str(uuid.uuid4()), "name": name, "created_at": now}
+    col = {"id": str(uuid.uuid4()), "name": name, "created_at": now_iso}
     memstore.collections.setdefault(uid, []).append(col)
     return col
 

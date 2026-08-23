@@ -93,62 +93,79 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
   assert.equal(stored.preparationItems[0].card_id, "learn_serve_and_return");
 }
 
-function testHomeClickNavigatesBeforeBackgroundPreparation() {
+function testHomeDailySelectionOpensVerifiedExternalResource() {
   const home = read("../app/(tabs)/index.tsx");
   const start = home.indexOf("const openHeroCard = useCallback(");
   const end = home.indexOf("\n  return (", start);
   assert.ok(start >= 0 && end > start, "openHeroCard callback was not found");
   const handler = home.slice(start, end);
 
+  assert.match(
+    handler,
+    /DailySelectionResource\s*\|\s*undefined/,
+    "the homepage click contract must receive the exact article/video selected by the carousel",
+  );
+  assert.match(
+    handler,
+    /\^https:\\\/\\\//,
+    "the homepage must reject any selected resource that is not HTTPS",
+  );
+  assert.match(
+    handler,
+    /event:\s*["']card_open["']/,
+    "opening a daily selection must retain the card_open recommendation event",
+  );
+  assert.match(
+    handler,
+    /event:\s*["']external_resource_click["']/,
+    "opening a daily selection must record the outbound resource click",
+  );
+  assert.match(
+    handler,
+    /resource_id:\s*resource\.id/,
+    "the outbound event must identify the exact resource",
+  );
+  assert.match(
+    handler,
+    /resource_kind:\s*resource\.kind/,
+    "the outbound event must identify whether the selection is an article or video",
+  );
+  assert.match(
+    handler,
+    /Linking\.openURL\(resource\.url\)/,
+    "web daily selections must open the selected external URL directly",
+  );
+  assert.match(
+    handler,
+    /WebBrowser\.openBrowserAsync\(resource\.url\)/,
+    "native daily selections must open the selected external URL in the system browser",
+  );
   assert.doesNotMatch(
     handler,
-    /if\s*\(\s*!isReadyHeroCard\(card\)\s*\)/,
-    "an unready card must not return before navigation",
-  );
-  const handoffAt = handler.indexOf("storeRecommendationDetailHandoff(");
-  const navigateAt = handler.indexOf("router.push({");
-  const prepareAt = handler.indexOf("preparePersonalizedFeedOnce(");
-  assert.ok(handoffAt >= 0, "the guide handoff must be stored before route change");
-  assert.ok(navigateAt > handoffAt, "every visible recommendation must navigate");
-  assert.ok(
-    prepareAt < 0 || prepareAt > navigateAt,
-    "background preparation must not block the route transition",
+    /storeRecommendationDetailHandoff\(|pathname:\s*["']\/detail\/\[id\]["']/,
+    "daily selections must not route through the internal recommendation detail page",
   );
 
   const carousel = read("../src/components/HeroCarousel.tsx");
-  assert.doesNotMatch(
+  assert.match(
     carousel,
-    /disabled=\{cardDisabled\}/,
-    "preparing/retryable cards must remain navigable",
-  );
-  assert.doesNotMatch(
-    carousel,
-    /scrollEnabled=\{!isRefreshing\}|styles\.refreshingOverlay/,
-    "background preparation must not block or cover the published cards",
+    /\^https:\\\/\\\//,
+    "the carousel must only expose resources with an HTTPS URL",
   );
   assert.match(
     carousel,
-    /pointerEvents="none"[\s\S]{0,180}styles\.backgroundUpdatePill/,
-    "background preparation should be communicated without intercepting taps",
-  );
-  for (const metadata of [
-    "recommendationSourceLabel(card)",
-    "recommendationLanguageLabel(card)",
-    "recommendationTimeLabel(card)",
-    "recommendationStageLabel(card)",
-  ]) {
-    assert.ok(carousel.includes(metadata), `hero cards must expose ${metadata}`);
-  }
-
-  assert.doesNotMatch(
-    home,
-    /!card\.prepared_content_set_id[\s\S]{0,180}alternate_count[\s\S]{0,180}< 1/,
-    "one verified article/video pair must be publishable without waiting for backups",
+    /dailySelectionResource\(card,\s*index\)/,
+    "each visible card must resolve one concrete external article/video resource",
   );
   assert.match(
-    home,
-    /publication_state === "preparing"[\s\S]{0,320}setHeroPublicationState\("preparing"\)/,
-    "an unpublished replacement must leave the previous package on screen",
+    carousel,
+    /onCardPress\(card,\s*resource,\s*index\s*\+\s*1\)/,
+    "the carousel must pass the chosen resource and its position to the homepage handler",
+  );
+  assert.match(
+    carousel,
+    /accessibilityRole="link"/,
+    "daily selection cards must expose link semantics",
   );
 }
 
@@ -298,7 +315,7 @@ function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
 }
 
 testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput();
-testHomeClickNavigatesBeforeBackgroundPreparation();
+testHomeDailySelectionOpensVerifiedExternalResource();
 testDetailPaintsTheGuideWhileExternalLinksStayAtomic();
 testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming();
 console.log("recommendation entry contracts passed");
