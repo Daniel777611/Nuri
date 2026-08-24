@@ -3871,15 +3871,37 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
             .execute()
         )
         visible_messages = _visible_chat_messages(list(res.data or []))
+    except Exception as e:
+        _raise_chat_storage_error("message history load", e)
+
+    # Recovery context is derived, optional presentation data. A malformed
+    # legacy memory row or a temporary failure of the memories query must never
+    # turn successfully loaded, durable chat_messages into an empty screen.
+    # Keep the primary transcript available and log the augmentation failure
+    # without exposing account identifiers or memory contents.
+    try:
         recovery = await _memory_recovery_message(
             sb,
             uid=uid,
             session=session,
             visible_messages=visible_messages,
         )
-        return ([recovery] if recovery else []) + visible_messages
-    except Exception as e:
-        _raise_chat_storage_error("message history load", e)
+    except Exception as exc:
+        logger.warning(
+            "chat_memory_recovery_context_failed",
+            extra={
+                "event": "chat_memory_recovery_context_failed",
+                "user_id_hash": hashlib.sha256(
+                    uid.encode("utf-8")
+                ).hexdigest()[:12],
+                "session_id_hash": hashlib.sha256(
+                    session_id.encode("utf-8")
+                ).hexdigest()[:12],
+                "error_type": type(exc).__name__,
+            },
+        )
+        recovery = None
+    return ([recovery] if recovery else []) + visible_messages
 
 class _Turn(NamedTuple):
     """Everything established about a chat turn before the AI reply is produced.

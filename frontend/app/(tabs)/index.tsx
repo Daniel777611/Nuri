@@ -618,11 +618,9 @@ export default function Home() {
     openingNuriChat.current = true;
     let navigated = false;
     try {
-      if (nuriPreview?.sessionId) {
-        router.push(`/chat/${nuriPreview.sessionId}`);
-        navigated = true;
-        return;
-      }
+      // Preview is display data and can outlive a deleted legacy session in a
+      // mounted browser tab. Always ask the idempotent server endpoint for the
+      // account's current canonical conversation immediately before routing.
       const session = await api.getOrStartMainSession();
       router.push(`/chat/${session.id}`);
       navigated = true;

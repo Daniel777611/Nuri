@@ -518,3 +518,31 @@ def test_real_parent_messages_never_get_a_memory_recovery_card(monkeypatch):
     rows = asyncio.run(main.get_messages("main-1", uid="parent-1"))
 
     assert [row["id"] for row in rows] == ["user-1"]
+
+
+def test_memory_recovery_failure_never_hides_durable_messages(monkeypatch):
+    sessions = [{
+        "id": "main-1",
+        "user_id": "parent-1",
+        "title": "chat",
+        "created_at": "2026-08-24T04:16:00+00:00",
+    }]
+    messages = {"main-1": [{
+        "id": "greeting",
+        "session_id": "main-1",
+        "role": "ai",
+        "text": "真实保留下来的欢迎语",
+        "transition": None,
+        "created_at": "2026-08-24T04:17:00+00:00",
+    }]}
+    database = _Supabase(sessions, messages, [])
+    monkeypatch.setattr(runtime, "get_supabase", lambda: database)
+
+    async def broken_recovery(*_args, **_kwargs):
+        raise RuntimeError("optional recovery query failed")
+
+    monkeypatch.setattr(main, "_memory_recovery_message", broken_recovery)
+
+    rows = asyncio.run(main.get_messages("main-1", uid="parent-1"))
+
+    assert [row["id"] for row in rows] == ["greeting"]

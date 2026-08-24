@@ -138,6 +138,8 @@ export const en: Record<string, string> = {
     "Morning, {nickname}! Remember the sleep plan we talked about last time? How's it going?",
   "继续对话": "Continue",
   "已恢复的家庭记忆": "Restored family memory",
+  "正在加载对话…": "Loading your conversation…",
+  "对话未能打开，点此重试": "Couldn't open the conversation. Tap to retry.",
   "这些内容来自已恢复的家庭记忆，不是聊天记录。":
     "This context comes from restored family memory, not from the chat transcript.",
   "知识图书馆": "Library",

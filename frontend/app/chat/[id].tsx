@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Easing,
   KeyboardAvoidingView,
@@ -20,7 +21,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import * as WebBrowser from "expo-web-browser";
 import Toast from "@/src/components/Toast";
-import { api, isStreamUnsupported } from "@/src/api";
+import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import { taskTypeMeta } from "@/src/taskMeta";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -243,6 +244,9 @@ export default function ChatDetail() {
   const phoneWidth = Math.min(viewportWidth, 402);
   const { id } = useLocalSearchParams<{ id: string }>();
   const [messages, setMessages] = useState<Msg[]>([]);
+  const [historyLoadState, setHistoryLoadState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
@@ -272,25 +276,45 @@ export default function ChatDetail() {
 
   const load = useCallback(async () => {
     if (!id) return;
-    const [msgs, tasks] = await Promise.all([
-      api.getMessages(id),
-      api.listTasks().catch(() => []),
-    ]);
-    setMessages(msgs);
-    const savedSources = new Set(tasks.map((task: any) => task.source));
-    setApprovedTaskIds(
-      msgs.flatMap((msg: Msg) => {
-        const suggested = msg.transition?.kind === "task_suggestion"
-          ? (msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []))
-          : [];
-        return suggested.flatMap((_: any, index: number) =>
-          savedSources.has(taskSourceKey(msg.id, index))
-            ? [taskApprovalId(msg.id, index)]
-            : []
-        );
-      })
-    );
-  }, [id]);
+    setHistoryLoadState("loading");
+    try {
+      const [msgs, tasks] = await Promise.all([
+        api.getMessages(id),
+        api.listTasks().catch(() => []),
+      ]);
+      setMessages(msgs);
+      const savedSources = new Set(tasks.map((task: any) => task.source));
+      setApprovedTaskIds(
+        msgs.flatMap((msg: Msg) => {
+          const suggested = msg.transition?.kind === "task_suggestion"
+            ? (msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []))
+            : [];
+          return suggested.flatMap((_: any, index: number) =>
+            savedSources.has(taskSourceKey(msg.id, index))
+              ? [taskApprovalId(msg.id, index)]
+              : []
+          );
+        })
+      );
+      setHistoryLoadState("ready");
+    } catch (error) {
+      // Old clients could keep a deleted session URL in navigation history.
+      // A 404 is safe to heal because the authenticated, idempotent endpoint
+      // returns only this account's current canonical conversation.
+      if (error instanceof ApiError && error.status === 404) {
+        try {
+          const session = await api.getOrStartMainSession();
+          if (session?.id && session.id !== id) {
+            router.replace(`/chat/${session.id}`);
+            return;
+          }
+        } catch {
+          // Fall through to an explicit retry state; never render fake history.
+        }
+      }
+      setHistoryLoadState("error");
+    }
+  }, [id, router]);
 
   useEffect(() => {
     load();
@@ -457,6 +481,24 @@ export default function ChatDetail() {
             contentContainerStyle={styles.scroll}
             testID="chat-scroll"
           >
+            {historyLoadState === "loading" ? (
+              <View style={styles.historyStatus} testID="chat-history-loading">
+                <ActivityIndicator color={colors.brand} />
+                <Text style={styles.historyStatusText}>{t("正在加载对话…")}</Text>
+              </View>
+            ) : null}
+            {historyLoadState === "error" ? (
+              <Pressable
+                onPress={() => void load()}
+                style={styles.historyStatus}
+                testID="chat-history-retry"
+              >
+                <Ionicons name="refresh" size={20} color={colors.brand} />
+                <Text style={styles.historyStatusText}>
+                  {t("对话未能打开，点此重试")}
+                </Text>
+              </Pressable>
+            ) : null}
             {messages.map((m) => (
               <MessageBubble
                 key={m.id}
@@ -491,6 +533,7 @@ export default function ChatDetail() {
                 placeholder={t("说点什么...")}
                 placeholderTextColor={colors.muted}
                 style={styles.input}
+                editable={historyLoadState === "ready" && !sending}
                 multiline
                 returnKeyType="send"
                 blurOnSubmit={false}
@@ -742,6 +785,18 @@ const styles = StyleSheet.create({
   headerSub: { fontSize: type.sm, color: colors.muted },
 
   scroll: { paddingHorizontal: 18, paddingVertical: 16, paddingBottom: 18, gap: 12 },
+  historyStatus: {
+    alignSelf: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.86)",
+  },
+  historyStatusText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
   row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
   avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
 

@@ -193,6 +193,35 @@ function testRestoredMemoryIsNotRenderedAsChatHistory() {
   assert.match(en, /"已恢复的家庭记忆": "Restored family memory"/);
 }
 
+function testStaleConversationLinksHealToTheCanonicalSession() {
+  const chat = read("../app/chat/[id].tsx");
+  const home = read("../app/(tabs)/index.tsx");
+
+  assert.match(
+    chat,
+    /error instanceof ApiError && error\.status === 404[\s\S]*api\.getOrStartMainSession\(\)[\s\S]*router\.replace\(`\/chat\/\$\{session\.id\}`\)/,
+    "a stale deep link must adopt the authenticated account's canonical session",
+  );
+  assert.match(
+    chat,
+    /historyLoadState === "error"[\s\S]*testID="chat-history-retry"/,
+    "a non-recoverable history failure needs a visible retry instead of a blank chat",
+  );
+  const openStart = home.indexOf("const openNuriChat = async () => {");
+  const openEnd = home.indexOf("useFocusEffect(", openStart);
+  const openNuriChat = home.slice(openStart, openEnd);
+  assert.match(
+    openNuriChat,
+    /api\.getOrStartMainSession\(\)/,
+    "Home must resolve the canonical session at click time",
+  );
+  assert.doesNotMatch(
+    openNuriChat,
+    /router\.push\(`\/chat\/\$\{nuriPreview\.sessionId\}`\)/,
+    "Home must not navigate using a preview id that may have gone stale",
+  );
+}
+
 testPayloadCarriesClientTimeContext();
 testStreamingAndFallbackShareOnePayload();
 testLeavingChatNeverDeletesPersistentConversation();
@@ -200,4 +229,5 @@ testStorageFailuresNeverTriggerASecondPost();
 testNativeAndFetchStreamingTransportsClassifyFailuresSafely();
 testUnchangedManualRetryKeepsTheSameTurnKey();
 testRestoredMemoryIsNotRenderedAsChatHistory();
+testStaleConversationLinksHealToTheCanonicalSession();
 console.log("chat client-context contracts passed");
