@@ -21,6 +21,7 @@ from backend.main import ChildCreate, _child_payload  # noqa: E402
 from backend.nuri_core.family_store import (  # noqa: E402
     age_label as _age_label,
     profile_ctx as _profile_ctx,
+    reconcile_context_with_child_profile as _reconcile_context,
     redact_child_profile_history as _redact_child_profile_history,
     redact_child_profile_text as _redact_child_profile_text,
     safe_child_recommendation_context as _safe_child_recommendation_context,
@@ -287,10 +288,14 @@ def test_multiple_children_keep_each_identity_bound_to_its_own_facts(monkeypatch
         "2025-10-10",
         "2025/10/10",
         "2025年10月10日",
+        "2025年10月10号",
         "2025 年 10 月 10 日",
         "10/10/2025",
+        "10/10/25",
         "October 10, 2025",
+        "Oct. 10, 2025",
         "10月10日",
+        "10月10号",
     ],
 )
 def test_router_boundary_redacts_saved_child_name_and_birthday_variants(
@@ -416,3 +421,30 @@ def test_feed_context_is_redacted_before_recommendation_topics_are_derived(monke
     assert "2025年10月10日" not in outbound
     assert "10个月" in outbound
     assert "语言发展" in outbound
+
+
+def test_confirmed_birthday_removes_only_stale_profile_claims_from_memory(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    memory = (
+        "基本资料：小啊谷的生日尚未确认；爸爸在 Houston 创业\n"
+        "日常节奏：宝宝大约9个月；晚上睡前喜欢听歌"
+    )
+    reconciled = _reconcile_context(
+        memory,
+        [{"nickname": "小啊谷", "birth_date": "2025-10-10"}],
+    )
+
+    assert "生日尚未确认" not in reconciled
+    assert "大约9个月" not in reconciled
+    assert "爸爸在 Houston 创业" in reconciled
+    assert "晚上睡前喜欢听歌" in reconciled
+
+
+def test_memory_is_unchanged_without_a_valid_confirmed_birthday():
+    memory = "基本资料：生日尚未确认；晚上睡前喜欢听歌"
+    assert _reconcile_context(memory, [{"birth_date": "invalid"}]) == memory

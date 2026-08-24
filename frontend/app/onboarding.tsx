@@ -20,7 +20,7 @@ import { useFonts } from "expo-font";
 import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
-import { api, auth } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import { useT } from "@/src/i18n";
 import {
   daysInMonth,
@@ -72,6 +72,7 @@ export default function Onboarding() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [existingChild, setExistingChild] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -86,9 +87,19 @@ export default function Onboarding() {
           setExistingChild(child); setChildName(child.nickname || "");
           if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
         }
-      } catch { /* Preview and first-use flows can start blank. */ }
+      } catch (error) {
+        if (isAuthError(error)) {
+          await auth.clearToken();
+          router.replace("/login");
+          return;
+        }
+        // A first-time account returns an empty children array, not an error.
+        // Any rejection here means durable profile state could not be read;
+        // proceeding would risk overwriting an existing child with blanks.
+        setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
+      }
     })();
-  }, []);
+  }, [router, t]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
   const birthDate = birthYear && birthMonth && birthDay
@@ -101,9 +112,9 @@ export default function Onboarding() {
       ? t("出生日期不能晚于今天")
       : "";
   const validBirthDate = isValidBirthDate(birthDate);
-  const canNext = page === 0
+  const canNext = !syncError && (page === 0
     ? !!childName.trim() && validBirthDate
-    : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true;
+    : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true);
   const birthLabel = birthDate
     ? // All three are set whenever birthDate is, but that is a fact about
       // formatDateOnly rather than something the type system can see.
@@ -121,12 +132,23 @@ export default function Onboarding() {
       return;
     }
     setSaving(true);
+    setSyncError("");
     try {
       const child = { nickname: childName.trim(), birth_date: birthDate, gender: existingChild?.gender || "other", allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
-      if (existingChild?.id) await api.updateChild(existingChild.id, child); else await api.addChild(child);
+      const saved: any = existingChild?.id
+        ? await api.updateChild(existingChild.id, child)
+        : await api.addChild(child);
+      if (saved?.birth_date !== birthDate) throw new Error("Child birthday was not persisted");
       await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
       await auth.setOnboarded(true);
       router.replace("/(tabs)");
+    } catch (error) {
+      if (isAuthError(error)) {
+        await auth.clearToken();
+        router.replace("/login");
+        return;
+      }
+      setSyncError(t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));
     } finally { setSaving(false); }
   };
 
@@ -152,6 +174,7 @@ export default function Onboarding() {
           </View>
 
           <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            {!!syncError && <Text style={styles.syncError} accessibilityLiveRegion="assertive">{syncError}</Text>}
             <Hero page={page} />
             <View style={[styles.form, page >= 3 && styles.preferenceForm]}>
               {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} hasBirthDate={!!birthDate} birthDateError={birthDateError} openPicker={() => setPickerOpen(true)} />}
@@ -213,6 +236,7 @@ const styles = StyleSheet.create({
   choiceIcon: { width: 48, height: 48, alignSelf: "center", marginTop: 62, flexDirection: "row", flexWrap: "wrap", gap: 4 }, iconBlockTall: { width: 22, height: 28, borderRadius: 4, backgroundColor: "#3A2F5A" }, iconBlockShort: { width: 22, height: 16, borderRadius: 4, backgroundColor: "#3A2F5A" },
   form: { marginTop: 159 }, preferenceForm: { marginTop: 132 }, title: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 24 }, subtitle: { color: "#3A2F5A", fontFamily: "NotoSansSC_400Regular", fontSize: 16, lineHeight: 21, marginTop: 4 }, pageBody: { marginTop: 16 },
   field: { marginTop: 12 }, label: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16, marginBottom: 8 }, input: { height: 48, borderRadius: 12, borderWidth: 1.5, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 12, letterSpacing: 0.48 }, inputError: { borderColor: "#C54444" }, errorText: { marginTop: 6, color: "#C54444", fontFamily: "NotoSansSC_400Regular", fontSize: 12 }, inputText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 12, letterSpacing: 0.48 }, picker: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, placeholder: { color: "rgba(58,47,90,0.6)" },
+  syncError: { color: "#C54444", backgroundColor: "#FFF2F0", borderColor: "#C54444", borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 8, fontFamily: "NotoSansSC_400Regular", fontSize: 12, lineHeight: 18 },
   ctaRow: { alignItems: "flex-end", marginTop: 62 }, concernCta: { marginTop: 32 }, cta: { width: 148, height: 48, borderRadius: 12, borderWidth: 1, borderColor: "rgba(60,34,45,0.3)", backgroundColor: "rgba(255,255,255,0.6)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }, ctaReady: { backgroundColor: "rgba(255,255,255,0.9)" }, ctaText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 }, chip: { height: 41, borderRadius: 12, borderWidth: 1, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.2)", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14 }, chipActive: { backgroundColor: "#3A2F5A" }, chipText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, chipTextActive: { color: "#fff" },
   choiceList: { gap: 10, marginTop: 4 }, choice: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.2)", flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 10 }, choiceActive: { backgroundColor: "#3A2F5A" }, radio: { width: 16, height: 16, borderRadius: 8, borderWidth: 1.5, borderColor: "#3A2F5A", alignItems: "center", justifyContent: "center" }, radioActive: { borderColor: "#fff" }, radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff" }, choiceText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, choiceTextActive: { color: "#fff" },

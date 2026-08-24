@@ -132,6 +132,7 @@ def core(context_hints: dict, ports: CorePorts, uid: Optional[str] = None) -> Fa
         child_age_context=(
             f"孩子当前年龄：{'、'.join(age_labels)}" if age_labels else ""
         ),
+        child_profiles=tuple(children),
         age_months=youngest_months,
         stage_label=ports.age_label(str(youngest_child.get("birth_date") or ""))
         if youngest_child else "",
@@ -174,6 +175,12 @@ async def enrich(
     memory_block, follow_up_block = await asyncio.gather(
         ports.memory_context(uid),
         ports.follow_up_context(uid),
+    )
+    memory_block = family_store.reconcile_context_with_child_profile(
+        memory_block, list(state.child_profiles),
+    )
+    follow_up_block = family_store.reconcile_context_with_child_profile(
+        follow_up_block, list(state.child_profiles),
     )
     enriched = replace(
         state,

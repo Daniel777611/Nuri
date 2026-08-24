@@ -114,6 +114,9 @@ class FamilyState:
     #: ``profile_block`` because the reply model may use confirmed names and
     #: birthdays, while retrieval never needs those identifiers.
     child_age_context: str = ""
+    #: Internal rows used only to reconcile stale memory/state facts with the
+    #: current account profile.  They are never returned by search_context().
+    child_profiles: Sequence[dict] = ()
     #: The youngest child's completed age in months. The single most
     #: load-bearing fact for both retrieval and directive conditions.
     age_months: Optional[int] = None

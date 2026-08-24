@@ -4496,6 +4496,15 @@ async def _reply_context(
     )
     route, results = routed
     state_summary, _covered = state
+    memory_ctx = core_family_store.reconcile_context_with_child_profile(
+        memory_ctx, children,
+    )
+    follow_ctx = core_family_store.reconcile_context_with_child_profile(
+        follow_ctx, children,
+    )
+    state_summary = core_family_store.reconcile_context_with_child_profile(
+        state_summary, children,
+    )
     if metrics:
         metrics.mark("context_ms", started)
     return _ReplyContext(

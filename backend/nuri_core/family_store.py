@@ -106,11 +106,15 @@ def redact_child_profile_text(value: object, children: Optional[list] = None) ->
             rf"(?<!\d){year}\s*[-/.年]\s*0?{month}\s*[-/.月]\s*0?{day}\s*日?(?!\d)",
             rf"(?<!\d)0?{month}\s*[-/.]\s*0?{day}\s*[-/.]\s*{year}(?!\d)",
             # Parents and the model often say only the birthday's month/day.
-            rf"(?<!\d)0?{month}\s*月\s*0?{day}\s*日(?!\d)",
+            rf"(?<!\d)0?{month}\s*月\s*0?{day}\s*[日号](?!\d)",
+            # Two-digit years are common in casual chat.  Restrict the match
+            # to the saved birthday's actual final two digits so unrelated
+            # dates are not consumed.
+            rf"(?<!\d)0?{month}\s*[-/.]\s*0?{day}\s*[-/.]\s*{year % 100:02d}(?!\d)",
             # ``\w`` also treats adjacent Chinese characters as word
             # characters, so use ASCII-letter guards here. A model commonly
             # emits forms such as ``生日是October 10, 2025`` without a space.
-            rf"(?<![A-Za-z])(?:{month_name}|{month_short})\s+0?{day}(?:st|nd|rd|th)?\s*,?\s*{year}(?![A-Za-z])",
+            rf"(?<![A-Za-z])(?:{month_name}|{month_short}\.?)\s+0?{day}(?:st|nd|rd|th)?\s*,?\s*{year}(?![A-Za-z])",
         )
         for pattern in date_patterns:
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
@@ -152,6 +156,55 @@ def redact_child_profile_history(
             item["text"] = redact_child_profile_text(item.get("text"), children)
         sanitized.append(item)
     return sanitized
+
+
+_STALE_CHILD_FACT_RE = re.compile(
+    r"(?:出生(?:日期|年月|时间)?|生日|生辰|月龄|年龄|"
+    r"(?<!\d)\d{1,3}\s*个?月(?:大|龄|左右)?|"
+    r"(?<!\d)\d{1,2}\s*岁(?:大|左右)?|"
+    r"\bbirth\s*date\b|\bbirthday\b|\bage\b|"
+    r"\b\d{1,3}\s*months?\s*old\b|\b\d{1,2}\s*years?\s*old\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def reconcile_context_with_child_profile(
+    value: object, children: Optional[list] = None,
+) -> str:
+    """Remove stale age/birthday claims when structured profile facts exist.
+
+    Long-term memories and rolling conversation summaries predate profile
+    edits.  A remembered sentence such as ``birthday not confirmed`` must not
+    compete with the current ``children`` row in the final model prompt.  The
+    profile block owns these facts, so discard only age/birthday clauses and
+    preserve every unrelated family memory.
+    """
+
+    text = str(value or "")
+    has_confirmed_birthday = any(
+        age_label(str(child.get("birth_date") or "")[:10])
+        for child in (children or [])
+    )
+    if not text or not has_confirmed_birthday:
+        return text
+
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        prefix = ""
+        body = line
+        if "：" in line:
+            maybe_prefix, body = line.split("：", 1)
+            prefix = maybe_prefix + "："
+        clauses = re.split(r"([；;])", body)
+        kept: list[str] = []
+        for index in range(0, len(clauses), 2):
+            clause = clauses[index].strip()
+            if not clause or _STALE_CHILD_FACT_RE.search(clause):
+                continue
+            kept.append(clause)
+        if kept:
+            kept_lines.append(prefix + "；".join(kept))
+    return "\n".join(kept_lines)
 
 
 def age_in_months(birth_date: str) -> Optional[int]:

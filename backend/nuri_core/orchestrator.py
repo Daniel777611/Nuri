@@ -32,7 +32,15 @@ import asyncio
 import time
 from typing import Any, Optional, Sequence
 
-from backend.nuri_core import context_budget, dialogue, family, knowledge, outcome, safety
+from backend.nuri_core import (
+    context_budget,
+    dialogue,
+    family,
+    family_store,
+    knowledge,
+    outcome,
+    safety,
+)
 from backend.nuri_core.contracts import (
     DialoguePlan,
     EvidenceDecision,
@@ -99,6 +107,9 @@ async def run_turn_context(
         ),
     )
     enriched, policy, directives, card_block, state_block, (evidence, verdict) = results
+    state_block = family_store.reconcile_context_with_child_profile(
+        state_block, list(core.child_profiles),
+    )
 
     # Attributed here rather than inside knowledge, so the numbers line up with
     # what the linear pipeline reported under the same names.

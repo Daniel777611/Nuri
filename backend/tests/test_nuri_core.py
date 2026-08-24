@@ -493,6 +493,42 @@ def test_four_model_final_prompt_uses_confirmed_birthday_but_search_does_not(
     assert "2025-10-10" not in bundle.family.search_context()
 
 
+def test_four_model_drops_stale_memory_and_state_profile_claims(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    hints = {
+        "nickname": "Daniel",
+        "children": [{"nickname": "小啊谷", "birth_date": "2025-10-10"}],
+    }
+    ports = _ports(
+        profile_ctx=family_store.profile_ctx,
+        age_label=family_store.age_label,
+        age_months=family_store.age_in_months,
+        memory_context=_async("基本资料：孩子生日未确认；爸爸创业很忙"),
+        conversation_state=_async(("宝宝大约9个月；最近在练挥手", 0)),
+    )
+    bundle = _run(run_turn_context(
+        history=[{"role": "user", "text": "你知道孩子的生日吗？"}],
+        user_text="你知道孩子的生日吗？",
+        uid="u1",
+        session_id="s1",
+        context_hints=hints,
+        ports=ports,
+        route_turn=_route_turn,
+    ))
+    prompt = bundle.plan.system_prompt("你叫 NURI。")
+
+    assert "已确认出生日期：2025-10-10" in prompt
+    assert "生日未确认" not in prompt
+    assert "大约9个月" not in prompt
+    assert "爸爸创业很忙" in prompt
+    assert "最近在练挥手" in prompt
+
+
 def test_the_legacy_shaped_fields_stay_populated_for_the_comparison():
     bundle = _bundle()
     assert bundle.profile and bundle.memory and bundle.internal
