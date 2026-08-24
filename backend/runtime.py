@@ -60,7 +60,31 @@ VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
 INTERNAL_NAMESPACE      = os.getenv("INTERNAL_VECTOR_NAMESPACE", "internal")
 INTERNAL_TOP_K          = int(os.getenv("INTERNAL_TOP_K", "3"))
 INTERNAL_MIN_SIMILARITY = float(os.getenv("INTERNAL_MIN_SIMILARITY", "0.5"))
-JWT_SECRET       = os.getenv("JWT_SECRET", "dev-secret-change-in-prod")
+
+_LOCAL_ONLY_JWT_SECRET = "dev-secret-change-in-prod"
+
+
+def _load_jwt_secret() -> str:
+    """Refuse to boot a deployed app with a guessable signing key.
+
+    Local development keeps the historical fallback so a fresh clone remains
+    runnable.  Vercel Preview and Production must receive a high-entropy secret
+    through environment configuration; silently accepting the public fallback
+    would let anybody mint an authenticated token for an arbitrary user id.
+    """
+
+    value = (os.getenv("JWT_SECRET") or "").strip()
+    deployment_env = (os.getenv("VERCEL_ENV") or "").strip().lower()
+    if deployment_env in {"preview", "production"}:
+        if value == _LOCAL_ONLY_JWT_SECRET or len(value) < 32:
+            raise RuntimeError(
+                "JWT_SECRET must be configured with at least 32 random "
+                f"characters in Vercel {deployment_env}"
+            )
+    return value or _LOCAL_ONLY_JWT_SECRET
+
+
+JWT_SECRET       = _load_jwt_secret()
 RECOMMENDATION_SNAPSHOT_SECRET = (
     os.getenv("RECOMMENDATION_SNAPSHOT_SECRET") or SUPABASE_SERVICE_ROLE_KEY
 )
