@@ -545,6 +545,7 @@ export const en: Record<string, string> = {
   "来源：{source}": "Source: {source}",
   "添加图片": "Add a photo",
   "拍照": "Take a photo",
+  "拍照或选择图片": "Take or choose a photo",
   "从相册选择": "Choose from photos",
   "选择图片文件": "Choose an image file",
   "选择一种添加方式": "Choose how to add a photo",

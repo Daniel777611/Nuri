@@ -27,6 +27,7 @@ import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
   ChatImageInputError,
+  pickWebChatImageFile,
   prepareChatImage,
   type PreparedChatImage,
 } from "@/src/chatImageInput";
@@ -258,6 +259,8 @@ export default function ChatDetail() {
   const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
   const [imageMenuVisible, setImageMenuVisible] = useState(false);
   const [processingImage, setProcessingImage] = useState(false);
+  const pendingNativePickerRef = useRef<"camera" | "library" | null>(null);
+  const nativePickerFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
   // rapid taps would otherwise all read the stale `false`.
@@ -466,41 +469,29 @@ export default function ChatDetail() {
     }
   };
 
-  const takePhoto = async () => {
-    setImageMenuVisible(false);
+  const openNativePicker = async (source: "camera" | "library") => {
     try {
-      // Browsers handle camera permission inside the file/capture dialog. An
-      // extra asynchronous permission call would break the required user
-      // gesture and prevent the picker from opening on Safari.
-      if (Platform.OS !== "web") {
+      if (source === "camera") {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (!permission.granted) {
           showToast(t("需要相机权限才能拍照，请在系统设置中允许"));
           return;
         }
+        await acceptPickerResult(await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          cameraType: ImagePicker.CameraType.back,
+          allowsEditing: false,
+          base64: false,
+          exif: false,
+          quality: 0.68,
+        }));
+        return;
       }
-      await acceptPickerResult(await ImagePicker.launchCameraAsync({
-        mediaTypes: ["images"],
-        cameraType: ImagePicker.CameraType.back,
-        allowsEditing: false,
-        base64: false,
-        exif: false,
-        quality: 1,
-      }));
-    } catch {
-      showToast(t("无法打开相机，请重试"));
-    }
-  };
 
-  const choosePhoto = async () => {
-    setImageMenuVisible(false);
-    try {
-      if (Platform.OS !== "web") {
-        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!permission.granted) {
-          showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
-          return;
-        }
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
+        return;
       }
       await acceptPickerResult(await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
@@ -508,12 +499,87 @@ export default function ChatDetail() {
         allowsMultipleSelection: false,
         base64: false,
         exif: false,
-        quality: 1,
+        quality: 0.78,
       }));
     } catch {
-      showToast(t("无法读取图片，请重试"));
+      showToast(t(source === "camera" ? "无法打开相机，请重试" : "无法读取图片，请重试"));
     }
   };
+
+  const flushNativePicker = () => {
+    const source = pendingNativePickerRef.current;
+    if (!source) return;
+    pendingNativePickerRef.current = null;
+    if (nativePickerFallbackTimerRef.current) {
+      clearTimeout(nativePickerFallbackTimerRef.current);
+      nativePickerFallbackTimerRef.current = null;
+    }
+    void openNativePicker(source);
+  };
+
+  const deferNativePickerUntilModalCloses = (source: "camera" | "library") => {
+    pendingNativePickerRef.current = source;
+    setImageMenuVisible(false);
+    // onDismiss is reliable on iOS. Android does not consistently emit it for
+    // every RN Modal implementation, so use a guarded fallback after the fade.
+    if (Platform.OS === "android") {
+      nativePickerFallbackTimerRef.current = setTimeout(flushNativePicker, 350);
+    }
+  };
+
+  const openSafeWebPicker = async () => {
+    try {
+      // Do not force capture=environment or use Expo's eager Web metadata
+      // decode. Safari owns the chooser transition and NURI validates the raw
+      // file header before allocating any full-resolution image surface.
+      const pendingAsset = pickWebChatImageFile();
+      setImageMenuVisible(false);
+      const asset = await pendingAsset;
+      if (asset) await acceptPickerResult({ canceled: false, assets: [asset] });
+    } catch (error) {
+      explainImageError(error);
+    }
+  };
+
+  const takePhoto = () => {
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    deferNativePickerUntilModalCloses("camera");
+  };
+
+  const choosePhoto = () => {
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    deferNativePickerUntilModalCloses("library");
+  };
+
+  useEffect(() => () => {
+    if (nativePickerFallbackTimerRef.current) {
+      clearTimeout(nativePickerFallbackTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    let active = true;
+    void ImagePicker.getPendingResultAsync()
+      .then((result) => {
+        if (active && result && "canceled" in result) {
+          void acceptPickerResult(result);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+    // Recovery is intentionally a one-time mount operation. The latest
+    // acceptPickerResult implementation is sufficient for the recovered file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const addGeneratedTask = async (msg: Msg, task: any, index: number) => {
     const approvalId = taskApprovalId(msg.id, index);
     if (approvedTaskIds.includes(approvalId) || addingTaskIdsRef.current.has(approvalId)) return;
@@ -694,6 +760,7 @@ export default function ChatDetail() {
           transparent
           animationType="fade"
           onRequestClose={() => setImageMenuVisible(false)}
+          onDismiss={flushNativePicker}
         >
           <View style={styles.imageMenuOverlay}>
             <Pressable
@@ -720,10 +787,12 @@ export default function ChatDetail() {
                 <View style={styles.imageMenuIcon}>
                   <Ionicons name="camera-outline" size={22} color={colors.brand} />
                 </View>
-                <Text style={styles.imageMenuActionText}>{t("拍照")}</Text>
+                <Text style={styles.imageMenuActionText}>
+                  {Platform.OS === "web" ? t("拍照或选择图片") : t("拍照")}
+                </Text>
                 <Ionicons name="chevron-forward" size={18} color={colors.muted} />
               </Pressable>
-              <Pressable
+              {Platform.OS !== "web" ? <Pressable
                 onPress={() => void choosePhoto()}
                 style={styles.imageMenuAction}
                 testID="chat-image-library"
@@ -732,10 +801,10 @@ export default function ChatDetail() {
                   <Ionicons name="images-outline" size={22} color={colors.brand} />
                 </View>
                 <Text style={styles.imageMenuActionText}>
-                  {Platform.OS === "web" ? t("选择图片文件") : t("从相册选择")}
+                  {t("从相册选择")}
                 </Text>
                 <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-              </Pressable>
+              </Pressable> : null}
               <Pressable
                 onPress={() => setImageMenuVisible(false)}
                 style={styles.imageMenuCancel}

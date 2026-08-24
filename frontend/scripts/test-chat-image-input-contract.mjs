@@ -13,6 +13,10 @@ assert.match(chat, /requestCameraPermissionsAsync\(\)/, "camera use must request
 assert.match(chat, /requestMediaLibraryPermissionsAsync\(\)/, "photo library use must request permission");
 assert.match(chat, /launchCameraAsync\(/, "the action menu must support taking a photo");
 assert.match(chat, /launchImageLibraryAsync\(/, "the action menu must support choosing a photo");
+assert.match(chat, /Do not force capture=environment/, "web camera entry must avoid forced PWA capture");
+assert.match(chat, /onDismiss=\{flushNativePicker\}/, "native camera must wait for the modal to close");
+assert.match(chat, /getPendingResultAsync\(\)/, "Android camera results must survive activity recreation");
+assert.match(chat, /pickWebChatImageFile\(\)/, "web must own the raw file picker instead of Expo metadata decoding");
 assert.match(chat, /prepareChatImage\(asset\)/, "selected photos must be resized and compressed");
 assert.match(chat, /setPendingImage\(prepared\)/, "a prepared photo must enter send-preview state");
 assert.match(chat, /testID="chat-image-preview"/, "the chosen photo must be visible before send");
@@ -22,7 +26,12 @@ assert.match(chat, /Platform\.OS === "web"/, "web must have an explicit picker b
 assert.match(chat, /AI 服务（OpenAI）分析/, "the picker must disclose that AI processes the photo");
 
 assert.match(imageInput, /CHAT_IMAGE_MAX_SOURCE_BYTES/, "source files need a hard size limit");
+assert.match(imageInput, /CHAT_IMAGE_MAX_SOURCE_PIXELS/, "camera photos need a decoded-pixel limit");
 assert.match(imageInput, /CHAT_IMAGE_MAX_DATA_URI_CHARS/, "encoded requests need a hard size limit");
+assert.match(imageInput, /createImageBitmap/, "web photos must use bounded decode-time resizing");
+assert.match(imageInput, /readEncodedImageDimensions/, "web must inspect encoded dimensions before image decode");
+assert.match(imageInput, /input\.type = "file"/, "web must use a browser-owned raw file input");
+assert.doesNotMatch(imageInput, /input\.capture/, "the PWA picker must never force a camera process transition");
 assert.match(imageInput, /SaveFormat\.JPEG/, "chat photos must use a predictable MIME type");
 assert.match(imageInput, /data:image\/jpeg;base64,/, "the API must receive a complete data URI");
 assert.match(imageInput, /compress\(asset, 1200, 0\.55\)/, "oversized first-pass output needs a bounded retry");
