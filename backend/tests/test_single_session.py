@@ -29,6 +29,8 @@ class _SessionTable:
         self._filters: dict = {}
         self._pending = None
         self._update = None
+        self._orders: list[tuple[str, bool]] = []
+        self._limit = None
 
     def select(self, *_a, **_k):
         return self
@@ -37,10 +39,12 @@ class _SessionTable:
         self._filters[col] = val
         return self
 
-    def order(self, *_a, **_k):
+    def order(self, column, desc=False, **_k):
+        self._orders.append((column, desc))
         return self
 
-    def limit(self, *_a, **_k):
+    def limit(self, count, **_k):
+        self._limit = count
         return self
 
     def insert(self, row):
@@ -68,8 +72,16 @@ class _SessionTable:
                 for row in rows:
                     row.update(patch)
                 return SimpleNamespace(data=[dict(row) for row in rows])
-            rows.sort(key=lambda r: r.get("created_at") or "")
-            return SimpleNamespace(data=[dict(row) for row in rows[:1]])
+            for column, desc in reversed(self._orders):
+                rows.sort(
+                    key=lambda r, c=column: str(r.get(c) or ""),
+                    reverse=desc,
+                )
+            if not self._orders:
+                rows.sort(key=lambda r: r.get("created_at") or "")
+            if self._limit is not None:
+                rows = rows[: self._limit]
+            return SimpleNamespace(data=[dict(row) for row in rows])
 
 
 class _Supabase:
@@ -118,6 +130,10 @@ class _MessageTable:
         self._filters[col] = val
         return self
 
+    def in_(self, col, values):
+        self._filters[col] = set(values)
+        return self
+
     def order(self, _col, desc=False, **_k):
         self._desc = desc
         return self
@@ -143,7 +159,10 @@ class _MessageTable:
                 return SimpleNamespace(data=[dict(row)])
             rows = [
                 r for r in self._store
-                if all(value(r, k) == v for k, v in self._filters.items())
+                if all(
+                    value(r, k) in v if isinstance(v, set) else value(r, k) == v
+                    for k, v in self._filters.items()
+                )
             ]
             if self._update is not None:
                 patch, self._update = self._update, None
@@ -182,6 +201,50 @@ def test_second_call_returns_the_same_conversation(monkeypatch, no_model):
 
     assert second["id"] == first["id"]
     assert len(sb.sessions) == 1
+
+
+def test_legacy_duplicates_open_the_session_with_the_newest_parent_message(
+    monkeypatch, no_model,
+):
+    sessions = [
+        {
+            "id": "older-row",
+            "user_id": "parent-1",
+            "title": "old greeting only",
+            "created_at": "2026-07-01T00:00:00+00:00",
+        },
+        {
+            "id": "real-history",
+            "user_id": "parent-1",
+            "title": "real history",
+            "created_at": "2026-07-02T00:00:00+00:00",
+        },
+    ]
+    sb = _Supabase(sessions)
+    sb.message_inserts.extend([
+        {
+            "id": "old-greeting",
+            "session_id": "older-row",
+            "role": "ai",
+            "text": "你好",
+            "transition": None,
+            "created_at": "2026-07-01T00:00:01+00:00",
+        },
+        {
+            "id": "latest-user",
+            "session_id": "real-history",
+            "role": "user",
+            "text": "这是最新的真实对话",
+            "transition": None,
+            "created_at": "2026-08-23T00:00:00+00:00",
+        },
+    ])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    session = _start()
+
+    assert session["id"] == "real-history"
+    assert len(sb.sessions) == 2
 
 
 def test_opening_a_card_does_not_start_a_second_conversation(monkeypatch, no_model):

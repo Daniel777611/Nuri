@@ -107,6 +107,7 @@ export const en: Record<string, string> = {
   "正在更新每日精选…": "Refreshing your daily selections…",
   "正在更新每日精选...": "Refreshing your daily selections...",
   "和我聊聊": "Talk with me",
+  "从这里聊起": "Start from here",
   "对话": "Chat",
   "任务": "Tasks",
   "社区": "Community",
@@ -136,6 +137,9 @@ export const en: Record<string, string> = {
   "Hi！早上好，{nickname}，你还记得我们上次聊到了宝宝的睡眠策略吗？最新的进展如何？":
     "Morning, {nickname}! Remember the sleep plan we talked about last time? How's it going?",
   "继续对话": "Continue",
+  "已恢复的家庭记忆": "Restored family memory",
+  "这些内容来自已恢复的家庭记忆，不是聊天记录。":
+    "This context comes from restored family memory, not from the chat transcript.",
   "知识图书馆": "Library",
   "我的家": "My home",
   "灵感：试着写下今天的心情。": "Prompt: write down how today felt.",

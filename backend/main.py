@@ -2752,6 +2752,37 @@ _MEMORY_PREVIEW_SENSITIVE_KEYS = (
 )
 
 
+def _safe_memory_display_item(row: dict) -> Optional[dict]:
+    """Reduce one memory row to fields that are safe to show to its owner."""
+
+    category = str(row.get("category") or "").strip()
+    if category not in _MEMORY_PREVIEW_CATEGORY_PRIORITY:
+        return None
+    key = " ".join(str(row.get("key") or "").split())
+    text = " ".join(str(row.get("value") or "").split())
+    lowered_key = key.casefold()
+    if (
+        not key
+        or not text
+        or any(token in lowered_key for token in _MEMORY_PREVIEW_SENSITIVE_KEYS)
+    ):
+        return None
+    if text[:1] in {"{", "["}:
+        try:
+            if isinstance(json.loads(text), (dict, list)):
+                return None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    item = {
+        "category": category,
+        "key": key[:80],
+        "text": text[:240],
+    }
+    if row.get("updated_at"):
+        item["updated_at"] = str(row["updated_at"])
+    return item
+
+
 def _safe_memory_preview(rows: list[dict]) -> Optional[dict]:
     """Return one display-safe memory summary, never its storage metadata.
 
@@ -2763,33 +2794,43 @@ def _safe_memory_preview(rows: list[dict]) -> Optional[dict]:
 
     candidates: list[tuple[int, int, dict]] = []
     for index, row in enumerate(rows):
-        category = str(row.get("category") or "").strip()
-        if category not in _MEMORY_PREVIEW_CATEGORY_PRIORITY:
+        preview = _safe_memory_display_item(row)
+        if not preview:
             continue
-        key = " ".join(str(row.get("key") or "").split())
-        text = " ".join(str(row.get("value") or "").split())
-        lowered_key = key.casefold()
-        if (
-            not key
-            or not text
-            or any(token in lowered_key for token in _MEMORY_PREVIEW_SENSITIVE_KEYS)
-        ):
-            continue
-        if text[:1] in {"{", "["}:
-            try:
-                if isinstance(json.loads(text), (dict, list)):
-                    continue
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
-        preview = {
-            "category": category,
-            "key": key[:80],
-            "text": text[:240],
-        }
-        if row.get("updated_at"):
-            preview["updated_at"] = str(row["updated_at"])
-        candidates.append((_MEMORY_PREVIEW_CATEGORY_PRIORITY[category], index, preview))
+        candidates.append((
+            _MEMORY_PREVIEW_CATEGORY_PRIORITY[preview["category"]],
+            index,
+            preview,
+        ))
     return min(candidates, default=(0, 0, None))[2]
+
+
+def _safe_memory_context_items(rows: list[dict], limit: int = 6) -> list[dict]:
+    """Return newest, distinct owner-visible facts for a recovery notice.
+
+    These are summaries retained by the memory system, not reconstructed chat
+    bubbles.  Keeping the shape separate from ``memory_preview`` makes that
+    distinction explicit at the API boundary.
+    """
+
+    items: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        item = _safe_memory_display_item(row)
+        if not item:
+            continue
+        fingerprint = item["text"].casefold()
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        items.append({
+            key: value
+            for key, value in item.items()
+            if key in {"category", "text", "updated_at"}
+        })
+        if len(items) >= limit:
+            break
+    return items
 
 
 async def _load_memory_preview(sb, uid: str) -> Optional[dict]:
@@ -2836,41 +2877,19 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
         ) from exc
 
     try:
-        session_res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_sessions")
-            .select("id,title,source_card_id,created_at")
-            .eq("user_id", uid)
-            .execute()
+        # Both Home and the chat-opening endpoint use the same resolver.  That
+        # matters for pre-unique-index accounts: picking the oldest row here
+        # and the most recently active row elsewhere made Home preview one
+        # conversation and open a different, greeting-only conversation.
+        session = await _canonical_session_for(
+            uid,
+            sb=sb,
+            translate_storage_errors=False,
         )
-        # There is one continuous conversation per account. It may originally
-        # have been created by opening a card, so source_card_id is provenance,
-        # not a reason to hide the account's real conversation.
-        main_sessions = list(session_res.data or [])
-        if not main_sessions:
+        if not session:
             return _main_chat_preview_payload(
                 memory_preview=await _load_memory_preview(sb, uid)
             )
-
-        session_ids = [session["id"] for session in main_sessions]
-        user_message_res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_messages")
-            .select("id,session_id,role,text,created_at")
-            .in_("session_id", session_ids)
-            .eq("role", "user")
-            .order("created_at", desc=True)
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        last_user_message = (user_message_res.data or [None])[0]
-        if last_user_message:
-            session = next(
-                item
-                for item in main_sessions
-                if item["id"] == last_user_message.get("session_id")
-            )
-        else:
-            session = max(main_sessions, key=_chat_activity_key)
 
         message_res = await anyio.to_thread.run_sync(
             lambda: sb.table("chat_messages")
@@ -2881,11 +2900,22 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
             .limit(20)
             .execute()
         )
+        user_message_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .eq("session_id", session["id"])
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
         # A deterministic empty AI row can temporarily hold the distributed
         # generation claim. It must never replace the parent's last real
         # message on the home card.
         visible_recent = _visible_chat_messages(list(message_res.data or []))
         last_message = (visible_recent or [None])[0]
+        last_user_message = (user_message_res.data or [None])[0]
         memory_preview = (
             await _load_memory_preview(sb, uid) if not last_user_message else None
         )
@@ -3101,6 +3131,79 @@ def _visible_chat_messages(messages: list[dict]) -> list[dict]:
         for message in messages
         if (public := _public_chat_message(message)) is not None
     ]
+
+
+MEMORY_CONTEXT = "memory_context"
+
+
+async def _memory_recovery_message(
+    sb,
+    *,
+    uid: str,
+    session: dict,
+    visible_messages: list[dict],
+) -> Optional[dict]:
+    """Build a transparent recovery card when only memory summaries survived.
+
+    The legacy chat-unmount bug deleted a session and cascaded through the raw
+    transcript while ``user_memories`` remained.  Recasting those summaries as
+    old user/AI bubbles would fabricate a transcript.  Instead, an ephemeral
+    transition card explains exactly what is available.  It is returned only
+    for a conversation with no real parent message, and is never persisted or
+    included in an LLM prompt.
+    """
+
+    if any(message.get("role") == "user" for message in visible_messages):
+        return None
+
+    result = await anyio.to_thread.run_sync(
+        lambda: sb.table("user_memories")
+        .select(
+            "category,key,value,updated_at,source_id,source_type,status"
+        )
+        .eq("user_id", uid)
+        .eq("status", "active")
+        .eq("source_type", "chat")
+        .order("updated_at", desc=True)
+        .limit(40)
+        .execute()
+    )
+    current_message_ids = {
+        str(message.get("id"))
+        for message in visible_messages
+        if message.get("id")
+    }
+    orphan_rows = [
+        row
+        for row in (result.data or [])
+        if row.get("source_id")
+        and str(row.get("source_id")) not in current_message_ids
+    ]
+    items = _safe_memory_context_items(orphan_rows)
+    if not items:
+        return None
+
+    session_id = str(session["id"])
+    return {
+        "id": str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"nuri:memory-context:{uid}:{session_id}",
+        )),
+        "session_id": session_id,
+        "role": "ai",
+        "text": "",
+        "quick_replies": [],
+        "transition": {
+            "kind": MEMORY_CONTEXT,
+            "title": "已恢复的家庭记忆",
+            "notice": (
+                "原始聊天记录曾被旧版误删；下面是 NURI 当时单独保留下来的"
+                "家庭记忆，不是逐字聊天记录。"
+            ),
+            "items": items,
+        },
+        "created_at": session.get("created_at") or _now(),
+    }
 
 
 def _claim_transition(token: str) -> dict:
@@ -3439,17 +3542,79 @@ def _missing_sources_column(exc: Exception) -> bool:
     )
 
 
-async def _existing_session_for(uid: str) -> Optional[dict]:
-    """The account's one conversation, if it has been created already."""
-    sb = _require_chat_storage()
+async def _canonical_session_for(
+    uid: str,
+    sb=None,
+    *,
+    translate_storage_errors: bool = True,
+) -> Optional[dict]:
+    """Resolve the one conversation every NURI surface should open.
+
+    New databases enforce one row per user.  A few legacy accounts can still
+    contain duplicates, however, and historically Home and ``POST /sessions``
+    selected different rows.  Prefer the session containing the newest real
+    parent message; with no parent messages, prefer the newest visible activity
+    and finally the newest session row.  Pending generation claims are never
+    considered activity.
+    """
+
+    sb = sb or _require_chat_storage()
     try:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_sessions").select("*")
-            .eq("user_id", uid).order("created_at").limit(1).execute()
+        session_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions")
+            .select("*")
+            .eq("user_id", uid)
+            .execute()
         )
-        return (res.data or [None])[0]
-    except Exception as e:
-        _raise_chat_storage_error("session lookup", e)
+        sessions = list(session_res.data or [])
+        if not sessions:
+            return None
+        if len(sessions) == 1:
+            return sessions[0]
+
+        by_id = {str(session.get("id")): session for session in sessions}
+        session_ids = list(by_id)
+        latest_user_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at")
+            .in_("session_id", session_ids)
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_user = (latest_user_res.data or [None])[0]
+        if latest_user:
+            chosen = by_id.get(str(latest_user.get("session_id")))
+            if chosen:
+                return chosen
+
+        recent_res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,transition,created_at")
+            .in_("session_id", session_ids)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(100)
+            .execute()
+        )
+        visible_recent = _visible_chat_messages(list(recent_res.data or []))
+        if visible_recent:
+            chosen = by_id.get(str(visible_recent[0].get("session_id")))
+            if chosen:
+                return chosen
+        return max(sessions, key=_chat_activity_key)
+    except Exception as exc:
+        if not translate_storage_errors:
+            raise
+        _raise_chat_storage_error("canonical session lookup", exc)
+
+
+async def _existing_session_for(uid: str) -> Optional[dict]:
+    """Backward-compatible name for the account's canonical conversation."""
+
+    return await _canonical_session_for(uid)
 
 
 async def _ensure_initial_greeting(
@@ -3696,7 +3861,7 @@ async def delete_session(session_id: str, uid: str = Depends(_req_uid)):
 @api.get("/chat/sessions/{session_id}/messages")
 async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
     sb = _require_chat_storage()
-    await _load_owned_session(session_id, uid, sb)
+    session = await _load_owned_session(session_id, uid, sb)
     try:
         res = await anyio.to_thread.run_sync(
             lambda: sb.table("chat_messages")
@@ -3705,7 +3870,14 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
             .order("created_at", desc=False)
             .execute()
         )
-        return _visible_chat_messages(list(res.data or []))
+        visible_messages = _visible_chat_messages(list(res.data or []))
+        recovery = await _memory_recovery_message(
+            sb,
+            uid=uid,
+            session=session,
+            visible_messages=visible_messages,
+        )
+        return ([recovery] if recovery else []) + visible_messages
     except Exception as e:
         _raise_chat_storage_error("message history load", e)
 

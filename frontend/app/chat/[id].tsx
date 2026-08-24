@@ -45,6 +45,19 @@ type Msg = {
   sources?: Source[];
 };
 
+type MemoryContextItem = {
+  category?: string;
+  key?: string;
+  text: string;
+  updated_at?: string;
+};
+
+type MemoryContextTransition = {
+  kind: "memory_context";
+  items?: MemoryContextItem[];
+  notice?: string;
+};
+
 // Built server-side from the search results the backend fetched, indexed by the
 // citation numbers the model emitted — the model never writes a URL, so a link
 // here can't be invented.
@@ -164,6 +177,60 @@ function NuriAvatar({ size = 34 }: { size?: number }) {
       >
         N
       </Text>
+    </View>
+  );
+}
+
+// Restored memories are context supplied to a new conversation, not messages
+// that either the parent or NURI previously sent. Keep them visually separate
+// from the chat transcript and show only the backend-authored display text;
+// category/key are internal provenance used solely for stable React keys.
+function MemoryContextCard({ transition }: { transition: MemoryContextTransition }) {
+  const { t } = useT();
+  const items: MemoryContextItem[] = Array.isArray(transition?.items)
+    ? transition.items.flatMap((item: unknown) => {
+        if (!item || typeof item !== "object") return [];
+        const candidate = item as Partial<MemoryContextItem>;
+        const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+        return text
+          ? [{
+              text,
+              category: typeof candidate.category === "string" ? candidate.category : undefined,
+              key: typeof candidate.key === "string" ? candidate.key : undefined,
+              updated_at:
+                typeof candidate.updated_at === "string" ? candidate.updated_at : undefined,
+            }]
+          : [];
+      })
+    : [];
+  const notice =
+    typeof transition?.notice === "string" && transition.notice.trim()
+      ? transition.notice.trim()
+      : t("这些内容来自已恢复的家庭记忆，不是聊天记录。");
+
+  return (
+    <View style={styles.memoryContextCard} testID="chat-memory-context">
+      <View style={styles.memoryContextHeader}>
+        <View style={styles.memoryContextIcon}>
+          <Ionicons name="albums-outline" size={18} color={colors.brand} />
+        </View>
+        <Text style={styles.memoryContextTitle}>{t("已恢复的家庭记忆")}</Text>
+      </View>
+      <Text style={styles.memoryContextNotice}>{notice}</Text>
+      {items.length ? (
+        <View style={styles.memoryContextItems}>
+          {items.map((item, index) => (
+            <View
+              key={`${item.category || "memory"}:${item.key || index}`}
+              style={styles.memoryContextItem}
+              testID={`chat-memory-context-item-${index}`}
+            >
+              <View style={styles.memoryContextBullet} />
+              <Text style={styles.memoryContextText}>{item.text}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -461,6 +528,10 @@ function MessageBubble({
 }) {
   const { t } = useT();
   const isAI = msg.role === "ai";
+
+  if (msg.transition?.kind === "memory_context") {
+    return <MemoryContextCard transition={msg.transition as MemoryContextTransition} />;
+  }
 
   // A parent opened a feed card. There is only ever one conversation, so this
   // marks where the subject changed instead of the card getting a chat of its
@@ -766,6 +837,69 @@ const styles = StyleSheet.create({
     color: colors.onSurfaceTertiary,
     fontWeight: "600",
     flexShrink: 1,
+  },
+  memoryContextCard: {
+    marginBottom: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100, 76, 195, 0.24)",
+    backgroundColor: "rgba(250, 248, 255, 0.94)",
+    gap: spacing.sm,
+    shadowColor: colors.brand,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  memoryContextHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  memoryContextIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEE9FF",
+  },
+  memoryContextTitle: {
+    flex: 1,
+    color: "#3A2F5A",
+    fontSize: type.base,
+    fontWeight: "800",
+  },
+  memoryContextNotice: {
+    color: colors.onSurfaceTertiary,
+    fontSize: type.sm,
+    lineHeight: 19,
+  },
+  memoryContextItems: {
+    gap: spacing.sm,
+    paddingTop: 2,
+  },
+  memoryContextItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(238, 233, 255, 0.72)",
+  },
+  memoryContextBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 7,
+    backgroundColor: colors.brand,
+  },
+  memoryContextText: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: type.sm,
+    lineHeight: 20,
   },
   transitionCard: {
     flex: 1, gap: 12,

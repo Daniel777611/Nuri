@@ -157,10 +157,47 @@ function testUnchangedManualRetryKeepsTheSameTurnKey() {
   );
 }
 
+function testRestoredMemoryIsNotRenderedAsChatHistory() {
+  const chat = read("../app/chat/[id].tsx");
+  const zhTw = read("../src/i18n/zh-TW.ts");
+  const en = read("../src/i18n/en.ts");
+  const memoryBranch = chat.indexOf('msg.transition?.kind === "memory_context"');
+  const genericBubble = chat.indexOf('testID={`bubble-${msg.role}`}');
+
+  assert.ok(memoryBranch >= 0, "memory_context needs an explicit render branch");
+  assert.ok(
+    genericBubble > memoryBranch,
+    "memory_context must be intercepted before the generic chat bubble",
+  );
+  assert.match(
+    chat,
+    /function MemoryContextCard[\s\S]*testID="chat-memory-context"/,
+    "restored memory must render as a dedicated context card",
+  );
+  assert.match(
+    chat,
+    /Array\.isArray\(transition\?\.items\)[\s\S]*typeof candidate\.text === "string"/,
+    "the card must validate and render the backend memory items",
+  );
+  assert.match(
+    chat,
+    /typeof transition\?\.notice === "string"/,
+    "the card must render the backend-authored notice when present",
+  );
+  assert.doesNotMatch(
+    chat.slice(memoryBranch, chat.indexOf('if (msg.transition?.kind === "card_opened")')),
+    /styles\.bubble/,
+    "memory_context must never use the historical-message bubble style",
+  );
+  assert.match(zhTw, /"已恢复的家庭记忆": "已恢復的家庭記憶"/);
+  assert.match(en, /"已恢复的家庭记忆": "Restored family memory"/);
+}
+
 testPayloadCarriesClientTimeContext();
 testStreamingAndFallbackShareOnePayload();
 testLeavingChatNeverDeletesPersistentConversation();
 testStorageFailuresNeverTriggerASecondPost();
 testNativeAndFetchStreamingTransportsClassifyFailuresSafely();
 testUnchangedManualRetryKeepsTheSameTurnKey();
+testRestoredMemoryIsNotRenderedAsChatHistory();
 console.log("chat client-context contracts passed");

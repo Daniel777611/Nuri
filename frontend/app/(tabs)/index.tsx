@@ -717,9 +717,11 @@ export default function Home() {
       ? t("正在加载")
       : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
-      : hasPersonalContext
+      : nuriPreview?.sessionId
         ? t("继续对话")
-        : t("和我聊聊");
+        : hasPersonalContext
+          ? t("从这里聊起")
+          : t("和我聊聊");
 
   const trackHeroImpression = useCallback(
     (card: HeroCard, position: number) => {

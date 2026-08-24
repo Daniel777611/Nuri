@@ -8,6 +8,8 @@ function read(relativePath) {
 const home = read("../app/(tabs)/index.tsx");
 const api = read("../src/api.ts");
 const previewApi = read("../src/preview-api.ts");
+const zhTw = read("../src/i18n/zh-TW.ts");
+const en = read("../src/i18n/en.ts");
 
 assert.match(
   api,
@@ -36,9 +38,11 @@ assert.match(
 );
 assert.match(
   home,
-  /hasPersonalContext[\s\S]*?\? t\("继续对话"\)[\s\S]*?: t\("和我聊聊"\)/,
-  "the action label must distinguish personal context from a new conversation",
+  /nuriPreview\?\.sessionId[\s\S]*?\? t\("继续对话"\)[\s\S]*?: hasPersonalContext[\s\S]*?\? t\("从这里聊起"\)[\s\S]*?: t\("和我聊聊"\)/,
+  "only an existing session may be labelled Continue; memory-only context must start from here",
 );
+assert.match(zhTw, /"从这里聊起": "從這裡聊起"/);
+assert.match(en, /"从这里聊起": "Start from here"/);
 assert.match(
   home,
   /<Pressable[\s\S]*?onPress=\{openNuriChat\}[\s\S]*?testID="home-nuri-card"/,

@@ -425,3 +425,96 @@ def test_preview_skips_newer_pending_generation_claim(monkeypatch):
 
     assert preview["last_message"]["id"] == "ai-1"
     assert preview["last_message"]["text"] == "真实回答"
+
+
+def test_ai_only_history_exposes_orphan_memories_as_a_labeled_recovery_card(
+    monkeypatch,
+):
+    sessions = [{
+        "id": "main-1",
+        "user_id": "parent-1",
+        "source_card_id": None,
+        "title": "chat",
+        "created_at": "2026-08-24T04:16:00+00:00",
+    }]
+    messages = {"main-1": [{
+        "id": "greeting",
+        "session_id": "main-1",
+        "role": "ai",
+        "text": "你好，我在这里。",
+        "transition": None,
+        "created_at": "2026-08-24T04:17:00+00:00",
+    }]}
+    memories = [
+        {
+            "user_id": "parent-1",
+            "category": "child_state",
+            "key": "eyes_red_frequent",
+            "value": "啊谷经常眼睛有点红。",
+            "source_type": "chat",
+            "source_id": "deleted-user-message",
+            "status": "active",
+            "updated_at": "2026-08-23T16:47:15+00:00",
+        },
+        {
+            "user_id": "parent-1",
+            "category": "fact",
+            "key": "email_address",
+            "value": "must-not-leak@example.com",
+            "source_type": "chat",
+            "source_id": "deleted-private-message",
+            "status": "active",
+            "updated_at": "2026-08-23T16:48:15+00:00",
+        },
+    ]
+    database = _Supabase(sessions, messages, memories)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: database)
+
+    rows = asyncio.run(main.get_messages("main-1", uid="parent-1"))
+
+    assert [row["id"] for row in rows[1:]] == ["greeting"]
+    recovery = rows[0]
+    assert recovery["text"] == ""
+    assert recovery["transition"]["kind"] == main.MEMORY_CONTEXT
+    assert recovery["transition"]["title"] == "已恢复的家庭记忆"
+    assert "不是逐字聊天记录" in recovery["transition"]["notice"]
+    assert recovery["transition"]["items"] == [{
+        "category": "child_state",
+        "text": "啊谷经常眼睛有点红。",
+        "updated_at": "2026-08-23T16:47:15+00:00",
+    }]
+    # The recovery view is derived and must never manufacture stored dialogue.
+    assert [row["id"] for row in database.rows["chat_messages"]] == ["greeting"]
+
+
+def test_real_parent_messages_never_get_a_memory_recovery_card(monkeypatch):
+    sessions = [{
+        "id": "main-1",
+        "user_id": "parent-1",
+        "title": "chat",
+        "created_at": "2026-08-24T04:16:00+00:00",
+    }]
+    messages = {"main-1": [{
+        "id": "user-1",
+        "session_id": "main-1",
+        "role": "user",
+        "text": "真实保留下来的对话",
+        "transition": None,
+        "created_at": "2026-08-24T04:17:00+00:00",
+    }]}
+    memories = [{
+        "user_id": "parent-1",
+        "category": "fact",
+        "key": "old_fact",
+        "value": "旧记忆",
+        "source_type": "chat",
+        "source_id": "deleted-message",
+        "status": "active",
+        "updated_at": "2026-08-23T16:47:15+00:00",
+    }]
+    database = _Supabase(sessions, messages, memories)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: database)
+
+    rows = asyncio.run(main.get_messages("main-1", uid="parent-1"))
+
+    assert [row["id"] for row in rows] == ["user-1"]
