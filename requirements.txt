@@ -3,6 +3,7 @@ uvicorn
 openai==2.50.0
 supabase
 pypdf
+Pillow>=10.4.0
 python-multipart
 python-dotenv
 anyio

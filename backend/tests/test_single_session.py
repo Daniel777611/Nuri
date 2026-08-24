@@ -11,12 +11,22 @@ those in one afternoon, 42% of that day's tokens.
 from __future__ import annotations
 
 import asyncio
+import base64
+from io import BytesIO
 import threading
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from backend import main, memstore
+
+
+def _jpeg_data_uri(color: tuple[int, int, int]) -> str:
+    output = BytesIO()
+    Image.new("RGB", (1, 1), color).save(output, "JPEG")
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 class _SessionTable:
@@ -611,7 +621,8 @@ def test_reusing_client_retry_key_for_different_image_is_conflict(
     _prepare(
         session["id"],
         main.UserMessageIn(
-            text="图片", image_base64="image-one",
+            text="图片",
+            image_base64=_jpeg_data_uri((255, 0, 0)),
             client_message_id="client-request-123",
         ),
     )
@@ -620,12 +631,16 @@ def test_reusing_client_retry_key_for_different_image_is_conflict(
         _prepare(
             session["id"],
             main.UserMessageIn(
-                text="图片", image_base64="image-two",
+                text="图片",
+                image_base64=_jpeg_data_uri((0, 0, 255)),
                 client_message_id="client-request-123",
             ),
         )
 
     assert exc.value.status_code == 409
+    assert calls[0]["raw_image_base64"] is None
+    stored_user = next(row for row in sb.message_inserts if row["role"] == "user")
+    assert stored_user["image_base64"].startswith("data:image/jpeg;base64,")
 
 
 def test_write_verification_is_scoped_to_the_session(monkeypatch, no_model):

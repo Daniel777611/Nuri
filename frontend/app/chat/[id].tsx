@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -20,9 +21,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import * as WebBrowser from "expo-web-browser";
+import * as ImagePicker from "expo-image-picker";
 import Toast from "@/src/components/Toast";
 import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
+import {
+  ChatImageInputError,
+  prepareChatImage,
+  type PreparedChatImage,
+} from "@/src/chatImageInput";
 import { taskTypeMeta } from "@/src/taskMeta";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
@@ -248,6 +255,9 @@ export default function ChatDetail() {
     "loading" | "ready" | "error"
   >("loading");
   const [input, setInput] = useState("");
+  const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
+  const [imageMenuVisible, setImageMenuVisible] = useState(false);
+  const [processingImage, setProcessingImage] = useState(false);
   const [sending, setSending] = useState(false);
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
   // rapid taps would otherwise all read the stale `false`.
@@ -350,8 +360,13 @@ export default function ChatDetail() {
   const send = async (textOverride?: string, imageBase64?: string | null) => {
     if (!id || sendingRef.current) return;
     const text = (textOverride ?? input).trim();
-    if (!text && !imageBase64) return;
+    const selectedImage = imageBase64
+      ? { previewUri: imageBase64, dataUri: imageBase64, width: 0, height: 0 }
+      : pendingImage;
+    const normalizedImage = selectedImage?.dataUri || null;
+    if (!text && !normalizedImage) return;
     setInput("");
+    setPendingImage(null);
     sendingRef.current = true;
     setSending(true);
 
@@ -360,12 +375,11 @@ export default function ChatDetail() {
       role: "user",
       text: text || "[图片]",
       created_at: new Date().toISOString(),
-      image_base64: imageBase64 || null,
+      image_base64: normalizedImage,
     };
     setMessages((p) => [...p, optimistic]);
 
     setTyping(true);
-    const normalizedImage = imageBase64 || null;
     const failedSend = failedSendRef.current;
     const payload = failedSend
       && failedSend.text === text
@@ -408,6 +422,7 @@ export default function ChatDetail() {
       // a second response while the first request may still be running.
       failedSendRef.current = { text, imageBase64: normalizedImage, payload };
       if (text) setInput(text);
+      if (selectedImage) setPendingImage(selectedImage);
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
       pendingHomeReturnRef.current = false;
       showToast(t("发送失败，请重试"));
@@ -423,6 +438,81 @@ export default function ChatDetail() {
   const showToast = (message: string) => {
     setToastMsg(message);
     setTimeout(() => setToastMsg(null), 1800);
+  };
+
+  const explainImageError = (error: unknown) => {
+    if (error instanceof ChatImageInputError && error.code === "too_large") {
+      showToast(t("图片太大，请选择另一张图片"));
+      return;
+    }
+    if (error instanceof ChatImageInputError && error.code === "unsupported") {
+      showToast(t("暂时只支持图片格式"));
+      return;
+    }
+    showToast(t("图片处理失败，请重试"));
+  };
+
+  const acceptPickerResult = async (result: ImagePicker.ImagePickerResult) => {
+    if (result.canceled || !result.assets?.length) return;
+    setProcessingImage(true);
+    try {
+      const asset = result.assets[0];
+      const prepared = await prepareChatImage(asset);
+      setPendingImage(prepared);
+    } catch (error) {
+      explainImageError(error);
+    } finally {
+      setProcessingImage(false);
+    }
+  };
+
+  const takePhoto = async () => {
+    setImageMenuVisible(false);
+    try {
+      // Browsers handle camera permission inside the file/capture dialog. An
+      // extra asynchronous permission call would break the required user
+      // gesture and prevent the picker from opening on Safari.
+      if (Platform.OS !== "web") {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          showToast(t("需要相机权限才能拍照，请在系统设置中允许"));
+          return;
+        }
+      }
+      await acceptPickerResult(await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        cameraType: ImagePicker.CameraType.back,
+        allowsEditing: false,
+        base64: false,
+        exif: false,
+        quality: 1,
+      }));
+    } catch {
+      showToast(t("无法打开相机，请重试"));
+    }
+  };
+
+  const choosePhoto = async () => {
+    setImageMenuVisible(false);
+    try {
+      if (Platform.OS !== "web") {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+          showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
+          return;
+        }
+      }
+      await acceptPickerResult(await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: false,
+        allowsMultipleSelection: false,
+        base64: false,
+        exif: false,
+        quality: 1,
+      }));
+    } catch {
+      showToast(t("无法读取图片，请重试"));
+    }
   };
   const addGeneratedTask = async (msg: Msg, task: any, index: number) => {
     const approvalId = taskApprovalId(msg.id, index);
@@ -518,11 +608,41 @@ export default function ChatDetail() {
           </ScrollView>
 
           <View style={styles.composer} testID="chat-composer">
+            {processingImage ? (
+              <View style={styles.imageProcessing} testID="chat-image-processing">
+                <ActivityIndicator size="small" color={colors.brand} />
+                <Text style={styles.imageProcessingText}>{t("正在准备图片…")}</Text>
+              </View>
+            ) : null}
+            {pendingImage ? (
+              <View style={styles.imagePreview} testID="chat-image-preview">
+                <Image
+                  source={{ uri: pendingImage.previewUri }}
+                  style={styles.imagePreviewThumb}
+                  contentFit="cover"
+                />
+                <View style={styles.imagePreviewCopy}>
+                  <Text style={styles.imagePreviewTitle}>{t("已添加图片")}</Text>
+                  <Text style={styles.imagePreviewHint}>{t("可以补充文字，让 NURI 更准确地理解")}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setPendingImage(null)}
+                  style={styles.imageRemove}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("移除图片")}
+                  testID="chat-image-remove"
+                >
+                  <Ionicons name="close" size={20} color="#3A2F5A" />
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.inputPill}>
               <Pressable
-                onPress={() => showToast(t("图片上传功能即将上线"))}
+                onPress={() => setImageMenuVisible(true)}
                 style={styles.iconBtn}
-                disabled={sending}
+                disabled={sending || processingImage}
+                accessibilityRole="button"
+                accessibilityLabel={t("添加图片")}
                 testID="chat-image-btn"
               >
                 <Ionicons name="add" size={26} color="#3A2F5A" />
@@ -537,21 +657,95 @@ export default function ChatDetail() {
                 multiline
                 returnKeyType="send"
                 blurOnSubmit={false}
-                onSubmitEditing={() => { if (input.trim() && !sending) send(); }}
+                onSubmitEditing={() => {
+                  if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
+                }}
                 onKeyPress={(e: any) => {
                   if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
                     e.preventDefault?.();
-                    if (input.trim() && !sending) send();
+                    if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
                   }
                 }}
                 testID="chat-input"
               />
-              <Pressable onPress={() => showToast(t("语音输入功能即将上线"))} style={styles.micBtn} testID="chat-voice-btn">
-                <Ionicons name="mic-outline" size={22} color="#3A2F5A" />
+              <Pressable
+                onPress={() => {
+                  if (input.trim() || pendingImage) void send();
+                  else showToast(t("语音输入功能即将上线"));
+                }}
+                disabled={sending || processingImage}
+                style={[styles.micBtn, (input.trim() || pendingImage) && styles.sendBtn]}
+                accessibilityRole="button"
+                accessibilityLabel={(input.trim() || pendingImage) ? t("发送") : t("语音输入")}
+                testID={(input.trim() || pendingImage) ? "chat-send-btn" : "chat-voice-btn"}
+              >
+                <Ionicons
+                  name={(input.trim() || pendingImage) ? "send" : "mic-outline"}
+                  size={21}
+                  color={(input.trim() || pendingImage) ? "#fff" : "#3A2F5A"}
+                />
               </Pressable>
             </View>
           </View>
         </KeyboardAvoidingView>
+
+        <Modal
+          visible={imageMenuVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setImageMenuVisible(false)}
+        >
+          <View style={styles.imageMenuOverlay}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setImageMenuVisible(false)}
+              accessibilityLabel={t("关闭图片菜单")}
+            />
+            <View style={[styles.imageMenu, { width: Math.min(phoneWidth - 32, 370) }]} accessibilityViewIsModal>
+              <View style={styles.imageMenuHandle} />
+              <Text style={styles.imageMenuTitle}>{t("添加图片")}</Text>
+              <Text style={styles.imageMenuHint}>
+                {Platform.OS === "web"
+                  ? t("浏览器会打开设备支持的相机或图片文件选择器")
+                  : t("选择一种添加方式")}
+              </Text>
+              <Text style={styles.imagePrivacyHint}>
+                {t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}
+              </Text>
+              <Pressable
+                onPress={() => void takePhoto()}
+                style={styles.imageMenuAction}
+                testID="chat-image-camera"
+              >
+                <View style={styles.imageMenuIcon}>
+                  <Ionicons name="camera-outline" size={22} color={colors.brand} />
+                </View>
+                <Text style={styles.imageMenuActionText}>{t("拍照")}</Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => void choosePhoto()}
+                style={styles.imageMenuAction}
+                testID="chat-image-library"
+              >
+                <View style={styles.imageMenuIcon}>
+                  <Ionicons name="images-outline" size={22} color={colors.brand} />
+                </View>
+                <Text style={styles.imageMenuActionText}>
+                  {Platform.OS === "web" ? t("选择图片文件") : t("从相册选择")}
+                </Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => setImageMenuVisible(false)}
+                style={styles.imageMenuCancel}
+                testID="chat-image-cancel"
+              >
+                <Text style={styles.imageMenuCancelText}>{t("取消")}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
         <Toast message={toastMsg} />
         </View>
       </SafeAreaView>
@@ -1015,6 +1209,55 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  imageProcessing: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
+  imageProcessingText: {
+    color: colors.onSurfaceTertiary,
+    fontSize: type.sm,
+    fontWeight: "600",
+  },
+  imagePreview: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    paddingRight: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100,76,195,0.22)",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    shadowColor: "#3A2F5A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  imagePreviewThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  imagePreviewCopy: { flex: 1, gap: 3 },
+  imagePreviewTitle: { color: colors.onSurface, fontSize: type.sm, fontWeight: "800" },
+  imagePreviewHint: { color: colors.muted, fontSize: 11, lineHeight: 16 },
+  imageRemove: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F0ECFA",
   },
   inputPill: {
     flexDirection: "row",
@@ -1051,4 +1294,79 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  sendBtn: { backgroundColor: colors.brand },
+  imageMenuOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingBottom: Platform.OS === "ios" ? 24 : 16,
+    backgroundColor: "rgba(25,18,48,0.34)",
+  },
+  imageMenu: {
+    padding: spacing.md,
+    paddingTop: spacing.sm,
+    borderRadius: 24,
+    backgroundColor: "#FFFDFC",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  imageMenuHandle: {
+    alignSelf: "center",
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: spacing.md,
+    backgroundColor: "#D7D0E5",
+  },
+  imageMenuTitle: { color: colors.onSurface, fontSize: type.lg, fontWeight: "900" },
+  imageMenuHint: {
+    color: colors.muted,
+    fontSize: type.sm,
+    lineHeight: 19,
+    marginTop: 4,
+    marginBottom: spacing.sm,
+  },
+  imagePrivacyHint: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "#F5F1FD",
+  },
+  imageMenuAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    minHeight: 58,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  imageMenuIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F0ECFA",
+  },
+  imageMenuActionText: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: type.base,
+    fontWeight: "700",
+  },
+  imageMenuCancel: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 48,
+    marginTop: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "#F3F0F7",
+  },
+  imageMenuCancelText: { color: colors.onSurface, fontSize: type.base, fontWeight: "700" },
 });

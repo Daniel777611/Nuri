@@ -50,6 +50,7 @@ from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
+from backend.nuri_core import image_input as core_image_input
 from backend import llm_usage, locales, memstore, runtime, stores
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
@@ -280,12 +281,33 @@ async def _correlate_llm_calls(request: Request, call_next):
 
 @app.middleware("http")
 async def _protect_personalized_feed_cache(request: Request, call_next):
+    # A decoded image is capped at 2.5 MB. Base64 plus the surrounding JSON
+    # must remain below the serverless request ceiling and must not be allowed
+    # to consume an unbounded local worker before Pydantic can validate it.
+    if request.method == "POST" and re.search(
+        r"/api/chat/sessions/[^/]+/messages(?:/stream)?$",
+        request.url.path,
+    ):
+        raw_length = request.headers.get("content-length")
+        if raw_length:
+            try:
+                if int(raw_length) > 3_700_000:
+                    return JSONResponse(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        content={"detail": "Chat image request is too large"},
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"detail": "Invalid Content-Length header"},
+                )
     response = await call_next(request)
     path = request.url.path
     is_private_feed = path.endswith("/feed/personalized") or bool(
         re.search(r"/feed/[^/]+/(?:detail|research)$", path)
     )
-    if is_private_feed:
+    is_private_chat = path.startswith("/api/chat/")
+    if is_private_feed or is_private_chat:
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Vary"] = "Authorization"
     return response
@@ -523,6 +545,14 @@ class UserMessageIn(BaseModel):
     # Optional for backward compatibility. Old clients get an explicit UTC
     # timeline rather than an inferred timezone based on city or locale.
     client_context: Optional[ClientContext] = None
+
+    @field_validator("image_base64")
+    @classmethod
+    def validate_image_base64(cls, value: Optional[str]) -> Optional[str]:
+        try:
+            return core_image_input.validate_image_data_uri(value)
+        except core_image_input.InvalidChatImage as exc:
+            raise ValueError(str(exc)) from exc
 
 class TaskCreate(BaseModel):
     title:       str
@@ -3164,6 +3194,32 @@ def _visible_chat_messages(messages: list[dict]) -> list[dict]:
     ]
 
 
+MAX_CHAT_HISTORY_IMAGE_CHARS = 3_300_000
+
+
+def _bound_chat_history_images(messages: list[dict]) -> list[dict]:
+    """Keep history responses below the serverless response-body ceiling.
+
+    Images remain durable in ``chat_messages`` for model follow-ups, but a
+    transcript with many inline data URIs must not make the entire chat page
+    unloadable. Keep the newest attachments that fit one bounded response;
+    older bubbles retain their ``[图片]`` marker without returning private
+    image bytes on every page load.
+    """
+
+    remaining = MAX_CHAT_HISTORY_IMAGE_CHARS
+    bounded = [dict(message) for message in messages]
+    for message in reversed(bounded):
+        image = message.get("image_base64")
+        if not isinstance(image, str) or not image:
+            continue
+        if len(image) <= remaining:
+            remaining -= len(image)
+        else:
+            message["image_base64"] = None
+    return bounded
+
+
 MEMORY_CONTEXT = "memory_context"
 
 
@@ -3901,7 +3957,9 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
             .order("created_at", desc=False)
             .execute()
         )
-        visible_messages = _visible_chat_messages(list(res.data or []))
+        visible_messages = _bound_chat_history_images(
+            _visible_chat_messages(list(res.data or []))
+        )
     except Exception as e:
         _raise_chat_storage_error("message history load", e)
 
@@ -4053,7 +4111,9 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: str) -> _Tu
             await core_family_store.save_normalized_input(
                 user_id=owner_uid, session_id=session_id,
                 source="card_chat" if session.get("source_card_id") else "chat",
-                raw_text=body.text or "", raw_image_base64=body.image_base64,
+                # chat_messages is the single durable copy of the attachment;
+                # normalized_inputs must not duplicate private image bytes.
+                raw_text=body.text or "", raw_image_base64=None,
                 card_ref={"card_id": session.get("source_card_id")} if session.get("source_card_id") else None,
                 context_hints=normalized_context,
             )
@@ -5183,6 +5243,65 @@ async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_op
         await core_outcome_store.delete_events(uid)
     return settings
 
+_PRIVACY_WIPE_USER_TABLES = (
+    # Removing the session first cascades through chat_messages and all
+    # normalized inputs linked to that conversation, including chat photos.
+    "chat_sessions",
+    # Inputs can also come from uploads or task reflections without a session.
+    "normalized_inputs",
+    "user_memories",
+    "follow_ups",
+    "tasks",
+    "children",
+    "favorites",
+    "collections",
+    "chat_turn_logs",
+    "llm_call_logs",
+    "nuri_turn_outcomes",
+    "nuri_turn_traces",
+    "email_logs",
+)
+
+
+async def _delete_persistent_user_history(uid: str) -> None:
+    """Delete account-owned content while retaining the login and opt-out.
+
+    The previous privacy endpoint cleared process memory but left Supabase chat
+    rows behind. That becomes especially unsafe once a message can contain a
+    family photo. Optional observability tables may not exist on older installs;
+    a real deletion failure, however, is fail-closed and never reported as a
+    successful wipe.
+    """
+
+    sb = _get_supabase()
+    if not sb:
+        return
+    for table_name in _PRIVACY_WIPE_USER_TABLES:
+        try:
+            await anyio.to_thread.run_sync(
+                lambda _table=table_name: sb.table(_table)
+                .delete()
+                .eq("user_id", uid)
+                .execute()
+            )
+        except Exception as exc:
+            if core_outcome_store.events_table_missing(exc):
+                continue
+            logger.error(
+                "privacy_wipe_persistent_delete_failed",
+                extra={
+                    "event": "privacy_wipe_persistent_delete_failed",
+                    "table": table_name,
+                    "user_id_hash": hashlib.sha256(uid.encode("utf-8")).hexdigest()[:12],
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Private account data could not be completely deleted",
+            ) from exc
+
+
 @api.post("/privacy/wipe")
 async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
     if uid:
@@ -5201,6 +5320,7 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         )
         await stores.delete_snapshots(uid)
         await core_outcome_store.delete_events(uid)
+        await _delete_persistent_user_history(uid)
         memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
         memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
         for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:

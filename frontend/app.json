@@ -26,6 +26,14 @@
     "plugins": [
       "expo-router",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许 NURI 访问你的相册，以便在对话中添加图片。",
+          "cameraPermission": "允许 NURI 使用相机，以便拍照并在对话中添加图片。",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-image.png",
