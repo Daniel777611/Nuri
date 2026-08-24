@@ -9,9 +9,11 @@ property a well-meaning edit silently undoes.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from backend.nuri_core import context_budget as cb
+from backend.nuri_core import context_budget as cb, family_store
 from backend.nuri_core.contracts import DialoguePlan
 from backend.nuri_core.dialogue_reply import CACHE_SEAM, nuri_messages
 
@@ -130,6 +132,37 @@ def test_prompt_is_split_stable_first():
     assert "全局规则" in systems[0] and "孩子18个月" not in systems[0]
     assert "孩子18个月" in systems[1] and "之前聊过入睡时间" in systems[1]
     assert "对花生过敏" in systems[2] and "某篇文章" in systems[2]
+
+
+def test_confirmed_child_profile_overrides_stale_memory_in_final_prompt(monkeypatch):
+    """The reply model must see the saved birthday, not infer it from an old
+    conversational age or ask the parent to provide it again."""
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    profile = family_store.profile_ctx({}, [{
+        "nickname": "小啊谷",
+        "birth_date": "2025-10-10",
+        "gender": "boy",
+    }])
+    built, _ = nuri_messages(
+        msgs(("user", "你知道小啊谷的生日吗？")),
+        profile_ctx=profile,
+        memory_ctx="旧对话只记得孩子大约9个月，生日还没有确认。",
+    )
+    systems = [m["content"] for m in built if m["role"] == "system"]
+
+    assert "已确认出生日期：2025-10-10" in systems[1]
+    assert "当前年龄：10个月" in systems[1]
+    assert "若与旧对话摘要或长期记忆冲突，以这里为准" in systems[1]
+    assert "不要再次询问" in systems[1]
+    # The stale memory may still be relevant to this turn, but the preceding
+    # family block gives the model an explicit, deterministic precedence rule.
+    assert "生日还没有确认" in systems[2]
 
 
 def test_the_global_message_is_identical_across_parents():

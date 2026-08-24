@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Optional
@@ -65,6 +66,92 @@ INFO_SOURCE_LABELS = {
     "parents": "其他家长经验", "all": "都会参考",
 }
 GENDER_LABELS = {"boy": "男孩", "girl": "女孩"}
+
+
+_ENGLISH_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def redact_child_profile_text(value: object, children: Optional[list] = None) -> str:
+    """Remove saved child identifiers from text crossing a retrieval boundary.
+
+    The dialogue model is allowed to use the account's confirmed child profile,
+    but the router and search providers only need developmental stage.  Redact
+    against the actual saved values instead of trying to guess whether arbitrary
+    words are names.  A known birthday is replaced by the derived age so a
+    useful search query keeps its most important relevance signal.
+    """
+
+    text = str(value or "")
+    child_rows = list(children or [])
+
+    # Dates must be handled before nicknames. A valid nickname can also be an
+    # English month name (for example, "May"); replacing the name first would
+    # otherwise break the birthday pattern and leave its day/year exposed.
+    for child in child_rows:
+        raw_birth_date = str(child.get("birth_date") or "")[:10]
+        try:
+            born = date.fromisoformat(raw_birth_date)
+        except (TypeError, ValueError):
+            continue
+        replacement = age_label(raw_birth_date) or "孩子当前年龄"
+        year, month, day = born.year, born.month, born.day
+        month_name = _ENGLISH_MONTHS[month - 1]
+        month_short = month_name[:3]
+        date_patterns = (
+            # ISO, slash, dotted and Chinese year-month-day forms, allowing
+            # optional zero padding and spaces around separators.
+            rf"(?<!\d){year}\s*[-/.年]\s*0?{month}\s*[-/.月]\s*0?{day}\s*日?(?!\d)",
+            rf"(?<!\d)0?{month}\s*[-/.]\s*0?{day}\s*[-/.]\s*{year}(?!\d)",
+            # Parents and the model often say only the birthday's month/day.
+            rf"(?<!\d)0?{month}\s*月\s*0?{day}\s*日(?!\d)",
+            # ``\w`` also treats adjacent Chinese characters as word
+            # characters, so use ASCII-letter guards here. A model commonly
+            # emits forms such as ``生日是October 10, 2025`` without a space.
+            rf"(?<![A-Za-z])(?:{month_name}|{month_short})\s+0?{day}(?:st|nd|rd|th)?\s*,?\s*{year}(?![A-Za-z])",
+        )
+        for pattern in date_patterns:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # Longest first prevents a shorter nickname from partially consuming a
+    # longer one in a multi-child household.
+    nicknames = sorted(
+        {
+            str(child.get("nickname") or "").strip()
+            for child in child_rows
+            if str(child.get("nickname") or "").strip()
+        },
+        key=len,
+        reverse=True,
+    )
+    for nickname in nicknames:
+        escaped = re.escape(nickname)
+        # Any Latin nickname needs ASCII word guards: a child named "May"
+        # must not turn "maybe" into "孩子be". Chinese names are exact account
+        # values and can be replaced wherever they appear.
+        pattern = (
+            rf"(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])"
+            if nickname.isascii()
+            else escaped
+        )
+        text = re.sub(pattern, "孩子", text, flags=re.IGNORECASE)
+    return text
+
+
+def redact_child_profile_history(
+    history: list[dict], children: Optional[list] = None,
+) -> list[dict]:
+    """Return a copy of chat history safe for routing and retrieval models."""
+
+    sanitized: list[dict] = []
+    for message in history or []:
+        item = dict(message)
+        if "text" in item:
+            item["text"] = redact_child_profile_text(item.get("text"), children)
+        sanitized.append(item)
+    return sanitized
 
 
 def age_in_months(birth_date: str) -> Optional[int]:
@@ -141,6 +228,23 @@ def safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
     }
 
 
+def safe_normalized_input_context(profile: dict, children: list[dict]) -> dict:
+    """Minimal structured context retained with canonical input logs.
+
+    Normalized input rows are for auditing the user turn, not a second copy of
+    the family profile.  Keep only opaque/derived child stage and fixed
+    questionnaire codes; names, birthdays, city and free-form notes remain in
+    their authoritative account tables.
+    """
+
+    context: dict = safe_child_recommendation_context(children)
+    for key in ("help_preference", "info_source"):
+        value = str(profile.get(key) or "").strip()
+        if value:
+            context[key] = value
+    return context
+
+
 async def attach_child_recommendation_context(uid: str, context: dict) -> dict:
     """Attach safe child-stage and questionnaire recommendation context.
 
@@ -150,6 +254,13 @@ async def attach_child_recommendation_context(uid: str, context: dict) -> dict:
     """
 
     profile, children = await load_profile(uid)
+    # Feed ranking and web research work on this copy, never on the durable
+    # chat transcript.  Remove exact child identifiers before any topic/title/
+    # recommendation-focus text can be derived from the conversation.
+    if context.get("messages"):
+        context["messages"] = redact_child_profile_history(
+            list(context.get("messages") or []), children,
+        )
     context.update(safe_child_recommendation_context(children))
     context["help_preference"] = str(profile.get("help_preference") or "")
     context["info_source"] = str(profile.get("info_source") or "")
@@ -189,12 +300,22 @@ def profile_ctx(row: dict, children: Optional[list] = None) -> str:
     if info_source:
         parts.append(f"比较信任的信息来源：{info_source}")
 
+    child_parts: list[str] = []
+    has_confirmed_child_fact = False
     for child in children or []:
         desc = []
         name = (child.get("nickname") or "").strip()
-        age = age_label(child.get("birth_date"))
+        # A child's birthday is an account-level fact the parent explicitly
+        # saved.  The chat model needs the exact date to answer direct profile
+        # questions and to reason about time without asking for the same fact
+        # again.  Only render dates that also pass the age validator: malformed
+        # or future legacy rows must not become authoritative prompt facts.
+        birth_date = str(child.get("birth_date") or "")[:10]
+        age = age_label(birth_date)
         if age:
-            desc.append(age)
+            has_confirmed_child_fact = True
+            desc.append(f"已确认出生日期：{birth_date}")
+            desc.append(f"当前年龄：{age}")
         gender = GENDER_LABELS.get(child.get("gender"))
         if gender:
             desc.append(gender)
@@ -205,7 +326,17 @@ def profile_ctx(row: dict, children: Optional[list] = None) -> str:
         if notes:
             desc.append(notes)
         if desc:
-            parts.append(f"孩子{('（' + name + '）') if name else ''}：{'，'.join(desc)}")
+            child_parts.append(
+                f"孩子{('（' + name + '）') if name else ''}：{'，'.join(desc)}"
+            )
+
+    if has_confirmed_child_fact:
+        parts.append(
+            "资料使用规则：以下结构化孩子资料是账号中当前已确认的信息；"
+            "若与旧对话摘要或长期记忆冲突，以这里为准。已有的姓名、出生日期、"
+            "年龄等信息请直接使用，不要说未确认，也不要再次询问"
+        )
+    parts.extend(child_parts)
 
     block = "；".join(parts)
     help_pref = HELP_PREF_LABELS.get(row.get("help_preference"))
@@ -218,6 +349,11 @@ PROFILE_FIELDS = (
     "help_preference,info_source"
 )
 
+
+class ProfileStorageUnavailable(RuntimeError):
+    """The account profile could not be read from its durable source."""
+
+
 async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
     """Fetch the profile answers and children behind the prompt block.
 
@@ -225,9 +361,16 @@ async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
     set than profile_ctx reads, so answers the parent had given were silently
     dropped in chat while showing up in the intro message.
     """
-    sb = runtime.get_supabase()
-    if not user_id or not sb:
+    if not user_id:
         return {}, []
+    sb = runtime.get_supabase()
+    if not sb:
+        # Unit/preview builds intentionally run without a durable profile
+        # store.  Production chat already requires Supabase before reaching
+        # this loader; only an actual configured-store query failure must stop
+        # the turn rather than masquerade as an empty profile.
+        return {}, []
+
     async def _user():
         try:
             r = await anyio.to_thread.run_sync(
@@ -235,9 +378,10 @@ async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
                 .eq("id", user_id).maybe_single().execute()
             )
             return (r.data if r else None) or {}
-        except Exception as e:
-            print(f"[warn] load_profile user: {e}")
-            return {}
+        except Exception as exc:
+            print(f"[warn] load_profile user: {type(exc).__name__}")
+            raise ProfileStorageUnavailable("User profile query failed") from exc
+
     async def _children():
         try:
             r = await anyio.to_thread.run_sync(
@@ -245,9 +389,10 @@ async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
                 .eq("user_id", user_id).execute()
             )
             return r.data or []
-        except Exception as e:
-            print(f"[warn] load_profile children: {e}")
-            return []
+        except Exception as exc:
+            print(f"[warn] load_profile children: {type(exc).__name__}")
+            raise ProfileStorageUnavailable("Child profile query failed") from exc
+
     profile, children = await asyncio.gather(_user(), _children())
     return profile, children
 

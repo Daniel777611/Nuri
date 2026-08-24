@@ -212,6 +212,46 @@ def test_child_context_reaches_the_prompt():
     assert "4个月" in user_msg and "对话：" in user_msg
 
 
+def test_saved_child_pii_is_removed_from_router_prompt_output_and_metrics():
+    children = [{"nickname": "小啊谷", "birth_date": "2025-10-10"}]
+    history = [
+        {"role": "user", "text": "你知道小啊谷的生日吗？"},
+        {"role": "ai", "text": "小啊谷的生日是2025年10月10日。"},
+        {"role": "user", "text": "他最近的语言发展怎么样？"},
+    ]
+    client = _Client(raw=_raw(
+        search_query="小啊谷 born October 10, 2025 language development",
+        search_query_zh="小啊谷 2025/10/10 语言发展",
+        topic="小啊谷的语言发展",
+        reason="小啊谷生日2025年10月10日，需要查发展依据",
+    ))
+
+    route = asyncio.run(route_turn(
+        history,
+        client=client,
+        child_context="孩子当前年龄：10个月",
+        sensitive_children=children,
+    ))
+
+    prompt = client.calls[0]["messages"][1]["content"]
+    persisted_metrics = route_metrics(route)
+    outbound = "\n".join((
+        prompt,
+        route.search_query,
+        route.search_query_zh,
+        persisted_metrics["route_topic"],
+        persisted_metrics["route_reason"],
+    ))
+    assert "小啊谷" not in outbound
+    assert "2025-10-10" not in outbound
+    assert "2025年10月10日" not in outbound
+    assert "2025/10/10" not in outbound
+    assert "October 10, 2025" not in outbound
+    assert "10个月" in outbound
+    assert "语言发展" in route.search_query_zh
+    assert route.needs_search is True
+
+
 def test_model_is_overridable():
     client = _Client(raw=_raw())
     _route(client, model="some-mini-model")

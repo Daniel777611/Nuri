@@ -461,6 +461,95 @@ def test_four_model_router_receives_timestamped_history_once(monkeypatch):
     _assert_single_temporal_annotation_per_message(captured["history"], original)
 
 
+def _turn_with_child_pii_for_routing():
+    context = temporal.build_context(
+        "America/Chicago", now_utc=_utc(2026, 8, 24, 12, 0)
+    )
+    history = [
+        {
+            "role": "user",
+            "text": "你知道小啊谷的生日吗？",
+            "created_at": "2026-08-24T11:58:00Z",
+        },
+        {
+            "role": "ai",
+            "text": "小啊谷的生日是2025年10月10日。",
+            "created_at": "2026-08-24T11:59:00Z",
+        },
+        {
+            "role": "user",
+            "text": "那语言发展呢？",
+            "created_at": context.server_utc.isoformat(),
+        },
+    ]
+    return main._Turn(
+        session={"id": "session-1", "user_id": "parent-1"},
+        owner_uid="parent-1",
+        user_msg=history[-1],
+        msgs=history,
+        context_hints={
+            "children": [{
+                "nickname": "小啊谷",
+                "birth_date": "2025-10-10",
+            }],
+        },
+        fix_text=None,
+        temporal=context,
+    )
+
+
+def test_linear_pipeline_redacts_child_pii_before_router(monkeypatch):
+    turn = _turn_with_child_pii_for_routing()
+    captured = {}
+
+    async def fake_route(history, **kwargs):
+        captured["history"] = history
+        captured["sensitive_children"] = kwargs.get("sensitive_children")
+        return TurnRoute(needs_search=False)
+
+    monkeypatch.setattr(main, "route_turn", fake_route)
+    asyncio.run(main._route_and_search(turn, "孩子当前年龄：10个月", None))
+
+    routed_text = "\n".join(message["text"] for message in captured["history"])
+    assert "小啊谷" not in routed_text
+    assert "2025年10月10日" not in routed_text
+    assert "10个月" in routed_text
+    assert captured["sensitive_children"] == turn.context_hints["children"]
+
+
+def test_four_model_pipeline_redacts_child_pii_before_router(monkeypatch):
+    turn = _turn_with_child_pii_for_routing()
+    captured = {}
+
+    async def fake_route(history, **kwargs):
+        captured["history"] = history
+        captured["sensitive_children"] = kwargs.get("sensitive_children")
+        return TurnRoute(needs_search=False)
+
+    async def fake_run_turn_context(**kwargs):
+        route = await kwargs["route_turn"](
+            kwargs["history"], client=None, child_context="孩子当前年龄：10个月",
+        )
+        return SimpleNamespace(
+            trace=SimpleNamespace(timings={}, metrics_row=lambda: {}),
+            search_results=[], card="", memory="", profile="", state="",
+            style="", internal="", sources="", route=route, plan=None,
+            family=None, evidence=None,
+        )
+
+    monkeypatch.setattr(main, "route_turn", fake_route)
+    monkeypatch.setattr(main, "run_turn_context", fake_run_turn_context)
+    asyncio.run(main._reply_context_four_model(
+        turn, main.UserMessageIn(text="那语言发展呢？"), None,
+    ))
+
+    routed_text = "\n".join(message["text"] for message in captured["history"])
+    assert "小啊谷" not in routed_text
+    assert "2025年10月10日" not in routed_text
+    assert "10个月" in routed_text
+    assert captured["sensitive_children"] == turn.context_hints["children"]
+
+
 class _CapturingSyncClient:
     def __init__(self, content):
         self.content = content

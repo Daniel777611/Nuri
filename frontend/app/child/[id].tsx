@@ -13,7 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import {
   compareDateOnly,
   completedAgeMonths,
@@ -40,21 +40,35 @@ export default function ChildEdit() {
   const [gender, setGender] = useState<"boy" | "girl" | "other">("other");
   const [allergies, setAllergies] = useState("");
   const [notes, setNotes] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
       if (isNew) return;
-      const list = await api.listChildren();
-      const c = list.find((x: any) => x.id === id);
-      if (c) {
+      try {
+        const list = await api.listChildren();
+        const c = list.find((x: any) => x.id === id);
+        if (!c) {
+          setLoadError(t("没有找到这份孩子资料，请返回后重试。"));
+          return;
+        }
         setNickname(c.nickname);
         setBirthDate(c.birth_date || "");
         setGender(c.gender);
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
+      } catch (error) {
+        if (isAuthError(error)) {
+          await auth.clearToken();
+          router.replace("/login");
+          return;
+        }
+        setLoadError(t("孩子资料加载失败，请检查网络后重试。"));
       }
     })();
-  }, [id, isNew]);
+  }, [id, isNew, router, t]);
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
@@ -68,7 +82,9 @@ export default function ChildEdit() {
   const canSave = !!nickname.trim() && !birthDateError;
 
   const save = async () => {
-    if (!canSave) return;
+    if (!canSave || saving) return;
+    setSaving(true);
+    setSaveError("");
     const body = {
       nickname: nickname.trim(),
       birth_date: birthDate,
@@ -79,15 +95,42 @@ export default function ChildEdit() {
         .filter(Boolean),
       notes: notes.trim(),
     };
-    if (isNew) await api.addChild(body);
-    else await api.updateChild(id as string, body);
-    router.back();
+    try {
+      const saved: any = isNew
+        ? await api.addChild(body)
+        : await api.updateChild(id as string, body);
+      if (saved?.birth_date !== body.birth_date) {
+        throw new Error("The saved birthday did not match the submitted value");
+      }
+      router.back();
+    } catch (error) {
+      if (isAuthError(error)) {
+        await auth.clearToken();
+        router.replace("/login");
+        return;
+      }
+      setSaveError(t("保存失败，这次修改尚未写入。请检查网络后重试。"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const remove = async () => {
-    if (!isNew && id) {
+    if (isNew || !id || saving) return;
+    setSaving(true);
+    setSaveError("");
+    try {
       await api.deleteChild(id as string);
       router.back();
+    } catch (error) {
+      if (isAuthError(error)) {
+        await auth.clearToken();
+        router.replace("/login");
+        return;
+      }
+      setSaveError(t("删除失败，孩子资料仍然保留。请稍后重试。"));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -106,11 +149,11 @@ export default function ChildEdit() {
         </Text>
         <Pressable
           onPress={save}
-          disabled={!canSave}
-          style={[styles.save, !canSave && styles.disabled]}
+          disabled={!canSave || saving}
+          style={[styles.save, (!canSave || saving) && styles.disabled]}
           testID="child-save-btn"
         >
-          <Text style={styles.saveText}>保存</Text>
+          <Text style={styles.saveText}>{saving ? t("保存中...") : t("保存")}</Text>
         </Pressable>
       </View>
       <KeyboardAvoidingView
@@ -118,6 +161,16 @@ export default function ChildEdit() {
         style={{ flex: 1 }}
       >
         <ScrollView contentContainerStyle={styles.scroll}>
+          {!!loadError && (
+            <Text style={styles.syncError} accessibilityLiveRegion="assertive">
+              {loadError}
+            </Text>
+          )}
+          {!!saveError && (
+            <Text style={styles.syncError} accessibilityLiveRegion="assertive">
+              {saveError}
+            </Text>
+          )}
           <Field label="昵称">
             <TextInput
               value={nickname}
@@ -203,6 +256,7 @@ export default function ChildEdit() {
           {!isNew && (
             <Pressable
               onPress={remove}
+              disabled={saving}
               style={styles.delete}
               testID="child-delete-btn"
             >
@@ -273,6 +327,17 @@ const styles = StyleSheet.create({
   mutedText: { color: colors.muted },
   fieldHint: { marginTop: spacing.xs, fontSize: type.sm, color: colors.muted },
   errorText: { color: colors.error },
+  syncError: {
+    color: colors.error,
+    backgroundColor: "#FFF2F0",
+    borderColor: colors.error,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    fontSize: type.sm,
+    lineHeight: 20,
+  },
   disabled: { opacity: 0.45 },
   row: { flexDirection: "row", gap: spacing.sm },
   chip: {

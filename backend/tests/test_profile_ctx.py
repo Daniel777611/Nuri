@@ -4,6 +4,7 @@ The questionnaire asks the parent eight things; anything this builder drops is a
 question they answered for nothing, so the coverage assertion below is the point
 of the file rather than an extra.
 """
+import asyncio
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -20,7 +21,10 @@ from backend.main import ChildCreate, _child_payload  # noqa: E402
 from backend.nuri_core.family_store import (  # noqa: E402
     age_label as _age_label,
     profile_ctx as _profile_ctx,
+    redact_child_profile_history as _redact_child_profile_history,
+    redact_child_profile_text as _redact_child_profile_text,
     safe_child_recommendation_context as _safe_child_recommendation_context,
+    safe_normalized_input_context as _safe_normalized_input_context,
 )
 
 
@@ -164,6 +168,7 @@ def test_every_answered_question_reaches_the_prompt():
         "看剧、健身",        # hobbies
         "医师或专家",        # info_source
         "小满",             # child name
+        CHILDREN[0]["birth_date"],  # exact confirmed birth date
         "2岁3个月",         # child age
         "女孩",             # child gender
         "花生",             # allergies
@@ -204,3 +209,210 @@ def test_multiple_children_all_appear():
     out = _profile_ctx({}, kids)
     assert "老大" in out and "5岁" in out
     assert "老二" in out and "8个月" in out
+
+
+def test_confirmed_birth_date_and_dynamic_age_reach_chat_profile(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    out = _profile_ctx({}, [{
+        "nickname": "小啊谷",
+        "birth_date": "2025-10-10",
+        "gender": "boy",
+    }])
+
+    assert (
+        "孩子（小啊谷）：已确认出生日期：2025-10-10，"
+        "当前年龄：10个月，男孩"
+    ) in out
+    assert "若与旧对话摘要或长期记忆冲突，以这里为准" in out
+    assert "不要再次询问" in out
+
+
+@pytest.mark.parametrize("bad_date", ["not-a-date", "2027-01-01"])
+def test_invalid_or_future_birth_date_is_not_marked_confirmed(monkeypatch, bad_date):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    out = _profile_ctx({}, [{
+        "nickname": "小啊谷",
+        "birth_date": bad_date,
+        "gender": "boy",
+    }])
+
+    assert "小啊谷" in out and "男孩" in out
+    assert bad_date not in out
+    assert "已确认出生日期" not in out
+
+
+def test_multiple_children_keep_each_identity_bound_to_its_own_facts(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    out = _profile_ctx({}, [
+        {
+            "nickname": "小啊谷",
+            "birth_date": "2025-10-10",
+            "gender": "boy",
+        },
+        {
+            "nickname": "姐姐",
+            "birth_date": "2022-08-24",
+            "gender": "girl",
+        },
+    ])
+
+    assert (
+        "孩子（小啊谷）：已确认出生日期：2025-10-10，"
+        "当前年龄：10个月，男孩"
+    ) in out
+    assert (
+        "孩子（姐姐）：已确认出生日期：2022-08-24，"
+        "当前年龄：4岁，女孩"
+    ) in out
+
+
+@pytest.mark.parametrize(
+    "displayed_date",
+    [
+        "2025-10-10",
+        "2025/10/10",
+        "2025年10月10日",
+        "2025 年 10 月 10 日",
+        "10/10/2025",
+        "October 10, 2025",
+        "10月10日",
+    ],
+)
+def test_router_boundary_redacts_saved_child_name_and_birthday_variants(
+    monkeypatch, displayed_date,
+):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    children = [{"nickname": "小啊谷", "birth_date": "2025-10-10"}]
+    redacted = _redact_child_profile_text(
+        f"小啊谷的生日是{displayed_date}，最近在练习挥手。",
+        children,
+    )
+
+    assert "小啊谷" not in redacted
+    assert displayed_date not in redacted
+    assert "10个月" in redacted
+    assert "练习挥手" in redacted
+
+
+def test_router_history_redaction_returns_copy_and_preserves_stored_messages(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    original = [{"role": "ai", "text": "小啊谷生于2025年10月10日。"}]
+    redacted = _redact_child_profile_history(
+        original,
+        [{"nickname": "小啊谷", "birth_date": "2025-10-10"}],
+    )
+
+    assert redacted is not original and redacted[0] is not original[0]
+    assert "小啊谷" not in redacted[0]["text"]
+    assert "2025年10月10日" not in redacted[0]["text"]
+    assert original[0]["text"] == "小啊谷生于2025年10月10日。"
+
+
+def test_birthday_is_redacted_before_month_name_nickname(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    redacted = _redact_child_profile_text(
+        "May was born May 10, 2025.",
+        [{"nickname": "May", "birth_date": "2025-05-10"}],
+    )
+
+    assert "May" not in redacted
+    assert "10, 2025" not in redacted
+    assert "15个月" in redacted
+
+
+def test_latin_nickname_does_not_corrupt_larger_english_words():
+    redacted = _redact_child_profile_text(
+        "Maybe May is ready to practice gestures.",
+        [{"nickname": "May"}],
+    )
+
+    assert redacted == "Maybe 孩子 is ready to practice gestures."
+
+
+def test_normalized_input_context_does_not_duplicate_profile_pii(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    context = _safe_normalized_input_context(
+        {
+            "nickname": "Daniel",
+            "city": "Houston",
+            "help_preference": "actionable",
+            "info_source": "professional",
+        },
+        [{
+            "nickname": "小啊谷",
+            "birth_date": "2025-10-10",
+            "notes": "家庭私密备注",
+        }],
+    )
+    serialized = str(context)
+
+    assert context["child_age_context"] == "孩子当前年龄：10个月"
+    assert context["help_preference"] == "actionable"
+    assert context["info_source"] == "professional"
+    assert "Daniel" not in serialized
+    assert "Houston" not in serialized
+    assert "小啊谷" not in serialized
+    assert "2025-10-10" not in serialized
+    assert "家庭私密备注" not in serialized
+
+
+def test_feed_context_is_redacted_before_recommendation_topics_are_derived(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    async def load_profile(_uid):
+        return {}, [{"nickname": "小啊谷", "birth_date": "2025-10-10"}]
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    monkeypatch.setattr(family_store, "load_profile", load_profile)
+    context = {
+        "messages": [{
+            "role": "user",
+            "text": "小啊谷是2025年10月10日出生，想了解语言发展。",
+        }],
+    }
+
+    asyncio.run(family_store.attach_child_recommendation_context("parent-1", context))
+    outbound = context["messages"][0]["text"]
+
+    assert "小啊谷" not in outbound
+    assert "2025年10月10日" not in outbound
+    assert "10个月" in outbound
+    assert "语言发展" in outbound

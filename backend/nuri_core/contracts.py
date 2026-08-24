@@ -110,6 +110,10 @@ class FamilyState:
     uid: Optional[str] = None
     nickname: str = ""
     profile_block: str = ""            # 身份/阶段/偏好, rendered
+    #: Age-only context for the routing/search model.  Kept separate from
+    #: ``profile_block`` because the reply model may use confirmed names and
+    #: birthdays, while retrieval never needs those identifiers.
+    child_age_context: str = ""
     #: The youngest child's completed age in months. The single most
     #: load-bearing fact for both retrieval and directive conditions.
     age_months: Optional[int] = None
@@ -132,7 +136,7 @@ class FamilyState:
         """What the knowledge model needs to write a usable query. Age only —
         a search for a 4-month-old and a 2-year-old share almost nothing, and
         everything else in the profile only makes the query worse."""
-        return self.profile_block
+        return self.child_age_context
 
     def facts(self) -> dict:
         return {

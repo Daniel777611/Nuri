@@ -118,11 +118,20 @@ def core(context_hints: dict, ports: CorePorts, uid: Optional[str] = None) -> Fa
             ((ports.age_months(str(c.get("birth_date") or "")), c) for c in children)
             if isinstance(m, int)]
     youngest_months, youngest_child = min(aged, key=lambda pair: pair[0]) if aged else (None, None)
+    age_labels = [
+        label for label in (
+            ports.age_label(str(child.get("birth_date") or ""))
+            for child in children
+        ) if label
+    ]
 
     return FamilyState(
         uid=uid,
         nickname=str(profile.get("nickname") or "").strip(),
         profile_block=ports.profile_ctx(profile, children),
+        child_age_context=(
+            f"孩子当前年龄：{'、'.join(age_labels)}" if age_labels else ""
+        ),
         age_months=youngest_months,
         stage_label=ports.age_label(str(youngest_child.get("birth_date") or ""))
         if youngest_child else "",

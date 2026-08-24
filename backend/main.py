@@ -43,7 +43,7 @@ import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_context
@@ -249,6 +249,19 @@ async def _lifespan(_app: FastAPI):
     yield
 
 app = FastAPI(title="Family Growth Radar API", lifespan=_lifespan)
+
+
+@app.exception_handler(core_family_store.ProfileStorageUnavailable)
+async def _profile_storage_unavailable(
+    _request: Request,
+    _exc: core_family_store.ProfileStorageUnavailable,
+):
+    """Never let a temporary profile read failure look like missing facts."""
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": "Family profile is temporarily unavailable; please retry."},
+    )
 
 
 @app.middleware("http")
@@ -1086,41 +1099,55 @@ async def _invalidate_child_recommendations(uid: Optional[str]) -> None:
 
 
 @api.get("/children")
-async def list_children(uid: Optional[str] = Depends(_opt_uid)):
+async def list_children(uid: str = Depends(_req_uid)):
     sb = _get_supabase()
-    if sb and uid:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("children")
-                .select("*")
-                .eq("user_id", uid)
-                .order("created_at", desc=False)
-                .execute()
-            )
-            return res.data or []
-        except Exception as e:
-            print(f"[warn] listChildren Supabase error: {e}")
-    return [c for c in memstore.children if not uid or c.get("user_id") == uid]
+    if not sb:
+        raise HTTPException(503, "Child profile storage is unavailable")
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("children")
+            .select("*")
+            .eq("user_id", uid)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        print(f"[warn] listChildren Supabase error: {type(exc).__name__}")
+        raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
 
 @api.post("/children", status_code=201)
-async def add_child(body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
-    child = {"id": str(uuid.uuid4()), "created_at": _now(), **_child_payload(body)}
-    if uid:
-        child["user_id"] = uid
+async def add_child(body: ChildCreate, uid: str = Depends(_req_uid)):
+    child = {
+        "id": str(uuid.uuid4()),
+        "created_at": _now(),
+        "user_id": uid,
+        **_child_payload(body),
+    }
     sb = _get_supabase()
-    if sb and uid:
-        await anyio.to_thread.run_sync(lambda: sb.table("children").insert(child).execute())
+    if not sb:
+        raise HTTPException(503, "Child profile storage is unavailable")
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("children").insert(child).execute()
+        )
+        if not res.data:
+            raise HTTPException(503, "Child profile was not persisted")
         await _invalidate_child_recommendations(uid)
-        return child
-    memstore.children.append(child)
-    await _invalidate_child_recommendations(uid)
-    return child
+        return res.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[warn] addChild Supabase error: {type(exc).__name__}")
+        raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
 
 @api.put("/children/{child_id}")
-async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = Depends(_opt_uid)):
+async def update_child(child_id: str, body: ChildCreate, uid: str = Depends(_req_uid)):
     updates = _child_payload(body)
     sb = _get_supabase()
-    if sb and uid:
+    if not sb:
+        raise HTTPException(503, "Child profile storage is unavailable")
+    try:
         res = await anyio.to_thread.run_sync(
             lambda: sb.table("children")
             .update(updates)
@@ -1132,26 +1159,30 @@ async def update_child(child_id: str, body: ChildCreate, uid: Optional[str] = De
             await _invalidate_child_recommendations(uid)
             return res.data[0]
         raise HTTPException(404, "child not found")
-    for i, c in enumerate(memstore.children):
-        if c["id"] == child_id and (not uid or c.get("user_id") == uid):
-            memstore.children[i] = {**c, **updates}
-            await _invalidate_child_recommendations(uid)
-            return memstore.children[i]
-    raise HTTPException(404, "child not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[warn] updateChild Supabase error: {type(exc).__name__}")
+        raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
 
 @api.delete("/children/{child_id}")
-async def delete_child(child_id: str, uid: Optional[str] = Depends(_opt_uid)):
+async def delete_child(child_id: str, uid: str = Depends(_req_uid)):
     sb = _get_supabase()
-    if sb and uid:
-        await anyio.to_thread.run_sync(
+    if not sb:
+        raise HTTPException(503, "Child profile storage is unavailable")
+    try:
+        res = await anyio.to_thread.run_sync(
             lambda: sb.table("children").delete().eq("id", child_id).eq("user_id", uid).execute()
         )
+        if not res.data:
+            raise HTTPException(404, "child not found")
         await _invalidate_child_recommendations(uid)
         return {"ok": True}
-    memstore.children[:] = [c for c in memstore.children
-                    if not (c["id"] == child_id and (not uid or c.get("user_id") == uid))]
-    await _invalidate_child_recommendations(uid)
-    return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[warn] deleteChild Supabase error: {type(exc).__name__}")
+        raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
 
 # ── Feed ──────────────────────────────────────────────────────────────────────
 # The conversation read and the delivery contract moved to backend/feed/.
@@ -4016,12 +4047,15 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: str) -> _Tu
         # The canonical input is secondary indexing. It runs only after the
         # source chat message and reply claim are durable.
         if user_message_created:
+            normalized_context = core_family_store.safe_normalized_input_context(
+                profile, children,
+            )
             await core_family_store.save_normalized_input(
                 user_id=owner_uid, session_id=session_id,
                 source="card_chat" if session.get("source_card_id") else "chat",
                 raw_text=body.text or "", raw_image_base64=body.image_base64,
                 card_ref={"card_id": session.get("source_card_id")} if session.get("source_card_id") else None,
-                context_hints=context_hints,
+                context_hints=normalized_context,
             )
 
         # "#fix <反馈>" is an internal command for reviewers to correct the
@@ -4261,7 +4295,7 @@ class _ReplyContext(NamedTuple):
 
 
 async def _route_and_search(
-    turn: _Turn, profile_ctx: str, metrics: Optional["_TurnMetrics"],
+    turn: _Turn, child_context: str, metrics: Optional["_TurnMetrics"],
 ) -> tuple["TurnRoute", list]:
     """Decide what this turn needs from the outside, then fetch it.
 
@@ -4277,9 +4311,16 @@ async def _route_and_search(
     handling of its own.
     """
     started = time.perf_counter()
-    route = await route_turn(
+    sensitive_children = list(turn.context_hints.get("children") or [])
+    routing_history = core_family_store.redact_child_profile_history(
         core_temporal.annotate_history(turn.msgs, turn.temporal),
-        client=aoai, child_context=profile_ctx,
+        sensitive_children,
+    )
+    route = await route_turn(
+        routing_history,
+        client=aoai,
+        child_context=child_context,
+        sensitive_children=sensitive_children,
     )
     if metrics:
         metrics.mark("route_ms", started)
@@ -4363,15 +4404,29 @@ async def _reply_context_four_model(
         if metrics and route is not None:
             metrics.set(**route_metrics(route))
 
+    sensitive_children = list(turn.context_hints.get("children") or [])
+    routing_history = core_family_store.redact_child_profile_history(
+        core_temporal.annotate_history(turn.msgs, turn.temporal),
+        sensitive_children,
+    )
+
+    async def _privacy_safe_route_turn(history, **kwargs):
+        return await route_turn(
+            history,
+            sensitive_children=sensitive_children,
+            **kwargs,
+        )
+
     bundle: TurnBundle = await run_turn_context(
         # The router/knowledge branch must see the same trusted timeline as
-        # the final reply model.  The stored transcript remains untouched.
-        history=core_temporal.annotate_history(turn.msgs, turn.temporal),
+        # the final reply model, with exact saved child identifiers removed.
+        # The stored transcript and the dialogue-model history remain untouched.
+        history=routing_history,
         user_text=body.text or "",
         uid=turn.owner_uid,
         context_hints=turn.context_hints,
         ports=_core_ports(),
-        route_turn=route_turn,
+        route_turn=_privacy_safe_route_turn,
         source_card_id=_active_card_id(turn),
         session_id=turn.session.get("id") or "",
         history_window=core_dialogue_reply.HISTORY_WINDOW,
@@ -4419,7 +4474,14 @@ async def _reply_context(
     if NURI_PIPELINE == "four_model":
         return await _reply_context_four_model(turn, body, metrics)
     started = time.perf_counter()
-    profile_ctx = core_family_store.profile_ctx(turn.context_hints, turn.context_hints.get("children"))
+    children = list(turn.context_hints.get("children") or [])
+    profile_ctx = core_family_store.profile_ctx(turn.context_hints, children)
+    # The dialogue model may use confirmed names and birthdays.  The routing
+    # model only needs developmental stage, and must never receive those
+    # identifiers even when the linear fallback pipeline is enabled.
+    child_search_ctx = core_family_store.safe_child_recommendation_context(
+        children
+    ).get("child_age_context", "")
     user_text = body.text or ""
     gen_cards, memory_ctx, follow_ctx, style_ctx, internal_ctx, state, routed = await asyncio.gather(
         stores.get_gen_cards(),
@@ -4430,7 +4492,7 @@ async def _reply_context(
         core_dialogue_reply.get_style_rules_ctx(),
         anyio.to_thread.run_sync(core_knowledge_store.internal_rules_ctx, user_text),
         core_state_store.load(turn.session.get("id") or ""),
-        _route_and_search(turn, profile_ctx, metrics),
+        _route_and_search(turn, child_search_ctx, metrics),
     )
     route, results = routed
     state_summary, _covered = state

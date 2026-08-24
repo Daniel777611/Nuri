@@ -31,10 +31,11 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, Optional, Sequence
 
 from backend import llm_usage
+from backend.nuri_core import family_store
 
 Scope = Literal["en", "zh", "both"]
 
@@ -222,6 +223,7 @@ async def route_turn(
     *,
     client,
     child_context: str = "",
+    sensitive_children: Sequence[dict] = (),
     model: str = ROUTER_MODEL,
     timeout_s: float = ROUTER_TIMEOUT_S,
 ) -> TurnRoute:
@@ -235,7 +237,13 @@ async def route_turn(
     if client is None:
         return _failed("no model client")
 
-    convo = _condense(history)
+    # This model may author an external search query.  It must not see the
+    # account's exact child identifiers even when those facts appeared in a
+    # recent user or NURI message.
+    safe_history = family_store.redact_child_profile_history(
+        list(history), list(sensitive_children),
+    )
+    convo = _condense(safe_history)
     if not convo:
         return NO_ROUTE
 
@@ -286,7 +294,28 @@ async def route_turn(
         return _failed(f"{type(e).__name__}: {e}")
 
     try:
-        return parse_route(raw)
+        route = parse_route(raw)
+        # Treat model output as untrusted.  A router can echo text from its
+        # prompt or reconstruct a birthday in another supported display form;
+        # scrub every field that can reach search or persistent turn metrics.
+        search_query = family_store.redact_child_profile_text(
+            route.search_query, list(sensitive_children),
+        ).strip()
+        search_query_zh = family_store.redact_child_profile_text(
+            route.search_query_zh, list(sensitive_children),
+        ).strip()
+        return replace(
+            route,
+            needs_search=bool(route.needs_search and (search_query or search_query_zh)),
+            search_query=search_query if route.needs_search else "",
+            search_query_zh=search_query_zh if route.needs_search else "",
+            topic=family_store.redact_child_profile_text(
+                route.topic, list(sensitive_children),
+            ).strip()[:40],
+            reason=family_store.redact_child_profile_text(
+                route.reason, list(sensitive_children),
+            ).strip()[:120],
+        )
     except Exception as e:
         print(f"[warn] router returned unparsable JSON: {type(e).__name__}: {e}")
         return _failed(f"parse: {type(e).__name__}")

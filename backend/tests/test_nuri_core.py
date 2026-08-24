@@ -15,7 +15,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.nuri_core import dialogue, family, knowledge, outcome, provenance, safety  # noqa: E402
+from backend.nuri_core import (  # noqa: E402
+    dialogue,
+    family,
+    family_store,
+    knowledge,
+    outcome,
+    provenance,
+    safety,
+)
 from backend.nuri_core.contracts import (  # noqa: E402
     Directive,
     EvidenceDecision,
@@ -137,6 +145,35 @@ def test_core_is_free_and_carries_what_routing_needs():
     assert state.constraints == ("豆豆对花生过敏",)
     assert state.search_context()
     assert not state.enriched
+
+
+def test_search_context_is_age_only_and_contains_no_child_pii(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    hints = {
+        "nickname": "Daniel",
+        "children": [{
+            "nickname": "小啊谷",
+            "birth_date": "2025-10-10",
+            "gender": "boy",
+        }],
+    }
+    p = _ports(
+        profile_ctx=family_store.profile_ctx,
+        age_label=family_store.age_label,
+        age_months=family_store.age_in_months,
+    )
+    state = family.core(hints, p, uid="u1")
+
+    assert "小啊谷" in state.profile_block
+    assert "2025-10-10" in state.profile_block
+    assert state.search_context() == "孩子当前年龄：10个月"
+    assert "小啊谷" not in state.search_context()
+    assert "2025-10-10" not in state.search_context()
 
 
 def test_fingerprint_is_stable_and_moves_with_the_child():
@@ -414,6 +451,46 @@ def test_end_to_end_produces_a_prompt_and_a_trace():
     assert bundle.trace.version == PIPELINE_VERSION
     assert bundle.trace.timings["context"] >= 0
     assert bundle.trace.directive_ids
+
+
+def test_four_model_final_prompt_uses_confirmed_birthday_but_search_does_not(
+    monkeypatch,
+):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    hints = {
+        "nickname": "Daniel",
+        "children": [{
+            "nickname": "小啊谷",
+            "birth_date": "2025-10-10",
+            "gender": "boy",
+        }],
+    }
+    ports = _ports(
+        profile_ctx=family_store.profile_ctx,
+        age_label=family_store.age_label,
+        age_months=family_store.age_in_months,
+    )
+    bundle = _run(run_turn_context(
+        history=[{"role": "user", "text": "你知道孩子的生日吗？"}],
+        user_text="你知道孩子的生日吗？",
+        uid="u1",
+        context_hints=hints,
+        ports=ports,
+        route_turn=_route_turn,
+    ))
+    prompt = bundle.plan.system_prompt("你叫 NURI。")
+
+    assert "小啊谷" in prompt
+    assert "已确认出生日期：2025-10-10" in prompt
+    assert "不要再次询问" in prompt
+    assert bundle.family.search_context() == "孩子当前年龄：10个月"
+    assert "小啊谷" not in bundle.family.search_context()
+    assert "2025-10-10" not in bundle.family.search_context()
 
 
 def test_the_legacy_shaped_fields_stay_populated_for_the_comparison():
