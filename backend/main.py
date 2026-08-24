@@ -501,6 +501,12 @@ class ClientContext(BaseModel):
 class UserMessageIn(BaseModel):
     text:         Optional[str] = ""
     image_base64: Optional[str] = None
+    # Stable across the streaming request and its compatibility fallback. It
+    # makes a client retry idempotent even when the database committed the row
+    # but the HTTP response was lost.
+    client_message_id: Optional[str] = Field(
+        None, min_length=8, max_length=160, pattern=r"^[A-Za-z0-9._:-]+$"
+    )
     # Optional for backward compatibility. Old clients get an explicit UTC
     # timeline rather than an inferred timezone based on city or locale.
     client_context: Optional[ClientContext] = None
@@ -2868,14 +2874,18 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
 
         message_res = await anyio.to_thread.run_sync(
             lambda: sb.table("chat_messages")
-            .select("id,session_id,role,text,created_at")
+            .select("id,session_id,role,text,transition,created_at")
             .eq("session_id", session["id"])
             .order("created_at", desc=True)
             .order("id", desc=True)
-            .limit(1)
+            .limit(20)
             .execute()
         )
-        last_message = (message_res.data or [None])[0]
+        # A deterministic empty AI row can temporarily hold the distributed
+        # generation claim. It must never replace the parent's last real
+        # message on the home card.
+        visible_recent = _visible_chat_messages(list(message_res.data or []))
+        last_message = (visible_recent or [None])[0]
         memory_preview = (
             await _load_memory_preview(sb, uid) if not last_user_message else None
         )
@@ -2938,50 +2948,626 @@ async def _append_card_marker(session_id: str, card_id: str) -> None:
     in a row is not a record of anything.
     """
     gen_cards = await stores.get_gen_cards()
-    marker = _card_marker_message(session_id, card_id, gen_cards)
+    sb = _require_chat_storage()
+    try:
+        recent = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages").select("id,transition")
+            .eq("session_id", session_id)
+            .order("created_at", desc=True).limit(1).execute()
+        )
+        last_row = (recent.data or [{}])[0]
+        last = last_row.get("transition") or {}
+        if last.get("kind") == CARD_OPENED and last.get("card_id") == card_id:
+            return
+        marker = _card_marker_message(session_id, card_id, gen_cards)
+        marker["id"] = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"nuri:card-marker:{session_id}:{card_id}:{last_row.get('id') or 'start'}",
+        ))
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages").insert(marker).execute()
+        )
+    except Exception as e:
+        marker_id = locals().get("marker", {}).get("id")
+        if marker_id and await _chat_row_by_id(
+            sb, "chat_messages", marker_id, session_id=session_id,
+        ):
+            return
+        _raise_chat_storage_error("card transition insert", e)
+
+
+_CHAT_STORAGE_UNAVAILABLE = (
+    "Conversation storage is temporarily unavailable. Nothing was saved; "
+    "please retry."
+)
+
+
+def _require_chat_storage():
+    """Return durable chat storage or fail before showing a fake success.
+
+    A signed-in conversation must never fall back to process memory. Vercel
+    instances are disposable, so an in-memory success is data loss presented
+    to the parent as a saved conversation.
+    """
     sb = _get_supabase()
-    if sb:
-        try:
-            recent = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_messages").select("transition")
-                .eq("session_id", session_id)
-                .order("created_at", desc=True).limit(1).execute()
+    if not sb:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            _CHAT_STORAGE_UNAVAILABLE,
+        )
+    return sb
+
+
+def _raise_chat_storage_error(operation: str, exc: Exception) -> None:
+    print(f"[error] durable chat {operation} failed: {type(exc).__name__}: {exc}")
+    raise HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        _CHAT_STORAGE_UNAVAILABLE,
+    ) from exc
+
+
+async def _chat_row_by_id(
+    sb, table: str, row_id: str, *, session_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Verify a write by its stable key after an ambiguous transport error.
+
+    Message IDs are deterministic, but the session predicate is still part of
+    the identity boundary.  A bare primary-key lookup must never let a retry
+    adopt a row belonging to another conversation.
+    """
+    try:
+        def load_row():
+            query = sb.table(table).select("*").eq("id", row_id)
+            if session_id is not None:
+                query = query.eq("session_id", session_id)
+            return query.execute()
+
+        result = await anyio.to_thread.run_sync(
+            load_row
+        )
+        return (result.data or [None])[0]
+    except Exception as exc:
+        _raise_chat_storage_error(f"{table} write verification", exc)
+
+
+def _user_message_id(session_id: str, client_message_id: Optional[str]) -> str:
+    """Turn a client retry key into a server-owned, session-scoped row ID."""
+    if not client_message_id:
+        return str(uuid.uuid4())
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"nuri:user-message:{session_id}:{client_message_id}",
+    ))
+
+
+def _ai_message_id(session_id: str, user_message_id: str) -> str:
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"nuri:ai-reply:{session_id}:{user_message_id}",
+    ))
+
+
+# A reply row doubles as the distributed generation lock.  The primary key is
+# deterministic for a client turn, so Postgres' unique constraint is the one
+# atomic arbiter even when two Vercel workers receive the same retry at once.
+# Pending rows are internal implementation details and are stripped from every
+# history/preview response and prompt below.
+_GENERATION_CLAIM_KIND = "_nuri_generation_claim"
+_GENERATION_OWNER_KEY = "_nuri_generation_owner"
+_SCRIPT_STATE_KEY = "_nuri_script_state"
+_GENERATION_CLAIM_LEASE_SECONDS = 180
+_GENERATION_CLAIM_WAIT_SECONDS = 2.0
+_GENERATION_CLAIM_POLL_SECONDS = 0.05
+
+
+class _GenerationClaim(NamedTuple):
+    token: Optional[str] = None
+    transition: Optional[dict] = None
+    replayed_message: Optional[dict] = None
+
+    @property
+    def owned(self) -> bool:
+        return bool(self.token and self.transition and not self.replayed_message)
+
+
+def _is_pending_generation_claim(message: Optional[dict]) -> bool:
+    return bool(
+        message
+        and message.get("role") == "ai"
+        and (message.get("transition") or {}).get("kind")
+        == _GENERATION_CLAIM_KIND
+    )
+
+
+def _public_chat_message(message: dict) -> Optional[dict]:
+    """Return a client/prompt-safe copy, or ``None`` for a pending claim."""
+    if _is_pending_generation_claim(message):
+        return None
+    public = dict(message)
+    transition = public.get("transition")
+    if isinstance(transition, dict) and (
+        _SCRIPT_STATE_KEY in transition or _GENERATION_OWNER_KEY in transition
+    ):
+        transition = dict(transition)
+        transition.pop(_SCRIPT_STATE_KEY, None)
+        transition.pop(_GENERATION_OWNER_KEY, None)
+        public["transition"] = transition or None
+    return public
+
+
+def _visible_chat_messages(messages: list[dict]) -> list[dict]:
+    return [
+        public
+        for message in messages
+        if (public := _public_chat_message(message)) is not None
+    ]
+
+
+def _claim_transition(token: str) -> dict:
+    now = core_temporal.parse_created_at(_now())
+    return {
+        "kind": _GENERATION_CLAIM_KIND,
+        "claim_token": token,
+        "lease_expires_at": (
+            now + timedelta(seconds=_GENERATION_CLAIM_LEASE_SECONDS)
+        ).isoformat(),
+    }
+
+
+def _claim_is_expired(message: dict) -> bool:
+    transition = message.get("transition") or {}
+    raw = transition.get("lease_expires_at")
+    if not raw:
+        return True
+    try:
+        expires = core_temporal.parse_created_at(str(raw))
+        now = core_temporal.parse_created_at(_now())
+        return expires <= now
+    except (TypeError, ValueError):
+        return True
+
+
+def _validate_completed_ai_message(actual: dict, expected: dict) -> dict:
+    _verify_existing_message(actual, expected)
+    for field in ("quick_replies", "transition"):
+        if (actual.get(field) or None) != (expected.get(field) or None):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "The reply key was completed with different response data.",
             )
-            last = ((recent.data or [{}])[0].get("transition") or {})
-            if last.get("kind") == CARD_OPENED and last.get("card_id") == card_id:
-                return
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_messages").insert(marker).execute()
+    # ``sources`` did not exist in the oldest schema.  If it is returned, it
+    # must still match exactly; absence remains the supported legacy case.
+    if "sources" in actual and (actual.get("sources") or []) != (
+        expected.get("sources") or []
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The reply key was completed with different source data.",
+        )
+    return actual
+
+
+async def _insert_generation_claim(
+    sb, session_id: str, message_id: str, token: str,
+) -> _GenerationClaim:
+    transition = _claim_transition(token)
+    pending = {
+        "id": message_id,
+        "session_id": session_id,
+        "role": "ai",
+        "text": "",
+        "quick_replies": [],
+        "transition": transition,
+        "created_at": _now(),
+    }
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages").insert(pending).execute()
+        )
+        return _GenerationClaim(token, transition, None)
+    except Exception as exc:
+        # The insert may have committed and only its response was lost.  A
+        # readback of our exact token means this worker still owns the claim.
+        persisted = await _chat_row_by_id(
+            sb, "chat_messages", message_id, session_id=session_id,
+        )
+        if _is_pending_generation_claim(persisted):
+            observed = persisted.get("transition") or {}
+            if observed.get("claim_token") == token:
+                return _GenerationClaim(token, observed, None)
+        if persisted and not _is_pending_generation_claim(persisted):
+            return _GenerationClaim(
+                replayed_message=_public_chat_message(persisted),
             )
-        except Exception as e:
-            print(f"[warn] card marker insert: {e}")
+        # A duplicate is expected under concurrency. Other failures are also
+        # resolved by the same read/wait loop in the caller; if no row appears,
+        # fail closed rather than generating without a database claim.
+        if persisted is None:
+            _raise_chat_storage_error("generation claim insert", exc)
+    return _GenerationClaim()
+
+
+async def _take_over_expired_claim(
+    sb, session_id: str, message_id: str, observed: dict,
+) -> _GenerationClaim:
+    old_transition = observed.get("transition") or {}
+    old_token = old_transition.get("claim_token")
+    if not old_token:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The reply is being prepared. Please retry shortly.",
+        )
+    token = str(uuid.uuid4())
+    transition = _claim_transition(token)
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .update({"transition": transition, "created_at": _now()})
+            .eq("id", message_id)
+            .eq("session_id", session_id)
+            .eq("transition->>kind", _GENERATION_CLAIM_KIND)
+            .eq("transition->>claim_token", old_token)
+            .execute()
+        )
+    except Exception as exc:
+        refreshed = await _chat_row_by_id(
+            sb, "chat_messages", message_id, session_id=session_id,
+        )
+        if _is_pending_generation_claim(refreshed):
+            current = refreshed.get("transition") or {}
+            if current.get("claim_token") == token:
+                return _GenerationClaim(token, current, None)
+        if refreshed and not _is_pending_generation_claim(refreshed):
+            return _GenerationClaim(
+                replayed_message=_public_chat_message(refreshed),
+            )
+        _raise_chat_storage_error("expired generation claim takeover", exc)
+    row = (result.data or [None])[0]
+    if row and (row.get("transition") or {}).get("claim_token") == token:
+        return _GenerationClaim(token, transition, None)
+    # Some PostgREST deployments use ``return=minimal`` for updates.  An empty
+    # response is therefore not proof that the compare-and-set lost; verify the
+    # durable row before making this worker wait on a lease it already owns.
+    refreshed = await _chat_row_by_id(
+        sb, "chat_messages", message_id, session_id=session_id,
+    )
+    if _is_pending_generation_claim(refreshed):
+        current = refreshed.get("transition") or {}
+        if current.get("claim_token") == token:
+            return _GenerationClaim(token, current, None)
+    if refreshed and not _is_pending_generation_claim(refreshed):
+        return _GenerationClaim(
+            replayed_message=_public_chat_message(refreshed),
+        )
+    return _GenerationClaim()
+
+
+async def _acquire_generation_claim(
+    sb, session_id: str, message_id: str, *, wait_seconds: Optional[float] = None,
+) -> _GenerationClaim:
+    """Atomically acquire, replay, take over a stale lease, or return 409.
+
+    No model call or reply-producing side effect may run before this returns an
+    owned token. A peer waits briefly so fast requests replay the durable result
+    instead of surfacing a conflict; a genuinely in-flight reply is explicit.
+    """
+    wait_seconds = (
+        _GENERATION_CLAIM_WAIT_SECONDS
+        if wait_seconds is None else max(0.0, wait_seconds)
+    )
+    deadline = time.monotonic() + wait_seconds
+    tried_insert = False
+    while True:
+        existing = await _chat_row_by_id(
+            sb, "chat_messages", message_id, session_id=session_id,
+        )
+        if existing and not _is_pending_generation_claim(existing):
+            public = _public_chat_message(existing)
+            if public is None or public.get("role") != "ai":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "The reply key contains an invalid message.",
+                )
+            return _GenerationClaim(replayed_message=public)
+        if existing and _claim_is_expired(existing):
+            takeover = await _take_over_expired_claim(
+                sb, session_id, message_id, existing,
+            )
+            if takeover.owned or takeover.replayed_message is not None:
+                return takeover
+        elif existing is None and not tried_insert:
+            tried_insert = True
+            token = str(uuid.uuid4())
+            inserted = await _insert_generation_claim(
+                sb, session_id, message_id, token,
+            )
+            if inserted.owned or inserted.replayed_message is not None:
+                return inserted
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "The reply is still being prepared. Please retry shortly.",
+            )
+        await anyio.sleep(_GENERATION_CLAIM_POLL_SECONDS)
+
+
+async def _release_generation_claim(
+    sb, session_id: str, message_id: str, token: Optional[str],
+) -> None:
+    """Best-effort release; a failed release remains recoverable by its lease."""
+    if not token:
         return
-    msgs = memstore.messages.setdefault(session_id, [])
-    last = (msgs[-1].get("transition") or {}) if msgs else {}
-    if not (last.get("kind") == CARD_OPENED and last.get("card_id") == card_id):
-        msgs.append(marker)
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .delete()
+            .eq("id", message_id)
+            .eq("session_id", session_id)
+            .eq("transition->>kind", _GENERATION_CLAIM_KIND)
+            .eq("transition->>claim_token", token)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(
+            "generation_claim_release_failed",
+            extra={"session_id": session_id, "error_type": type(exc).__name__},
+        )
+
+
+async def _complete_generation_claim(
+    sb,
+    *,
+    session_id: str,
+    message_id: str,
+    token: str,
+    text: str,
+    quick_replies: list,
+    transition: Optional[dict],
+    sources: Optional[list] = None,
+) -> "_PersistedChatMessage":
+    """Atomically replace this worker's pending row with the real reply.
+
+    An exception from PostgREST is ambiguous: the UPDATE may have committed.
+    Exact readback therefore counts as a successful completion *owned by this
+    worker*, so metrics/memory/outcome side effects are not silently skipped.
+    """
+    # Retain the completing claim token as private metadata.  If a lease expires
+    # and a new worker completes the same deterministic response first, exact
+    # content alone cannot prove which worker committed it; without this marker
+    # both could run the turn's follow-up side effects.  Public serializers strip
+    # the marker together with the script cursor metadata.
+    stored_transition = dict(transition or {})
+    stored_transition[_GENERATION_OWNER_KEY] = token
+    expected = {
+        "id": message_id,
+        "session_id": session_id,
+        "role": "ai",
+        "text": text,
+        "quick_replies": quick_replies,
+        "transition": stored_transition,
+        "sources": sources or [],
+        "created_at": _now(),
+    }
+
+    async def read_completed() -> Optional[dict]:
+        row = await _chat_row_by_id(
+            sb, "chat_messages", message_id, session_id=session_id,
+        )
+        if row and not _is_pending_generation_claim(row):
+            return _validate_completed_ai_message(row, expected)
+        return None
+
+    async def update_claim(patch: dict):
+        return await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .update(patch)
+            .eq("id", message_id)
+            .eq("session_id", session_id)
+            .eq("transition->>kind", _GENERATION_CLAIM_KIND)
+            .eq("transition->>claim_token", token)
+            .execute()
+        )
+
+    try:
+        result = await update_claim(expected)
+    except Exception as exc:
+        completed = await read_completed()
+        if completed:
+            return _PersistedChatMessage(
+                _public_chat_message(completed) or completed, created=True,
+            )
+        if not _missing_sources_column(exc):
+            _raise_chat_storage_error("AI claim completion", exc)
+        legacy = {key: value for key, value in expected.items() if key != "sources"}
+        try:
+            result = await update_claim(legacy)
+            print("[warn] saved without `sources`; run message_sources_migration.sql")
+        except Exception as legacy_exc:
+            completed = await read_completed()
+            if completed:
+                return _PersistedChatMessage(
+                    _public_chat_message(completed) or completed, created=True,
+                )
+            _raise_chat_storage_error("AI claim completion", legacy_exc)
+
+    row = (result.data or [None])[0]
+    if row and not _is_pending_generation_claim(row):
+        completed = _validate_completed_ai_message(row, expected)
+    else:
+        # Empty response may mean the server used return=minimal, or that this
+        # worker lost an expired lease. Only exact durable readback is success.
+        completed = await read_completed()
+    if not completed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The reply generation lease is no longer owned by this request.",
+        )
+    return _PersistedChatMessage(
+        _public_chat_message(completed) or completed, created=True,
+    )
+
+
+def _message_image_digest(value: Optional[str]) -> Optional[bytes]:
+    if value is None:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def _verify_existing_message(actual: dict, expected: dict) -> dict:
+    """Reject an idempotency-key collision instead of adopting foreign data."""
+    mismatched = any(
+        actual.get(field) != expected.get(field)
+        for field in ("session_id", "role", "text")
+    )
+    if not mismatched:
+        mismatched = _message_image_digest(actual.get("image_base64")) != (
+            _message_image_digest(expected.get("image_base64"))
+        )
+    if mismatched:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The idempotency key was already used for different message content.",
+        )
+    return actual
+
+
+def _missing_sources_column(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "sources" in message and any(
+        marker in message
+        for marker in ("column", "schema cache", "pgrst204", "does not exist")
+    )
 
 
 async def _existing_session_for(uid: str) -> Optional[dict]:
     """The account's one conversation, if it has been created already."""
-    sb = _get_supabase()
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions").select("*")
-                .eq("user_id", uid).order("created_at").limit(1).execute()
-            )
-            return (res.data or [None])[0]
-        except Exception as e:
-            print(f"[warn] existing_session_for: {e}")
-            return None
-    return next(
-        (s for s in memstore.sessions.values() if s.get("user_id") == uid), None
+    sb = _require_chat_storage()
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions").select("*")
+            .eq("user_id", uid).order("created_at").limit(1).execute()
+        )
+        return (res.data or [None])[0]
+    except Exception as e:
+        _raise_chat_storage_error("session lookup", e)
+
+
+async def _ensure_initial_greeting(
+    session: dict, uid: str, *, wait_for_peer: bool = False,
+) -> None:
+    """Ensure an adopted or newly-created session is never left empty.
+
+    The session insert and greeting insert are separate PostgREST requests. A
+    process failure between them, or the losing side of the one-session race,
+    used to leave a durable but empty conversation forever. The deterministic
+    greeting key makes repair safe on every later ``start_session`` call.
+    """
+    sb = _require_chat_storage()
+    session_id = session["id"]
+    greeting_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"nuri:greeting:{session_id}",
+    ))
+
+    existing = await _chat_row_by_id(
+        sb, "chat_messages", greeting_id, session_id=session_id,
     )
+    if existing and not _is_pending_generation_claim(existing):
+        if (
+            existing.get("session_id") != session_id
+            or existing.get("role") != "ai"
+            or not isinstance(existing.get("text"), str)
+        ):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "The initial greeting key contains an invalid message.",
+            )
+        return
+
+    # Legacy sessions may have a non-deterministic greeting. Do not add a new
+    # one to a real transcript; only repair sessions with no rows at all.
+    try:
+        any_rows = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages").select("id,role,text,transition")
+            .eq("session_id", session_id).limit(20).execute()
+        )
+    except Exception as exc:
+        _raise_chat_storage_error("initial message lookup", exc)
+    if _visible_chat_messages(list(any_rows.data or [])):
+        return
+
+    claim = await _acquire_generation_claim(
+        sb,
+        session_id,
+        greeting_id,
+        wait_seconds=(
+            _GENERATION_CLAIM_WAIT_SECONDS + 1.0
+            if wait_for_peer else _GENERATION_CLAIM_WAIT_SECONDS
+        ),
+    )
+    if claim.replayed_message is not None:
+        return
+
+    completed = False
+    try:
+        profile, children = await core_family_store.load_profile(uid)
+        nickname = profile.get("nickname", "")
+        profile_ctx = core_family_store.profile_ctx(profile, children)
+        card_id = session.get("source_card_id")
+        gen_cards = await stores.get_gen_cards()
+        ctx = _card_ctx(card_id, gen_cards) if card_id else ""
+        style_ctx = await core_dialogue_reply.get_style_rules_ctx()
+        name_part = f"用户的名字是{nickname}，" if nickname else ""
+        quick_replies: list = []
+        if oai:
+            if ctx:
+                intro_prompt = (
+                    f"{name_part}用户刚看完这条育儿内容：{ctx[:200]}。"
+                    "用专业顾问的口吻简短开场：先用名字打招呼（如果有），"
+                    "再说一句对这个话题的专业观察或家长常见的误区，让对方感受到你的专业和真实关心。"
+                    "不要问问题，不要客服腔，控制在3句话以内。"
+                )
+            else:
+                intro_prompt = (
+                    f"{name_part}用户来找你聊育儿。"
+                    "用专业顾问的口吻打招呼：先用名字问候（如果有），"
+                    "简短介绍自己是专注儿童发展的育儿顾问NURI，"
+                    "再说一句真诚的、让父母感受到被理解和支持的话。"
+                    "语气温暖但沉稳，不油腻，不问问题，控制在3句话以内。"
+                )
+            reply = await anyio.to_thread.run_sync(
+                lambda: core_dialogue_reply.nuri_reply_sync(
+                    [{"role": "user", "text": intro_prompt}], "", "",
+                    profile_ctx, style_ctx,
+                )
+            )
+            first_text = reply["text"]
+            quick_replies = reply.get("quick_replies", [])
+        else:
+            script_key = session.get("script_key") or "free"
+            first_step = SCRIPTS.get(script_key, SCRIPTS["free"])[0]
+            first_text = first_step["text"]
+            quick_replies = first_step.get("quick_replies", [])
+
+        await _complete_generation_claim(
+            sb,
+            session_id=session_id,
+            message_id=greeting_id,
+            token=claim.token or "",
+            text=first_text,
+            quick_replies=quick_replies,
+            transition=None,
+            sources=[],
+        )
+        completed = True
+    finally:
+        if not completed:
+            await _release_generation_claim(
+                sb, session_id, greeting_id, claim.token,
+            )
 
 
 @api.post("/chat/sessions")
-async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_opt_uid)):
+async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
     # A parent has one conversation, for the life of the account, holding
     # everything they have ever said. This route used to insert a row every time
     # it was called and leave the client to decide whether it wanted one, which
@@ -2994,17 +3580,17 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
     # Returning what already exists makes the route idempotent, which is what
     # the client was trying and failing to achieve from the outside.
     # one_session_per_user_migration.sql enforces it underneath.
-    if uid:
-        existing = await _existing_session_for(uid)
-        if existing:
-            # Opening a card is a new subject inside the one conversation, so
-            # it leaves a marker rather than starting somewhere else. That
-            # marker is both the divider the parent sees and where the reply
-            # path reads the card context from — the job source_card_id did
-            # while every card had a session of its own.
-            if body.card_id:
-                await _append_card_marker(existing["id"], body.card_id)
-            return existing
+    existing = await _existing_session_for(uid)
+    if existing:
+        await _ensure_initial_greeting(existing, uid)
+        # Opening a card is a new subject inside the one conversation, so
+        # it leaves a marker rather than starting somewhere else. That
+        # marker is both the divider the parent sees and where the reply
+        # path reads card context from — the job source_card_id did while
+        # every card had a session of its own.
+        if body.card_id:
+            await _append_card_marker(existing["id"], body.card_id)
+        return existing
 
     card_id = body.card_id
     title = body.title or "和NURI聊天"
@@ -3020,157 +3606,108 @@ async def start_session(body: StartChatRequest, uid: Optional[str] = Depends(_op
         "script_key": CARD_TO_SCRIPT.get(card_id or "", "free"),
         "created_at": _now(),
     }
-    if uid:
-        session["user_id"] = uid
+    session["user_id"] = uid
 
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(lambda: sb.table("chat_sessions").insert(session).execute())
-        except Exception as e:
-            # The check above is not atomic, so two first-ever requests from one
-            # account can both reach here. The unique index lets exactly one
-            # win; the loser must adopt that row rather than fall back to
-            # memory, or the account ends up with two conversations again —
-            # which is the whole failure this route exists to prevent.
-            if uid:
-                winner = await _existing_session_for(uid)
-                if winner:
-                    return winner
-            print(f"[warn] start_session insert error: {e}")
-            memstore.sessions[session["id"]] = session
-            memstore.messages[session["id"]] = []
-    else:
-        memstore.sessions[session["id"]] = session
-        memstore.messages[session["id"]] = []
-
-    # Fetch profile info for a personalised greeting and ongoing context
-    profile, children = await core_family_store.load_profile(uid)
-    nickname = profile.get("nickname", "")
-    profile_ctx = core_family_store.profile_ctx(profile, children)
-
-    gen_cards = await stores.get_gen_cards()
-    ctx = _card_ctx(card_id, gen_cards) if card_id else ""
-    style_ctx = await core_dialogue_reply.get_style_rules_ctx()
-    name_part = f"用户的名字是{nickname}，" if nickname else ""
-    quick_replies: list = []
-    if oai:
-        if ctx:
-            intro_prompt = (
-                f"{name_part}用户刚看完这条育儿内容：{ctx[:200]}。"
-                "用专业顾问的口吻简短开场：先用名字打招呼（如果有），"
-                "再说一句对这个话题的专业观察或家长常见的误区，让对方感受到你的专业和真实关心。"
-                "不要问问题，不要客服腔，控制在3句话以内。"
-            )
-        else:
-            intro_prompt = (
-                f"{name_part}用户来找你聊育儿。"
-                "用专业顾问的口吻打招呼：先用名字问候（如果有），"
-                "简短介绍自己是专注儿童发展的育儿顾问NURI，"
-                "再说一句真诚的、让父母感受到被理解和支持的话。"
-                "语气温暖但沉稳，不油腻，不问问题，控制在3句话以内。"
-            )
-        reply = await anyio.to_thread.run_sync(
-            lambda: core_dialogue_reply.nuri_reply_sync([{"role": "user", "text": intro_prompt}], "", "", profile_ctx, style_ctx)
+    sb = _require_chat_storage()
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions").insert(session).execute()
         )
-        first_text = reply["text"]
-        quick_replies = reply.get("quick_replies", [])
-    else:
-        script_key = session["script_key"]
-        first_step = SCRIPTS.get(script_key, SCRIPTS["free"])[0]
-        first_text = first_step["text"]
-        quick_replies = first_step.get("quick_replies", [])
-
-    first_msg = {
-        "id": str(uuid.uuid4()), "session_id": session["id"],
-        "role": "ai", "text": first_text,
-        "quick_replies": quick_replies, "transition": None, "created_at": _now(),
-    }
-    if sb:
+    except Exception as e:
+        # The check above is not atomic, so two first-ever requests from one
+        # account can both reach here. The unique index lets exactly one win;
+        # the loser must adopt that row. A genuine storage failure must be
+        # visible to the client, never converted into a disposable session.
         try:
-            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(first_msg).execute())
-        except Exception as e:
-            print(f"[warn] start_session msg insert error: {e}")
-    else:
-        memstore.messages[session["id"]].append(first_msg)
+            winner = await _existing_session_for(uid)
+            if winner:
+                await _ensure_initial_greeting(winner, uid, wait_for_peer=True)
+                if body.card_id:
+                    await _append_card_marker(winner["id"], body.card_id)
+                return winner
+        except HTTPException:
+            pass
+        _raise_chat_storage_error("session insert", e)
+
+    await _ensure_initial_greeting(session, uid)
+    if body.card_id:
+        await _append_card_marker(session["id"], body.card_id)
 
     return session
 
-async def _load_owned_session(session_id: str, uid: Optional[str], sb) -> dict:
-    """Load a chat session and enforce ownership. Sessions with a user_id can only
-    be touched by that same user; legacy/anonymous sessions (user_id is null) stay
-    open, matching how they're created. 404 (not 403) on mismatch so a guessed
-    session_id can't be used to tell "not yours" apart from "doesn't exist"."""
-    session = None
-    if sb:
-        try:
-            sr = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions").select("*").eq("id", session_id).execute()
-            )
-            session = sr.data[0] if sr.data else None
-        except Exception as e:
-            print(f"[warn] _load_owned_session: {e}")
-    if not session:
-        session = memstore.sessions.get(session_id)
+async def _load_owned_session(session_id: str, uid: str, sb=None) -> dict:
+    """Load a durable chat session and enforce exact account ownership.
+
+    Legacy anonymous sessions are not adopted by a signed-in account. 404 (not
+    403) on mismatch keeps a guessed session ID from revealing whether another
+    conversation exists.
+    """
+    sb = sb or _require_chat_storage()
+    try:
+        sr = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions").select("*")
+            .eq("id", session_id).execute()
+        )
+        session = sr.data[0] if sr.data else None
+    except Exception as e:
+        _raise_chat_storage_error("owned session lookup", e)
     if not session:
         raise HTTPException(404, "session not found")
     owner = session.get("user_id")
-    if owner and owner != uid:
+    if owner != uid:
         raise HTTPException(404, "session not found")
     return session
 
 @api.get("/chat/sessions")
-async def list_sessions(uid: Optional[str] = Depends(_opt_uid)):
-    sb = _get_supabase()
-    if sb and uid:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions")
-                .select("*")
-                .eq("user_id", uid)
-                .order("created_at", desc=True)
-                .execute()
-            )
-            return res.data or []
-        except Exception as e:
-            print(f"[warn] list_sessions error: {e}")
-    sessions = list(memstore.sessions.values())
-    if uid:
-        sessions = [s for s in sessions if s.get("user_id") == uid]
-    return sorted(sessions, key=lambda s: s["created_at"], reverse=True)
+async def list_sessions(uid: str = Depends(_req_uid)):
+    sb = _require_chat_storage()
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions")
+            .select("*")
+            .eq("user_id", uid)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        _raise_chat_storage_error("session list", e)
 
 @api.delete("/chat/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str, uid: Optional[str] = Depends(_opt_uid)):
-    sb = _get_supabase()
+async def delete_session(session_id: str, uid: str = Depends(_req_uid)):
+    """Protect the account's durable conversation from accidental deletion.
+
+    NURI now has one persistent conversation per account.  Older clients used
+    this endpoint from an unmount cleanup while their message state was still
+    loading.  Deleting the session then cascaded through ``chat_messages`` and
+    ``normalized_inputs``.  Account data can still be removed deliberately via
+    the privacy-wipe endpoint; an ordinary chat navigation must never do it.
+    """
+    sb = _require_chat_storage()
     await _load_owned_session(session_id, uid, sb)
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions").delete().eq("id", session_id).execute()
-            )
-            return
-        except Exception as e:
-            print(f"[warn] delete_session error: {e}")
-    memstore.sessions.pop(session_id, None)
-    memstore.messages.pop(session_id, None)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "The account conversation is persistent and cannot be deleted. "
+            "Use the privacy wipe flow to remove account history."
+        ),
+    )
 
 @api.get("/chat/sessions/{session_id}/messages")
-async def get_messages(session_id: str, uid: Optional[str] = Depends(_opt_uid)):
-    sb = _get_supabase()
+async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
+    sb = _require_chat_storage()
     await _load_owned_session(session_id, uid, sb)
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_messages")
-                .select("*")
-                .eq("session_id", session_id)
-                .order("created_at", desc=False)
-                .execute()
-            )
-            return res.data or []
-        except Exception as e:
-            print(f"[warn] get_messages error: {e}")
-    return memstore.messages.get(session_id, [])
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return _visible_chat_messages(list(res.data or []))
+    except Exception as e:
+        _raise_chat_storage_error("message history load", e)
 
 class _Turn(NamedTuple):
     """Everything established about a chat turn before the AI reply is produced.
@@ -3182,12 +3719,15 @@ class _Turn(NamedTuple):
     context_hints: dict
     fix_text: Optional[str]
     temporal: core_temporal.TemporalContext
+    user_message_created: bool = True
+    replayed_ai_message: Optional[dict] = None
+    generation_claim_token: Optional[str] = None
 
 
-async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[str]) -> _Turn:
-    sb = _get_supabase()
+async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: str) -> _Turn:
+    sb = _require_chat_storage()
     session = await _load_owned_session(session_id, uid, sb)
-    owner_uid = uid or session.get("user_id")
+    owner_uid = uid
 
     requested_timezone = (
         body.client_context.timezone if body.client_context else None
@@ -3198,7 +3738,8 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
     )
 
     user_msg = {
-        "id": str(uuid.uuid4()), "session_id": session_id,
+        "id": _user_message_id(session_id, body.client_message_id),
+        "session_id": session_id,
         "role": "user",
         "text": body.text or ("[图片]" if body.image_base64 else ""),
         "image_base64": body.image_base64,
@@ -3206,51 +3747,109 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: Optional[st
         "created_at": temporal_context.server_utc.isoformat(),
     }
 
-    profile, children = await core_family_store.load_profile(owner_uid)
-    context_hints = dict(profile)
-    if children:
-        context_hints["children"] = children
-    await core_family_store.save_normalized_input(
-        user_id=owner_uid, session_id=session_id,
-        source="card_chat" if session.get("source_card_id") else "chat",
-        raw_text=body.text or "", raw_image_base64=body.image_base64,
-        card_ref={"card_id": session.get("source_card_id")} if session.get("source_card_id") else None,
-        context_hints=context_hints,
-    )
-
-    # Persist user message and load full history for AI
-    msgs: list = []
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(user_msg).execute())
-            mr = await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_messages")
-                .select("role,text,transition,created_at")
-                .eq("session_id", session_id)
-                .order("created_at", desc=False)
-                .execute()
-            )
-            msgs = mr.data or []
-        except Exception as e:
-            print(f"[warn] post_message msgs load: {e}")
-    if not msgs:
-        msgs = memstore.messages.setdefault(session_id, [])
+    # Load history first, then durably insert the user turn. If either database
+    # operation fails, stop before generating a reply: showing a successful AI
+    # turn backed only by process memory is the data-loss bug this guards.
+    try:
+        mr = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("*")
+            .eq("session_id", session_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        raw_messages = list(mr.data or [])
+        msgs = _visible_chat_messages(raw_messages)
+        existing_user = next(
+            (message for message in msgs if message.get("id") == user_msg["id"]),
+            None,
+        )
+        user_message_created = False
+        if existing_user:
+            _verify_existing_message(existing_user, user_msg)
+            user_msg = {**user_msg, **existing_user}
+        else:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_messages").insert(user_msg).execute()
+                )
+                user_message_created = True
+            except Exception as insert_error:
+                persisted = await _chat_row_by_id(
+                    sb, "chat_messages", user_msg["id"], session_id=session_id,
+                )
+                if not persisted:
+                    raise insert_error
+                _verify_existing_message(persisted, user_msg)
+                user_msg = {**user_msg, **persisted}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_chat_storage_error("user message persistence", e)
+    if not any(message.get("id") == user_msg["id"] for message in msgs):
         msgs.append(user_msg)
 
-    # "#fix <反馈>" is an internal command for reviewers to correct the AI's
-    # last reply — it never reaches the parent as a normal turn. See
-    # core_dialogue_reply.distill_style_rule_sync / nuri_style_rules.
-    fix_text = None
-    stripped_text = (body.text or "").strip()
-    if stripped_text.startswith(core_dialogue_reply.FIX_KEYWORD) and await core_dialogue_reply.is_fix_reviewer(owner_uid):
-        fix_text = stripped_text[len(core_dialogue_reply.FIX_KEYWORD):].strip()
+    # Claim the deterministic reply row before *any* reply model, #fix insert,
+    # scripted-state update, normalization or title model can run. Postgres'
+    # primary-key uniqueness makes this the atomic single-generator boundary.
+    ai_id = _ai_message_id(session_id, user_msg["id"])
+    claim = await _acquire_generation_claim(sb, session_id, ai_id)
+    replayed_ai_message = claim.replayed_message
+    if replayed_ai_message is not None:
+        raw_replay = await _chat_row_by_id(
+            sb, "chat_messages", ai_id, session_id=session_id,
+        )
+        if raw_replay:
+            await _repair_script_step_from_message(session, raw_replay, sb)
+        return _Turn(
+            session, owner_uid, user_msg, msgs, {}, None, temporal_context,
+            False, replayed_ai_message, None,
+        )
 
-    user_turns = sum(1 for m in msgs if m["role"] == "user")
-    await _maybe_set_title(session, session_id, body, fix_text, user_turns)
-    return _Turn(
-        session, owner_uid, user_msg, msgs, context_hints, fix_text,
-        temporal_context,
-    )
+    try:
+        # Repair a script cursor if a prior reply committed but its subsequent
+        # compare-and-set response was lost. This runs under the current turn's
+        # claim, so two requests cannot advance/reply from stale state together.
+        for message in raw_messages:
+            if not _is_pending_generation_claim(message):
+                await _repair_script_step_from_message(session, message, sb)
+
+        profile, children = await core_family_store.load_profile(owner_uid)
+        context_hints = dict(profile)
+        if children:
+            context_hints["children"] = children
+
+        # The canonical input is secondary indexing. It runs only after the
+        # source chat message and reply claim are durable.
+        if user_message_created:
+            await core_family_store.save_normalized_input(
+                user_id=owner_uid, session_id=session_id,
+                source="card_chat" if session.get("source_card_id") else "chat",
+                raw_text=body.text or "", raw_image_base64=body.image_base64,
+                card_ref={"card_id": session.get("source_card_id")} if session.get("source_card_id") else None,
+                context_hints=context_hints,
+            )
+
+        # "#fix <反馈>" is an internal command for reviewers to correct the
+        # AI's last reply — it never reaches the parent as a normal turn.
+        fix_text = None
+        stripped_text = (body.text or "").strip()
+        if stripped_text.startswith(core_dialogue_reply.FIX_KEYWORD) and await core_dialogue_reply.is_fix_reviewer(owner_uid):
+            fix_text = stripped_text[len(core_dialogue_reply.FIX_KEYWORD):].strip()
+
+        user_turns = sum(1 for m in msgs if m["role"] == "user")
+        if user_message_created:
+            await _maybe_set_title(session, session_id, body, fix_text, user_turns)
+        return _Turn(
+            session, owner_uid, user_msg, msgs, context_hints, fix_text,
+            temporal_context, user_message_created, None,
+            claim.token,
+        )
+    except Exception:
+        await _release_generation_claim(
+            sb, session_id, ai_id, claim.token,
+        )
+        raise
 
 
 async def _maybe_set_title(
@@ -3291,7 +3890,13 @@ async def _maybe_set_title(
             elif session_id in memstore.sessions:
                 memstore.sessions[session_id]["title"] = new_title
 
-async def _fix_reply(msgs: list, fix_text: str, uid: Optional[str] = None) -> str:
+async def _fix_reply(
+    msgs: list,
+    fix_text: str,
+    uid: Optional[str] = None,
+    *,
+    operation_id: Optional[str] = None,
+) -> str:
     """Handle a reviewer's `#fix` correction: distil it into a reusable style
     rule instead of answering the parent.
 
@@ -3305,27 +3910,50 @@ async def _fix_reply(msgs: list, fix_text: str, uid: Optional[str] = None) -> st
     )
     rule = await anyio.to_thread.run_sync(lambda: core_dialogue_reply.distill_style_rule_sync(prior_ai_text, fix_text))
     if sb and rule.get("rule"):
+        style_rule_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"nuri:fix-rule:{operation_id or uuid.uuid4()}",
+        ))
+        row = {
+            "id": style_rule_id,
+            "rule": rule["rule"],
+            "category": rule.get("category"),
+            "source_note": fix_text,
+            "active": True,
+            "created_by": "chat:#fix",
+        }
         try:
             await anyio.to_thread.run_sync(
-                lambda: sb.table("nuri_style_rules").insert({
-                    "id": str(uuid.uuid4()), "rule": rule["rule"], "category": rule.get("category"),
-                    "source_note": fix_text, "active": True, "created_by": "chat:#fix",
-                }).execute()
+                lambda: sb.table("nuri_style_rules").insert(row).execute()
             )
-            # The new rule has to be visible on the next turn, not in two
-            # minutes, or a reviewer testing a correction sees the old reply.
-            core_dialogue.clear_cache()
-            await core_outcome.observe_latest(uid=uid, signal="fix", ports=_core_ports())
-            return f"已记录调整：{rule['rule']}"
         except Exception as e:
-            print(f"[warn] #fix insert error: {e}")
-            return "调整没能存上，稍后在后台重试一下。"
+            try:
+                persisted = await anyio.to_thread.run_sync(
+                    lambda: sb.table("nuri_style_rules").select("*")
+                    .eq("id", style_rule_id).limit(1).execute()
+                )
+                saved = (persisted.data or [None])[0]
+            except Exception:
+                saved = None
+            if not saved or saved.get("rule") != row["rule"]:
+                print(f"[warn] #fix insert error: {e}")
+                return "调整没能存上，稍后在后台重试一下。"
+        # The new rule has to be visible on the next turn, not in two minutes,
+        # or a reviewer testing a correction sees the old reply.
+        core_dialogue.clear_cache()
+        await core_outcome.observe_latest(uid=uid, signal="fix", ports=_core_ports())
+        return f"已记录调整：{rule['rule']}"
     return "没能提炼出规则，换个说法再试一次？"
 
 
 async def _scripted_reply(session: dict, session_id: str) -> tuple:
-    """Canned script used when no OpenAI key is configured."""
-    sb = _get_supabase()
+    """Plan a canned reply without mutating its durable script cursor.
+
+    The previous implementation advanced ``chat_sessions.step`` before the AI
+    row was saved. A failed message write therefore skipped a script response
+    forever. The caller now records the intended transition inside the claimed
+    reply, completes that row, and only then advances the cursor idempotently.
+    """
     script_key = session.get("script_key", "free")
     script = SCRIPTS.get(script_key, SCRIPTS["free"])
     step = session.get("step", 0)
@@ -3346,16 +3974,67 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
             "kind": "task_suggestion",
             "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
         }
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("chat_sessions").update({"step": new_step}).eq("id", session_id).execute()
-            )
-        except Exception:
-            pass
-    else:
-        session["step"] = new_step
-    return ai_text, quick_replies, transition
+    return ai_text, quick_replies, transition, step, new_step
+
+
+def _transition_with_script_state(
+    transition: Optional[dict], step_from: int, step_to: int,
+) -> dict:
+    stored = dict(transition or {})
+    stored[_SCRIPT_STATE_KEY] = {"from": step_from, "to": step_to}
+    return stored
+
+
+async def _advance_script_step(
+    session: dict, sb, step_from: int, step_to: int,
+) -> None:
+    if step_to <= step_from:
+        return
+    session_id = session["id"]
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions")
+            .update({"step": step_to})
+            .eq("id", session_id)
+            .eq("step", step_from)
+            .execute()
+        )
+    except Exception as exc:
+        _raise_chat_storage_error("script state advance", exc)
+    if result.data:
+        session["step"] = step_to
+        return
+    try:
+        current = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_sessions").select("id,step")
+            .eq("id", session_id).limit(1).execute()
+        )
+    except Exception as exc:
+        _raise_chat_storage_error("script state verification", exc)
+    row = (current.data or [None])[0]
+    if row and int(row.get("step") or 0) >= step_to:
+        session["step"] = int(row.get("step") or step_to)
+        return
+    _raise_chat_storage_error(
+        "script state advance",
+        RuntimeError("script cursor compare-and-set updated no row"),
+    )
+
+
+async def _repair_script_step_from_message(session: dict, message: dict, sb) -> None:
+    transition = message.get("transition") or {}
+    state = transition.get(_SCRIPT_STATE_KEY) if isinstance(transition, dict) else None
+    if not isinstance(state, dict):
+        return
+    try:
+        step_from = int(state["from"])
+        step_to = int(state["to"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The saved scripted reply contains invalid cursor metadata.",
+        )
+    await _advance_script_step(session, sb, step_from, step_to)
 
 
 class _ReplyContext(NamedTuple):
@@ -3710,90 +4389,126 @@ def _cited_sources(
     return out
 
 
+class _PersistedChatMessage(dict):
+    """A normal response dict with non-serialized write ownership metadata."""
+
+    def __init__(self, row: dict, *, created: bool):
+        super().__init__(row)
+        self.created = created
+
+
 async def _persist_ai_turn(
     session_id: str, turn: _Turn, ai_text: str,
     quick_replies: list, transition: Optional[dict], sources: Optional[list] = None,
+    *, script_step: Optional[tuple[int, int]] = None,
 ) -> dict:
-    sb = _get_supabase()
-    ai_msg = {
-        "id": str(uuid.uuid4()), "session_id": session_id,
-        "role": "ai", "text": ai_text,
-        "quick_replies": quick_replies, "transition": transition,
-        "sources": sources or [], "created_at": _now(),
-    }
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(lambda: sb.table("chat_messages").insert(ai_msg).execute())
-        except Exception as e:
-            print(f"[warn] post_message ai_msg insert: {e}")
-            # `sources` arrives with message_sources_migration.sql. Deploying
-            # ahead of that migration would otherwise stop every AI reply from
-            # being saved at all, which is far worse than losing the links —
-            # so drop the new column and keep the message.
-            legacy = {k: v for k, v in ai_msg.items() if k != "sources"}
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("chat_messages").insert(legacy).execute()
-                )
-                print("[warn] saved without `sources`; run message_sources_migration.sql")
-            except Exception as e2:
-                print(f"[warn] ai_msg insert retry failed: {e2}")
-    else:
-        turn.msgs.append(ai_msg)
-    return ai_msg
+    sb = _require_chat_storage()
+    token = getattr(turn, "generation_claim_token", None)
+    if not token:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A durable generation claim is required before saving a reply.",
+        )
+    stored_transition = transition
+    if script_step is not None:
+        stored_transition = _transition_with_script_state(
+            transition, script_step[0], script_step[1],
+        )
+    return await _complete_generation_claim(
+        sb,
+        session_id=session_id,
+        message_id=_ai_message_id(session_id, turn.user_msg["id"]),
+        token=token,
+        text=ai_text,
+        quick_replies=quick_replies,
+        transition=stored_transition,
+        sources=sources,
+    )
 
 
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(
     session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
-    uid: Optional[str] = Depends(_opt_uid),
+    uid: str = Depends(_req_uid),
 ):
     """Non-streaming turn. Kept as the fallback for clients that can't consume
     the SSE endpoint below (and for hosts that buffer streamed responses)."""
     metrics = _TurnMetrics(streamed=False)
     turn = await _prepare_turn(session_id, body, uid)
+    if turn.replayed_ai_message is not None:
+        return {
+            "user_message": turn.user_msg,
+            "ai_messages": [turn.replayed_ai_message],
+        }
     transition = None
     quick_replies: list = []
     # Both the #fix and scripted branches below skip the model, and so produce
     # no citations; without this the persist call a few lines down raises.
     sources: list = []
     rc: Optional[_ReplyContext] = None
+    script_step: Optional[tuple[int, int]] = None
+    claim_completed = False
+    sb = _require_chat_storage()
 
-    if turn.fix_text:
-        ai_text = await _fix_reply(turn.msgs, turn.fix_text, turn.owner_uid)
-    elif oai:
-        rc = await _reply_context(turn, body, metrics)
-        system_prompt, history_window = _plan_prompt(rc)
-        reply = await anyio.to_thread.run_sync(
-            lambda: core_dialogue_reply.nuri_reply_sync(
-                turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                rc.internal, rc.sources, metrics, system_prompt, history_window,
-                rc.state,
-                temporal_context=turn.temporal,
+    try:
+        if turn.fix_text:
+            ai_text = await _fix_reply(
+                turn.msgs, turn.fix_text, turn.owner_uid,
+                operation_id=turn.user_msg["id"],
             )
-        )
-        ai_text = reply["text"]
-        quick_replies = reply.get("quick_replies", [])
-        sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
-        transition = await _task_suggestion(
-            reply, turn.msgs, body.text or "", ai_text, metrics,
-            allow=rc.plan.allow_task_cards if rc.plan else True,
-        )
-    else:
-        ai_text, quick_replies, transition = await _scripted_reply(turn.session, session_id)
+        elif oai:
+            rc = await _reply_context(turn, body, metrics)
+            system_prompt, history_window = _plan_prompt(rc)
+            reply = await anyio.to_thread.run_sync(
+                lambda: core_dialogue_reply.nuri_reply_sync(
+                    turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                    rc.internal, rc.sources, metrics, system_prompt, history_window,
+                    rc.state,
+                    temporal_context=turn.temporal,
+                )
+            )
+            ai_text = reply["text"]
+            quick_replies = reply.get("quick_replies", [])
+            sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
+            transition = await _task_suggestion(
+                reply, turn.msgs, body.text or "", ai_text, metrics,
+                allow=rc.plan.allow_task_cards if rc.plan else True,
+            )
+        else:
+            (
+                ai_text, quick_replies, transition, step_from, step_to,
+            ) = await _scripted_reply(turn.session, session_id)
+            script_step = (step_from, step_to)
 
-    ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
+        ai_msg = await _persist_ai_turn(
+            session_id, turn, ai_text, quick_replies, transition, sources,
+            script_step=script_step,
+        )
+        if script_step is not None:
+            await _advance_script_step(
+                turn.session, sb, script_step[0], script_step[1],
+            )
+        claim_completed = True
+    finally:
+        if not claim_completed:
+            await _release_generation_claim(
+                sb,
+                session_id,
+                _ai_message_id(session_id, turn.user_msg["id"]),
+                turn.generation_claim_token,
+            )
+    ai_message_created = getattr(ai_msg, "created", True)
 
     # Logged after the reply is built, and only for real model turns — a #fix
     # command or the canned script isn't a generation worth measuring.
-    if oai and not turn.fix_text:
+    if ai_message_created and oai and not turn.fix_text:
         background_tasks.add_task(
             metrics.flush, session_id=session_id, user_id=turn.owner_uid, reply_text=ai_text,
         )
         if rc is not None:
             background_tasks.add_task(_after_turn, rc, turn, session_id)
 
-    if oai and turn.owner_uid:
+    if ai_message_created and oai and turn.owner_uid:
         background_tasks.add_task(
             core_family.extract_and_upsert_memories,
             turn.msgs + [ai_msg], turn.owner_uid, session_id,
@@ -3809,7 +4524,7 @@ def _sse(payload: dict) -> str:
 
 @api.post("/chat/sessions/{session_id}/messages/stream")
 async def post_message_stream(
-    session_id: str, body: UserMessageIn, uid: Optional[str] = Depends(_opt_uid),
+    session_id: str, body: UserMessageIn, uid: str = Depends(_req_uid),
 ):
     """Same turn as post_message, delivered as Server-Sent Events so the reply
     renders as it's generated instead of after a several-second wait.
@@ -3827,9 +4542,26 @@ async def post_message_stream(
         transition = None
         quick_replies: list = []
         sources: list = []
+        rc: Optional[_ReplyContext] = None
+        script_step: Optional[tuple[int, int]] = None
+        claim_completed = False
+        sb = _require_chat_storage()
         try:
+            if turn.replayed_ai_message is not None:
+                replay_text = turn.replayed_ai_message.get("text") or ""
+                if replay_text:
+                    yield _sse({"type": "delta", "text": replay_text})
+                yield _sse({
+                    "type": "done",
+                    "user_message": turn.user_msg,
+                    "ai_messages": [turn.replayed_ai_message],
+                })
+                return
             if turn.fix_text:
-                ai_text = await _fix_reply(turn.msgs, turn.fix_text, turn.owner_uid)
+                ai_text = await _fix_reply(
+                    turn.msgs, turn.fix_text, turn.owner_uid,
+                    operation_id=turn.user_msg["id"],
+                )
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
                 rc = await _reply_context(turn, body, metrics)
@@ -3856,23 +4588,34 @@ async def post_message_stream(
                     reply, turn.msgs, body.text or "", ai_text, metrics,
                     allow=rc.plan.allow_task_cards if rc.plan else True,
                 )
-                finished["rc"] = rc
             else:
-                ai_text, quick_replies, transition = await _scripted_reply(
-                    turn.session, session_id
-                )
+                (
+                    ai_text, quick_replies, transition, step_from, step_to,
+                ) = await _scripted_reply(turn.session, session_id)
+                script_step = (step_from, step_to)
                 yield _sse({"type": "delta", "text": ai_text})
 
-            ai_msg = await _persist_ai_turn(session_id, turn, ai_text, quick_replies, transition, sources)
+            ai_msg = await _persist_ai_turn(
+                session_id, turn, ai_text, quick_replies, transition, sources,
+                script_step=script_step,
+            )
+            if script_step is not None:
+                await _advance_script_step(
+                    turn.session, sb, script_step[0], script_step[1],
+                )
+            claim_completed = True
             yield _sse({
                 "type": "done",
                 "user_message": turn.user_msg,
                 "ai_messages": [ai_msg],
             })
 
-            if aoai and not turn.fix_text:
+            ai_message_created = getattr(ai_msg, "created", True)
+            if ai_message_created and aoai and not turn.fix_text:
                 finished["metrics_reply"] = ai_text
-            if oai and turn.owner_uid:
+                if rc is not None:
+                    finished["rc"] = rc
+            if ai_message_created and oai and turn.owner_uid:
                 finished["memory_args"] = (
                     turn.msgs + [ai_msg], turn.owner_uid, session_id,
                 )
@@ -3881,7 +4624,28 @@ async def post_message_stream(
             print(f"[error] post_message_stream failed: {type(e).__name__}: {e}")
             metrics.set(status="error", error=f"{type(e).__name__}: {e}"[:500])
             finished["metrics_reply"] = ""
-            yield _sse({"type": "error", "message": "AI 暂时无法回应，请稍后再试。"})
+            persistence_failed = (
+                isinstance(e, HTTPException)
+                and e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+            yield _sse({
+                "type": "error",
+                "code": "persistence_failed" if persistence_failed else "generation_failed",
+                "retryable": not persistence_failed,
+                "message": (
+                    "对话暂时无法安全保存，请稍后重试。"
+                    if persistence_failed
+                    else "AI 暂时无法回应，请稍后再试。"
+                ),
+            })
+        finally:
+            if not claim_completed:
+                await _release_generation_claim(
+                    sb,
+                    session_id,
+                    _ai_message_id(session_id, turn.user_msg["id"]),
+                    turn.generation_claim_token,
+                )
 
     async def after_stream():
         """Runs after the stream closes. Starlette awaits this, so it still

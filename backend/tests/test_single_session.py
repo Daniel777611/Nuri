@@ -11,6 +11,7 @@ those in one afternoon, 42% of that day's tokens.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -21,10 +22,13 @@ from backend import main, memstore
 class _SessionTable:
     """Just enough PostgREST to stand in for chat_sessions."""
 
-    def __init__(self, store: list[dict], on_insert=None):
+    def __init__(self, store: list[dict], on_insert=None, lock=None):
         self._store = store
         self._on_insert = on_insert
+        self._lock = lock or threading.Lock()
         self._filters: dict = {}
+        self._pending = None
+        self._update = None
 
     def select(self, *_a, **_k):
         return self
@@ -43,19 +47,29 @@ class _SessionTable:
         self._pending = row
         return self
 
+    def update(self, patch):
+        self._update = patch
+        return self
+
     def execute(self):
-        if getattr(self, "_pending", None) is not None:
-            row, self._pending = self._pending, None
-            if self._on_insert:
-                self._on_insert(row)
-            self._store.append(row)
-            return SimpleNamespace(data=[row])
-        rows = [
-            r for r in self._store
-            if all(r.get(k) == v for k, v in self._filters.items())
-        ]
-        rows.sort(key=lambda r: r.get("created_at") or "")
-        return SimpleNamespace(data=rows[:1])
+        with self._lock:
+            if self._pending is not None:
+                row, self._pending = self._pending, None
+                if self._on_insert:
+                    self._on_insert(row)
+                self._store.append(dict(row))
+                return SimpleNamespace(data=[dict(row)])
+            rows = [
+                r for r in self._store
+                if all(r.get(k) == v for k, v in self._filters.items())
+            ]
+            if self._update is not None:
+                patch, self._update = self._update, None
+                for row in rows:
+                    row.update(patch)
+                return SimpleNamespace(data=[dict(row) for row in rows])
+            rows.sort(key=lambda r: r.get("created_at") or "")
+            return SimpleNamespace(data=[dict(row) for row in rows[:1]])
 
 
 class _Supabase:
@@ -63,29 +77,41 @@ class _Supabase:
         self.sessions = sessions
         self._on_insert = on_insert
         self.message_inserts: list[dict] = []
+        self._lock = threading.Lock()
 
     def table(self, name):
         if name == "chat_sessions":
-            return _SessionTable(self.sessions, self._on_insert)
+            return _SessionTable(self.sessions, self._on_insert, self._lock)
         # chat_messages has to read back what it stored: the divider dedupe
         # works by looking at the last message, so a sink that always answers
         # "empty" would let the test pass while the real check never ran.
-        return _MessageTable(self.message_inserts)
+        return _MessageTable(self.message_inserts, self._lock)
 
 
 class _MessageTable:
-    def __init__(self, store: list[dict]):
+    def __init__(self, store: list[dict], lock=None):
         self._store = store
+        self._lock = lock or threading.Lock()
         self._filters: dict = {}
         self._desc = False
         self._limit = None
         self._pending = None
+        self._update = None
+        self._delete = False
 
     def insert(self, row):
         self._pending = row
         return self
 
     def select(self, *_a, **_k):
+        return self
+
+    def update(self, patch):
+        self._update = patch
+        return self
+
+    def delete(self):
+        self._delete = True
         return self
 
     def eq(self, col, val):
@@ -101,16 +127,36 @@ class _MessageTable:
         return self
 
     def execute(self):
-        if self._pending is not None:
-            row, self._pending = self._pending, None
-            self._store.append(row)
-            return SimpleNamespace(data=[row])
-        rows = [
-            r for r in self._store
-            if all(r.get(k) == v for k, v in self._filters.items())
-        ]
-        rows.sort(key=lambda r: r.get("created_at") or "", reverse=self._desc)
-        return SimpleNamespace(data=rows[: self._limit] if self._limit else rows)
+        def value(row, key):
+            if "->>" in key:
+                column, json_key = key.split("->>", 1)
+                nested = row.get(column) or {}
+                return nested.get(json_key) if isinstance(nested, dict) else None
+            return row.get(key)
+
+        with self._lock:
+            if self._pending is not None:
+                row, self._pending = self._pending, None
+                if any(existing.get("id") == row.get("id") for existing in self._store):
+                    raise RuntimeError("duplicate key value violates chat_messages_pkey")
+                self._store.append(dict(row))
+                return SimpleNamespace(data=[dict(row)])
+            rows = [
+                r for r in self._store
+                if all(value(r, k) == v for k, v in self._filters.items())
+            ]
+            if self._update is not None:
+                patch, self._update = self._update, None
+                for row in rows:
+                    row.update(patch)
+                return SimpleNamespace(data=[dict(row) for row in rows])
+            if self._delete:
+                deleted = [dict(row) for row in rows]
+                self._store[:] = [row for row in self._store if row not in rows]
+                return SimpleNamespace(data=deleted)
+            rows.sort(key=lambda r: r.get("created_at") or "", reverse=self._desc)
+            rows = rows[: self._limit] if self._limit else rows
+            return SimpleNamespace(data=[dict(row) for row in rows])
 
 
 @pytest.fixture
@@ -256,4 +302,799 @@ def test_a_lost_insert_race_adopts_the_winner(monkeypatch, no_model):
     session = _start()
 
     assert session["id"] == "winner-session"
+    greetings = [
+        row for row in sb.message_inserts
+        if row.get("id") == str(main.uuid.uuid5(
+            main.uuid.NAMESPACE_URL, "nuri:greeting:winner-session"
+        ))
+    ]
+    assert len(greetings) == 1
     assert memstore.sessions == {}
+
+
+def test_existing_empty_session_is_repaired_with_one_greeting(monkeypatch, no_model):
+    session = {
+        "id": "empty-session",
+        "user_id": "parent-1",
+        "title": "和NURI聊天",
+        "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    returned = _start()
+    _start()
+
+    assert returned["id"] == session["id"]
+    assert len(sb.message_inserts) == 1
+    assert sb.message_inserts[0]["role"] == "ai"
+
+
+def test_empty_session_gets_greeting_before_card_marker(monkeypatch, no_model):
+    session = {
+        "id": "empty-session",
+        "user_id": "parent-1",
+        "title": "和NURI聊天",
+        "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    _start(card_id="learn_big_feelings")
+
+    assert sb.message_inserts[0]["role"] == "ai"
+    assert (sb.message_inserts[1].get("transition") or {}).get("kind") == (
+        main.CARD_OPENED
+    )
+
+
+def test_persistent_conversation_cannot_be_deleted(monkeypatch, no_model):
+    """A stale client cleanup must not erase the account's durable history."""
+    session = {
+        "id": "persistent-session",
+        "user_id": "parent-1",
+        "title": "和NURI聊天",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main.delete_session(session["id"], uid="parent-1"))
+
+    assert exc.value.status_code == 409
+    assert sb.sessions == [session]
+
+
+def test_signed_in_session_never_falls_back_to_process_memory(monkeypatch, no_model):
+    monkeypatch.setattr(main, "_get_supabase", lambda: None)
+
+    with pytest.raises(main.HTTPException) as exc:
+        _start()
+
+    assert exc.value.status_code == 503
+    assert memstore.sessions == {}
+    assert memstore.messages == {}
+
+
+def test_user_message_write_failure_stops_before_fake_success(monkeypatch, no_model):
+    class BrokenMessageTable(_MessageTable):
+        def execute(self):
+            raise RuntimeError("chat_messages unavailable")
+
+    class BrokenMessagesSupabase(_Supabase):
+        def table(self, name):
+            if name == "chat_sessions":
+                return _SessionTable(self.sessions)
+            return BrokenMessageTable(self.message_inserts)
+
+    session = {
+        "id": "durable-session",
+        "user_id": "parent-1",
+        "title": "和NURI聊天",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = BrokenMessagesSupabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(
+            main._prepare_turn(
+                session["id"], main.UserMessageIn(text="这条必须保存"), "parent-1"
+            )
+        )
+
+    assert exc.value.status_code == 503
+    assert memstore.messages == {}
+
+
+def test_ai_message_write_failure_is_not_reported_as_saved(monkeypatch, no_model):
+    class BrokenCompletionTable(_MessageTable):
+        def execute(self):
+            if self._update is not None:
+                raise RuntimeError("chat_messages unavailable")
+            return super().execute()
+
+    class BrokenSupabase(_Supabase):
+        def table(self, name):
+            if name == "chat_sessions":
+                return _SessionTable(self.sessions, lock=self._lock)
+            return BrokenCompletionTable(self.message_inserts, self._lock)
+
+    sb = BrokenSupabase([])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    message_id = main._ai_message_id("durable-session", "client-message-1")
+    claim = asyncio.run(main._acquire_generation_claim(
+        sb, "durable-session", message_id,
+    ))
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(
+            main._persist_ai_turn(
+                "durable-session",
+                SimpleNamespace(
+                    msgs=[],
+                    user_msg={"id": "client-message-1"},
+                    generation_claim_token=claim.token,
+                ),
+                "这条也必须保存",
+                [],
+                None,
+            )
+        )
+
+    assert exc.value.status_code == 503
+
+
+def _install_turn_dependencies(monkeypatch, normalized_calls):
+    async def load_profile(_uid):
+        return {}, []
+
+    async def save_normalized_input(**kwargs):
+        normalized_calls.append(kwargs)
+
+    monkeypatch.setattr(main.core_family_store, "load_profile", load_profile)
+    monkeypatch.setattr(
+        main.core_family_store, "save_normalized_input", save_normalized_input,
+    )
+
+
+def _prepare(session_id, body):
+    return asyncio.run(main._prepare_turn(session_id, body, "parent-1"))
+
+
+def test_client_retry_key_is_session_scoped_and_normalized_only_once(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    calls = []
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, calls)
+    body = main.UserMessageIn(
+        text="请记住这一条", client_message_id="client-request-123",
+    )
+
+    first = _prepare(session["id"], body)
+    asyncio.run(main._release_generation_claim(
+        sb,
+        session["id"],
+        main._ai_message_id(session["id"], first.user_msg["id"]),
+        first.generation_claim_token,
+    ))
+    second = _prepare(session["id"], body)
+
+    assert first.user_message_created is True
+    assert second.user_message_created is False
+    assert second.replayed_ai_message is None
+    assert first.user_msg["id"] != body.client_message_id
+    assert first.user_msg["id"] == main._user_message_id(
+        session["id"], body.client_message_id,
+    )
+    assert main._user_message_id("session-a", body.client_message_id) != (
+        main._user_message_id("session-b", body.client_message_id)
+    )
+    assert len(calls) == 1
+    asyncio.run(main._release_generation_claim(
+        sb,
+        session["id"],
+        main._ai_message_id(session["id"], second.user_msg["id"]),
+        second.generation_claim_token,
+    ))
+
+
+def test_reusing_client_retry_key_for_different_content_is_conflict(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    calls = []
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, calls)
+    _prepare(
+        session["id"],
+        main.UserMessageIn(text="原始内容", client_message_id="client-request-123"),
+    )
+
+    with pytest.raises(main.HTTPException) as exc:
+        _prepare(
+            session["id"],
+            main.UserMessageIn(text="不同内容", client_message_id="client-request-123"),
+        )
+
+    assert exc.value.status_code == 409
+    assert len(calls) == 1
+
+
+def test_reusing_client_retry_key_for_different_image_is_conflict(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    calls = []
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, calls)
+    _prepare(
+        session["id"],
+        main.UserMessageIn(
+            text="图片", image_base64="image-one",
+            client_message_id="client-request-123",
+        ),
+    )
+
+    with pytest.raises(main.HTTPException) as exc:
+        _prepare(
+            session["id"],
+            main.UserMessageIn(
+                text="图片", image_base64="image-two",
+                client_message_id="client-request-123",
+            ),
+        )
+
+    assert exc.value.status_code == 409
+
+
+def test_write_verification_is_scoped_to_the_session(monkeypatch, no_model):
+    sb = _Supabase([])
+    sb.message_inserts.append({
+        "id": "same-id", "session_id": "other-session", "role": "user",
+        "text": "foreign",
+    })
+
+    row = asyncio.run(main._chat_row_by_id(
+        sb, "chat_messages", "same-id", session_id="wanted-session",
+    ))
+
+    assert row is None
+
+
+def test_completed_retry_replays_ai_without_generation_or_side_effects(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    calls = []
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, calls)
+    body = main.UserMessageIn(
+        text="同一个请求", client_message_id="client-request-123",
+    )
+    first = _prepare(session["id"], body)
+    ai = asyncio.run(main._persist_ai_turn(
+        session["id"], first, "已经保存的回答", ["继续"], None, [],
+    ))
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("a replay must not generate or persist again")
+
+    monkeypatch.setattr(main, "_scripted_reply", forbidden)
+    monkeypatch.setattr(main, "_persist_ai_turn", forbidden)
+    background = main.BackgroundTasks()
+    result = asyncio.run(main.post_message(
+        session["id"], body, background, uid="parent-1",
+    ))
+
+    assert result["ai_messages"] == [ai]
+    assert len(calls) == 1
+    assert background.tasks == []
+
+
+def test_streaming_completed_retry_replays_saved_result(monkeypatch, no_model):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    calls = []
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, calls)
+    body = main.UserMessageIn(
+        text="同一个流请求", client_message_id="client-request-123",
+    )
+    first = _prepare(session["id"], body)
+    asyncio.run(main._persist_ai_turn(
+        session["id"], first, "旧流式回答", [], None, [],
+    ))
+
+    async def collect():
+        response = await main.post_message_stream(
+            session["id"], body, uid="parent-1",
+        )
+        return "".join([
+            chunk.decode() if isinstance(chunk, bytes) else chunk
+            async for chunk in response.body_iterator
+        ])
+
+    payload = asyncio.run(collect())
+
+    assert '"type": "delta"' in payload
+    assert "旧流式回答" in payload
+    assert '"type": "done"' in payload
+    assert len(calls) == 1
+
+
+def test_ai_retry_key_collision_with_different_text_is_conflict(
+    monkeypatch, no_model,
+):
+    session_id = "session-a"
+    user_id = main._user_message_id(session_id, "client-request-123")
+    existing = {
+        "id": main._ai_message_id(session_id, user_id),
+        "session_id": session_id, "role": "ai", "text": "已经保存",
+        "image_base64": None, "created_at": "2020-01-01T00:00:02+00:00",
+    }
+    with pytest.raises(main.HTTPException) as exc:
+        main._validate_completed_ai_message(existing, {
+            "id": existing["id"],
+            "session_id": session_id,
+            "role": "ai",
+            "text": "另一个回答",
+            "quick_replies": [],
+            "transition": None,
+            "sources": [],
+        })
+
+    assert exc.value.status_code == 409
+
+
+def test_pending_generation_claim_is_hidden_from_message_history(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    sb.message_inserts.extend([
+        {
+            "id": "user-1", "session_id": session["id"], "role": "user",
+            "text": "可见问题", "transition": None,
+            "created_at": "2026-08-23T00:00:00+00:00",
+        },
+        {
+            "id": "pending-ai", "session_id": session["id"], "role": "ai",
+            "text": "", "quick_replies": [],
+            "transition": {
+                "kind": main._GENERATION_CLAIM_KIND,
+                "claim_token": "peer-token",
+                "lease_expires_at": "2099-01-01T00:00:00+00:00",
+            },
+            "created_at": "2026-08-23T00:00:01+00:00",
+        },
+    ])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+
+    rows = asyncio.run(main.get_messages(session["id"], uid="parent-1"))
+
+    assert [row["id"] for row in rows] == ["user-1"]
+
+
+def test_expired_generation_claim_is_recoverable_by_atomic_takeover(
+    monkeypatch, no_model,
+):
+    sb = _Supabase([])
+    message_id = "pending-ai"
+    sb.message_inserts.append({
+        "id": message_id, "session_id": "session-a", "role": "ai",
+        "text": "", "quick_replies": [],
+        "transition": {
+            "kind": main._GENERATION_CLAIM_KIND,
+            "claim_token": "dead-worker",
+            "lease_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+        "created_at": "2020-01-01T00:00:00+00:00",
+    })
+
+    claim = asyncio.run(main._acquire_generation_claim(
+        sb, "session-a", message_id, wait_seconds=0,
+    ))
+
+    assert claim.owned is True
+    assert claim.token != "dead-worker"
+    assert sb.message_inserts[0]["transition"]["claim_token"] == claim.token
+
+
+def test_expired_claim_takeover_verifies_return_minimal_update(no_model):
+    class MinimalUpdateTable(_MessageTable):
+        def execute(self):
+            was_update = self._update is not None
+            result = super().execute()
+            return SimpleNamespace(data=[]) if was_update else result
+
+    class MinimalUpdateSupabase(_Supabase):
+        def table(self, name):
+            if name == "chat_sessions":
+                return super().table(name)
+            return MinimalUpdateTable(self.message_inserts, self._lock)
+
+    sb = MinimalUpdateSupabase([])
+    message_id = "pending-ai-minimal"
+    sb.message_inserts.append({
+        "id": message_id, "session_id": "session-a", "role": "ai",
+        "text": "", "quick_replies": [],
+        "transition": {
+            "kind": main._GENERATION_CLAIM_KIND,
+            "claim_token": "dead-worker",
+            "lease_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+        "created_at": "2020-01-01T00:00:00+00:00",
+    })
+
+    claim = asyncio.run(main._acquire_generation_claim(
+        sb, "session-a", message_id, wait_seconds=0,
+    ))
+
+    assert claim.owned is True
+    assert sb.message_inserts[0]["transition"]["claim_token"] == claim.token
+
+
+def test_live_generation_claim_returns_explicit_conflict_after_wait(no_model):
+    sb = _Supabase([])
+    sb.message_inserts.append({
+        "id": "pending-ai", "session_id": "session-a", "role": "ai",
+        "text": "", "quick_replies": [],
+        "transition": {
+            "kind": main._GENERATION_CLAIM_KIND,
+            "claim_token": "live-worker",
+            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+        },
+        "created_at": "2026-08-23T00:00:00+00:00",
+    })
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main._acquire_generation_claim(
+            sb, "session-a", "pending-ai", wait_seconds=0,
+        ))
+
+    assert exc.value.status_code == 409
+
+
+def test_ambiguous_claim_completion_readback_keeps_owner_side_effect_rights(
+    monkeypatch, no_model,
+):
+    class AmbiguousCompletionTable(_MessageTable):
+        def __init__(self, parent):
+            super().__init__(parent.message_inserts, parent._lock)
+            self.parent = parent
+
+        def execute(self):
+            if self._update is not None and self.parent.raise_after_update:
+                result = super().execute()
+                self.parent.raise_after_update = False
+                raise RuntimeError("response lost after commit")
+            return super().execute()
+
+    class AmbiguousSupabase(_Supabase):
+        def __init__(self):
+            super().__init__([])
+            self.raise_after_update = True
+
+        def table(self, name):
+            if name == "chat_sessions":
+                return _SessionTable(self.sessions, lock=self._lock)
+            return AmbiguousCompletionTable(self)
+
+    sb = AmbiguousSupabase()
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    user_id = "user-1"
+    message_id = main._ai_message_id("session-a", user_id)
+    claim = asyncio.run(main._acquire_generation_claim(
+        sb, "session-a", message_id,
+    ))
+    turn = SimpleNamespace(
+        user_msg={"id": user_id}, generation_claim_token=claim.token,
+    )
+
+    saved = asyncio.run(main._persist_ai_turn(
+        "session-a", turn, "只生成一次的回答", ["继续"], None, [],
+    ))
+
+    assert saved["text"] == "只生成一次的回答"
+    # The owner must still schedule this turn's metrics/memory/outcome work;
+    # an ambiguous response is not a peer replay.
+    assert saved.created is True
+    assert not any(main._is_pending_generation_claim(row) for row in sb.message_inserts)
+
+
+def test_expired_owner_cannot_claim_side_effects_from_new_owner_completion(
+    no_model,
+):
+    sb = _Supabase([])
+    message_id = "pending-ai"
+    first = asyncio.run(main._acquire_generation_claim(
+        sb, "session-a", message_id,
+    ))
+    # Simulate a crashed/slow worker whose lease was legitimately taken over.
+    sb.message_inserts[0]["transition"]["lease_expires_at"] = (
+        "2020-01-01T00:00:00+00:00"
+    )
+    second = asyncio.run(main._acquire_generation_claim(
+        sb, "session-a", message_id, wait_seconds=0,
+    ))
+    assert second.token != first.token
+
+    winner = asyncio.run(main._complete_generation_claim(
+        sb,
+        session_id="session-a",
+        message_id=message_id,
+        token=second.token,
+        text="相同的确定性回答",
+        quick_replies=[],
+        transition=None,
+        sources=[],
+    ))
+    assert winner.created is True
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main._complete_generation_claim(
+            sb,
+            session_id="session-a",
+            message_id=message_id,
+            token=first.token,
+            text="相同的确定性回答",
+            quick_replies=[],
+            transition=None,
+            sources=[],
+        ))
+
+    assert exc.value.status_code == 409
+
+
+def test_concurrent_same_client_turn_generates_once_and_peer_replays(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "step": 1, "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    normalized = []
+    _install_turn_dependencies(monkeypatch, normalized)
+    calls = []
+    started = asyncio.Event()
+
+    async def one_script(_session, _session_id):
+        calls.append("generated")
+        started.set()
+        await asyncio.sleep(0.15)
+        return "并发只生成一次", [], None, 1, 1
+
+    monkeypatch.setattr(main, "_scripted_reply", one_script)
+    body = main.UserMessageIn(
+        text="同一条并发消息", client_message_id="same-client-request",
+    )
+
+    async def run_both():
+        first = asyncio.create_task(main.post_message(
+            session["id"], body, main.BackgroundTasks(), uid="parent-1",
+        ))
+        await started.wait()
+        second = asyncio.create_task(main.post_message(
+            session["id"], body, main.BackgroundTasks(), uid="parent-1",
+        ))
+        return await asyncio.gather(first, second)
+
+    first, second = asyncio.run(run_both())
+
+    assert calls == ["generated"]
+    assert first["ai_messages"][0]["text"] == "并发只生成一次"
+    assert second["ai_messages"][0]["text"] == "并发只生成一次"
+    assert len(normalized) == 1
+    assert len([
+        row for row in sb.message_inserts
+        if row.get("id") == main._ai_message_id(
+            session["id"], first["user_message"]["id"],
+        )
+    ]) == 1
+
+
+def test_concurrent_initial_greeting_uses_one_model_call(monkeypatch):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "step": 1, "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    monkeypatch.setattr(main, "oai", object())
+
+    async def load_profile(_uid):
+        return ({"nickname": "Daniel"}, [])
+
+    async def no_cards():
+        return []
+
+    async def no_style():
+        return ""
+
+    monkeypatch.setattr(main.core_family_store, "load_profile", load_profile)
+    monkeypatch.setattr(main.core_family_store, "profile_ctx", lambda *_args: "")
+    monkeypatch.setattr(main.stores, "get_gen_cards", no_cards)
+    monkeypatch.setattr(main.core_dialogue_reply, "get_style_rules_ctx", no_style)
+    calls = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def greeting_model(*_args, **_kwargs):
+        calls.append("generated")
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"text": "只生成一次的问候", "quick_replies": []}
+
+    monkeypatch.setattr(
+        main.core_dialogue_reply, "nuri_reply_sync", greeting_model,
+    )
+
+    async def run_both():
+        first = asyncio.create_task(main._ensure_initial_greeting(session, "parent-1"))
+        await asyncio.to_thread(entered.wait, 2)
+        second = asyncio.create_task(main._ensure_initial_greeting(session, "parent-1"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.gather(first, second)
+
+    asyncio.run(run_both())
+
+    assert calls == ["generated"]
+    greetings = [
+        row for row in sb.message_inserts
+        if row.get("role") == "ai" and row.get("text") == "只生成一次的问候"
+    ]
+    assert len(greetings) == 1
+
+
+def test_generation_failure_releases_claim_and_retry_can_complete(
+    monkeypatch, no_model,
+):
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "step": 1, "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = _Supabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, [])
+    attempts = []
+
+    async def flaky_script(_session, _session_id):
+        attempts.append("attempt")
+        if len(attempts) == 1:
+            raise RuntimeError("model failed")
+        return "重试成功", [], None, 1, 1
+
+    monkeypatch.setattr(main, "_scripted_reply", flaky_script)
+    body = main.UserMessageIn(
+        text="失败后重试", client_message_id="retry-after-failure",
+    )
+
+    with pytest.raises(RuntimeError, match="model failed"):
+        asyncio.run(main.post_message(
+            session["id"], body, main.BackgroundTasks(), uid="parent-1",
+        ))
+    assert not any(main._is_pending_generation_claim(row) for row in sb.message_inserts)
+
+    result = asyncio.run(main.post_message(
+        session["id"], body, main.BackgroundTasks(), uid="parent-1",
+    ))
+
+    assert attempts == ["attempt", "attempt"]
+    assert result["ai_messages"][0]["text"] == "重试成功"
+
+
+def test_script_cursor_advances_only_after_reply_completion(
+    monkeypatch, no_model,
+):
+    class BrokenCompletionTable(_MessageTable):
+        def execute(self):
+            if self._update is not None:
+                raise RuntimeError("reply completion unavailable")
+            return super().execute()
+
+    class BrokenSupabase(_Supabase):
+        def table(self, name):
+            if name == "chat_sessions":
+                return _SessionTable(self.sessions, lock=self._lock)
+            return BrokenCompletionTable(self.message_inserts, self._lock)
+
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "step": 1, "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = BrokenSupabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, [])
+
+    with pytest.raises(main.HTTPException) as exc:
+        asyncio.run(main.post_message(
+            session["id"],
+            main.UserMessageIn(
+                text="不能跳步", client_message_id="script-write-failure",
+            ),
+            main.BackgroundTasks(),
+            uid="parent-1",
+        ))
+
+    assert exc.value.status_code == 503
+    assert session["step"] == 1
+
+
+def test_stream_never_emits_done_before_reply_completion(
+    monkeypatch, no_model,
+):
+    class BrokenCompletionTable(_MessageTable):
+        def execute(self):
+            if self._update is not None:
+                raise RuntimeError("reply completion unavailable")
+            return super().execute()
+
+    class BrokenSupabase(_Supabase):
+        def table(self, name):
+            if name == "chat_sessions":
+                return _SessionTable(self.sessions, lock=self._lock)
+            return BrokenCompletionTable(self.message_inserts, self._lock)
+
+    session = {
+        "id": "session-a", "user_id": "parent-1", "title": "chat",
+        "step": 1, "script_key": "free",
+        "created_at": "2020-01-01T00:00:00+00:00",
+    }
+    sb = BrokenSupabase([session])
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    _install_turn_dependencies(monkeypatch, [])
+
+    async def collect():
+        response = await main.post_message_stream(
+            session["id"],
+            main.UserMessageIn(
+                text="流式保存失败", client_message_id="stream-write-failure",
+            ),
+            uid="parent-1",
+        )
+        return "".join([
+            chunk.decode() if isinstance(chunk, bytes) else chunk
+            async for chunk in response.body_iterator
+        ])
+
+    payload = asyncio.run(collect())
+
+    assert '"type": "delta"' in payload
+    assert '"type": "error"' in payload
+    assert '"type": "done"' not in payload
+    assert not any(main._is_pending_generation_claim(row) for row in sb.message_inserts)

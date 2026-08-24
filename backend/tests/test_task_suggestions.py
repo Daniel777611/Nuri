@@ -320,6 +320,13 @@ def test_clarifying_turn_does_not_generate_tasks(monkeypatch):
 
 def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypatch):
     session_id = "main-long-lived"
+    session = {
+        "id": session_id,
+        "user_id": "parent-1",
+        "source_card_id": None,
+        "title": "长期主会话",
+        "created_at": "2026-06-01T00:00:00+00:00",
+    }
     old_transition = {
         "id": "old-ai",
         "session_id": session_id,
@@ -329,34 +336,53 @@ def test_non_streaming_turn_can_generate_again_in_a_long_lived_session(monkeypat
         "transition": {"kind": "task_suggestion", "tasks": [_proposal("旧任务")]},
         "created_at": "2026-06-01T00:00:00+00:00",
     }
-    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
-    monkeypatch.setattr(
-        memstore, "sessions",
-        {
-            session_id: {
-                "id": session_id,
-                "user_id": "parent-1",
-                "source_card_id": None,
-                "title": "长期主会话",
-                "created_at": "2026-06-01T00:00:00+00:00",
-            }
-        },
-    )
-    monkeypatch.setattr(
-        memstore, "messages",
-        {
-            session_id: [
-                {
-                    "id": "old-user",
-                    "session_id": session_id,
-                    "role": "user",
-                    "text": "上个月的问题",
-                    "created_at": "2026-06-01T00:00:00+00:00",
-                },
-                old_transition,
-            ]
-        },
-    )
+    old_user = {
+        "id": "old-user",
+        "session_id": session_id,
+        "role": "user",
+        "text": "上个月的问题",
+        "created_at": "2026-06-01T00:00:00+00:00",
+    }
+    current_user = {
+        "id": "current-user",
+        "session_id": session_id,
+        "role": "user",
+        "text": "这是一个新的睡眠问题",
+        "created_at": "2026-08-23T00:00:00+00:00",
+    }
+
+    async def prepare_turn(*_args, **_kwargs):
+        return main._Turn(
+            session=session,
+            owner_uid="parent-1",
+            user_msg=current_user,
+            msgs=[old_user, old_transition, current_user],
+            context_hints={},
+            fix_text=None,
+            temporal=None,
+        )
+
+    async def persist_turn(
+        _session_id, _turn, text, quick_replies, transition, sources,
+        *, script_step=None,
+    ):
+        return {
+            "id": "current-ai",
+            "session_id": _session_id,
+            "role": "ai",
+            "text": text,
+            "quick_replies": quick_replies,
+            "transition": transition,
+            "sources": sources,
+            "created_at": "2026-08-23T00:00:01+00:00",
+        }
+
+    monkeypatch.setattr(main, "_prepare_turn", prepare_turn)
+    monkeypatch.setattr(main, "_persist_ai_turn", persist_turn)
+    # post_message keeps the durable claim storage handle until completion so
+    # it can safely release an unfinished claim.  This unit test replaces both
+    # claim preparation and persistence, therefore a sentinel is sufficient.
+    monkeypatch.setattr(main, "_require_chat_storage", lambda: object())
     monkeypatch.setattr(main, "oai", object())
 
     async def reply_context(*_args, **_kwargs):

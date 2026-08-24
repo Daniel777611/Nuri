@@ -10,3 +10,4 @@ pyjwt
 bcrypt
 email-validator
 cryptography>=42.0.8
+tzdata

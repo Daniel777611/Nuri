@@ -388,3 +388,40 @@ def test_preview_does_not_expose_full_message_payload(monkeypatch):
     assert set(preview["last_user_message"]) == {"id", "text", "created_at"}
     assert set(preview["last_message"]) == {"id", "role", "text", "created_at"}
     assert preview["memory_preview"] is None
+
+
+def test_preview_skips_newer_pending_generation_claim(monkeypatch):
+    sessions = [{
+        "id": "main-1",
+        "user_id": "parent-1",
+        "source_card_id": None,
+        "title": "chat",
+        "created_at": "2026-08-23T10:00:00+00:00",
+    }]
+    messages = {"main-1": [
+        {
+            "id": "user-1", "session_id": "main-1", "role": "user",
+            "text": "昨天和今天的真实问题",
+            "created_at": "2026-08-23T10:01:00+00:00",
+        },
+        {
+            "id": "ai-1", "session_id": "main-1", "role": "ai",
+            "text": "真实回答", "transition": None,
+            "created_at": "2026-08-23T10:01:01+00:00",
+        },
+        {
+            "id": "pending", "session_id": "main-1", "role": "ai",
+            "text": "",
+            "transition": {
+                "kind": main._GENERATION_CLAIM_KIND,
+                "claim_token": "live-worker",
+                "lease_expires_at": "2099-01-01T00:00:00+00:00",
+            },
+            "created_at": "2026-08-23T10:01:02+00:00",
+        },
+    ]}
+
+    preview = _run_preview(monkeypatch, sessions, messages)
+
+    assert preview["last_message"]["id"] == "ai-1"
+    assert preview["last_message"]["text"] == "真实回答"

@@ -84,6 +84,7 @@ class _Messages:
         self.rows = []
         self.selected = []
         self.pending = None
+        self.filters = {}
 
     def insert(self, row):
         self.pending = row
@@ -93,7 +94,8 @@ class _Messages:
         self.selected.append(columns)
         return self
 
-    def eq(self, *_args):
+    def eq(self, column, value):
+        self.filters[column] = value
         return self
 
     def order(self, *_args, **_kwargs):
@@ -104,7 +106,12 @@ class _Messages:
             self.rows.append(self.pending)
             self.pending = None
             return SimpleNamespace(data=self.rows[-1:])
-        return SimpleNamespace(data=list(self.rows))
+        rows = [
+            row for row in self.rows
+            if all(row.get(column) == value for column, value in self.filters.items())
+        ]
+        self.filters = {}
+        return SimpleNamespace(data=rows)
 
 
 class _Supabase:
@@ -146,6 +153,6 @@ def test_prepare_turn_keeps_created_at_from_supabase(monkeypatch):
         )
     )
 
-    assert "created_at" in sb.messages.selected[-1].split(",")
+    assert "*" in sb.messages.selected
     assert turn.msgs[-1]["created_at"] == NOW.isoformat()
     assert turn.temporal.timezone_name == "America/Chicago"

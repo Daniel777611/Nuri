@@ -296,11 +296,13 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
 }
 
 // ── SSE chat streaming ───────────────────────────────────────────────────────
-// Thrown when the stream never started (no such route, non-200, wrong content
-// type). Nothing was persisted server-side, so the caller can safely retry
-// against the non-streaming endpoint. A failure *mid*-stream throws a plain
-// Error instead: the user message is already saved, and retrying would double
-// post it, so the caller should reload the thread rather than resend.
+// Thrown when the host genuinely lacks the stream route (or returns a wrong
+// content type). The caller can safely retry the shared payload against the
+// non-streaming endpoint because every turn carries a stable client_message_id
+// and the backend replays the already-persisted turn. Auth, rate-limit and 5xx
+// responses are real failures and must not be resent. A failure *mid*-stream
+// throws a plain Error instead, so the caller reloads rather than retrying while
+// a response may still be in flight.
 // Carries an explicit flag rather than relying on `instanceof`: subclassing
 // Error survives transpilation poorly under Hermes/Babel, and a missed check
 // here would silently disable the fallback.
@@ -315,7 +317,8 @@ export function isStreamUnsupported(err: unknown): boolean {
 // React Native's fetch resolves without a `body` stream; only web/RNW has one.
 const SUPPORTS_FETCH_STREAM = (() => {
   try {
-    return typeof TextDecoder !== "undefined" && !!new Response("").body;
+    const body = new Response("").body;
+    return typeof TextDecoder !== "undefined" && typeof body?.getReader === "function";
   } catch {
     return false;
   }
@@ -324,7 +327,16 @@ const SUPPORTS_FETCH_STREAM = (() => {
 type SseEvent =
   | { type: "delta"; text: string }
   | { type: "done"; user_message: any; ai_messages: any[] }
-  | { type: "error"; message?: string };
+  | { type: "error"; message?: string; code?: string; retryable?: boolean };
+
+const STREAM_ROUTE_FALLBACK_STATUSES = new Set([404, 405, 415, 501]);
+
+function streamHttpError(status: number, path: string, detail = "") {
+  if (STREAM_ROUTE_FALLBACK_STATUSES.has(status)) {
+    return new StreamUnsupportedError(`stream HTTP ${status}`);
+  }
+  return new ApiError(status, path, detail || "stream request failed");
+}
 
 /** Feed raw response text in; get whole `data:` events out. */
 function makeSseParser(onEvent: (e: SseEvent) => void) {
@@ -367,17 +379,27 @@ function xhrStream(
       }
     };
     xhr.onreadystatechange = () => {
-      if (xhr.readyState === xhr.HEADERS_RECEIVED) {
-        if (xhr.status < 200 || xhr.status >= 300) {
-          xhr.abort();
-          reject(new StreamUnsupportedError(`stream HTTP ${xhr.status}`));
-          return;
-        }
+      if (
+        xhr.readyState >= xhr.HEADERS_RECEIVED &&
+        xhr.status >= 200 &&
+        xhr.status < 300
+      ) {
         started = true;
       }
     };
     xhr.onprogress = drain;
     xhr.onload = () => {
+      // React Native does not consistently emit HEADERS_RECEIVED. Treat onload
+      // as the authoritative HTTP result before consuming the final bytes.
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(streamHttpError(xhr.status, url, xhr.responseText || ""));
+        return;
+      }
+      const contentType = xhr.getResponseHeader("content-type") || "";
+      if (!contentType.includes("text/event-stream")) {
+        reject(new StreamUnsupportedError("stream not supported by host"));
+        return;
+      }
       drain();
       resolve();
     };
@@ -430,9 +452,14 @@ async function streamMessage(
         body: payload,
         signal: controller.signal,
       });
-      if (!res.ok) throw new StreamUnsupportedError(`stream HTTP ${res.status}`);
+      if (!res.ok) {
+        throw streamHttpError(res.status, url, await res.text());
+      }
       // A host that buffers the response (or an old backend) won't send SSE.
-      if (!res.body || !(res.headers.get("content-type") || "").includes("text/event-stream")) {
+      if (
+        typeof res.body?.getReader !== "function" ||
+        !(res.headers.get("content-type") || "").includes("text/event-stream")
+      ) {
         throw new StreamUnsupportedError("stream not supported by host");
       }
       const reader = res.body.getReader();
@@ -442,6 +469,7 @@ async function streamMessage(
         if (done) break;
         feed(decoder.decode(value, { stream: true }));
       }
+      feed(decoder.decode());
     } finally {
       clearTimeout(timer);
     }
@@ -611,8 +639,6 @@ export const api = {
   // from legacy `source_card_id` values or create a duplicate itself.
   getOrStartMainSession: () =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) }),
-  deleteSession: (sid: string) =>
-    req(`/chat/sessions/${sid}`, { method: "DELETE" }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
   // A model turn can legitimately run past the 12s default. Aborting early
   // doesn't stop the backend, it just makes users resend and stack more work,

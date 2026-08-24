@@ -181,6 +181,14 @@ export default function ChatDetail() {
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
   // rapid taps would otherwise all read the stale `false`.
   const sendingRef = useRef(false);
+  // A timeout can hide a request that is still finishing on the server. Keep
+  // the exact idempotency key with the failed draft so pressing Send again on
+  // unchanged content replays that turn instead of starting a second one.
+  const failedSendRef = useRef<{
+    text: string;
+    imageBase64: string | null;
+    payload: ReturnType<typeof buildChatMessagePayload>;
+  } | null>(null);
   // A parent may tap Back while the SSE turn is still being persisted.  Keep
   // that intent and navigate only after the server returns the durable turn;
   // otherwise the home feed can race the chat insert and rank stale context.
@@ -220,19 +228,6 @@ export default function ChatDetail() {
   useEffect(() => {
     load();
   }, [load]);
-
-  // Auto-delete session if user leaves without sending any message
-  useEffect(() => {
-    return () => {
-      setMessages((current) => {
-        const hasUserMsg = current.some((m) => m.role === "user");
-        if (!hasUserMsg && id) {
-          api.deleteSession(id).catch(() => {});
-        }
-        return current;
-      });
-    };
-  }, [id]);
 
   useEffect(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -279,7 +274,14 @@ export default function ChatDetail() {
     setMessages((p) => [...p, optimistic]);
 
     setTyping(true);
-    const payload = buildChatMessagePayload(text, imageBase64 || null, locale);
+    const normalizedImage = imageBase64 || null;
+    const failedSend = failedSendRef.current;
+    const payload = failedSend
+      && failedSend.text === text
+      && failedSend.imageBase64 === normalizedImage
+      ? failedSend.payload
+      : buildChatMessagePayload(text, normalizedImage, locale);
+    if (payload !== failedSend?.payload) failedSendRef.current = null;
     try {
       let res;
       try {
@@ -300,6 +302,7 @@ export default function ChatDetail() {
         res.user_message,
         ...res.ai_messages,
       ]);
+      failedSendRef.current = null;
       completedTurnNonceRef.current = String(
         res.user_message?.id || res.user_message?.created_at || Date.now(),
       );
@@ -309,7 +312,11 @@ export default function ChatDetail() {
       }
     } catch {
       // Mid-stream failures may have already persisted the user message, so
-      // resending would duplicate it — reload the thread instead of guessing.
+      // preserve both the draft and its stable key. An unchanged retry then
+      // asks the backend to replay the same durable turn rather than generating
+      // a second response while the first request may still be running.
+      failedSendRef.current = { text, imageBase64: normalizedImage, payload };
+      if (text) setInput(text);
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
       pendingHomeReturnRef.current = false;
       showToast(t("发送失败，请重试"));
