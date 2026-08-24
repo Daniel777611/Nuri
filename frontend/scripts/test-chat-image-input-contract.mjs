@@ -17,6 +17,12 @@ assert.match(chat, /Do not force capture=environment/, "web camera entry must av
 assert.match(chat, /onDismiss=\{flushNativePicker\}/, "native camera must wait for the modal to close");
 assert.match(chat, /getPendingResultAsync\(\)/, "Android camera results must survive activity recreation");
 assert.match(chat, /pickWebChatImageFile\(\)/, "web must own the raw file picker instead of Expo metadata decoding");
+assert.match(
+  chat,
+  /if \(Platform\.OS === "web"\)[\s\S]*?void openSafeWebPicker\(\);[\s\S]*?setImageMenuVisible\(true\);/,
+  "the plus button must open the system picker directly on web and reserve the NURI menu for native builds",
+);
+assert.match(chat, /onPress=\{openImageInput\}/, "the plus button must use the direct picker dispatcher");
 assert.match(chat, /prepareChatImage\(asset\)/, "selected photos must be resized and compressed");
 assert.match(chat, /setPendingImage\(prepared\)/, "a prepared photo must enter send-preview state");
 assert.match(chat, /testID="chat-image-preview"/, "the chosen photo must be visible before send");

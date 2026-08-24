@@ -557,6 +557,17 @@ export default function ChatDetail() {
     deferNativePickerUntilModalCloses("library");
   };
 
+  const openImageInput = () => {
+    // The iOS app is a WKWebView shell. Its browser-owned file chooser already
+    // offers Camera and Photo Library, so opening a NURI menu first only adds a
+    // redundant extra step and can break Safari's required user gesture.
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    setImageMenuVisible(true);
+  };
+
   useEffect(() => () => {
     if (nativePickerFallbackTimerRef.current) {
       clearTimeout(nativePickerFallbackTimerRef.current);
@@ -704,7 +715,7 @@ export default function ChatDetail() {
             ) : null}
             <View style={styles.inputPill}>
               <Pressable
-                onPress={() => setImageMenuVisible(true)}
+                onPress={openImageInput}
                 style={styles.iconBtn}
                 disabled={sending || processingImage}
                 accessibilityRole="button"
