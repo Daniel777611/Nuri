@@ -114,9 +114,12 @@ export const en: Record<string, string> = {
     "Do you remember when we last talked about “{excerpt}”? How has it been going?",
   "你还记得我们上次分享的那张图片吗？最近怎么样？":
     "Do you remember the image we shared last time? How has it been going?",
+  "我记得你提过“{excerpt}”。最近有新变化吗？":
+    "I remember you mentioned “{excerpt}”. Has anything changed recently?",
   "上次的对话暂时没能加载，点一下再试试。":
     "Our last conversation could not load just now. Tap to try again.",
   "正在整理我们上次的对话…": "Getting our last conversation ready…",
+  "正在加载": "Loading…",
   "今天想聊聊什么？我在这里陪你。": "What would you like to talk about today? I'm here.",
   "这项每日精选还在准备中，请稍后再试":
     "This daily selection is still being prepared. Please try again shortly.",

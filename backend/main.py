@@ -32,7 +32,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, io, json, os, time, uuid, hashlib, random, re
+import asyncio, io, json, logging, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import List, Literal, NamedTuple, Optional
@@ -69,6 +69,9 @@ from backend.websearch import (
 )
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.background import BackgroundTask
+
+
+logger = logging.getLogger(__name__)
 
 try:
     from backend.content_library import (
@@ -2705,6 +2708,7 @@ def _main_chat_preview_payload(
     session: Optional[dict] = None,
     last_message: Optional[dict] = None,
     last_user_message: Optional[dict] = None,
+    memory_preview: Optional[dict] = None,
 ) -> dict:
     if not session:
         return {
@@ -2714,6 +2718,7 @@ def _main_chat_preview_payload(
             "last_activity_at": None,
             "last_user_message": None,
             "last_message": None,
+            "memory_preview": memory_preview,
         }
     return {
         "has_conversation": True,
@@ -2724,44 +2729,86 @@ def _main_chat_preview_payload(
         ),
         "last_user_message": _chat_preview_row(last_user_message),
         "last_message": _chat_preview_row(last_message, include_role=True),
+        "memory_preview": memory_preview,
     }
 
 
-def _main_chat_preview_from_memory(uid: str) -> dict:
-    sessions = [
-        session
-        for session in memstore.sessions.values()
-        if session.get("user_id") == uid and not session.get("source_card_id")
-    ]
-    if not sessions:
-        return _main_chat_preview_payload()
+_MEMORY_PREVIEW_CATEGORY_PRIORITY = {
+    "concern": 0,
+    "child_state": 1,
+    "constraint": 2,
+    "preference": 3,
+    "fact": 4,
+}
+_MEMORY_PREVIEW_SENSITIVE_KEYS = (
+    "password", "secret", "token", "email", "phone", "address",
+    "密码", "口令", "令牌", "邮箱", "电话", "手机", "地址",
+)
 
-    session_ids = {session["id"] for session in sessions}
-    all_messages = [
-        {
-            **message,
-            "session_id": message.get("session_id") or session_id,
+
+def _safe_memory_preview(rows: list[dict]) -> Optional[dict]:
+    """Return one display-safe memory summary, never its storage metadata.
+
+    The database query is already newest-first. Category priority keeps a live
+    parenting concern ahead of a generic fact, while row order breaks ties by
+    recency. Values that look structured are skipped: a home-card preview must
+    not accidentally serialize internal JSON/evidence into the response.
+    """
+
+    candidates: list[tuple[int, int, dict]] = []
+    for index, row in enumerate(rows):
+        category = str(row.get("category") or "").strip()
+        if category not in _MEMORY_PREVIEW_CATEGORY_PRIORITY:
+            continue
+        key = " ".join(str(row.get("key") or "").split())
+        text = " ".join(str(row.get("value") or "").split())
+        lowered_key = key.casefold()
+        if (
+            not key
+            or not text
+            or any(token in lowered_key for token in _MEMORY_PREVIEW_SENSITIVE_KEYS)
+        ):
+            continue
+        if text[:1] in {"{", "["}:
+            try:
+                if isinstance(json.loads(text), (dict, list)):
+                    continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        preview = {
+            "category": category,
+            "key": key[:80],
+            "text": text[:240],
         }
-        for session_id in session_ids
-        for message in memstore.messages.get(session_id, [])
-    ]
-    last_user_message = max(
-        (message for message in all_messages if message.get("role") == "user"),
-        key=_chat_activity_key,
-        default=None,
-    )
-    if last_user_message:
-        session = next(
-            item
-            for item in sessions
-            if item["id"] == last_user_message.get("session_id")
-        )
-    else:
-        session = max(sessions, key=_chat_activity_key)
+        if row.get("updated_at"):
+            preview["updated_at"] = str(row["updated_at"])
+        candidates.append((_MEMORY_PREVIEW_CATEGORY_PRIORITY[category], index, preview))
+    return min(candidates, default=(0, 0, None))[2]
 
-    session_messages = memstore.messages.get(session["id"], [])
-    last_message = max(session_messages, key=_chat_activity_key, default=None)
-    return _main_chat_preview_payload(session, last_message, last_user_message)
+
+async def _load_memory_preview(sb, uid: str) -> Optional[dict]:
+    result = await anyio.to_thread.run_sync(
+        lambda: sb.table("user_memories")
+        .select("category,key,value,updated_at")
+        .eq("user_id", uid)
+        .eq("status", "active")
+        .order("updated_at", desc=True)
+        .limit(24)
+        .execute()
+    )
+    return _safe_memory_preview(result.data or [])
+
+
+def _log_chat_preview_db_error(uid: str, exc: BaseException) -> None:
+    logger.error(
+        "chat_main_preview_database_error",
+        extra={
+            "event": "chat_main_preview_database_error",
+            "user_id_hash": hashlib.sha256(uid.encode("utf-8")).hexdigest()[:12],
+            "error_type": type(exc).__name__,
+        },
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 @api.get("/chat/main/preview")
@@ -2775,7 +2822,12 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
     """
     sb = _get_supabase()
     if not sb:
-        return _main_chat_preview_from_memory(uid)
+        exc = RuntimeError("Supabase is not configured")
+        _log_chat_preview_db_error(uid, exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Conversation preview is temporarily unavailable",
+        ) from exc
 
     try:
         session_res = await anyio.to_thread.run_sync(
@@ -2784,13 +2836,14 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
             .eq("user_id", uid)
             .execute()
         )
-        main_sessions = [
-            session
-            for session in (session_res.data or [])
-            if not session.get("source_card_id")
-        ]
+        # There is one continuous conversation per account. It may originally
+        # have been created by opening a card, so source_card_id is provenance,
+        # not a reason to hide the account's real conversation.
+        main_sessions = list(session_res.data or [])
         if not main_sessions:
-            return _main_chat_preview_payload()
+            return _main_chat_preview_payload(
+                memory_preview=await _load_memory_preview(sb, uid)
+            )
 
         session_ids = [session["id"] for session in main_sessions]
         user_message_res = await anyio.to_thread.run_sync(
@@ -2823,9 +2876,14 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
             .execute()
         )
         last_message = (message_res.data or [None])[0]
-        return _main_chat_preview_payload(session, last_message, last_user_message)
+        memory_preview = (
+            await _load_memory_preview(sb, uid) if not last_user_message else None
+        )
+        return _main_chat_preview_payload(
+            session, last_message, last_user_message, memory_preview
+        )
     except Exception as exc:
-        print(f"[warn] get_main_chat_preview error: {exc}")
+        _log_chat_preview_db_error(uid, exc)
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Conversation preview is temporarily unavailable",

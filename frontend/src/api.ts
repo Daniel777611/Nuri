@@ -185,6 +185,30 @@ export type RecommendationEventInput = {
   reason?: RecommendationFeedbackReason;
 };
 
+export type MainConversationPreview = {
+  has_conversation: boolean;
+  session_id: string | null;
+  title?: string | null;
+  last_activity_at?: string | null;
+  last_user_message?: {
+    id: string;
+    text: string;
+    created_at?: string | null;
+  } | null;
+  last_message?: {
+    id: string;
+    role: "ai" | "user";
+    text: string;
+    created_at?: string | null;
+  } | null;
+  memory_preview?: {
+    category: string;
+    key: string;
+    text: string;
+    updated_at?: string;
+  } | null;
+};
+
 function createRecommendationEventId(): string {
   const randomUuid = globalThis.crypto?.randomUUID?.();
   if (randomUuid) return randomUuid;
@@ -580,16 +604,13 @@ export const api = {
   startSession: (b: any) =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
-  getMainConversationPreview: () => req(`/chat/main/preview`),
-  // Product only has one ongoing "Nuri的家" conversation (as opposed to the
-  // per-card sessions started from a feed card): reuse it if one already
-  // exists instead of creating a new session every time the tab is opened.
-  getOrStartMainSession: async () => {
-    const sessions = await req<any[]>(`/chat/sessions`);
-    const existing = sessions.find((s) => !s.source_card_id);
-    if (existing) return existing;
-    return req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) });
-  },
+  getMainConversationPreview: () => req<MainConversationPreview>(`/chat/main/preview`),
+  // The server owns canonical-session selection. This endpoint is idempotent:
+  // it returns the account's existing conversation and creates the first one
+  // only when the account truly has none. The client must not infer identity
+  // from legacy `source_card_id` values or create a duplicate itself.
+  getOrStartMainSession: () =>
+    req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) }),
   deleteSession: (sid: string) =>
     req(`/chat/sessions/${sid}`, { method: "DELETE" }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),

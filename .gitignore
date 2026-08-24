@@ -44,3 +44,7 @@ Thumbs.db
 frontend/dist/
 frontend/dist2/
 frontend/dist3/
+
+# operator-only recovery backups (may contain account history / PII)
+.private-backups/
+account-history-backups/

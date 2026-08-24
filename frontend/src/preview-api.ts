@@ -645,7 +645,10 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/privacy/wipe") return {};
 
   if (path === "/chat/main/preview" && method === "GET") {
-    const mainSessions = sessions.filter((session) => !session.source_card_id);
+    // `source_card_id` is legacy provenance, not conversation identity. The
+    // real backend treats every owned row as a candidate for the account's
+    // canonical continuous conversation, so preview mode must do the same.
+    const mainSessions = sessions;
     if (!mainSessions.length) {
       return {
         has_conversation: false,
@@ -654,6 +657,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         last_activity_at: null,
         last_user_message: null,
         last_message: null,
+        memory_preview: null,
       };
     }
     const mainIds = new Set(mainSessions.map((session) => session.id));
@@ -686,10 +690,22 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
             created_at: lastMessage.created_at,
           }
         : null,
+      memory_preview: null,
     };
   }
   if (path === "/chat/sessions" && method === "GET") return sessions;
   if (path === "/chat/sessions" && method === "POST") {
+    if (sessions.length) {
+      const existingIds = new Set(sessions.map((session) => session.id));
+      const latestUserMessage = newest(
+        Object.values(messages).flat().filter(
+          (message) => existingIds.has(message.session_id) && message.role === "user",
+        ),
+      );
+      return latestUserMessage
+        ? sessions.find((session) => session.id === latestUserMessage.session_id)
+        : newest(sessions);
+    }
     const next = { id: id("chat"), title: body.title || "和 NURI 的新对话", source_card_id: body.card_id || null, created_at: new Date().toISOString() };
     sessions = [next, ...sessions]; messages[next.id] = [{ id: id("msg"), session_id: next.id, role: "ai", text: "你好，我在这里。今天想聊聊什么？", created_at: new Date().toISOString() }]; return next;
   }

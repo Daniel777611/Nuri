@@ -19,6 +19,7 @@ import { useIsFocused } from "@react-navigation/native";
 
 import {
   api,
+  type MainConversationPreview,
   type PersonalizedFeedItem,
   type PreparedFeedItem,
   type PreparedLearningResource,
@@ -50,9 +51,11 @@ const PREPARATION_RETRY_MAX_DELAY_MS = 300000;
 const PREPARATION_RETRY_MAX_EXPONENT = 7;
 
 type NuriPreview = {
-  sessionId: string;
+  sessionId: string | null;
   hasLastUserMessage: boolean;
   lastUserMessage: string;
+  memoryText: string;
+  hasPersonalContext: boolean;
 };
 
 type NuriPreviewStatus = "loading" | "ready" | "empty" | "error";
@@ -273,19 +276,28 @@ export default function Home() {
     const requestId = ++nuriPreviewRequest.current;
     setNuriPreviewStatus("loading");
     try {
-      const preview: any = await api.getMainConversationPreview();
+      const preview: MainConversationPreview = await api.getMainConversationPreview();
       if (requestId !== nuriPreviewRequest.current) return;
-      if (!preview?.has_conversation || !preview?.session_id) {
-        setNuriPreview(null);
-        setNuriPreviewStatus("empty");
-        return;
-      }
+      const sessionId =
+        preview?.has_conversation && typeof preview.session_id === "string"
+          ? preview.session_id
+          : null;
+      const lastUserMessage = preview?.last_user_message?.text || "";
+      // Only the backend-authored display text is shown. category/key remain
+      // internal provenance and must never leak into parent-facing copy.
+      const memoryText =
+        typeof preview?.memory_preview?.text === "string"
+          ? preview.memory_preview.text.trim()
+          : "";
+      const hasPersonalContext = Boolean(lastUserMessage || memoryText);
       setNuriPreview({
-        sessionId: preview.session_id,
+        sessionId,
         hasLastUserMessage: !!preview.last_user_message,
-        lastUserMessage: preview.last_user_message?.text || "",
+        lastUserMessage,
+        memoryText,
+        hasPersonalContext,
       });
-      setNuriPreviewStatus(preview.last_user_message ? "ready" : "empty");
+      setNuriPreviewStatus(hasPersonalContext ? "ready" : "empty");
     } catch {
       if (requestId === nuriPreviewRequest.current) {
         setNuriPreviewStatus("error");
@@ -680,6 +692,10 @@ export default function Home() {
   const lastUserExcerpt = nuriPreview?.hasLastUserMessage
     ? conversationExcerpt(nuriPreview.lastUserMessage)
     : "";
+  const memoryExcerpt = nuriPreview?.memoryText
+    ? conversationExcerpt(nuriPreview.memoryText)
+    : "";
+  const hasPersonalContext = !!nuriPreview?.hasPersonalContext;
   const nuriMemo =
     hasLoadedPreview && nuriPreview?.hasLastUserMessage
       ? lastUserExcerpt
@@ -687,15 +703,23 @@ export default function Home() {
             excerpt: lastUserExcerpt,
           })
         : t("你还记得我们上次分享的那张图片吗？最近怎么样？")
+      : hasLoadedPreview && memoryExcerpt
+        ? t("我记得你提过“{excerpt}”。最近有新变化吗？", {
+            excerpt: memoryExcerpt,
+          })
       : nuriPreviewStatus === "error"
         ? t("上次的对话暂时没能加载，点一下再试试。")
         : nuriPreviewStatus === "loading"
           ? t("正在整理我们上次的对话…")
           : t("今天想聊聊什么？我在这里陪你。");
   const nuriActionText =
-    nuriPreviewStatus === "error" && !nuriPreview
+    nuriPreviewStatus === "loading" && !nuriPreview
+      ? t("正在加载")
+      : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
-      : t("和我聊聊");
+      : hasPersonalContext
+        ? t("继续对话")
+        : t("和我聊聊");
 
   const trackHeroImpression = useCallback(
     (card: HeroCard, position: number) => {
@@ -847,7 +871,15 @@ export default function Home() {
             <Text style={styles.sectionHeadingText}>{t("NURI之家")}</Text>
           </View>
 
-          <View style={styles.nuriStage} testID="home-nuri-card">
+          <Pressable
+            onPress={openNuriChat}
+            disabled={nuriPreviewStatus === "loading" || openingNuriChat.current}
+            style={({ pressed }) => [styles.nuriStage, pressed && styles.nuriStagePressed]}
+            testID="home-nuri-card"
+            accessibilityRole="button"
+            accessibilityLabel={nuriActionText}
+            accessibilityState={{ busy: nuriPreviewStatus === "loading" }}
+          >
             <LinearGradient
               colors={[C.purpleLight, C.purpleDark]}
               start={{ x: 0, y: 0 }}
@@ -857,21 +889,20 @@ export default function Home() {
               <Text style={styles.nuriMemo} numberOfLines={4} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
-              <Pressable
-                onPress={openNuriChat}
+              <View
                 style={styles.nuriButton}
                 testID="home-nuri-action"
-                accessibilityRole="button"
+                pointerEvents="none"
               >
                 <Text style={styles.nuriButtonText} testID="home-nuri-action-label">
                   {nuriActionText}
                 </Text>
-              </Pressable>
+              </View>
             </LinearGradient>
             <View pointerEvents="none" style={styles.mascotCrop}>
               <Image source={mascotImage} style={styles.mascot} resizeMode="contain" />
             </View>
-          </View>
+          </Pressable>
         </ScrollView>
 
         <View
@@ -1019,6 +1050,7 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "visible",
   },
+  nuriStagePressed: { opacity: 0.94 },
   nuriCard: {
     height: 312,
     borderRadius: 36,
