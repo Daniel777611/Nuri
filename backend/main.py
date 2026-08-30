@@ -4758,10 +4758,26 @@ async def _persist_ai_turn(
 # assertable without parsing prose. They are additive: every existing client
 # key keeps its meaning and position.
 
-#: Where the deployed commit comes from. Vercel sets the first automatically.
-_BACKEND_BUILD = (
-    os.getenv("VERCEL_GIT_COMMIT_SHA") or os.getenv("BACKEND_BUILD") or "dev"
-)[:40]
+#: Which build answered. A test protocol uses this to decide whether a batch of
+#: results may be merged with an earlier one, so "dev" reaching a deployed
+#: environment is itself a finding — it means none of the names below arrived
+#: and the run cannot be tied back to a commit.
+#:
+#: Vercel exposes VERCEL_GIT_COMMIT_SHA only when the project has system
+#: environment variables enabled, and not to every runtime. The deployment id
+#: identifies the build just as well when the SHA is missing, and VERCEL_URL
+#: at least names something unique per deployment.
+_BACKEND_BUILD = next(
+    (
+        value for value in (
+            os.getenv("BACKEND_BUILD"),
+            os.getenv("VERCEL_GIT_COMMIT_SHA"),
+            os.getenv("VERCEL_DEPLOYMENT_ID"),
+            os.getenv("VERCEL_URL"),
+        ) if (value or "").strip()
+    ),
+    "dev",
+)[:64]
 
 #: Internal RiskTier -> the three-value enum the test contract asks for. The
 #: raw tier travels alongside it: collapsing five values into three loses the
