@@ -58,3 +58,8 @@ supabase/.temp/
 # the test project, but this repo has a public mirror and a credential in a
 # repository is a habit worth not forming.
 TEST_ACCOUNTS.md
+
+# First-round test handoff. Carries the preview deployment URL and test account
+# addresses; this repo has a public mirror, so the folder is delivered directly
+# to the test party instead of being committed.
+首轮测试交付/
