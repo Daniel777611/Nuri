@@ -942,6 +942,11 @@ class _TurnMetrics:
             "model": "",
             "status": "ok",
             "suggested_tasks": False,
+            # The same id the response returns and llm_call_logs records, so one
+            # id a tester quotes reaches both this turn's metrics and the
+            # provider calls it fanned out into. Without it the two tables can
+            # only be joined by guessing from timestamps.
+            "request_id": llm_usage.current_request_id(),
         }
         self._t0 = time.perf_counter()
 
@@ -994,25 +999,34 @@ class _TurnMetrics:
                 lambda: sb.table("chat_turn_logs").insert(self.row).execute()
             )
         except Exception as e:
-            # A metrics table must never cost a turn. Most likely cause is the
-            # migration not having been run yet.
+            # A metrics table must never cost a turn. The usual cause is a
+            # migration that has not been run on this database yet.
             print(f"[warn] chat_turn_logs insert: {e}")
-            # The four-model columns arrive with four_model_migration.sql.
-            # Deploying ahead of it would otherwise drop every turn metric,
-            # including the ones that have been collected all along — so retry
-            # with just the columns the linear pipeline already wrote.
-            legacy = {k: v for k, v in self.row.items()
-                      if k not in core_provenance.TurnTrace.FLAT_COLUMNS
-                      and k not in _FEWSHOT_COLUMNS}
-            if len(legacy) == len(self.row):
-                return
-            try:
-                await anyio.to_thread.run_sync(
-                    lambda: sb.table("chat_turn_logs").insert(legacy).execute()
-                )
-                print("[warn] logged without four-model columns; run four_model_migration.sql")
-            except Exception as e2:
-                print(f"[warn] chat_turn_logs retry failed: {e2}")
+            # Drop whichever column the database says it does not have, and try
+            # again. The previous version dropped a fixed list — the four-model
+            # and few-shot columns — which meant any *other* missing column
+            # failed both the insert and the retry, and a whole environment
+            # recorded no turn metrics at all while looking healthy. That is
+            # exactly what happened when `route_topic` existed in production but
+            # in no migration. Partial metrics beat none, and the warning still
+            # names the column so the gap gets fixed rather than absorbed.
+            row = dict(self.row)
+            for _ in range(len(self.row)):
+                missing = _missing_column_name(e)
+                if missing is None or missing not in row:
+                    break
+                row.pop(missing)
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda payload=dict(row): sb.table("chat_turn_logs")
+                        .insert(payload).execute()
+                    )
+                    print(f"[warn] logged without {missing!r}; a migration is "
+                          f"missing on this database")
+                    return
+                except Exception as retry_error:
+                    e = retry_error
+            print(f"[warn] chat_turn_logs retry failed: {e}")
 
 
 
@@ -3703,6 +3717,19 @@ def _verify_existing_message(actual: dict, expected: dict) -> dict:
     return actual
 
 
+def _missing_column_name(exc: Exception) -> Optional[str]:
+    """The column PostgREST says it could not find, or None.
+
+    PostgREST reports an unknown column as PGRST204 with the name quoted in the
+    message. Reading it back is what lets a write degrade to the columns that
+    do exist instead of failing whole."""
+    text = str(exc)
+    if "PGRST204" not in text and "Could not find" not in text:
+        return None
+    match = re.search(r"Could not find the '([^']+)' column", text)
+    return match.group(1) if match else None
+
+
 def _missing_sources_column(exc: Exception) -> bool:
     message = str(exc).lower()
     return "sources" in message and any(
@@ -5797,8 +5824,15 @@ def _percentile(values: list[int], pct: float) -> Optional[int]:
 @app.get("/admin/turn-logs")
 async def admin_list_turn_logs(
     user_id: Optional[str] = None, status: Optional[str] = None,
+    session_id: Optional[str] = None, request_id: Optional[str] = None,
     limit: int = 50, offset: int = 0, _: None = Depends(_require_admin),
 ):
+    """Turn metrics, newest first.
+
+    `session_id` and `request_id` are what an outside report actually carries:
+    a test run quotes the request id it saw, or the conversation it was driving.
+    Filtering only by user_id meant answering "which turn was that" by reading
+    timestamps."""
     sb = _get_supabase()
     if not sb:
         raise HTTPException(503, "Supabase not configured")
@@ -5811,6 +5845,10 @@ async def admin_list_turn_logs(
             q = q.eq("user_id", user_id)
         if status:
             q = q.eq("status", status)
+        if session_id:
+            q = q.eq("session_id", session_id)
+        if request_id:
+            q = q.eq("request_id", request_id)
         # One extra beyond the page so the client knows there's a next page
         # without needing the count to be exact.
         return q.order("created_at", desc=True).range(offset, offset + limit).execute()
