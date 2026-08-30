@@ -48,3 +48,8 @@ frontend/dist3/
 # operator-only recovery backups (may contain account history / PII)
 .private-backups/
 account-history-backups/
+
+# Supabase CLI: local dependency tree and its scratch directory. The CLI is
+# declared in the root package.json; the tree it installs is not source.
+node_modules/
+supabase/.temp/
