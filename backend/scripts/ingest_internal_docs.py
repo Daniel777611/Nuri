@@ -41,11 +41,19 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend/
-
-import main as backend_main  # noqa: E402
-
+# The repo root, not backend/: main.py imports its own package by absolute
+# name ("from backend.nuri_core import ..."), so putting only backend/ on the
+# path makes this script fail at import with ModuleNotFoundError: backend.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# The PDF pipeline moved out of main.py into nuri_core/knowledge_store.py and
+# runtime.py. Importing those directly keeps this script off the HTTP layer,
+# which it never needed and which drags in the whole FastAPI app.
+from backend import runtime  # noqa: E402
+from backend.nuri_core import knowledge_store  # noqa: E402
+
 DEFAULT_SOURCE_DIR = REPO_ROOT / "internelDatabase"
 
 
@@ -58,7 +66,7 @@ def ingest_file(path: Path, reingest: bool = False) -> None:
     pdf_bytes = path.read_bytes()
     doc_id = hashlib.sha1(pdf_bytes).hexdigest()[:12]
 
-    already, total = backend_main._is_indexed(doc_id, namespace=backend_main.INTERNAL_NAMESPACE)
+    already, total = knowledge_store.is_indexed(doc_id, namespace=runtime.INTERNAL_NAMESPACE)
     if already and not reingest:
         print(f"[skip] {path.name} (doc_id={doc_id}, already indexed, {total} chunks)")
         return
@@ -67,30 +75,30 @@ def ingest_file(path: Path, reingest: bool = False) -> None:
         # number of chunks, and upsert keys on `{doc_id}-{i}`, so a shorter
         # rebuild would leave the tail of the old one behind — still embedded
         # from the broken text, still retrievable.
-        sb = backend_main._get_supabase()
-        sb.table(backend_main.VECTOR_TABLE).delete().eq(
-            "namespace", backend_main.INTERNAL_NAMESPACE
+        sb = runtime.get_supabase()
+        sb.table(runtime.VECTOR_TABLE).delete().eq(
+            "namespace", runtime.INTERNAL_NAMESPACE
         ).eq("doc_id", doc_id).execute()
         print(f"[wipe] {path.name} (doc_id={doc_id}, removed {total} chunks)")
 
-    text = backend_main._read_pdf(pdf_bytes)
+    text = knowledge_store.read_pdf(pdf_bytes)
     if not text.strip():
         print(f"[warn] {path.name}: no extractable text, skipping")
         return
-    chunks = backend_main._chunk_text(text)
-    total = backend_main._upsert_doc(
+    chunks = knowledge_store.chunk_text(text)
+    total = knowledge_store.upsert_doc(
         doc_id, chunks,
-        namespace=backend_main.INTERNAL_NAMESPACE,
+        namespace=runtime.INTERNAL_NAMESPACE,
         extra_metadata={"source_file": path.name, "source_folder": path.parent.name},
     )
     print(f"[ok] {path.name} -> doc_id={doc_id}, {total} chunks")
 
 
 def main() -> None:
-    if not backend_main._get_supabase():
+    if not runtime.get_supabase():
         print("Supabase not configured (check SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY). Aborting.")
         sys.exit(1)
-    if not backend_main.oai:
+    if not runtime.oai:
         print("OpenAI not configured (check OPENAI_API_KEY). Aborting.")
         sys.exit(1)
 
@@ -112,7 +120,7 @@ def main() -> None:
         return
 
     print(f"Found {len(pdfs)} PDF(s) under {[str(f) for f in folders]}. "
-          f"Namespace: {backend_main.INTERNAL_NAMESPACE}"
+          f"Namespace: {runtime.INTERNAL_NAMESPACE}"
           + ("  [REINGEST: existing chunks will be deleted]" if parsed.reingest else ""))
     for path in pdfs:
         ingest_file(path, reingest=parsed.reingest)

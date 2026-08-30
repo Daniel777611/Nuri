@@ -53,3 +53,8 @@ account-history-backups/
 # declared in the root package.json; the tree it installs is not source.
 node_modules/
 supabase/.temp/
+
+# Test-account credentials for the external multi-turn run. Worthless outside
+# the test project, but this repo has a public mirror and a credential in a
+# repository is a habit worth not forming.
+TEST_ACCOUNTS.md
