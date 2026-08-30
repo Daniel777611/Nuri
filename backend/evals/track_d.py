@@ -26,6 +26,15 @@ a NURI that does not exist.
 Writes are off: LLM_USAGE_LOGGING is forced to 0 before the backend imports, so
 an eval sweep cannot land in the spend table as if it were parent traffic, and
 `metrics.flush` (chat_turn_logs) is simply never called.
+
+**What a sweep can bill.** Reaching the pipeline directly means the feed,
+content research and daily push never execute at all — no switch is needed for
+them, and `KNOWLEDGE_CARDS_ENABLED` / `DAILY_PUSH_ENABLED` are off by default
+anyway. Memory extraction, the rolling summary and session titling are all
+background steps of `post_message`, which this runner does not call. So one run
+can only bill: `chat.router`, `rag.embed_query`, `chat.reply`, and — unless
+--task-cards off — `chat.tasks_fallback`. Task cards are the one non-chat
+feature still inside this path, which is why they have a switch.
 """
 from __future__ import annotations
 
@@ -38,7 +47,7 @@ import statistics
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
@@ -51,12 +60,19 @@ os.environ["LLM_USAGE_LOGGING"] = "0"
 
 from backend import llm_usage, main, runtime                         # noqa: E402
 from backend.nuri_core import dialogue_reply as core_dialogue_reply  # noqa: E402
+from backend.nuri_core import temporal as core_temporal              # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
 DATASET_VERSION = "NURI_Track_D_AI_Eval_Red_Team_Template"
 GRADER_MODEL = os.getenv("TRACK_D_GRADER_MODEL", "gpt-5.4-mini")
 GRADER_VERSION = "track-d-grader-v1"
+
+#: Whether a run also produces task cards. Off measures the conversation alone:
+#: `_task_suggestion` is skipped, so `chat.tasks_fallback` is never billed and
+#: the router's card decision buys nothing. Set from --task-cards and recorded
+#: on every row, because it moves the rubric's denominator — see main_cli.
+TASK_CARDS_ENABLED = True
 
 #: Replicates per risk tier, from the workbook's "推荐运行策略" sheet. Repeats
 #: are the point at Critical: a safety gate that holds two times in three is not
@@ -152,6 +168,14 @@ def _history(case: dict) -> list[dict]:
         except (json.JSONDecodeError, AttributeError, TypeError) as exc:
             print(f"  [warn] {case['Test_ID']} prior turns unparseable: {exc}")
     msgs.append({"role": "user", "text": str(case.get("User_Prompt") or "")})
+    # Production messages always carry a timestamp and the reply prompt now
+    # annotates every one of them. A workbook case has no clock, so stamp this
+    # turn as "now" and step the prior turns back five minutes each. Without it
+    # every history line renders as "历史消息时间：未知" — a prompt shape no
+    # parent ever produces, and not what we mean to be grading.
+    now = datetime.now(timezone.utc)
+    for offset, message in enumerate(reversed(msgs)):
+        message["created_at"] = (now - timedelta(minutes=5 * offset)).isoformat()
     return msgs
 
 
@@ -188,6 +212,13 @@ async def run_case(case: dict, replicate: int) -> dict:
     msgs = _history(case)
     user_text = msgs[-1]["text"]
     metrics = main._TurnMetrics(streamed=False)
+    # One frozen clock per run, the same thing `_prepare_turn` establishes.
+    # UTC rather than a guessed local zone: the workbook states no location,
+    # and inferring one from language is exactly what temporal.py forbids.
+    temporal_context = core_temporal.build_context(
+        core_temporal.DEFAULT_TIMEZONE,
+        now_utc=core_temporal.parse_created_at(msgs[-1]["created_at"]),
+    )
     turn = main._Turn(
         session={"id": f"eval-{uuid.uuid4().hex[:12]}", "user_id": None, "step": 0},
         owner_uid=None,
@@ -195,6 +226,7 @@ async def run_case(case: dict, replicate: int) -> dict:
         msgs=msgs,
         context_hints=_context_hints(case),
         fix_text=None,
+        temporal=temporal_context,
     )
     body = main.UserMessageIn(text=user_text)
 
@@ -211,6 +243,7 @@ async def run_case(case: dict, replicate: int) -> dict:
         "Model": "gpt-5.5",
         "Prompt_Version": getattr(runtime, "NURI_PIPELINE", ""),
         "Temperature_or_Effort": os.getenv("REPLY_REASONING_EFFORT", "low"),
+        "Task_Cards_Mode": "on" if TASK_CARDS_ENABLED else "off",
     }
     # Wraps the whole attempt, including the failure path: a turn that died
     # after the router had already been billed still cost what the router cost.
@@ -222,14 +255,16 @@ async def run_case(case: dict, replicate: int) -> dict:
                 core_dialogue_reply.nuri_reply_sync,
                 turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
                 rc.internal, rc.sources, metrics, system_prompt, history_window,
-                rc.state,
+                rc.state, turn.temporal,
             )
             ai_text = reply.get("text") or ""
             sources = main._cited_sources(reply.get("cited"), rc.search_results, metrics)
-            transition = await main._task_suggestion(
-                reply, turn.msgs, user_text, ai_text, metrics,
-                allow=rc.plan.allow_task_cards if rc.plan else True,
-            )
+            transition = None
+            if TASK_CARDS_ENABLED:
+                transition = await main._task_suggestion(
+                    reply, turn.msgs, user_text, ai_text, metrics,
+                    allow=rc.plan.allow_task_cards if rc.plan else True,
+                )
             record.update({
                 "API_Status": "200",
                 "Response_Text": ai_text,
@@ -674,6 +709,7 @@ EXTRA_COLUMNS = [
     "AI_Grader_Confidence", "AI_Grader_Notes",
     "Provider_Calls", "Cached_Tokens", "Reply_Input_Tokens", "Cost_By_Call_Site",
     "Observed_Risk_Tier", "Observed_Topic", "Task_Cards_Allowed", "Search_Hits",
+    "Task_Cards_Mode",
 ]
 
 #: Excel rejects the C0 control characters, and a reply carrying one would
@@ -752,7 +788,18 @@ def main_cli() -> int:
                              "check a fix without paying for the whole sweep")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--version", default="v1", help="goes in the output filename")
+    parser.add_argument(
+        "--task-cards", choices=("on", "off"), default="on",
+        help="off measures the conversation alone: _task_suggestion is skipped "
+             "so chat.tasks_fallback is never billed. It also drops "
+             "Task_Faithfulness and Card_Relevance_Source from the weighted "
+             "score's denominator, so an 'off' run does not compare with an "
+             "'on' run. Keep it identical across branches you mean to compare.",
+    )
     args = parser.parse_args()
+
+    global TASK_CARDS_ENABLED
+    TASK_CARDS_ENABLED = args.task_cards == "on"
 
     if not args.calibrate and not args.full:
         parser.error("choose --calibrate or --full")
@@ -776,6 +823,7 @@ def main_cli() -> int:
     summary["wall_clock_s"] = int(time.time() - started)
     summary["phase"] = "calibration" if args.calibrate else "full"
     summary["grader_model"] = GRADER_MODEL
+    summary["task_cards"] = args.task_cards
 
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

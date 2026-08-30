@@ -4751,6 +4751,112 @@ async def _persist_ai_turn(
     )
 
 
+# ── Test-harness surface: request id, version, structured events ─────────────
+# An external multi-turn run grades the conversation and the product's
+# behaviour separately, so "建议咨询专业人士" appearing in the reply text is not
+# the same fact as the turn having escalated. These fields make the second one
+# assertable without parsing prose. They are additive: every existing client
+# key keeps its meaning and position.
+
+#: Where the deployed commit comes from. Vercel sets the first automatically.
+_BACKEND_BUILD = (
+    os.getenv("VERCEL_GIT_COMMIT_SHA") or os.getenv("BACKEND_BUILD") or "dev"
+)[:40]
+
+#: Internal RiskTier -> the three-value enum the test contract asks for. The
+#: raw tier travels alongside it: collapsing five values into three loses the
+#: difference between a medical route and a hard family constraint, and that
+#: difference is the one a grader most often needs.
+_ESCALATION_BY_TIER = {
+    "none": "none",
+    "elevated": "none",
+    "medical": "suggest_professional",
+    "crisis": "urgent",
+    "emergency": "urgent",
+}
+
+
+def _prompt_version(style_ctx: str = "") -> str:
+    """Identify the prompt without disclosing it.
+
+    Hashes the stable half — persona, output contract, operator style rules —
+    so the id changes by itself whenever any of them do. A hand-maintained
+    version number is one deploy away from being a lie, and a test protocol
+    uses this value to decide whether two runs may be compared at all.
+    """
+    material = "|".join((
+        core_dialogue_reply.NURI_PERSONA,
+        core_dialogue_reply.NURI_JSON_SUFFIX,
+        style_ctx or "",
+    ))
+    return "p_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
+
+def _version_info(style_ctx: str = "", model: str = "") -> dict:
+    return {
+        "model": model or core_dialogue_reply.REPLY_MODEL,
+        "prompt_version": _prompt_version(style_ctx),
+        "backend_build": _BACKEND_BUILD,
+        "pipeline": NURI_PIPELINE,
+        "pipeline_version": PIPELINE_VERSION,
+    }
+
+
+def _turn_events(
+    rc: Optional["_ReplyContext"],
+    transition: Optional[dict],
+    session: dict,
+) -> dict:
+    """Machine-readable product outcomes for one turn."""
+    evidence = getattr(rc, "evidence", None)
+    tier = str(getattr(evidence, "risk_tier", "") or "none")
+    reason = None
+    for directive in (getattr(evidence, "directives", ()) or ()):
+        directive_id = str(getattr(directive, "id", "") or "")
+        if directive_id.startswith("safety."):
+            reason = directive_id
+            break
+    proposals = list((transition or {}).get("tasks") or [])
+    card_id = str(session.get("source_card_id") or "") or None
+    return {
+        # A chat turn *proposes* tasks. A row in `tasks` appears only when the
+        # parent accepts one through POST /api/tasks, which is a separate
+        # request. Reporting a draft as created would make every assertion
+        # about task creation wrong in the same direction.
+        "task_created": False,
+        "task_ids": [],
+        "task_proposed": bool(proposals),
+        "task_proposal_count": len(proposals),
+        "card_ids": [card_id] if card_id else [],
+        "escalation_level": _ESCALATION_BY_TIER.get(tier, "none"),
+        "escalation_reason_code": reason,
+        #: Unmapped tier, for graders that want the full resolution.
+        "risk_tier": tier,
+    }
+
+
+def _turn_envelope(
+    turn: "_Turn", ai_messages: list, rc: Optional["_ReplyContext"],
+    transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
+) -> dict:
+    """The chat response body, shared by the blocking and streaming paths."""
+    style_ctx = getattr(rc, "style", "") or ""
+    model = (metrics.row.get("model") if metrics else "") or ""
+    return {
+        "user_message": turn.user_msg,
+        "ai_messages": ai_messages,
+        "request_id": llm_usage.current_request_id(),
+        "events": _turn_events(rc, transition, turn.session),
+        "version": _version_info(style_ctx, model),
+    }
+
+
+@api.get("/version")
+async def version_info():
+    """Read-only build identity. No prompt text, by design."""
+    return _version_info(await core_dialogue_reply.get_style_rules_ctx())
+
+
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(
     session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
@@ -4761,10 +4867,13 @@ async def post_message(
     metrics = _TurnMetrics(streamed=False)
     turn = await _prepare_turn(session_id, body, uid)
     if turn.replayed_ai_message is not None:
-        return {
-            "user_message": turn.user_msg,
-            "ai_messages": [turn.replayed_ai_message],
-        }
+        # A replay must report the events of the turn it is replaying, not an
+        # empty set: an idempotent retry that silently loses the escalation
+        # flag is worse than no flag at all.
+        return _turn_envelope(
+            turn, [turn.replayed_ai_message], None,
+            turn.replayed_ai_message.get("transition"),
+        )
     transition = None
     quick_replies: list = []
     # Both the #fix and scripted branches below skip the model, and so produce
@@ -4840,7 +4949,7 @@ async def post_message(
             temporal_context=turn.temporal,
         )
 
-    return {"user_message": turn.user_msg, "ai_messages": [ai_msg]}
+    return _turn_envelope(turn, [ai_msg], rc, transition, metrics)
 
 
 def _sse(payload: dict) -> str:
@@ -4931,8 +5040,7 @@ async def post_message_stream(
             claim_completed = True
             yield _sse({
                 "type": "done",
-                "user_message": turn.user_msg,
-                "ai_messages": [ai_msg],
+                **_turn_envelope(turn, [ai_msg], rc, transition, metrics),
             })
 
             ai_message_created = getattr(ai_msg, "created", True)
