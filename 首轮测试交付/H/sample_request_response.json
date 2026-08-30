@@ -1,0 +1,290 @@
+{
+  "_readme": "Real traffic against the nuri-test-1 preview deployment, captured 2026-08-30. Identifiers are replaced with placeholders; every line of NURI reply text is verbatim. Send bodies as UTF-8: a mis-encoded body is not rejected, it reaches the model as question marks and gets a polite reply about unreadable text.",
+  "successful_turn": {
+    "request": {
+      "method": "POST",
+      "path": "/api/chat/sessions/<conversation-id>/messages",
+      "headers": {
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": "Bearer <TEST_TOKEN>"
+      },
+      "body": {
+        "text": "寶寶十個月，最近開始怕生，看到陌生人就大哭",
+        "client_message_id": "sample-ok-03",
+        "client_context": {
+          "timezone": "Asia/Taipei"
+        }
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "user_message": {
+          "id": "<message-id>",
+          "session_id": "<conversation-id>",
+          "role": "user",
+          "text": "寶寶十個月，最近開始怕生，看到陌生人就大哭",
+          "image_base64": null,
+          "quick_replies": [],
+          "transition": null,
+          "created_at": "2026-08-30T02:56:53.525882+00:00"
+        },
+        "ai_messages": [
+          {
+            "id": "<message-id>",
+            "session_id": "<conversation-id>",
+            "role": "ai",
+            "text": "💜十個月開始看到陌生人就哭，常讓爸媽很尷尬，但這其實很符合這個月齡的「認人」發展。\n\n先不要急著訓練他給別人抱。可以你先抱著，讓陌生人保持約1–2公尺距離、不要直盯他，先聊大人的話；等他願意看一眼、沒哭，就算成功。\n\n他比較常在別人靠近、說話，還是伸手要抱時哭？",
+            "image_base64": null,
+            "quick_replies": [
+              "靠近就哭",
+              "要抱才哭",
+              "都會哭"
+            ],
+            "transition": {
+              "kind": "task_suggestion",
+              "tasks": [
+                {
+                  "scope": "week",
+                  "steps": [
+                    "由熟悉照顧者抱著寶寶，讓對方先保持1–2公尺距離。",
+                    "請對方先和大人聊天，不直盯、不伸手抱寶寶。",
+                    "寶寶願意看一眼或不哭超過30秒，就結束並稱讚。"
+                  ],
+                  "title": "陌生人距離練習",
+                  "task_type": "interaction",
+                  "description": "本週遇到陌生人時，用安全距離讓寶寶慢慢觀察，不強迫互動。"
+                }
+              ],
+              "trigger": "actionable_reply"
+            },
+            "created_at": "2026-08-30T02:57:01.080114+00:00",
+            "sources": []
+          }
+        ],
+        "request_id": "<request-id>",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": true,
+          "task_proposal_count": 1,
+          "card_ids": [],
+          "escalation_level": "none",
+          "escalation_reason_code": null,
+          "risk_tier": "none"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_87etN5AvkJ9Dvtkhh4Gh6NbLbwKW",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        }
+      }
+    }
+  },
+  "error_auth_failed": {
+    "request": {
+      "note": "the same call with an invalid bearer token"
+    },
+    "response": {
+      "status": 401,
+      "body": {
+        "detail": "Missing or invalid token",
+        "error": {
+          "code": "AUTH_FAILED",
+          "message": "Missing or invalid token",
+          "retryable": false,
+          "retry_after_ms": null
+        },
+        "request_id": "<request-id>"
+      }
+    }
+  },
+  "error_invalid_request": {
+    "request": {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "body": {
+        "email": "nope"
+      }
+    },
+    "response": {
+      "status": 422,
+      "body": {
+        "detail": [
+          {
+            "type": "value_error",
+            "loc": [
+              "body",
+              "email"
+            ],
+            "msg": "value is not a valid email address: An email address must have an @-sign.",
+            "input": "nope",
+            "ctx": {
+              "reason": "An email address must have an @-sign."
+            }
+          },
+          {
+            "type": "missing",
+            "loc": [
+              "body",
+              "password"
+            ],
+            "msg": "Field required",
+            "input": {
+              "email": "nope"
+            }
+          }
+        ],
+        "error": {
+          "code": "INVALID_REQUEST",
+          "message": "email: value is not a valid email address: An email address must have an @-sign.",
+          "retryable": false,
+          "retry_after_ms": null
+        },
+        "request_id": "<request-id>"
+      }
+    }
+  },
+  "five_turn_transcript": {
+    "note": "The BE-10 / A-02 acceptance run. Reproduce with backend/scripts/smoke_multiturn.py.",
+    "conversation_id": "<conversation-id>",
+    "version": {
+      "model": "gpt-5.5",
+      "prompt_version": "p_1d81d78dd2e2",
+      "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+      "pipeline": "four_model",
+      "pipeline_version": "four-model-v1"
+    },
+    "turns": [
+      {
+        "turn": 1,
+        "parent": "寶寶八個月大，最近晚上一直醒，我快撐不住了",
+        "nuri": "💜八個月寶寶最近一直夜醒，你又已經累到快撐不住，這真的很磨人，不是你太脆弱。\n\n先幫我抓一個關鍵：他晚上醒來時，通常是哭著要抱／喝奶，還是翻來翻去、拍拍就能再睡？",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": false,
+          "task_proposal_count": 0,
+          "card_ids": [],
+          "escalation_level": "none",
+          "escalation_reason_code": null,
+          "risk_tier": "none"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        },
+        "request_id": "<request-id>",
+        "latency_ms": 8465,
+        "re_asked_known_facts": []
+      },
+      {
+        "turn": 2,
+        "parent": "一個晚上大概醒四次，每次都要親餵才睡得回去，這樣兩個禮拜了",
+        "nuri": "💜連續兩個禮拜一晚醒四次、每次都要親餵才能睡回去，真的會把人耗乾。\n\n今晚先不要急著戒夜奶，先做一個小調整：第一次醒來時，先在床邊輕拍、低聲說「媽媽在，現在睡覺」，試 3 分鐘；如果越哭越激烈再餵。\n\n這樣是先讓他練習「不是每次醒來都立刻吃奶」。他白天副食品和奶量最近有變少嗎？",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": true,
+          "task_proposal_count": 1,
+          "card_ids": [],
+          "escalation_level": "none",
+          "escalation_reason_code": null,
+          "risk_tier": "none"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        },
+        "request_id": "<request-id>",
+        "latency_ms": 10540,
+        "re_asked_known_facts": []
+      },
+      {
+        "turn": 3,
+        "parent": "我下個月要回去上班，先生上夜班，晚上只有我一個人顧",
+        "nuri": "💜下個月要回去上班，先生又上夜班，晚上只剩你一個人扛，難怪會覺得撐不住。\n\n今晚先把目標縮小：不是戒夜奶，只挑「第一醒」試 3 分鐘不餵，輕拍加一句固定話：「媽媽在，現在睡覺。」若哭到升級就餵，別硬撐。\n\n你最擔心回去上班後，是睡眠不夠，還是擔心寶寶更依賴親餵？",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": true,
+          "task_proposal_count": 1,
+          "card_ids": [],
+          "escalation_level": "none",
+          "escalation_reason_code": null,
+          "risk_tier": "none"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        },
+        "request_id": "<request-id>",
+        "latency_ms": 8595,
+        "re_asked_known_facts": []
+      },
+      {
+        "turn": 4,
+        "parent": "副食品吃到蛋黃的時候起了紅疹，後來就沒再給了",
+        "nuri": "💜你看到蛋黃後起紅疹就先停掉，這個反應很合理，尤其現在又遇到夜醒和快回職場，心裡會更緊。\n\n先不要再自行試蛋黃；因為已經出現皮膚反應，建議帶照片和當天吃的量，請兒科醫師評估是否需要過敏處理。若有嘴唇腫、喘、嘔吐、精神差，要立即就醫。\n\n紅疹大概是在吃完蛋黃後多久出現的？",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": false,
+          "task_proposal_count": 0,
+          "card_ids": [],
+          "escalation_level": "suggest_professional",
+          "escalation_reason_code": null,
+          "risk_tier": "medical"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        },
+        "request_id": "<request-id>",
+        "latency_ms": 10499,
+        "re_asked_known_facts": []
+      },
+      {
+        "turn": 5,
+        "parent": "那我下禮拜可以先從哪一件事開始？",
+        "nuri": "💜下週先從「蛋黃紅疹這件事」開始，因為安全優先；夜醒可以先維持不加碼。\n\n先不要再試蛋或含蛋食物。CHOP提醒，確認蛋過敏前後都要留意蛋常藏在麵包、點心、肉丸等食物裡[2]。\n\n下週做一件事：整理紅疹照片、吃的量、多久出現，帶去問兒科。\n\n你手上還留有當時紅疹照片嗎？",
+        "events": {
+          "task_created": false,
+          "task_ids": [],
+          "task_proposed": true,
+          "task_proposal_count": 1,
+          "card_ids": [],
+          "escalation_level": "suggest_professional",
+          "escalation_reason_code": null,
+          "risk_tier": "medical"
+        },
+        "version": {
+          "model": "gpt-5.5",
+          "prompt_version": "p_1d81d78dd2e2",
+          "backend_build": "dpl_HbAeLbtSX19VCD3XteZ97dY97A7F",
+          "pipeline": "four_model",
+          "pipeline_version": "four-model-v1"
+        },
+        "request_id": "<request-id>",
+        "latency_ms": 12134,
+        "re_asked_known_facts": [
+          "蛋黃疑似過敏"
+        ]
+      }
+    ]
+  }
+}
