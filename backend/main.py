@@ -42,6 +42,8 @@ import anyio
 import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -263,6 +265,86 @@ async def _profile_storage_unavailable(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": "Family profile is temporarily unavailable; please retry."},
     )
+
+
+# ── Error envelope ───────────────────────────────────────────────────────────
+# An automated caller has to decide whether a failure may be resent. HTTP status
+# carries most of that, but not all of it: 409 here means a reply key was
+# completed with different content, which is never safe to retry, while 429 is
+# always safe once the wait has passed. Saying so explicitly costs one field and
+# removes a guess from every client.
+#
+# `detail` stays exactly where it was. The admin screens read it, and a contract
+# that breaks its only existing consumer to satisfy a new one is not an
+# improvement.
+
+#: status -> (code, retryable). Anything unlisted is treated as a server fault,
+#: which is the safe default: retrying a 5xx wastes a request, but declaring a
+#: transient failure permanent strands the run.
+_ERROR_CODES = {
+    400: ("INVALID_REQUEST", False),
+    401: ("AUTH_FAILED", False),
+    403: ("AUTH_FAILED", False),
+    404: ("NOT_FOUND", False),
+    # A conflict means the same reply key already resolved differently. The way
+    # forward is to re-read the conversation, never to send the turn again.
+    409: ("SESSION_CONFLICT", False),
+    413: ("INVALID_REQUEST", False),
+    422: ("INVALID_REQUEST", False),
+    429: ("RATE_LIMITED", True),
+    500: ("SERVER_ERROR", True),
+    502: ("SERVER_ERROR", True),
+    503: ("SERVER_ERROR", True),
+    504: ("TIMEOUT", True),
+}
+
+
+def _error_body(status_code: int, message: object, headers: object = None) -> dict:
+    code, retryable = _ERROR_CODES.get(status_code, ("SERVER_ERROR", True))
+    retry_after_ms = None
+    raw_retry = (headers or {}).get("Retry-After") if hasattr(headers, "get") else None
+    if raw_retry:
+        try:
+            retry_after_ms = int(float(raw_retry) * 1000)
+        except (TypeError, ValueError):
+            retry_after_ms = None
+    return {
+        "detail": message,
+        "error": {
+            "code": code,
+            "message": message if isinstance(message, str) else "Request failed",
+            "retryable": retryable,
+            "retry_after_ms": retry_after_ms,
+        },
+        "request_id": llm_usage.current_request_id(),
+    }
+
+
+@app.exception_handler(HTTPException)
+async def _http_error(_request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_body(exc.status_code, exc.detail, exc.headers),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request: Request, exc: RequestValidationError):
+    """Keep FastAPI's field-level errors; add the envelope around them.
+
+    The per-field list is the only thing that makes a 422 actionable, so it
+    stays in `detail` untouched and the flat message summarises it.
+    """
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    where = ".".join(str(p) for p in (first.get("loc") or [])[1:]) or "body"
+    body = _error_body(
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        f"{where}: {first.get('msg', 'invalid request')}",
+    )
+    body["detail"] = jsonable_encoder(errors)
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=body)
 
 
 @app.middleware("http")
