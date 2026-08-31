@@ -65,3 +65,7 @@ supabase/.temp/
 # the production .env backup, and the delivery bundle for the test party.
 # `.env` itself has to stay at the repo root — load_dotenv() reads it from there.
 private/
+
+# Scratch and working notes kept out of the shared history: eval result dumps,
+# one-off scripts, and drafts that are not part of the codebase.
+路径图/
