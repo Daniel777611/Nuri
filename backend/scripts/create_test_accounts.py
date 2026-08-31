@@ -39,7 +39,10 @@ from backend import runtime  # noqa: E402
 DEFAULT_COUNT = 20
 DEFAULT_PREFIX = "automated_test_"
 DEFAULT_DOMAIN = "example.com"
-DEFAULT_OUT = REPO_ROOT / "TEST_ACCOUNTS.md"
+#: Written into the git-ignored private/ folder. Everything with a
+#: credential in it lives there, so there is one rule keeping it out of
+#: the repository rather than a per-file list.
+DEFAULT_OUT = REPO_ROOT / "private" / "TEST_ACCOUNTS.md"
 
 
 def _project_ref() -> str:
@@ -151,6 +154,7 @@ def main() -> int:
     lines.append("")
 
     out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"\nwrote {out_path}")
 

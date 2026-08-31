@@ -54,12 +54,14 @@ account-history-backups/
 node_modules/
 supabase/.temp/
 
-# Test-account credentials for the external multi-turn run. Worthless outside
-# the test project, but this repo has a public mirror and a credential in a
-# repository is a habit worth not forming.
-TEST_ACCOUNTS.md
 
 # First-round test handoff. Carries the preview deployment URL and test account
 # addresses; this repo has a public mirror, so the folder is delivered directly
 # to the test party instead of being committed.
 首轮测试交付/
+
+# Everything sensitive lives here, so there is one rule to reason about rather
+# than a scattered list that grows a hole every time a file is added. Credentials,
+# the production .env backup, and the delivery bundle for the test party.
+# `.env` itself has to stay at the repo root — load_dotenv() reads it from there.
+private/
