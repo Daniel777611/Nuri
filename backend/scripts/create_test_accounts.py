@@ -74,11 +74,16 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=DEFAULT_COUNT)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
     parser.add_argument("--domain", default=DEFAULT_DOMAIN)
-    parser.add_argument("--password", default="NuriTest2026!")
+    # No default. A default password is a credential in the repository,
+    # and this one has a public mirror. Pass --password, or set
+    # NURI_TEST_PASSWORD in the environment.
+    parser.add_argument("--password", default=os.getenv("NURI_TEST_PASSWORD", ""))
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--force", action="store_true",
                         help="write even if the database holds unrecognised accounts")
     args = parser.parse_args()
+    if not args.password:
+        sys.exit("[fail] no password: pass --password or set NURI_TEST_PASSWORD")
 
     _guard_not_a_real_database(args.prefix, args.force)
     print(f"project: {_project_ref()}   creating {args.count} account(s)")

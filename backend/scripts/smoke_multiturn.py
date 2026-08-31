@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -96,12 +97,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True, help="deployment base URL")
     parser.add_argument("--account", default="05", help="two-digit test account number")
-    parser.add_argument("--password", default="NuriTest2026!")
+    # No default. A default password is a credential in the repository,
+    # and this one has a public mirror. Pass --password, or set
+    # NURI_TEST_PASSWORD in the environment.
+    parser.add_argument("--password", default=os.getenv("NURI_TEST_PASSWORD", ""))
     parser.add_argument("--timezone", default="Asia/Taipei")
     parser.add_argument("--out", default="", help="write the transcript as JSON")
     parser.add_argument("--reset", action="store_true",
                         help="wipe the account's history first (POST /api/privacy/wipe)")
     args = parser.parse_args()
+    if not args.password:
+        sys.exit("[fail] no password: pass --password or set NURI_TEST_PASSWORD")
 
     email = f"automated_test_{args.account}@example.com"
     status, body = _post(args.base, "/api/auth/login",
