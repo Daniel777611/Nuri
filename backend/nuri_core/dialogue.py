@@ -11,6 +11,15 @@ multiplies them by what the outcome model learned, sorts, and renders. Changing
 what NURI says is then an insert, scoped to the families and situations it
 should apply to, and reversible by flipping `active`.
 
+Not every directive is an order. `mode` splits them into the handful that hold
+for every turn and the rest, which render under a heading that says to pick the
+one or two that fit and leave the others alone — and which a per-turn cap trims
+to that size. The distinction is not decoration: nineteen style rules injected
+whole as 必须遵守 got satisfied one at a time, so a turn that needed "how old is
+she?" came back with a numbered question list, a bulleted checklist and an
+emoji. A rule set is only advice if the prompt says so and if it is short
+enough to weigh. See nuri_style_rules_selection.sql for the row-by-row reading.
+
 Section order is a latency decision as much as an editorial one. OpenAI caches
 the longest identical prefix across calls, so blocks are emitted most-stable
 first: a per-turn block placed early truncates the cache to whatever precedes
@@ -47,13 +56,32 @@ DIRECTIVES_LIMIT = 200
 
 _cache: tuple[list[Directive], float] | None = None
 
+#: How many advisory directives may reach one prompt, per bucket. Nineteen
+#: must-follow style rules is what produced the register this cap exists to
+#: undo: the model satisfied them one at a time, so every reply arrived with a
+#: numbered question list, a bulleted checklist and an emoji whether or not the
+#: turn called for any of it. Three unconditional plus three that this turn's
+#: facts actually selected is the size a person can hold while writing one
+#: reply. Must-follow directives are never trimmed — there are meant to be two
+#: or three of them, and if that stops being true the answer is to demote some.
+ALWAYS_ADVISORY_LIMIT = 3
+CONDITIONAL_ADVISORY_LIMIT = 3
+
 HEADINGS = {
-    "always": "运营团队根据实际反馈持续积累的回复规则，必须遵守：",
+    "always": "运营团队根据实际反馈提炼的回复规则，必须遵守：",
     "profile": "这位家长的基本情况（来自注册信息）：",
     "state": "这次对话到目前为止（摘要）：",
     "memory": "关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：",
     "card": "本次对话相关内容：",
-    "conditional": "这一轮额外适用的规则（根据家庭情况和话题命中，优先级高于上面的通则）：",
+    "conditional": "这一轮额外适用的规则（根据家庭情况和话题命中，同样必须遵守）：",
+    "advisory": (
+        "以下是同事在真实咨询里做过、而且有效的做法，供你参考，不是清单：\n"
+        "- 只挑这一轮真的用得上的一两条，用不上就整条不用，"
+        "不要为了都照顾到而把它们塞进同一则回复\n"
+        "- 与上面的沟通原则、安全约束冲突时，一律以上面为准\n"
+        "- 「先问清楚」永远优先于「把话说完整」；出现危急或医疗讯号时，"
+        "先给紧急建议，不要先追问"
+    ),
     "safety": "安全与责任约束，高于以上全部：",
 }
 
@@ -132,10 +160,26 @@ async def _load_conditional(sb, ports: CorePorts) -> list[Directive]:
 
 
 async def _load_style_rules(sb, ports: CorePorts) -> list[Directive]:
+    """Load the style-rule rows as directives, selection metadata included.
+
+    `select("*")` rather than a column list on purpose: `mode`, `priority` and
+    `applies_when` arrive with nuri_style_rules_selection.sql, and a deployment
+    that has not run it yet must keep working. Naming the new columns would
+    turn that into a query error and cost the turn every rule; asking for the
+    row and reading what is there keeps it answering.
+
+    What an unmigrated deployment gets is not the old behaviour, and the
+    difference is worth stating: with no `mode` column every row reads as
+    advisory, so instead of nineteen must-follow rules the prompt carries the
+    three most recent as advice. That is the safer of the two wrong answers —
+    a `#fix` is one reviewer's note about one reply, and nineteen of those
+    promoted to must-follow is the thing that went wrong — but "three most
+    recent" is recency, not judgement. Run the migration.
+    """
     try:
         res = await ports.to_thread(
             lambda: sb.table(STYLE_RULES_TABLE)
-            .select("id,rule,category")
+            .select("*")
             .eq("active", True)
             .order("created_at", desc=True)
             .limit(50)
@@ -145,16 +189,24 @@ async def _load_style_rules(sb, ports: CorePorts) -> list[Directive]:
     except Exception as e:
         print(f"[warn] dialogue: {STYLE_RULES_TABLE} unavailable: {type(e).__name__}: {e}")
         return []
-    return [
-        Directive(
+    out = []
+    for row in rows:
+        text = str(row.get("rule") or "").strip()
+        if not text:
+            continue
+        weight = row.get("weight")
+        out.append(Directive(
             id=f"style:{row.get('id')}",
-            text=str(row.get("rule") or "").strip(),
+            text=text,
             layer="dialogue",
             kind=str(row.get("category") or "style"),
+            mode="must" if row.get("mode") == "must" else "advisory",
+            priority=int(row.get("priority") or 0),
+            weight=float(weight if weight is not None else 1.0),
+            applies_when=row.get("applies_when") or {},
             source="fix",
-        )
-        for row in rows if str(row.get("rule") or "").strip()
-    ]
+        ))
+    return out
 
 
 def _from_block(block: str) -> list[Directive]:
@@ -184,6 +236,7 @@ def plan(
     card_block: str = "",
     state_block: str = "",
     history_window: int = context_budget.RECENT_MESSAGES,
+    turn_count: int = 0,
 ) -> DialoguePlan:
     """Assemble the turn. Pure — every input is already resolved.
 
@@ -195,6 +248,13 @@ def plan(
         **family.facts(),
         "risk_tier": verdict.tier,
         "topic": evidence.topic,
+        # Turn shape, not family fact. "Name the institution" is only advice
+        # when the reply will carry citations; "ask how the parent themselves
+        # is doing" only lands once the conversation has somewhere to stand.
+        "has_sources": bool(evidence.sources_block),
+        "has_internal": bool(evidence.internal_block),
+        "is_medical": verdict.tier in ("medical", "crisis", "emergency"),
+        "turns": turn_count,
     }
 
     applicable = policy.weigh([d for d in directives if d.matches(facts)])
@@ -203,10 +263,24 @@ def plan(
     # could switch off is not a gate.
     safety_directives = list(verdict.directives)
 
-    always = [d for d in applicable if not d.applies_when]
-    conditional = [d for d in applicable if d.applies_when]
-    _sort(always)
-    _sort(conditional)
+    # Two splits, not one. must/advisory decides which heading a directive is
+    # rendered under and therefore how hard the model tries to satisfy it;
+    # unconditional/conditional decides where in the prompt it sits, and that
+    # is a cache decision — the unconditional block is byte-identical across
+    # all traffic, so it has to stay above the first thing that moves.
+    always = [d for d in applicable if not d.applies_when and d.mode != "advisory"]
+    advisory_always = [d for d in applicable if not d.applies_when and d.mode == "advisory"]
+    conditional = [d for d in applicable if d.applies_when and d.mode != "advisory"]
+    advisory_cond = [d for d in applicable if d.applies_when and d.mode == "advisory"]
+    for bucket in (always, advisory_always, conditional, advisory_cond):
+        _sort(bucket)
+    # Only the advisory buckets are capped. The conditional must-follow bucket
+    # carries the outcome model's negative-topic gate, and a gate that a busy
+    # turn can push off the end of a list is not a gate either.
+    advisory = (
+        advisory_always[:ALWAYS_ADVISORY_LIMIT]
+        + advisory_cond[:CONDITIONAL_ADVISORY_LIMIT]
+    )
 
     if verdict.minimal_context:
         # An emergency reply is one instruction long. Everything else in the
@@ -244,6 +318,10 @@ def plan(
         (HEADINGS["memory"], memory),
         (HEADINGS["card"], card_block),
         (HEADINGS["conditional"], _render(conditional)),
+        # Below the cache seam because half of it is selected by this turn's
+        # facts, and after the must-follow blocks so that "以上为准" in its own
+        # heading points at text the model has already read.
+        (HEADINGS["advisory"], _render(advisory)),
         ("", evidence.internal_block),
         (HEADINGS["safety"], _render(safety_directives)),
         # Last, and after the internal rules on purpose: external pages are the
@@ -253,7 +331,7 @@ def plan(
 
     return DialoguePlan(
         sections=tuple((h, b) for h, b in sections if b),
-        directives=tuple(always + conditional + safety_directives),
+        directives=tuple(always + conditional + advisory + safety_directives),
         proactive=proactive,
         allow_task_cards=verdict.allow_task_cards,
         history_window=history_window,

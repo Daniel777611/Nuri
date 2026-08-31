@@ -59,6 +59,12 @@ type StyleRule = {
   category?: string | null;
   source_note?: string | null;
   active: boolean;
+  // Optional because a deployment that has not run
+  // nuri_style_rules_selection.sql returns rows without them. Undefined reads
+  // as advisory here, which matches the column default.
+  mode?: string;
+  priority?: number;
+  applies_when?: Record<string, unknown> | null;
   created_by?: string | null;
   created_at: string;
 };
@@ -306,6 +312,24 @@ export default function AdminPage() {
       if (!res.ok) throw new Error();
     } catch {
       setRules((rs) => rs.map((r) => (r.id === id ? { ...r, active: !active } : r)));
+    }
+  };
+
+  // active 只说这条规则还在不在用；mode 说它进不进每一轮的 prompt。
+  // must 的每轮都在，advisory 的按 priority 取前几条（见 dialogue.plan），
+  // 所以「开着但没生效」是正常状态，不是 bug——两个开关得分开看。
+  const toggleRuleMode = async (id: string, mode?: string) => {
+    const next = mode === "must" ? "advisory" : "must";
+    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, mode: next } : r)));
+    try {
+      const res = await fetch(`${BACKEND}/admin/style-rules/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ mode: next }),
+      });
+      if (!res.ok) throw new Error();
+    } catch {
+      setRules((rs) => rs.map((r) => (r.id === id ? { ...r, mode } : r)));
     }
   };
 
@@ -623,10 +647,16 @@ export default function AdminPage() {
         {/* NURI 规则文档 */}
         <View style={styles.modeCard}>
           <Text style={styles.modeTitle}>
-            NURI 规则文档（{rules.filter((r) => r.active).length} 条生效）
+            NURI 规则文档（{rules.filter((r) => r.active).length} 条启用，
+            {rules.filter((r) => r.active && r.mode === "must").length} 条必守）
           </Text>
           <Text style={styles.modeHint}>
             聊天里发 #fix 会自动写入一条规则；这里也可以直接增删改。停用的规则不会进入 AI 的 prompt。
+          </Text>
+          <Text style={styles.modeHint}>
+            「必守」每一轮都进 prompt，「酌用」按 P 值排序只取前 3 条、带条件的还要这一轮命中才进——
+            所以启用不等于每次都在用。全部当成必守整段注入，正是让 NURI 每次都编号追问、
+            条列一大堆的原因。改坏了先降成酌用或停用，不用发版。
           </Text>
           <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm }}>
             <TextInput
@@ -682,11 +712,23 @@ export default function AdminPage() {
                       {r.rule}
                     </Text>
                     <Text style={styles.bookMeta}>
-                      {[r.category, r.created_by, new Date(r.created_at).toLocaleDateString("zh-CN")]
-                        .filter(Boolean).join("  ·  ")}
+                      {[
+                        r.mode === "must" ? "必守" : `酌用 P${r.priority ?? 50}`,
+                        r.applies_when && Object.keys(r.applies_when).length
+                          ? `条件 ${Object.keys(r.applies_when).join("/")}`
+                          : "",
+                        r.category,
+                        r.created_by,
+                        new Date(r.created_at).toLocaleDateString("zh-CN"),
+                      ].filter(Boolean).join("  ·  ")}
                     </Text>
                   </Pressable>
                   <View style={styles.bookActions}>
+                    <Pressable onPress={() => toggleRuleMode(r.id, r.mode)} hitSlop={8}>
+                      <Text style={styles.smallBtnText}>
+                        {r.mode === "must" ? "降为酌用" : "升为必守"}
+                      </Text>
+                    </Pressable>
                     <Switch
                       value={r.active}
                       onValueChange={(v) => toggleRule(r.id, v)}

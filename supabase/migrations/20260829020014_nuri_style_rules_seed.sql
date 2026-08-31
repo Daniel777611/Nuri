@@ -6,9 +6,15 @@
 -- person on the team with first-hand user experience. Every rule below is
 -- something that colleague actually did, not a style someone invented.
 --
--- These are injected into every reply as must-follow, so they are deliberately
--- about *how* to talk rather than *what* to say. Anything factual belongs in
--- the internal RAG namespace instead.
+-- These are about *how* to talk rather than *what* to say. Anything factual
+-- belongs in the internal RAG namespace instead.
+--
+-- They were originally injected into every reply as must-follow, all nineteen
+-- of them, which is what made NURI answer in numbered question lists. That is
+-- undone by nuri_style_rules_selection.sql, which sets each row's mode,
+-- priority and applies_when and rewrites five of the texts below. Read the two
+-- files together: the rule text here is the seed, the selection migration is
+-- what is actually live.
 --
 -- Operationally editable: the admin page and the in-chat `#fix` command both
 -- write here, and setting active=false retires a rule without a deploy. If one

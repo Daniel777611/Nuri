@@ -419,6 +419,88 @@ def test_an_emergency_plan_is_one_instruction_long():
     assert plan.history_window < 20
 
 
+def _advisory(id_, text, priority=0, **kw):
+    return Directive(id=id_, text=text, mode="advisory", priority=priority, **kw)
+
+
+def test_advisory_rules_land_under_a_heading_that_says_they_are_optional():
+    """The must/advisory split is only real if the prompt carries it. A rule
+    rendered under 必须遵守 gets satisfied; the same sentence under the advisory
+    heading gets weighed, which is the whole difference this change buys."""
+    plan = _plan(directives=[
+        Directive(id="m1", text="先接住情绪"),
+        _advisory("a1", "偶尔用 💜"),
+    ])
+    must_body = next(b for h, b in plan.sections if h == dialogue.HEADINGS["always"])
+    advice_body = next(b for h, b in plan.sections if h == dialogue.HEADINGS["advisory"])
+    assert "先接住情绪" in must_body and "💜" not in must_body
+    assert "💜" in advice_body
+    assert "酌情" in dialogue.HEADINGS["advisory"] or "参考" in dialogue.HEADINGS["advisory"]
+
+
+def test_only_the_top_advisory_rules_reach_the_prompt():
+    """Nineteen of these was the bug. The cap is what keeps a rule set that
+    grows one `#fix` at a time from growing back into a checklist."""
+    rules = [_advisory(f"a{i}", f"建议{i}", priority=i) for i in range(10)]
+    rendered = _plan(directives=rules).system_prompt("persona")
+    kept = [i for i in range(10) if f"建议{i}" in rendered]
+    assert len(kept) == dialogue.ALWAYS_ADVISORY_LIMIT
+    # Highest priority survives, and it is priority that decides — not load
+    # order, which is what the operator would otherwise have to fight.
+    assert set(kept) == set(sorted(range(10), reverse=True)[:dialogue.ALWAYS_ADVISORY_LIMIT])
+
+
+def test_must_follow_rules_are_never_trimmed_by_the_cap():
+    rules = [Directive(id=f"m{i}", text=f"必守{i}") for i in range(10)]
+    rendered = _plan(directives=rules).system_prompt("persona")
+    assert all(f"必守{i}" in rendered for i in range(10))
+
+
+def test_the_advisory_cap_cannot_push_out_the_outcome_gate():
+    """The negative-topic gate is conditional, so it shares a bucket with
+    conditional advice. A gate a busy turn can trim is not a gate."""
+    policy = outcome.summarize(
+        [{"topic": "睡眠倒退", "directive_ids": [], "signal": "not_relevant"}] * 2
+    )
+    noise = [
+        _advisory(f"a{i}", f"建议{i}", priority=900, applies_when={"topics": ["睡眠"]})
+        for i in range(6)
+    ]
+    rendered = _plan(directives=noise, policy=policy).system_prompt("persona")
+    assert "睡眠倒退" in rendered
+
+
+def test_a_rule_that_only_makes_sense_with_citations_waits_for_them():
+    cite = _advisory("cite", "点名 AAP 或 CDC", applies_when={"has_sources": True})
+    with_sources = _plan(
+        directives=[cite],
+        evidence=EvidenceDecision(route=_Route(), sources_block="[1] aap.org"),
+    )
+    without = _plan(
+        directives=[cite], evidence=EvidenceDecision(route=_Route()),
+    )
+    assert "AAP" in with_sources.system_prompt("persona")
+    assert "AAP" not in without.system_prompt("persona")
+
+
+def test_asking_after_the_parent_waits_for_a_conversation_to_ask_in():
+    rule = _advisory("parent", "问问家长自己睡得好不好", applies_when={"min_turns": 4})
+    assert "睡得好不好" not in _plan(directives=[rule], turn_count=1).system_prompt("p")
+    assert "睡得好不好" in _plan(directives=[rule], turn_count=6).system_prompt("p")
+
+
+def test_advice_that_would_delay_an_urgent_reply_is_gated_on_risk():
+    """「先编号问 3-5 个问题」 is good advice on a calm turn and the wrong
+    instinct on a medical one, which is what `risk_tier` is in the row for."""
+    ask_first = _advisory(
+        "ask", "先问清楚再下结论", applies_when={"risk_tier": ["none", "elevated"]},
+    )
+    calm = _plan(directives=[ask_first], verdict=safety.SafetyVerdict(tier="none"))
+    medical = _plan(directives=[ask_first], verdict=safety.SafetyVerdict(tier="medical"))
+    assert "先问清楚再下结论" in calm.system_prompt("persona")
+    assert "先问清楚再下结论" not in medical.system_prompt("persona")
+
+
 def test_style_rules_survive_without_the_directives_table():
     """The migration is optional: with no Supabase the legacy block still
     loads, and the pipeline renders exactly what the linear one did."""

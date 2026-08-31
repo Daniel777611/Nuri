@@ -137,6 +137,9 @@ async def run_turn_context(
             card_block=card_block,
             state_block=state_block,
             history_window=history_window,
+            turn_count=sum(
+                1 for m in history if (m or {}).get("role") == "user"
+            ),
         )
     trace.directive_ids = [d.id for d in plan.directives]
     # Attributed by owning subsystem rather than by prompt section: "the family
@@ -156,7 +159,11 @@ async def run_turn_context(
         memory=_body(plan, dialogue.HEADINGS["memory"]),
         profile=enriched.profile_block,
         state=state_block,
-        style=_body(plan, dialogue.HEADINGS["always"]),
+        # Both style blocks, joined. The legacy field is what the linear
+        # pipeline called `style_ctx` and what `_prompt_version` hashes, so it
+        # has to mean "the operator rules this turn used" — which is now two
+        # sections rather than one.
+        style=_style_block(plan),
         internal=evidence.internal_block,
         sources=evidence.sources_block,
         route=evidence.route,
@@ -208,6 +215,14 @@ async def _card(source_card_id: str, ports: CorePorts) -> str:
 
 def _body(plan: DialoguePlan, heading: str) -> str:
     return next((b for h, b in plan.sections if h == heading), "")
+
+
+def _style_block(plan: DialoguePlan) -> str:
+    parts = [
+        _body(plan, dialogue.HEADINGS["always"]),
+        _body(plan, dialogue.HEADINGS["advisory"]),
+    ]
+    return "\n".join(p for p in parts if p)
 
 
 def _rendered_directives(plan: DialoguePlan) -> str:

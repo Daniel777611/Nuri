@@ -22,6 +22,17 @@
 范例是繁体，家长可能用简体。语言跟随由 GUARD 单独说明——若不说，模型会连同
 字体一起模仿，把简体家长的对话切成繁体。
 
+语料按语言分成 zh 与 en 两套，选取不跨语言。英文那套是补上去的：在它之前
+`topic_of` 对任何英文句子都返回 ""，于是英文家长一条范例都拿不到——而本模块
+的前提正是「范例强于规则」，所以英文回复只剩 persona 一个人在撑，读起来就是
+一份说明书。实测九个样本回合，中文 6/6 命中、英文 0/3。英文那十二条与中文的
+十二条默认范例一一对应（同场景、同三拍），是为了让两种语言只有一个语域可以
+漂移；每条注释里写着它对应的中文 id。它们尚未经过母语育儿工作者审阅。
+
+简体与繁体共用同一套（繁体）语料，所以简体家长拿到的永远是一次转换。转换最先
+丢的就是温度，`_SCRIPT_CLAUSE["zhs"]` 因此不只要求换字，还明说语气不能跟着变淡。
+如果实测下来简体仍然偏冷，下一步是给简体单独一套语料，而不是继续加护栏。
+
 语域取自 0625小雪對話 那份真人测试记录：十二个 NURI 回合，中位五个短段落，
 75% 以问句收尾，每一条都先回应家长刚说的话，靠一两个 emoji 带温度。第一版
 语料是一段话、零问句、零 emoji、直接从事实开讲——四条共情规则当时还开着，
@@ -56,6 +67,13 @@ COUNT = int(os.getenv("FEWSHOT_EXEMPLAR_COUNT", "2"))
 #: are the shape being copied, land around 110.
 MAX_CHARS = int(os.getenv("FEWSHOT_MAX_CHARS", "150"))
 
+#: The same ceiling for English, in the unit English is measured in. Not the
+#: same number: 150 Chinese characters is roughly ninety English words, and
+#: handing the English guard "150 characters" would ask for a reply a third the
+#: length of the Chinese one — the register would come out clipped rather than
+#: warm, which is the failure this whole module exists to avoid.
+MAX_CHARS_EN = int(os.getenv("FEWSHOT_MAX_CHARS_EN", "500"))
+
 #: Appended to the system message, and only when a pair actually fires. Says the
 #: three things the examples themselves cannot: copy the shape not the content,
 #: do not copy the script they happen to be written in, and stop at a length the
@@ -73,6 +91,35 @@ GUARD = (
     "问一个就好，但一定要问，而且放在最后。可以用一两个 emoji 表达温度，不要每句都堆。"
     f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
     "不要照搬范例里的内容，也不要跟着范例用繁体，文字仍然跟随这位家长自己在用的语言。"
+)
+
+#: GUARD for the English corpus, written in English rather than translated back
+#: and forth. Same three steps, and one addition the Chinese guard does not
+#: need: English parenting advice has a strong pull toward the clinical
+#: register — "ensure", "it is recommended that", "consult your pediatrician" —
+#: and that pull is most of why replies in English read colder than the same
+#: reply in Chinese. Naming it is cheaper than hoping the examples outvote it.
+GUARD_EN = (
+    "The first few turns below are reply samples written by the team, not this "
+    "parent's real conversation. Match their length, warmth and structure, and "
+    "write in three steps:\n"
+    "1. Start from what this parent just said — specific enough that it could "
+    "only be said to them, never \"you're doing great\";\n"
+    "2. Give one thing they can try today, with a concrete example;\n"
+    "3. End on one open question they will want to answer.\n"
+    "Break lines between sentences; no bold. Number steps 1. 2. 3. only when "
+    "they genuinely happen in order, one line each. Never number questions, and "
+    "never ask more than one — ask exactly one, and put it last. One or two "
+    "emoji are welcome; do not put one in every sentence.\n"
+    "Write the way a family member who has raised a child would talk, not the "
+    "way a leaflet does: no \"ensure\", no \"it is recommended that\", no "
+    "\"studies suggest\" as a way of avoiding a view. Say \"a lot of parents "
+    "find...\", \"you could try...\", \"I'd probably...\". Warmth in English is "
+    "carried by plain words and by naming what is hard, not by exclamation "
+    "marks.\n"
+    f"Keep the whole `text` under {MAX_CHARS_EN} characters; better to give the "
+    "one thing that matters most than to cover everything. Do not reuse the "
+    "samples' content. "
 )
 
 #: Characters that exist in only one script, frequent enough that a sentence or
@@ -95,9 +142,57 @@ def script_of(text: str) -> str:
     return "zht" if zht > zhs else "zhs"
 
 
+#: Any CJK ideograph. Coarser than `script_of` and answering a coarser
+#: question — which corpus to draw from, not which script to write in.
+_CJK = re.compile(r"[㐀-鿿豈-﫿]")
+
+
+_LATIN = re.compile(r"[A-Za-z]")
+
+
+def language_of(text: str) -> str:
+    """"zh" or "en" — which exemplar corpus this turn should draw from.
+
+    Deliberately a two-way split with `zh` as the fallback, not a language
+    detector. Everything the corpus covers is written in one or the other, and
+    a parent who mixes ("baby 一直哭") is writing to a Chinese-reading NURI.
+    A third language lands on `en`, which is the wrong corpus but the right
+    register — a wrong-language example still teaches acknowledge → one thing
+    to try → one open question, and nothing else in the prompt does.
+
+    Both sides need positive evidence. "" and "😭" are not English, and the
+    first version of this returned "en" for them on the grounds that they were
+    not Chinese — which handed the English guard to a parent who had typed
+    nothing readable yet.
+    """
+    if _CJK.search(text or ""):
+        return "zh"
+    return "en" if _LATIN.search(text or "") else "zh"
+
+
 _SCRIPT_CLAUSE = {
-    "zhs": "这位家长写的是简体中文，所以整段回复必须用简体中文，一个繁体字都不要出现。",
+    # The second sentence is the whole reason this clause is two sentences.
+    # The corpus is Traditional, so a Simplified parent's reply is always the
+    # examples run through a conversion, and warmth is what a conversion drops
+    # first: 「真的很不容易」 comes out as 「确实不容易」, 「辛苦了」 goes
+    # missing entirely, and the reply arrives correct and cooler. Same voice,
+    # different characters — not a more formal register that happens to be
+    # written in Simplified.
+    "zhs": (
+        "这位家长写的是简体中文，所以整段回复必须用简体中文，一个繁体字都不要出现。"
+        "换成简体只是换字，语气不能跟着变淡：范例里「真的很不容易」「辛苦了」"
+        "「你已经在照顾自己了」这类接住人的话要照样说出来，用简体家长自己会说的说法，"
+        "不要换成更客气、更书面、更像说明书的讲法。"
+    ),
     "zht": "這位家長寫的是繁體中文，所以整段回覆必須用繁體中文。",
+    # Reached through `language_of`, not `script_of`: English has no script
+    # ambiguity to resolve, and the clause it needs is the opposite one — the
+    # rest of this prompt is Chinese, including the guard it is appended to.
+    "en": (
+        "This parent is writing in English, so the entire reply must be in "
+        "English. The instructions around this one are in Chinese; that is "
+        "about how to write, never about which language to write in."
+    ),
 }
 
 
@@ -123,6 +218,29 @@ CEILING_RULE = (
     f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
 )
 
+CEILING_RULE_EN = (
+    "There are no reply samples for this turn, but the shape is the same: "
+    "start from what the parent just said, give one thing they can try today, "
+    "and end on one open question. Break lines between sentences; no bold. "
+    "Number steps only when they happen in order. Never ask more than one "
+    "question, and put it last. Write like a family member who has raised a "
+    "child, not like a leaflet — no \"ensure\", no \"it is recommended that\". "
+    f"Keep the whole `text` under {MAX_CHARS_EN} characters."
+)
+
+
+def ceiling_rule_for(parent_texts: Sequence[str]) -> str:
+    """The no-exemplar fallback, in the parent's language.
+
+    Same reason `guard_for` exists: this is the weaker of the two instruments,
+    and a length-and-register instruction that arrives in a language the reply
+    is not being written in is weaker still.
+    """
+    if isinstance(parent_texts, str):
+        parent_texts = [parent_texts]
+    latest = next((t for t in parent_texts if (t or "").strip()), "")
+    return CEILING_RULE_EN if language_of(latest) == "en" else CEILING_RULE
+
 
 def guard_for(parent_texts: Sequence[str]) -> str:
     """The guard, with the parent's script named outright when it can be read.
@@ -143,7 +261,15 @@ def guard_for(parent_texts: Sequence[str]) -> str:
     """
     if isinstance(parent_texts, str):  # tolerate a single message
         parent_texts = [parent_texts]
-    script = next((s for s in (script_of(t) for t in parent_texts) if s), "")
+    texts = list(parent_texts)
+    latest = next((t for t in texts if (t or "").strip()), "")
+    if language_of(latest) == "en":
+        # The English guard, not the Chinese one with a clause bolted on. Half
+        # the Chinese guard is about which script to write in and reads as
+        # noise here, and an instruction about register is worth more in the
+        # language the register is being asked for.
+        return f"{GUARD_EN}{_SCRIPT_CLAUSE['en']}"
+    script = next((s for s in (script_of(t) for t in texts) if s), "")
     clause = _SCRIPT_CLAUSE.get(script, "")
     return f"{GUARD}{clause}" if clause else GUARD
 
@@ -161,6 +287,12 @@ class Exemplar:
     reply: str
     #: Which gate this entry sits behind. Selection never crosses topics.
     topic: str = "language"
+    #: "zh" or "en". Selection never crosses languages either, and for a
+    #: sharper reason than topics: an example is the strongest instrument in
+    #: the prompt, so a Traditional pair shown to a parent writing English
+    #: teaches the register in a script the reply must not use, and the guard
+    #: then has to spend itself arguing with it.
+    lang: str = "zh"
     tags: tuple[str, ...] = ()
     quick_replies: tuple[str, ...] = ()
     suggest_tasks: bool = False
@@ -254,17 +386,103 @@ _TOPIC_DOMAIN["development"] = tuple(
 )
 
 
+#: The same six gates in English. A separate table rather than more alternates
+#: inside the Chinese patterns, because the two languages need different
+#: precision: 「累」 is one character and unambiguous in context, while a bare
+#: `tired` appears in "he gets tired around 6pm" as readily as in "I am tired",
+#: so the English parent gate has to be anchored to a first person.
+#:
+#: Same insertion order as the Chinese table, and for the same reason — whoever
+#: the family is worried about is who the reply should be for.
+_TOPIC_DOMAIN_EN: dict[str, tuple] = {}
+
+_TOPIC_DOMAIN_EN["parent"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bi(?:'m| am)\b[^.!?]{0,20}\b(exhaust|drain|burn(?:t|ed)? ?out|wiped|spent|done|depleted)",
+        r"\bi\b[^.!?]{0,20}\bcan'?t\b[^.!?]{0,14}\b(cope|do this|keep (?:going|up)|take (?:it|much more))",
+        r"\b(at my (?:limit|wit'?s end)|running on empty|falling apart|barely holding)",
+        r"\b(overwhelmed|touched out|postpartum (?:depression|anxiety)|no time for myself)\b",
+        r"\bno (?:one|body) (?:to )?help|\bno (?:help|support)\b|\bon my own\b",
+        r"\b(mother|father)-in-law\b|\bmy (?:husband|wife|partner)\b[^.!?]{0,24}\b(?:won'?t|doesn'?t|disagree)",
+    )
+)
+
+_TOPIC_DOMAIN_EN["language"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(talk|talking|speak|speaking|speech|say|says|saying|said)\b",
+        r"\b(word|words|vocabulary|babble|babbling|non-?verbal|late talker)\b",
+        r"\b(bilingual|two languages|second language|mother tongue|native language)\b",
+        r"\b(point|points|pointing|gestur\w*|understands? (?:me|us|instructions?))\b",
+        r"\b(speech therap\w*|language (?:delay|assessment|evaluation))\b",
+        r"\bread(?:ing)? (?:to|with) (?:him|her|them)\b|\bpicture books?\b",
+    )
+)
+
+_TOPIC_DOMAIN_EN["sleep"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(sleep|sleeps|sleeping|asleep|slept|nap|naps|napping)\b",
+        r"\b(wake|wakes|waking|woke|awake)\b[^.!?]{0,24}\b(night|3 ?am|2 ?am|early)\b|\bnight wak\w+",
+        r"\b(bedtime|bed time|settle|settling|self-?sooth\w*|sleep training|dream ?feed)\b",
+        r"\b(crib|cot|swaddle|wake window|sleep regression|overtired)\b",
+    )
+)
+
+_TOPIC_DOMAIN_EN["feeding"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(solids?|pur[ée]e[sd]?|weaning|baby-?led weaning|first foods?)\b",
+        r"\b(breast ?feed\w*|nursing|nurse[sd]?|pump\w*|formula|bottle[sd]?|milk supply)\b",
+        r"\b(eat|eats|eating|ate|feed|feeds|feeding|fed|meal ?times?|high ?chair)\b",
+        r"\b(picky|fussy) (?:eater|about food)\b|\brefus\w+ (?:to eat|food|solids|the bottle)\b",
+        r"\b(allergy|allergies|allergen|reaction to)\b",
+    )
+)
+
+_TOPIC_DOMAIN_EN["emotion"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(tantrum|tantrums|meltdown|meltdowns|melt(?:s|ing)? down)\b",
+        r"\b(cry|cries|crying|scream|screams|screaming|sob\w*|inconsolable)\b",
+        r"\b(angry|upset|frustrated|hits?|hitting|bites?|biting|throws? (?:things|himself))\b",
+        r"\b(clingy|separation anxiety|won'?t let me (?:go|leave)|stranger anxiety)\b",
+        r"\b(calm (?:him|her|them) down|regulate|big feelings)\b",
+    )
+)
+
+_TOPIC_DOMAIN_EN["development"] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(roll(?:s|ing)? over|crawl\w*|sit(?:s|ting)? up|pull(?:s|ing)? (?:to|up)|cruis\w+|walk\w*|stand\w*)\b",
+        r"\b(milestone|milestones|tummy time|gross motor|fine motor|head control)\b",
+        r"\b(behind|catching up|delay\w*)\b[^.!?]{0,20}\b(other|same age|peers|kids|babies)\b",
+        r"\b(other|same age|peers)\b[^.!?]{0,24}\b(already|can|are)\b[^.!?]{0,20}\b(crawl\w*|walk\w*|sit\w*)\b",
+    )
+)
+
+
 #: Used when a turn is clearly about a subject but matches no exemplar in
 #: particular, and to top a thin match up to `COUNT`. One pair per topic, chosen
 #: because they are the most general answer that topic has — they anchor the
 #: register without dragging in a technique the parent did not ask about.
-_DEFAULT_IDS: dict[str, tuple[str, ...]] = {
-    "language": ("A", "E"),
-    "sleep": ("SLP1", "SLP2"),
-    "feeding": ("FED1", "FED2"),
-    "emotion": ("EMO1", "EMO2"),
-    "development": ("DEV1", "DEV3"),
-    "parent": ("PAR1", "PAR3"),
+#: Keyed by (language, topic). Every gate must have an entry in both languages
+#: or that language falls back to a thin match, which is the failure mode this
+#: table exists to prevent.
+_DEFAULT_IDS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("zh", "language"): ("A", "E"),
+    ("zh", "sleep"): ("SLP1", "SLP2"),
+    ("zh", "feeding"): ("FED1", "FED2"),
+    ("zh", "emotion"): ("EMO1", "EMO2"),
+    ("zh", "development"): ("DEV1", "DEV3"),
+    ("zh", "parent"): ("PAR1", "PAR3"),
+    ("en", "language"): ("EN-LAN1", "EN-LAN2"),
+    ("en", "sleep"): ("EN-SLP1", "EN-SLP2"),
+    ("en", "feeding"): ("EN-FED1", "EN-FED2"),
+    ("en", "emotion"): ("EN-EMO1", "EN-EMO2"),
+    ("en", "development"): ("EN-DEV1", "EN-DEV2"),
+    ("en", "parent"): ("EN-PAR1", "EN-PAR2"),
 }
 
 CORPUS: tuple[Exemplar, ...] = (
@@ -819,6 +1037,262 @@ CORPUS: tuple[Exemplar, ...] = (
         ),
     ),
 
+    # ── English ──────────────────────────────────────────────────────────────
+    #
+    # Two per topic, mirroring the twelve Chinese entries in `_DEFAULT_IDS`
+    # scenario for scenario. Mirrored rather than newly invented on purpose:
+    # the Chinese corpus was distilled from one real consultation that the team
+    # judged good, and inventing a separate English corpus would have given
+    # NURI two voices and no way to tell which one drifted. Same situations,
+    # same three beats, one register.
+    #
+    # They are written in English rather than translated sentence by sentence,
+    # because the warmth markers do not survive translation — 「真的很不容易」
+    # rendered literally arrives as "that is truly not easy", which is stiffer
+    # in English than the original is in Chinese. What is held constant is the
+    # move, not the wording.
+    #
+    # Authored here, not reviewed by a native-speaking parent educator. That is
+    # the next thing to do to them, and the reason each one names the Chinese
+    # id it mirrors.
+
+    Exemplar(  # mirrors A
+        id="EN-LAN1",
+        topic="language",
+        lang="en",
+        question="My two-and-a-half-year-old only ever says one or two words at a time. What can I do?",
+        reply=(
+            "You're paying close attention to what he actually says, and that's harder than it sounds. 😊\n"
+            "Two and a half to three is exactly when single words start turning into short phrases. "
+            "You don't have to get him to repeat a full sentence — just add a little to whatever he "
+            "gives you. He says \"car,\" you say \"car goes up the bridge.\"\n"
+            "Which words is he using most at the moment?"
+        ),
+        tags=(
+            r"\b(one|two|a few|only)\b[^.!?]{0,16}\bwords?\b",
+            r"\b(short|two-?word|single words?|not (?:full|whole) sentences?)\b",
+            r"\blate talker\b|\bnot (?:talking|saying) much\b",
+        ),
+        quick_replies=("Maybe fifteen words", "He won't really try"),
+    ),
+    Exemplar(  # mirrors E
+        id="EN-LAN2",
+        topic="language",
+        lang="en",
+        question="She hardly ever starts a conversation with me. How do I get her talking?",
+        reply=(
+            "You've noticed how often she starts things herself, and that's a genuinely useful thing "
+            "to be tracking. 😊\n"
+            "It usually helps to make more room for her to need words, rather than asking more "
+            "questions. When she wants water, hold the cup and wait a beat so she has to tell you "
+            "somehow — a sound or a point is fine. She says \"water,\" you say \"I want water.\"\n"
+            "How does she usually let you know she wants something?"
+        ),
+        tags=(
+            r"\b(start|initiate|begin)\w*\b[^.!?]{0,16}\b(conversation|talking)\b",
+            r"\b(hardly|rarely|never|doesn'?t)\b[^.!?]{0,20}\b(talks?|speaks?|says anything)\b",
+            r"\bget (?:him|her|them) (?:to )?talk\w*\b",
+        ),
+        quick_replies=("She just points",),
+    ),
+
+    Exemplar(  # mirrors SLP1
+        id="EN-SLP1",
+        topic="sleep",
+        lang="en",
+        question="My four-month-old wakes two or three times a night and nothing settles him.",
+        reply=(
+            "Getting up to him again and again through the night is genuinely hard, and you're still "
+            "doing it. 💛\n"
+            "Around three or four months sleep cycles start changing, and some babies begin surfacing "
+            "fully instead of rolling through. Before you go in, it's worth working out whether he's "
+            "properly awake or just stirring and shifting.\n"
+            "When he wakes, are his eyes open, or still closed?"
+        ),
+        tags=(
+            r"\bwak\w+\b[^.!?]{0,20}\b(?:two|three|2|3|several|multiple)\b",
+            r"\bnothing (?:settles|works|helps)\b|\bwon'?t settle\b",
+            r"\bnight wak\w+|\bup all night\b",
+        ),
+        quick_replies=("A pat and he's back off",),
+    ),
+    Exemplar(  # mirrors SLP2
+        id="EN-SLP2",
+        topic="sleep",
+        lang="en",
+        question="Her daytime naps are so short — she's awake again after thirty minutes.",
+        reply=(
+            "The fact that you know how long her naps run is more useful than it feels. 😊\n"
+            "One sleep cycle is roughly thirty to forty minutes, and plenty of babies haven't yet "
+            "worked out how to link the next one on. You could try being nearby as she comes up "
+            "towards the end, and see whether a hand on her back carries her through.\n"
+            "When she wakes from a nap, does she seem rested, or still unsettled?"
+        ),
+        tags=(
+            r"\bnaps?\b[^.!?]{0,20}\b(short|30|thirty|45|forty-?five)\b",
+            r"\b(?:awake|up) again\b[^.!?]{0,20}\b(?:after|in)\b",
+            r"\b(cat ?nap|short naps|nap transition)\b",
+        ),
+    ),
+
+    Exemplar(  # mirrors FED1
+        id="EN-FED1",
+        topic="feeding",
+        lang="en",
+        question="I started solids with my four-month-old and he pushes everything straight back out.",
+        reply=(
+            "You're going slowly and not forcing it, and that patience matters more to him than the "
+            "spoonfuls do. 💛\n"
+            "At four months the tongue-thrust reflex is often still strong, so food coming back out "
+            "isn't really a verdict on the food. Milk is still where his nutrition comes from — you "
+            "can treat solids as a few minutes of practice and not count what goes in.\n"
+            "When the spoon comes close, does he open his mouth?"
+        ),
+        tags=(
+            r"\b(push\w*|spits?|spitting)\b[^.!?]{0,20}\b(out|back)\b",
+            r"\b(refus\w+|won'?t take)\b[^.!?]{0,14}\b(solids?|pur[ée]e|spoon|food)\b",
+            r"\bstart\w*\b[^.!?]{0,12}\bsolids?\b",
+        ),
+        quick_replies=("He opens up but spits it out",),
+    ),
+    Exemplar(  # mirrors FED2
+        id="EN-FED2",
+        topic="feeding",
+        lang="en",
+        question="She's suddenly drinking a lot less milk. Is this a nursing strike?",
+        reply=(
+            "You've been keeping track of how much she takes, which is exactly what makes this "
+            "answerable. 😊\n"
+            "Between four and six months a stretch of less interest in milk is very common. If she's "
+            "still tracking along her growth curve and her energy and wet nappies look normal, it's "
+            "usually worth looking at a whole day's total rather than any one feed.\n"
+            "How do her nappies over the last few days compare with before?"
+        ),
+        tags=(
+            r"\b(drinking|taking|having)\b[^.!?]{0,16}\bless\b",
+            r"\b(milk supply|nursing strike|bottle refusal|off (?:her|his) milk)\b",
+            r"\bfeeds?\b[^.!?]{0,16}\b(dropped|down|shorter)\b",
+        ),
+    ),
+
+    Exemplar(  # mirrors EMO1
+        id="EN-EMO1",
+        topic="emotion",
+        lang="en",
+        question="My two-year-old throws himself on the floor screaming the moment he doesn't get his way.",
+        reply=(
+            "You held off on shutting it down and came to ask how instead — that's not the easy "
+            "instinct. 💛\n"
+            "At two, feelings arrive fast and hard, and reasoning genuinely doesn't reach him while "
+            "he's in it. You can get down to his level, stay there, and put the feeling into words "
+            "for him: \"you really wanted that, and it's making you angry.\" What happens next can "
+            "wait until he's calmer.\n"
+            "When he's crying, does he want to be held, or does he need a bit of space?"
+        ),
+        tags=(
+            r"\b(throws? (?:him|her)self|on the floor|drops? to the ground)\b",
+            r"\btantrum|meltdown\b",
+            r"\bdoesn'?t get (?:his|her|their) way\b|\bsays? no\b[^.!?]{0,14}\bscream",
+        ),
+        quick_replies=("He always wants holding",),
+    ),
+    Exemplar(  # mirrors EMO2
+        id="EN-EMO2",
+        topic="emotion",
+        lang="en",
+        question="He's so clingy lately — he cries the second I leave the room.",
+        reply=(
+            "He's clinging to you because you're the person he feels safest with, which is worth "
+            "hearing on a day when it mostly feels heavy. 💛\n"
+            "Separation anxiety is very much the norm at this stage. A short goodbye you use every "
+            "time tends to help — say \"I'll be back in a minute,\" and then actually come back. "
+            "Slipping away while he's distracted usually makes the next separation harder.\n"
+            "When you leave, do you tend to tell him first, or go while he's occupied?"
+        ),
+        tags=(
+            r"\bclingy|clings?\b",
+            r"\b(cries|crying|screams?)\b[^.!?]{0,20}\b(?:i|we)\b[^.!?]{0,14}\b(leave|go|walk out)\b",
+            r"\bseparation anxiety\b|\bwon'?t let me (?:go|out of)\b",
+        ),
+    ),
+
+    Exemplar(  # mirrors DEV1
+        id="EN-DEV1",
+        topic="development",
+        lang="en",
+        question="She's five months and still not rolling over. Is that normal?",
+        reply=(
+            "You're keeping an eye on where she's up to, and that attention is worth something. 😊\n"
+            "Rolling arrives across a genuinely wide window. What helps in the meantime is tummy "
+            "time — it builds the neck and core strength rolling is built on. A few minutes at a "
+            "go, several times a day, is plenty.\n"
+            "When she's on her tummy, how long can she hold her head up for?"
+        ),
+        tags=(
+            r"\bnot\b[^.!?]{0,16}\b(rolling|roll(?:s|ed)? over|sitting|crawling|walking)\b",
+            r"\bstill (?:not|hasn'?t)\b",
+            r"\bis (?:that|this|it) normal\b",
+        ),
+        quick_replies=("She lifts her head fine",),
+    ),
+    Exemplar(  # mirrors DEV3
+        id="EN-DEV2",
+        topic="development",
+        lang="en",
+        question="How far behind on milestones is far enough to worry about?",
+        reply=(
+            "Looking up the warning signs before you're worried puts you ahead of most people. 😊\n"
+            "Running a bit later than other children usually isn't the thing to watch. What's worth "
+            "paying attention to is no progress at all over a stretch, losing a skill he already "
+            "had, or very little response to sound and to being engaged with. Any of those, and an "
+            "assessment is a solid next step rather than a worried one.\n"
+            "Has he picked up anything new recently?"
+        ),
+        tags=(
+            r"\bmilestones?\b",
+            r"\b(behind|delay\w*)\b[^.!?]{0,20}\b(worry|worried|concerned|normal)\b",
+            r"\bwhen (?:should|do) i (?:worry|be concerned)\b",
+        ),
+    ),
+
+    Exemplar(  # mirrors PAR1
+        id="EN-PAR1",
+        topic="parent",
+        lang="en",
+        question="I'm completely exhausted. I don't think I can keep doing this.",
+        reply=(
+            "Saying it out loud is already you taking care of yourself, and that counts. 💛\n"
+            "This kind of tired is real tired — it isn't a sign you're not good enough at it. It "
+            "helps to take one thing off yourself, even a small one: half an hour where someone "
+            "else is on duty, or one meal this week that becomes the easiest possible meal.\n"
+            "Is there any stretch in the next few days where you could actually rest?"
+        ),
+        tags=(
+            r"\bexhaust\w*|\bburn(?:t|ed)? ?out\b|\bwiped\b",
+            r"\bcan'?t (?:keep|do this|cope|go on)\b",
+            r"\bat my (?:limit|wit'?s end)\b|\brunning on empty\b",
+        ),
+    ),
+    Exemplar(  # mirrors PAR3
+        id="EN-PAR2",
+        topic="parent",
+        lang="en",
+        question="My mother-in-law keeps saying I'll spoil him by holding him so much. It's getting to me.",
+        reply=(
+            "Holding a line between two people who both care about him is its own kind of work. 😊\n"
+            "Under a year, a baby doesn't yet have the machinery to use crying to manage adults — "
+            "responding quickly is what builds his sense that the world answers. You don't have to "
+            "argue the principle. You could just say what you see: how fast he settles once he's "
+            "picked up.\n"
+            "Who's with him most of the time at the moment?"
+        ),
+        tags=(
+            r"\b(mother|father)-in-law\b|\bmy (?:mum|mom|mother)\b[^.!?]{0,16}\bsays?\b",
+            r"\bspoil\w*\b",
+            r"\bhold\w*\b[^.!?]{0,16}\b(too much|so much)\b",
+        ),
+    ),
+
 )
 
 _BY_ID = {e.id: e for e in CORPUS}
@@ -827,11 +1301,20 @@ _BY_ID = {e.id: e for e in CORPUS}
 def topic_of(text: str) -> str:
     """Which subject this message is about, or "" when none of them.
 
-    First match wins on `_TOPIC_DOMAIN`'s insertion order, which is deliberate:
-    language leads because its patterns are the most specific, and a message
-    that trips two gates is nearly always the more specific one's.
+    First match wins on the table's insertion order, which is deliberate:
+    `parent` leads because whoever the family is worried about is who the reply
+    should be for, and a message that trips two gates is nearly always the more
+    specific one's.
+
+    The table is picked by the message's language. Before there was an English
+    one, every English turn returned "" here — which meant no exemplar, and
+    therefore no register at all, on the only surface where the persona had to
+    carry it alone. That is the whole of "English answers read like a
+    diagnosis": measured on nine sample turns, Chinese fired on 6/6 and English
+    on 0/3.
     """
-    for topic, patterns in _TOPIC_DOMAIN.items():
+    table = _TOPIC_DOMAIN_EN if language_of(text) == "en" else _TOPIC_DOMAIN
+    for topic, patterns in table.items():
         if any(pattern.search(text or "") for pattern in patterns):
             return topic
     return ""
@@ -869,6 +1352,10 @@ def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> li
     text = " ".join((user_text or "").strip().split())
     if not text:
         return []
+    # Read off the message that was just sent, not off the pooled history: a
+    # parent who switches to English mid-conversation gets English examples on
+    # the turn they switch, the same way the persona promises to switch.
+    lang = language_of(text)
     topic = topic_of(text)
     if not topic:
         prior = next((t for t in list(recent)[:STICKY_TURNS] if topic_of(t or "")), "")
@@ -878,9 +1365,10 @@ def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> li
         # Scored against both, so a keyword-free follow-up still ranks on the
         # scenario the parent actually raised.
         text = f"{prior} {text}"
-    # Never across topics: an exemplar from the wrong subject answers the wrong
-    # question in the right voice, which reads worse than no example at all.
-    candidates = [e for e in CORPUS if e.topic == topic]
+    # Never across topics, and never across languages: an exemplar from the
+    # wrong subject answers the wrong question in the right voice, and one from
+    # the wrong language teaches the voice in a script the reply must not use.
+    candidates = [e for e in CORPUS if e.topic == topic and e.lang == lang]
     scored = [(e.score(text), i, e) for i, e in enumerate(candidates)]
     hits = sorted(
         (s for s in scored if s[0] > 0),
@@ -892,7 +1380,7 @@ def select(user_text: str, limit: int = COUNT, recent: Sequence[str] = ()) -> li
     # One exemplar shifts the register less reliably than two, so a thin match
     # is topped up rather than sent short. The fillers are in-domain by
     # construction, which is why this is safe here and would not be off-domain.
-    for fid in _DEFAULT_IDS.get(topic, ()):
+    for fid in _DEFAULT_IDS.get((lang, topic), ()):
         if len(chosen) >= limit:
             break
         if _BY_ID[fid] not in chosen:

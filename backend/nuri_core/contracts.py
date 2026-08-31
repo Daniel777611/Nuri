@@ -40,7 +40,16 @@ class Directive:
     text: str
     layer: str = "dialogue"
     kind: str = "style"
-    #: Ordering within a layer. Higher renders first.
+    #: "must" renders under a 必须遵守 heading; "advisory" under a heading that
+    #: says to pick the one or two that fit this turn and leave the rest. The
+    #: distinction exists because a rule set injected whole as must-follow gets
+    #: satisfied item by item, and a reply that satisfies nineteen rules reads
+    #: like a form being filled in rather than someone talking. Advisory
+    #: directives are also the only ones the per-turn cap trims — see
+    #: `dialogue.plan`.
+    mode: str = "must"
+    #: Ordering within a layer. Higher renders first. With a cap in play this
+    #: also decides what survives it, so it is no longer only cosmetic.
     priority: int = 0
     #: Multiplied by the outcome model's learned adjustment. At or below zero
     #: the directive is suppressed without being deleted, so a rule that stops
@@ -73,6 +82,12 @@ class Directive:
                     return False
             elif key == "min_turns":
                 if int(facts.get("turns") or 0) < int(expected):
+                    return False
+            elif key in ("has_sources", "has_internal", "is_medical"):
+                # Turn-shape flags rather than family facts: whether this reply
+                # will carry citations at all decides whether "name the
+                # institution" is advice or noise.
+                if bool(facts.get(key)) is not bool(expected):
                     return False
         return True
 

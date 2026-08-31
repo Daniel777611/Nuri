@@ -94,7 +94,7 @@ def test_a_thin_match_is_topped_up_from_its_own_topic():
     chosen = exemplars.select("孩子看繪本一下就跑掉，還要繼續讀嗎？")
     assert len(chosen) == 2
     assert chosen[0].id == "J"
-    assert chosen[1].id in exemplars._DEFAULT_IDS["language"]
+    assert chosen[1].id in exemplars._DEFAULT_IDS[("zh", "language")]
 
 
 def test_a_keyword_free_follow_up_keeps_the_gate_open():
@@ -223,8 +223,12 @@ def test_replies_look_like_the_target_register():
         # was asked for. A numbered *question* is not: that is the five-question
         # form this register work exists to remove, and the digit was never the
         # thing wrong with it.
+        mark = "\uff1f" if e.lang == "zh" else "?"
+        ceiling = (
+            exemplars.MAX_CHARS if e.lang == "zh" else exemplars.MAX_CHARS_EN
+        )
         numbered = [l for l in lines if re.match(r"\s*[1-9][.\u3001)]", l)]
-        assert not any("\uff1f" in l for l in numbered), e.id
+        assert not any(mark in l for l in numbered), e.id
         assert "\u2022" not in e.reply and "\u00b7 " not in e.reply, e.id
         # Not a fixed shape: only the first line and the last are required.
         # A reply that carries numbered steps needs more room than one that
@@ -233,18 +237,19 @@ def test_replies_look_like_the_target_register():
         assert 2 <= len(lines) <= 7, (e.id, len(lines))
         # Ends on exactly one question, which is what keeps the conversation
         # going. A trailing emoji is not the end of the sentence.
-        assert e.reply.rstrip().rstrip("\U0001F60A\U0001F49B\U0001F604\U0001F90D ").endswith(
-            "\uff1f"
-        ), e.id
+        assert e.reply.rstrip().rstrip("\U0001F60A\U0001F49B\U0001F604\U0001F90D ").endswith(mark), e.id
         # Counted on the closing line only: the advice above may quote a
         # question NURI suggests the parent try, and that is not a second
         # question being asked of them.
-        assert lines[-1].count("？") == 1, e.id
+        assert lines[-1].count(mark) == 1, e.id
         # Warmth carried, not decorative: present, and not on every line.
         assert _EMOJI.search(e.reply), e.id
         assert len(_EMOJI.findall(e.reply)) <= 2, e.id
-        # Measured without the newlines, the way the ceiling is applied.
-        assert len(e.reply.replace("\n", "")) <= exemplars.MAX_CHARS, e.id
+        # Measured without the newlines, the way the ceiling is applied. The
+        # English ceiling is a different number for the same register: 150
+        # Chinese characters is roughly ninety English words, and holding
+        # English to 150 would buy brevity by cutting the warmth back out.
+        assert len(e.reply.replace("\n", "")) <= ceiling, e.id
 
 
 def test_every_exemplar_is_reachable_from_its_own_question():
@@ -255,11 +260,83 @@ def test_every_exemplar_is_reachable_from_its_own_question():
         assert exemplars.topic_of(e.question) == e.topic, (e.id, e.topic)
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("My 15-month-old barely says anything", "en"),
+    ("寶寶一直哭", "zh"),
+    # Mixed writing is a parent talking to a Chinese-reading NURI.
+    ("baby 一直哭怎麼辦", "zh"),
+    # Neither side has evidence. Falling to "en" here is what handed the
+    # English guard to a parent who had typed nothing readable.
+    ("", "zh"),
+    ("\U0001F62D", "zh"),
+])
+def test_language_detection_needs_evidence_on_both_sides(text, expected):
+    assert exemplars.language_of(text) == expected
+
+
+def test_an_english_turn_gets_english_examples_and_never_chinese_ones():
+    """The bug this fixes: English matched no topic gate at all, so an English
+    parent got zero exemplars — no register, on the one surface where the
+    persona had to carry it alone."""
+    for text in (
+        "My four-month-old wakes three times a night and nothing settles him.",
+        "She refuses solids. Every spoon comes right back out.",
+        "I'm completely exhausted and I don't think I can keep doing this.",
+    ):
+        chosen = exemplars.select(text)
+        assert len(chosen) == exemplars.COUNT, text
+        assert all(e.lang == "en" for e in chosen), text
+
+
+def test_switching_language_switches_the_corpus_on_that_turn():
+    """The persona promises to follow a mid-conversation switch, and an example
+    is stronger than the persona — so the examples have to switch too."""
+    prior = ["寶寶四個月，晚上會醒兩三次"]
+    switched = exemplars.select("Sorry — he woke three times again last night.", recent=prior)
+    assert switched and all(e.lang == "en" for e in switched)
+
+
+def test_the_english_guard_is_english_and_names_the_language():
+    guard = exemplars.guard_for(["My toddler won't sleep through the night."])
+    assert guard.startswith(exemplars.GUARD_EN)
+    assert "must be in English" in guard
+    # Not the Chinese guard with a clause bolted on: half of that one is about
+    # which Chinese script to use, which is noise here.
+    assert exemplars.GUARD not in guard
+
+
+def test_the_ceiling_rule_follows_the_parent_too():
+    assert exemplars.ceiling_rule_for(["她最近很黏我"]) == exemplars.CEILING_RULE
+    assert exemplars.ceiling_rule_for(["She's been very clingy"]) == exemplars.CEILING_RULE_EN
+
+
+def test_the_simplified_clause_asks_for_the_warmth_not_only_the_script():
+    """The corpus is Traditional, so a Simplified reply is always a conversion,
+    and warmth is what a conversion drops first."""
+    guard = exemplars.guard_for(["这个孩子还没开始说话，我们想问问"])
+    assert "简体" in guard
+    assert "语气不能跟着变淡" in guard
+
+
 def test_every_topic_has_defaults_that_exist():
-    for topic, ids in exemplars._DEFAULT_IDS.items():
-        assert ids, topic
+    for (lang, topic), ids in exemplars._DEFAULT_IDS.items():
+        assert ids, (lang, topic)
         for exemplar_id in ids:
-            assert exemplars._BY_ID[exemplar_id].topic == topic, exemplar_id
+            entry = exemplars._BY_ID[exemplar_id]
+            assert entry.topic == topic, exemplar_id
+            assert entry.lang == lang, exemplar_id
+
+
+def test_both_languages_cover_every_gate():
+    """A gate that opens in one language and not the other is the bug this
+    exists to prevent: English used to match no topic at all, so an English
+    parent got no exemplar, and the register lived only in the persona."""
+    gates = {topic for _lang, topic in exemplars._DEFAULT_IDS}
+    for lang in ("zh", "en"):
+        for topic in gates:
+            assert exemplars._DEFAULT_IDS.get((lang, topic)), (lang, topic)
+        covered = {e.topic for e in exemplars.CORPUS if e.lang == lang}
+        assert gates <= covered, (lang, gates - covered)
 
 
 # ── injection into the prompt ────────────────────────────────────────────────

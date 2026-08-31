@@ -35,6 +35,19 @@ would do for every topic what the exemplars do for one. Which is a content
 decision for whoever wrote them — several encode a real intent, gathering a
 parent's situation in one round trip instead of five — so this only measures.
 
+That decision was made on 2026-08-31 (nuri_style_rules_selection.sql): the five
+were rewritten rather than switched off, so the intent survives as the exception
+instead of the instruction, and the rest of the table became advisory and capped.
+So this script now runs five conditions, not four. `all` is the *old* behaviour
+— every rule, under 必须遵守 — and stays here as the before picture. `shipped`
+is what the prompt actually carries now. The claim being tested is that
+`shipped` sits near `minus`, not near `all`.
+
+`shipped` covers the unconditional rules only. The conditional half is selected
+per turn by `dialogue.plan` against facts this script has none of, so a rule
+gated on `has_sources` or `min_turns` cannot appear here and its absence is not
+evidence about it either way.
+
     .venv/Scripts/python.exe backend/evals/rule_ablation.py
 """
 from __future__ import annotations
@@ -49,9 +62,15 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+import anyio                                                    # noqa: E402
+
 from backend import llm_usage, runtime                          # noqa: E402
 from backend.evals.variance import score                        # noqa: E402
-from backend.nuri_core.dialogue_reply import nuri_reply_sync    # noqa: E402
+from backend.nuri_core import dialogue                          # noqa: E402
+from backend.nuri_core.dialogue_reply import (                  # noqa: E402
+    get_style_rules_ctx,
+    nuri_reply_sync,
+)
 
 #: Off-domain on purpose: with an exemplar in the prompt the rules are no longer
 #: the only thing acting, and the ablation would measure the wrong contest.
@@ -77,7 +96,17 @@ def is_suspect(rule: str) -> bool:
 
 
 def _block(rules: list[str]) -> str:
-    return "\n".join(f"- {r}" for r in rules)
+    """Render an ablation condition the way the table used to be injected.
+
+    The heading is part of the condition, not decoration. `nuri_messages` now
+    appends style_ctx verbatim — the 必须遵守 wrapper it used to add moved into
+    get_style_rules_ctx — so a bare bullet list here would quietly measure a
+    prompt nobody ever shipped.
+    """
+    if not rules:
+        return ""
+    body = "\n".join(f"- {r}" for r in rules)
+    return f"{dialogue.HEADINGS['always']}\n{body}"
 
 
 def main() -> None:
@@ -96,7 +125,7 @@ def main() -> None:
           f"the reply, {len(rest)} others")
     for s in suspects:
         print(f"   {s[:76]}")
-    print(f"\n{4 * args.reps} gpt-5.5 calls")
+    print(f"\n{5 * args.reps} gpt-5.5 calls")
     if not args.yes and input("run? [y/N] ").strip().lower() not in ("y", "yes"):
         raise SystemExit("aborted")
 
@@ -105,9 +134,13 @@ def main() -> None:
 
     history = [{"role": "user", "text": QUESTION}]
     conditions = (
+        # The old behaviour, kept as the baseline this is measured against.
         ("all", _block(rules)),
         ("minus", _block(rest)),
         ("only", _block(suspects)),
+        # What the prompt carries today: must rules under 必须遵守, the top
+        # advisory ones under a heading that says to pick what fits.
+        ("shipped", anyio.run(get_style_rules_ctx)),
         ("none", ""),
     )
     print(f"\n{'condition':<10}{'chars':>8}{'lists':>8}{'questions':>11}{'emoji':>8}")

@@ -34,9 +34,15 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+import anyio                                                   # noqa: E402
+
 from backend import llm_usage, runtime                         # noqa: E402
 from backend.nuri_core import exemplars                        # noqa: E402
-from backend.nuri_core.dialogue_reply import NURI_FALLBACK, nuri_reply_sync  # noqa: E402
+from backend.nuri_core.dialogue_reply import (                  # noqa: E402
+    NURI_FALLBACK,
+    get_style_rules_ctx,
+    nuri_reply_sync,
+)
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
@@ -189,17 +195,17 @@ def style_rules_ctx() -> str:
     """The operator rules that go into every production turn.
 
     Left out of the first version of this eval, which made every number it
-    produced optimistic: production ships 1,600 characters of always-on rules
-    that include 「先用编号列出 3-5 个具体问题」 and 「用条列，每条一件事」, and
-    measuring the register without them measures a prompt the app never sends.
+    produced optimistic: production shipped 1,600 characters of always-on rules
+    that included 「先用编号列出 3-5 个具体问题」 and 「用条列，每条一件事」, and
+    measuring the register without them measured a prompt the app never sends.
+
+    Delegates to the shipping code rather than re-querying the table, for the
+    same reason. Since nuri_style_rules_selection.sql the block is not "every
+    active row" any more — must rules, then the top few advisory ones under a
+    heading that says to pick what fits — and an eval that rebuilt the old flat
+    list would go back to measuring a prompt nobody sends.
     """
-    sb = runtime.get_supabase()
-    if not sb:
-        return ""
-    rows = (sb.table("nuri_style_rules").select("rule")
-            .eq("active", True).order("created_at", desc=True)
-            .limit(50).execute().data) or []
-    return "\n".join(f"- {r['rule']}" for r in rows)
+    return anyio.run(get_style_rules_ctx)
 
 
 def run(reps: int, arms: tuple[str, ...], style: str = "") -> list[dict]:

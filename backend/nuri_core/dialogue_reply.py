@@ -27,6 +27,7 @@ import anyio
 
 from backend.nuri_core import (
     context_budget,
+    dialogue,
     exemplars,
     image_input,
     knowledge_store,
@@ -68,10 +69,14 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 - 紧急情况下不要为了显得有条理而先讲背景、先列来源、先追问细节
 
 【语气】
-- 沉稳、温暖，有专业感，像一位你信任的儿科医生朋友
-- 口语化但不随意，用词简单、直接，不堆砌术语
+- 像一位带过孩子、愿意陪你慢慢想的家人：先站在他这边，再一起看怎么办
+- 默认家长已经在尽力了。他做的选择先当成有他的道理，想清楚再问，不要先纠正
+- 一次只往前带一小步，让他觉得"这个我做得到"，而不是"原来我还差这么多"
+- 专业不靠术语撑：知道的照说，不确定就说不确定
+- 口语化但不随意，用词简单、直接
 - 不用"当然！""太棒了！"等客服腔，不油腻
-- 不是每条消息都以问句结尾，说清楚一件事也是好的回应"""
+- 多数时候用一个开放式问句收尾，邀请他接着说；他只是想说完一件事、或这一轮已经问过时，就不用硬问
+- 这个语气与你用哪种语言回复无关。英文和简体中文的回复不应该比繁体中文更冷、更像说明书"""
 
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 NURI_JSON_SUFFIX = """
@@ -303,7 +308,10 @@ def nuri_messages(
     # shared across all traffic.
     shared = NURI_PERSONA + NURI_JSON_SUFFIX
     if style_ctx:
-        shared += f"\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n{style_ctx}"
+        # Already a finished block carrying its own must/advisory headings —
+        # see get_style_rules_ctx. Wrapping it in a second 必须遵守 line is the
+        # flattening that made every rule land with equal force.
+        shared += f"\n\n{style_ctx}"
 
     per_family, per_turn = context_budget.build_sections(
         child_profile=profile_ctx,
@@ -360,7 +368,10 @@ def _assemble(
         # enough to read, and the earlier ones only stand in when it is not.
         system = f"{system}\n\n{exemplars.guard_for(said)}"
     elif exemplars.GLOBAL_CEILING:
-        system = f"{system}\n\n{exemplars.CEILING_RULE}"
+        # Also in the parent's language: this is the weaker of the two register
+        # instruments, and one written in a language the reply is not being
+        # written in is weaker again.
+        system = f"{system}\n\n{exemplars.ceiling_rule_for(said)}"
     # Three messages, most stable first. Splitting rather than concatenating is
     # the entire caching change: the first is identical across all traffic, the
     # second across one family's turns, and only the third moves per question.
@@ -1066,23 +1077,55 @@ def distill_style_rule_sync(prior_ai_text: str, feedback: str) -> dict:
         return {"rule": feedback, "category": "other"}
 
 async def get_style_rules_ctx(limit: int = 50) -> str:
-    """Fetch the active, accumulated style rules for injection into every
-    reply — this is what makes a #fix correction 'stick' going forward."""
+    """The operator style rules, as a finished prompt block with its headings.
+
+    Returns the block rather than a bare bullet list because the must/advisory
+    split is the whole point: which heading a rule sits under decides how hard
+    the model works to satisfy it, and a caller that concatenated all of these
+    under one 「必须遵守」 line would put back exactly what the split removes.
+    Callers append the return value as-is.
+
+    Conditional rows are dropped. This path has no turn facts to match them
+    against — that is what the four-model pipeline's `dialogue.plan` does — and
+    a condition silently treated as "always" is worse than the rule not firing.
+    """
     sb = runtime.get_supabase()
     if not sb:
         return ""
     try:
+        # select("*") rather than a column list: the selection columns arrive
+        # with nuri_style_rules_selection.sql, and naming them would make this
+        # a query error on a deployment that has not run it yet.
         res = await anyio.to_thread.run_sync(
-            lambda: sb.table("nuri_style_rules").select("rule")
+            lambda: sb.table("nuri_style_rules").select("*")
             .eq("active", True).order("created_at", desc=True).limit(limit).execute()
         )
         rows = res.data or []
     except Exception as e:
         print(f"[warn] get_style_rules_ctx: {e}")
         return ""
-    if not rows:
-        return ""
-    return "\n".join(f"- {r['rule']}" for r in rows)
+    must: list[tuple[int, str]] = []
+    advisory: list[tuple[int, str]] = []
+    for row in rows:
+        if row.get("applies_when"):
+            continue
+        rule = str(row.get("rule") or "").strip()
+        if not rule:
+            continue
+        bucket = must if row.get("mode") == "must" else advisory
+        bucket.append((int(row.get("priority") or 0), rule))
+    must.sort(key=lambda pair: -pair[0])
+    advisory.sort(key=lambda pair: -pair[0])
+
+    blocks = []
+    if must:
+        body = "\n".join(f"- {rule}" for _p, rule in must)
+        blocks.append(f"{dialogue.HEADINGS['always']}\n{body}")
+    if advisory:
+        kept = advisory[:dialogue.ALWAYS_ADVISORY_LIMIT]
+        body = "\n".join(f"- {rule}" for _p, rule in kept)
+        blocks.append(f"{dialogue.HEADINGS['advisory']}\n{body}")
+    return "\n\n".join(blocks)
 
 def gen_tasks_ai_sync(
     msgs: list[dict], requested_count: Optional[int] = None,
@@ -1168,7 +1211,7 @@ async def compose_follow_up_message(nickname: str, item: dict) -> str:
     style_ctx = await get_style_rules_ctx()
     system = (
         NURI_PERSONA
-        + ("\n\n运营团队根据实际反馈持续积累的回复规则，必须遵守：\n" + style_ctx if style_ctx else "")
+        + ("\n\n" + style_ctx if style_ctx else "")
         + "\n\n现在不是在回复家长，而是你主动想起了之前聊过的一件事，写一则简短的问候。"
         "\n- 只写 2-4 句，不要给建议、不要列点、不要引用来源"
         "\n- 说清楚你记得的是什么，让他知道你不是群发"

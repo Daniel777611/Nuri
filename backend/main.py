@@ -702,15 +702,28 @@ class FeedModeUpdate(BaseModel):
 class DailyPushToggle(BaseModel):
     enabled: bool
 
+# mode / priority / applies_when are what decide whether a rule reaches a given
+# prompt at all — see nuri_style_rules_selection.sql. They are editable here for
+# the same reason `active` is: retiring or narrowing a rule that turns out to
+# make NURI worse should not need a deploy.
 class StyleRuleCreate(BaseModel):
-    rule:        str
-    category:    Optional[str] = None
-    source_note: Optional[str] = None
+    rule:         str
+    category:     Optional[str] = None
+    source_note:  Optional[str] = None
+    #: Defaults to advisory, matching the column. A hand-written rule is one
+    #: person's read of a few replies; promoting it to must-follow for every
+    #: parent is a decision someone should have to type.
+    mode:         Optional[str] = None
+    priority:     Optional[int] = None
+    applies_when: Optional[dict] = None
 
 class StyleRuleUpdate(BaseModel):
-    rule:     Optional[str]  = None
-    category: Optional[str]  = None
-    active:   Optional[bool] = None
+    rule:         Optional[str]  = None
+    category:     Optional[str]  = None
+    active:       Optional[bool] = None
+    mode:         Optional[str]  = None
+    priority:     Optional[int]  = None
+    applies_when: Optional[dict] = None
 
 class FixReviewerAdd(BaseModel):
     email: EmailStr
@@ -5712,8 +5725,11 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
     return {"ok": True}
 
 # NURI 的"规则文档"：由 #fix 聊天指令自动写入，也可以在这里直接管理。
-# 每次生成回复都会把 active=true 的规则整段注入 system prompt（见
-# core_dialogue_reply.get_style_rules_ctx / core_dialogue_reply.nuri_reply_sync）。
+# active=true 不再等于"进入这一轮的 prompt"：mode='must' 的规则每轮都在，
+# mode='advisory' 的按 priority 取前几条，带 applies_when 的还要这一轮的
+# facts 命中才会出现。选择逻辑在 core_dialogue.plan，上限在
+# core_dialogue.ALWAYS_ADVISORY_LIMIT / CONDITIONAL_ADVISORY_LIMIT，
+# 由来见 supabase/migrations/20260831010000_nuri_style_rules_selection.sql。
 @app.get("/admin/style-rules")
 async def admin_list_style_rules(_: None = Depends(_require_admin)):
     sb = _get_supabase()
@@ -5731,6 +5747,12 @@ async def admin_create_style_rule(body: StyleRuleCreate, _: None = Depends(_requ
         "id": str(uuid.uuid4()), "rule": body.rule, "category": body.category,
         "source_note": body.source_note, "active": True, "created_by": "admin",
     }
+    # Omitted keys fall through to the column defaults (advisory, priority 50,
+    # no condition) rather than being written as nulls.
+    for key in ("mode", "priority", "applies_when"):
+        value = getattr(body, key)
+        if value is not None:
+            row[key] = value
     sb.table("nuri_style_rules").insert(row).execute()
     return row
 
