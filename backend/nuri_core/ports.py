@@ -104,6 +104,13 @@ class CorePorts:
     #: eligibility, immigration status, statutory leave, special-education
     #: rights, what a plan covers. Additive, not a gate.
     is_referral: Callable[..., bool] = _false
+    #: (user_text) -> a stable code naming which kind of emergency this is.
+    #: Only read once `is_urgent` has said yes; labels the escalation for
+    #: the audit trail rather than deciding anything.
+    urgent_category: Optional[Callable[..., str]] = None
+    #: (user_text) -> True when the parent says the call is made or they
+    #: are on their way. Meaningful only inside an emergency already open.
+    is_emergency_handoff: Optional[Callable[..., bool]] = None
 
     # ── tuning ────────────────────────────────────────────────────────────
     settings: dict = field(default_factory=dict)

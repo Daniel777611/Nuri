@@ -27,6 +27,7 @@ def verdict(text: str):
         is_crisis=dialogue_reply.crisis_detected,
         is_caregiver_harm=dialogue_reply.caregiver_harm_detected,
         is_referral=dialogue_reply.referral_needed,
+        urgent_category=dialogue_reply.urgent_category,
     )
 
 
@@ -111,8 +112,23 @@ def test_caregiver_harm_is_distinguishable_from_the_other_two_urgents():
     parent = events_for("我觉得没有我大家会更好")
     assert harm["risk_tier"] == "caregiver_harm"
     assert harm["escalation_reason_code"] == "safety.caregiver_harm"
-    assert child["escalation_reason_code"] == "safety.emergency"
+    assert child["escalation_reason_code"] == "safety.emergency.airway"
     assert parent["escalation_reason_code"] == "safety.crisis"
+
+
+@pytest.mark.parametrize("text,code", [
+    ("嘴唇好像开始肿了，还咳了几声", "safety.emergency.anaphylaxis"),
+    ("宝宝不呼吸了", "safety.emergency.airway"),
+    ("摔下来头着地", "safety.emergency.head_injury"),
+    ("他把奶奶的药吃了好几颗", "safety.emergency.poisoning"),
+])
+def test_every_emergency_carries_a_non_empty_stable_reason_code(text, code):
+    """Round two: `escalation_reason_code` was null on all four turns of an
+    anaphylaxis dialogue. Every emergency shared one directive id, and the
+    reason came from the id."""
+    events = events_for(text)
+    assert events["escalation_level"] == "urgent"
+    assert events["escalation_reason_code"] == code
 
 
 def test_a_harm_turn_proposes_no_task_cards():

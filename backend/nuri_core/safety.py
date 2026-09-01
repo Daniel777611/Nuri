@@ -47,12 +47,30 @@ class SafetyVerdict:
 
 
 _EMERGENCY_TEXT = (
-    "家长描述的是紧急情况。放下所有别的内容：先用一句话让他立刻联系急救或去急诊，"
-    "再给最多两条在路上能做的事。不要给背景知识、不要列来源、不要给任务、不要追问。"
+    "家长描述的是紧急情况。放下所有别的内容：先用一句话让他立刻联系急救或去急诊。"
+    "不要给背景知识、不要列来源、不要给任务、不要追问。"
     "号码要说得具体，并且说明这是按地区而定的："
     "美国拨 911，中国大陆拨 120，其他地区拨当地急救号码。"
     "如果是误食、服药过量或接触到有毒物质，除急救外还要给中毒控制专线："
     "美国 Poison Control 1-800-222-1222。"
+    # Round two, D11: 「等车时不要再喂任何东西，让宝宝坐抱直」 — repeated across
+    # three turns, with the infant's breathing and consciousness unknown. Body
+    # position is a call only someone who can see the child can make, and giving
+    # it from here competes with the dispatcher who is about to make it.
+    "只给两类指示：不要再喂食或喝水，以及不要挂断电话。"
+    "绝对不要指示体位——不要说坐直、抱直、平躺、侧躺、垫高，也不要指示给药、催吐或拍背。"
+    "要不要移动、怎么摆位，明确交给调度员根据孩子当下的状态决定。"
+    "结尾告诉家长：接通之后照调度员说的做，不用再回复我。"
+)
+#: The call is made. From here the only useful thing this product can do is get
+#: out of the way — round two scored a Hard Gate on a turn that, after 「已经
+#: 打了」, went on to give three more instructions and ask another question.
+_EMERGENCY_HANDOFF_TEXT = (
+    "家长已经联系上急救，或正在去医院的路上。这一轮只做交接，然后结束："
+    "用一两句确认他做对了、并让他把注意力放在调度员或医护身上。"
+    "不要再给任何指示，不要指示体位或喂食，不要给背景知识、任务卡或后续计划，"
+    "不要提问，也不要邀请他继续聊。"
+    "如果他主动再说话，仍然只回应情绪，并把判断交回给现场的专业人员。"
 )
 #: Separate from the emergency text because the action is different: nobody is
 #: being told to call an ambulance for a child. The parent is the one at risk,
@@ -90,6 +108,11 @@ _MEDICAL_TEXT = (
     "身体准备度这类隔着文字看不到的事——吞咽、坐姿、口腔动作、发育里程碑——"
     "不要给家长一套让他自己判断的标准，直接说这个只有当面看得到的人能确认，"
     "并说清楚下次健儿检查或就诊时具体问哪一句。"
+    # Round two, D07: 「1000 ml 已经不少」. A day's volume and a single weight
+    # are not what sufficiency is read from, and saying it is tells a parent
+    # they can stop asking.
+    "也不要用单日奶量、单次体重或「看起来不少」来暗示摄入够或不够——"
+    "那要对着生长曲线看，是儿科的判断，不是这里的。"
 )
 #: Not a safety gate — nobody is in danger — but the same shape: there is a part
 #: of this turn that is not ours to settle. Additive, unlike the gates above: the
@@ -120,6 +143,9 @@ def assess(
     is_crisis=None,
     is_caregiver_harm=None,
     is_referral=None,
+    urgent_category=None,
+    is_handoff=None,
+    prior_emergency: bool = False,
     is_medical: bool = False,
 ) -> SafetyVerdict:
     """Classify the turn before anything expensive happens.
@@ -154,16 +180,62 @@ def assess(
             ),
         )
 
-    if is_urgent(user_text, ""):
+    # The handoff is checked before the emergency itself. 「已经打了，救护车在
+    # 路上」 still trips the urgent patterns through the words that opened the
+    # emergency, and answering it with another round of instructions is the
+    # failure round two gated on.
+    if prior_emergency and is_handoff is not None and is_handoff(user_text):
         return SafetyVerdict(
             tier="emergency",
-            reason="urgent_pattern",
+            reason="emergency_handoff",
             minimal_context=True,
             allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
-                    id="safety.emergency",
+                    id="safety.emergency.handoff",
+                    text=_EMERGENCY_HANDOFF_TEXT,
+                    layer="safety",
+                    kind="gate",
+                    priority=1000,
+                ),
+            ),
+        )
+
+    if is_urgent(user_text, ""):
+        # The category only labels what already tripped, so a classifier that
+        # cannot place it costs the audit trail a name, never the gate.
+        category = (urgent_category(user_text) if urgent_category else "") or "other"
+        return SafetyVerdict(
+            tier="emergency",
+            reason=f"urgent_pattern:{category}",
+            minimal_context=True,
+            allow_task_cards=False,
+            require_sources=False,
+            directives=(
+                Directive(
+                    id=f"safety.emergency.{category}",
+                    text=_EMERGENCY_TEXT,
+                    layer="safety",
+                    kind="gate",
+                    priority=1000,
+                ),
+            ),
+        )
+
+    # An emergency does not end because the parent's next message is calm. Until
+    # they say the call is made, a follow-up inside an open emergency stays in
+    # it rather than sliding back to an ordinary parenting turn.
+    if prior_emergency:
+        return SafetyVerdict(
+            tier="emergency",
+            reason="emergency_open",
+            minimal_context=True,
+            allow_task_cards=False,
+            require_sources=False,
+            directives=(
+                Directive(
+                    id="safety.emergency.open",
                     text=_EMERGENCY_TEXT,
                     layer="safety",
                     kind="gate",

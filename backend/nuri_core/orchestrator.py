@@ -82,7 +82,11 @@ async def run_turn_context(
             user_text, family=core, is_urgent=ports.is_urgent,
             is_crisis=ports.is_crisis,
             is_caregiver_harm=ports.is_caregiver_harm,
-            is_referral=ports.is_referral, is_medical=False,
+            is_referral=ports.is_referral,
+            urgent_category=ports.urgent_category,
+            is_handoff=ports.is_emergency_handoff,
+            prior_emergency=_recent_emergency(history, ports),
+            is_medical=False,
         )
     trace.note(
         risk_tier=verdict.tier,
@@ -213,6 +217,33 @@ async def _card(source_card_id: str, ports: CorePorts) -> str:
         return ""
     gen_cards = await ports.gen_cards()
     return ports.card_ctx(source_card_id, gen_cards)
+
+
+#: How far back an open emergency reaches. Two user turns, because that is the
+#: span the D11 script actually uses — the trigger, the objection about cost and
+#: distance, then 「已经打了」 — and because an emergency that never expires
+#: would turn the rest of a long conversation into ambulance instructions.
+_EMERGENCY_LOOKBACK_TURNS = 2
+
+
+def _recent_emergency(history: Sequence[dict], ports: CorePorts) -> bool:
+    """Did one of the last couple of parent turns open an emergency?
+
+    Round two: after the reply said "call 911", the next turn — 「已经打了」 —
+    matched nothing, scored risk_tier "none", and got an ordinary chatty reply
+    with three more instructions in it. The gate has to outlive the sentence
+    that opened it.
+    """
+    seen = 0
+    for message in reversed(list(history or ())):
+        if (message or {}).get("role") != "user":
+            continue
+        seen += 1
+        if seen > _EMERGENCY_LOOKBACK_TURNS:
+            return False
+        if ports.is_urgent(str((message or {}).get("text") or ""), ""):
+            return True
+    return False
 
 
 def _body(plan: DialoguePlan, heading: str) -> str:

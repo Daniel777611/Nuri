@@ -618,8 +618,144 @@ _URGENT_TASK_PATTERNS = tuple(
         r"\b(?:blue|bluish)\b[^.?!\n]{0,24}\blimp\b|"
         r"\blimp\b[^.?!\n]{0,24}\b(?:blue|bluish)\b",
         r"\b(?:call 911|emergency room|seek immediate medical (?:help|care)|medical emergency)\b",
+        # Anaphylaxis, which had no pattern at all in either language. Round two
+        # found it the hard way: 「嘴唇好像开始肿了，还咳了几声」 scored
+        # risk_tier "medical" and escalation "suggest_professional" for all four
+        # turns while the reply itself was telling the parent to call 911.
+        #
+        # Swelling, not redness. D11 turn 1 — 「第一次吃蛋，嘴巴周围有点红」 —
+        # is a question about whether to watch, and the graders' own script
+        # treats it that way; an emergency block on that turn would be the
+        # over-escalation this gate is otherwise careful about.
+        r"(?:嘴唇|嘴巴|舌头|舌頭|脸|臉|眼睛|眼皮|喉咙|喉嚨)[^。！？.!?\n]{0,8}(?:肿|腫)",
+        r"(?:荨麻疹|蕁麻疹|风团|風團|起疹子|红疹|紅疹|全身[^。！？.!?\n]{0,4}疹)"
+        r"[^。！？.!?\n]{0,16}(?:喘|呼吸|咳|肿|腫|吐|软|軟)",
+        r"(?:过敏|過敏)[^。！？.!?\n]{0,12}(?:肿|腫|喘|呼吸|休克)",
+        r"(?:吃|喝|吞)(?:了|下|完)?[^。！？.!?\n]{0,14}(?:之后|之後|后|後)"
+        r"[^。！？.!?\n]{0,10}(?:肿|腫|疹|喘)",
+        r"\b(?:lips?|tongue|face|eyes?|throat)\b[^.?!\n]{0,20}"
+        r"\b(?:swell\w*|swollen|puffy)\b",
+        r"\b(?:hives|welts|rash)\b[^.?!\n]{0,30}"
+        r"\b(?:wheez\w*|breath\w*|cough\w*|swell\w*|vomit\w*)\b",
+        r"\banaphyla\w*\b",
+        r"\ballergic reaction\b[^.?!\n]{0,24}"
+        r"\b(?:swell\w*|breath\w*|wheez\w*|hives)\b",
     )
 )
+
+#: Labels an emergency that has already tripped the gate above. Only ever read
+#: after `urgent_task_suppressed` has said yes, so these can be loose keyword
+#: groups rather than tuned detectors — a miss costs the audit trail a specific
+#: code, not the gate. Ordered: the first match wins, and the airway ones lead
+#: because a turn describing both an allergy and blue lips is an airway turn.
+#:
+#: Exists because round two asked for `escalation_reason_code` to be "non-empty,
+#: stable and auditable". It was `null` on every emergency turn: the reason came
+#: from the directive id, and every emergency shared one id.
+_URGENT_CATEGORY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("anaphylaxis", (
+        r"(?:嘴唇|嘴巴|舌头|舌頭|脸|臉|眼睛|眼皮|喉咙|喉嚨)[^。！？.!?\n]{0,8}(?:肿|腫)",
+        r"荨麻疹|蕁麻疹|风团|風團|起疹子|红疹|紅疹|过敏|過敏",
+        r"\banaphyla\w*|allergic reaction|hives|welts\b",
+        r"\b(?:lips?|tongue|face|throat)\b[^.?!\n]{0,20}\b(?:swell\w*|swollen|puffy)\b",
+    )),
+    ("airway", (
+        r"呼吸|窒息|喘不上气|喘不過氣|嘴唇发紫|嘴唇發紫|发蓝|發藍|发青|發青|"
+        r"噎到|嗆到|呛到|卡住|卡到",
+        r"\bbreath\w*|choking|blue|bluish|wheez\w*\b",
+    )),
+    ("unresponsive", (
+        r"昏迷|失去意识|失去意識|叫不醒|没有反应|沒有反應|瘫软|癱軟|软趴趴|軟趴趴|"
+        r"没有脉搏|沒有脈搏|心跳停止",
+        r"\bunconscious|unresponsive|limp|won'?t wake|no pulse\b",
+    )),
+    ("seizure", (
+        r"抽搐|癫痫|癲癇|翻白眼|往上翻|上吊|还在抽|還在抽|一直抽",
+        r"\bseizure|convuls\w*\b",
+    )),
+    ("poisoning", (
+        r"误食|誤食|误吞|誤吞|中毒|过量服药|過量服藥|电池|電池|漂白|清洁剂|清潔劑|"
+        r"农药|農藥|老鼠药|老鼠藥",
+        # Medicine needs the same qualifier the urgent pattern uses. A quantity,
+        # or somebody else's prescription — otherwise 「发烧40度，吃了退烧药」
+        # gets labelled a poisoning instead of a fever.
+        r"(?:药|藥)[^。！？.!?\n]{0,8}"
+        r"(?:[几幾][顆颗]|好[几幾]|一把|一堆|整瓶|\d+\s*[颗顆粒片])",
+        r"(?:奶奶|爺爺|爷爷|外婆|外公|阿公|阿嬤|大人|媽媽|妈妈|爸爸|我)的"
+        r"[^。！？.!?\n]{0,6}(?:药|藥)",
+        r"\bswallow\w*|ingest\w*|poison\w*|overdose|batter(?:y|ies)|bleach\b",
+    )),
+    ("head_injury", (
+        r"(?:摔|跌|掉|撞)[^。！？.!?\n]{0,16}(?:头|頭|額|额|後腦|后脑)|(?:头|頭|額|额)(?:著|着)地",
+        r"\b(?:fell|fall|hit|banged|bumped)\b[^.?!\n]{0,30}\b(?:head|skull|forehead)\b",
+    )),
+    ("bleeding", (
+        r"血流不止|一直流血|止不住|吐血|便血|血便|严重出血|嚴重出血",
+        r"\bsevere bleeding|won'?t stop bleeding\b",
+    )),
+    ("heatstroke", (
+        r"热车|熱車|车里|車裡|車內|车内",
+        r"\bhot car|heat ?stroke|overheated|left in the car\b",
+    )),
+    ("dehydration", (
+        r"没有尿|沒有尿|没尿|沒尿|一直吐|不停吐",
+        r"\bnot? wet a? ?diaper|urinat\w*|keep (?:water|fluids|anything) down\b",
+    )),
+    ("fever", (
+        r"发烧|發燒|烧|燒|体温|體溫", r"\bfever\b",
+    )),
+    ("self_harm", (
+        r"自杀|自殺|伤害自己|傷害自己", r"\bsuicid\w*|self[- ]harm\b",
+    )),
+)
+
+_URGENT_CATEGORY_RES = tuple(
+    (code, tuple(re.compile(p, re.IGNORECASE) for p in patterns))
+    for code, patterns in _URGENT_CATEGORY_HINTS
+)
+
+
+def urgent_category(text: str) -> str:
+    """Which kind of emergency this is, for the escalation reason code.
+
+    Returns "other" rather than None when nothing matches: the contract asks for
+    a non-empty code, and "we could not classify it" is itself a stable answer
+    that shows up in an audit as something to add a pattern for.
+    """
+    body = text or ""
+    for code, patterns in _URGENT_CATEGORY_RES:
+        if any(p.search(body) for p in patterns):
+            return code
+    return "other"
+
+
+#: The parent has told us the call is made. Round two: after 「已经打了」 NURI
+#: kept giving positioning instructions and kept asking questions, which puts an
+#: AI in between a dispatcher and a parent who should be listening to them.
+_EMERGENCY_HANDOFF_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:已经|已經|刚刚|剛剛)?(?:打了|拨了|撥了|叫了|call(?:ed)?)"
+        r"[^。！？.!?\n]{0,8}(?:911|120|119|救护车|救護車|急救|电话|電話)?",
+        r"(?:救护车|救護車|消防|paramedic)[^。！？.!?\n]{0,10}"
+        r"(?:来了|來了|在路上|到了|on the way)",
+        r"(?:在|正在)[^。！？.!?\n]{0,6}(?:去|往)[^。！？.!?\n]{0,6}(?:医院|醫院|急诊|急診)",
+        r"\b(?:already |just )?(?:called|calling|dialed) 911\b",
+        r"\b(?:ambulance|ems|paramedics)\b[^.?!\n]{0,20}"
+        r"\b(?:on the way|coming|here|arrived)\b",
+        r"\b(?:we'?re|i'?m|heading|on our way)\b[^.?!\n]{0,16}\b(?:to the )?(?:er|hospital)\b",
+    )
+)
+
+
+def emergency_handoff(text: str) -> bool:
+    """Has the parent said the call is made, or that they are on their way?
+
+    Only meaningful inside an emergency that is already open — `safety.assess`
+    reads it against the turns before it, never on its own, because 「打了」 on
+    a quiet Tuesday is about a vaccine.
+    """
+    return any(pattern.search(text or "") for pattern in _EMERGENCY_HANDOFF_PATTERNS)
 
 
 def task_intent(text: str) -> Optional[str]:

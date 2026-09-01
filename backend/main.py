@@ -4575,6 +4575,8 @@ def _core_ports() -> CorePorts:
             is_crisis=core_dialogue_reply.crisis_detected,
             is_caregiver_harm=core_dialogue_reply.caregiver_harm_detected,
             is_referral=core_dialogue_reply.referral_needed,
+            urgent_category=core_dialogue_reply.urgent_category,
+            is_emergency_handoff=core_dialogue_reply.emergency_handoff,
         )
     return _core_ports_singleton
 
