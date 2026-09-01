@@ -63,6 +63,12 @@ async def decide(
         return (
             EvidenceDecision(
                 risk_tier=verdict.tier,
+                # Carried, not dropped. `_turn_events` reads the escalation
+                # reason code off these, and leaving them behind is why
+                # every emergency turn of every round so far reported
+                # `escalation_reason_code: null` no matter what id the
+                # safety layer put on the directive.
+                directives=verdict.directives,
                 skipped={"internal": "emergency", "web": "emergency"},
             ),
             verdict,
@@ -110,6 +116,7 @@ async def decide(
     decision = EvidenceDecision(
         route=route,
         risk_tier=verdict.tier,
+        directives=verdict.directives,
         internal_block=internal_block,
         sources_block=ports.sources_prompt_block(results) if results else "",
         search_results=results,

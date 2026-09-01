@@ -35,7 +35,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 import asyncio, io, json, logging, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
-from typing import List, Literal, NamedTuple, Optional
+from typing import List, Literal, NamedTuple, Optional, Sequence
 from urllib.parse import urlparse
 
 import anyio
@@ -4962,10 +4962,56 @@ def _version_info(rules_fingerprint: str = "", model: str = "") -> dict:
     }
 
 
+async def _save_proposed_tasks(
+    uid: str, message_id: str, transition: Optional[dict],
+) -> list[str]:
+    """Persist this turn's task proposals and return their ids.
+
+    The chat turn used to only *propose*: a row appeared when the parent
+    accepted one through `POST /api/tasks`, and `events.task_created` was
+    hardcoded false to say so. In the shipped product nothing asks the parent
+    to accept — the cards are the tasks — so the flag described a confirmation
+    step that does not exist, and an evaluator driving the API saw a turn that
+    proposed four Daycare questions and saved none of them.
+
+    Safe to run alongside a client that also posts them: a suggestion's id is a
+    uuid5 of the message id and the proposal's index, so both writes resolve to
+    one row and the loser is a no-op. Failures here are logged and dropped —
+    a task that did not save is not a reason to lose the reply it came with.
+    """
+    proposals = list((transition or {}).get("tasks") or [])
+    if not proposals or not uid or not message_id:
+        return []
+    saved: list[str] = []
+    for index, proposal in enumerate(proposals):
+        try:
+            body = TaskCreate(
+                title=str(proposal.get("title") or "").strip(),
+                description=proposal.get("description") or "",
+                steps=proposal.get("steps") or [],
+                task_type=proposal.get("task_type") or "interaction",
+                scope=proposal.get("scope") or "today",
+                source_message_id=message_id,
+                suggestion_index=index,
+            )
+        except Exception as e:
+            print(f"[warn] _save_proposed_tasks: unusable proposal {index}: {e}")
+            continue
+        if not body.title:
+            continue
+        try:
+            row = await create_task(body, uid)
+            saved.append(str(row.get("id") or ""))
+        except Exception as e:
+            print(f"[warn] _save_proposed_tasks: {type(e).__name__}: {e}")
+    return [task_id for task_id in saved if task_id]
+
+
 def _turn_events(
     rc: Optional["_ReplyContext"],
     transition: Optional[dict],
     session: dict,
+    task_ids: Optional[Sequence[str]] = None,
 ) -> dict:
     """Machine-readable product outcomes for one turn."""
     evidence = getattr(rc, "evidence", None)
@@ -4978,13 +5024,15 @@ def _turn_events(
             break
     proposals = list((transition or {}).get("tasks") or [])
     card_id = str(session.get("source_card_id") or "") or None
+    created = [str(task_id) for task_id in (task_ids or ()) if task_id]
     return {
-        # A chat turn *proposes* tasks. A row in `tasks` appears only when the
-        # parent accepts one through POST /api/tasks, which is a separate
-        # request. Reporting a draft as created would make every assertion
-        # about task creation wrong in the same direction.
-        "task_created": False,
-        "task_ids": [],
+        # Both, because they are different facts. `task_proposed` is what the
+        # reply offered; `task_created` is what is now a row. They came apart
+        # when the turn proposed something the save could not keep — an
+        # unusable proposal, or Supabase refusing the write — and a grader
+        # reading only one of them would not see that.
+        "task_created": bool(created),
+        "task_ids": created,
         "task_proposed": bool(proposals),
         "task_proposal_count": len(proposals),
         "card_ids": [card_id] if card_id else [],
@@ -4998,6 +5046,7 @@ def _turn_events(
 def _turn_envelope(
     turn: "_Turn", ai_messages: list, rc: Optional["_ReplyContext"],
     transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
+    task_ids: Optional[Sequence[str]] = None,
 ) -> dict:
     """The chat response body, shared by the blocking and streaming paths."""
     # Not `rc.style`. That is the subset of rules this turn matched, and hashing
@@ -5008,7 +5057,7 @@ def _turn_envelope(
         "user_message": turn.user_msg,
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
-        "events": _turn_events(rc, transition, turn.session),
+        "events": _turn_events(rc, transition, turn.session, task_ids),
         "version": _version_info(
             core_dialogue_reply.style_rules_fingerprint_cached(), model,
         ),
@@ -5039,9 +5088,17 @@ async def post_message(
         # A replay must report the events of the turn it is replaying, not an
         # empty set: an idempotent retry that silently loses the escalation
         # flag is worse than no flag at all.
+        # The save is idempotent on the replayed message's id, so this
+        # reports the same task ids the first attempt did rather than an
+        # empty list — same reason the events are replayed at all.
         return _turn_envelope(
             turn, [turn.replayed_ai_message], None,
             turn.replayed_ai_message.get("transition"),
+            task_ids=await _save_proposed_tasks(
+                turn.owner_uid,
+                str(turn.replayed_ai_message.get("id") or ""),
+                turn.replayed_ai_message.get("transition"),
+            ),
         )
     transition = None
     quick_replies: list = []
@@ -5118,7 +5175,10 @@ async def post_message(
             temporal_context=turn.temporal,
         )
 
-    return _turn_envelope(turn, [ai_msg], rc, transition, metrics)
+    saved_task_ids = await _save_proposed_tasks(
+        turn.owner_uid, str(ai_msg.get("id") or ""), transition,
+    )
+    return _turn_envelope(turn, [ai_msg], rc, transition, metrics, saved_task_ids)
 
 
 def _sse(payload: dict) -> str:
@@ -5209,7 +5269,12 @@ async def post_message_stream(
             claim_completed = True
             yield _sse({
                 "type": "done",
-                **_turn_envelope(turn, [ai_msg], rc, transition, metrics),
+                **_turn_envelope(
+                    turn, [ai_msg], rc, transition, metrics,
+                    await _save_proposed_tasks(
+                        turn.owner_uid, str(ai_msg.get("id") or ""), transition,
+                    ),
+                ),
             })
 
             ai_message_created = getattr(ai_msg, "created", True)
@@ -5299,8 +5364,16 @@ async def list_tasks(scope: Optional[str] = None, uid: str = Depends(_req_uid)):
         tasks = [t for t in tasks if t["scope"] == scope]
     return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
 
-@api.post("/tasks", status_code=201)
-async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
+def _task_row(body: TaskCreate, uid: str) -> tuple[dict, bool]:
+    """The row a proposal becomes, and whether it came from a chat turn.
+
+    Shared by `POST /api/tasks` and by the chat turn that now writes its own
+    proposals, so a task saved by the client and the same task saved by the
+    server are the same row rather than two rows that drift. The id is what
+    makes that safe: for a chat suggestion it is a uuid5 of the message id and
+    the proposal's index, so both paths land on it and the second one is a
+    no-op.
+    """
     due = date.today() + timedelta(days=0 if body.scope == "today" else 7)
     is_suggestion = (
         body.source_message_id is not None and body.suggestion_index is not None
@@ -5313,7 +5386,7 @@ async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
         str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri-task:{uid}:{source}"))
         if is_suggestion else str(uuid.uuid4())
     )
-    task = {
+    return {
         "id": task_id, "title": body.title, "scope": body.scope,
         "source": source, "done": False, "progress_done": 0,
         "progress_total": 7 if body.scope == "week" else 1,
@@ -5324,8 +5397,14 @@ async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
         "due_date": body.due_date or due.isoformat(),
         "is_favorited": False,
         "backfilled": False,
-    }
-    task["user_id"] = uid
+        "user_id": uid,
+    }, is_suggestion
+
+
+@api.post("/tasks", status_code=201)
+async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
+    task, is_suggestion = _task_row(body, uid)
+    task_id = task["id"]
     sb = _get_supabase()
     if sb:
         def find_existing():

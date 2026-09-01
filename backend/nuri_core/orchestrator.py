@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from backend.nuri_core import (
@@ -40,6 +41,7 @@ from backend.nuri_core import (
     knowledge,
     outcome,
     safety,
+    temporal,
 )
 from backend.nuri_core.contracts import (
     DialoguePlan,
@@ -85,7 +87,7 @@ async def run_turn_context(
             is_referral=ports.is_referral,
             urgent_category=ports.urgent_category,
             is_handoff=ports.is_emergency_handoff,
-            prior_emergency=_recent_emergency(history, ports),
+            open_emergency=open_emergency(history, ports),
             is_medical=False,
         )
     trace.note(
@@ -219,31 +221,64 @@ async def _card(source_card_id: str, ports: CorePorts) -> str:
     return ports.card_ctx(source_card_id, gen_cards)
 
 
-#: How far back an open emergency reaches. Two user turns, because that is the
-#: span the D11 script actually uses — the trigger, the objection about cost and
-#: distance, then 「已经打了」 — and because an emergency that never expires
-#: would turn the rest of a long conversation into ambulance instructions.
-_EMERGENCY_LOOKBACK_TURNS = 2
+#: How long an emergency stays open without anything new confirming it. This
+#: product keeps one continuous conversation per family rather than a session
+#: per topic, so a latch with no expiry would answer a feeding question in June
+#: with ambulance instructions from an emergency in March. An hour is longer
+#: than any dispatch takes and far shorter than that.
+_EMERGENCY_OPEN_WINDOW_S = 60 * 60
 
 
-def _recent_emergency(history: Sequence[dict], ports: CorePorts) -> bool:
-    """Did one of the last couple of parent turns open an emergency?
+def open_emergency(
+    history: Sequence[dict], ports: CorePorts, now=None,
+) -> str:
+    """The category of an emergency that is still open, or "".
 
-    Round two: after the reply said "call 911", the next turn — 「已经打了」 —
-    matched nothing, scored risk_tier "none", and got an ordinary chatty reply
-    with three more instructions in it. The gate has to outlive the sentence
-    that opened it.
+    Round two asked the gate to outlive the sentence that opened it; round three
+    showed it still did not. The first attempt walked back a fixed two user
+    turns, and the history it walks includes the turn being answered — so at
+    「已经打了」 the window covered that turn and the one before it, and the
+    turn that actually opened the emergency fell one place outside. An
+    off-by-one, and the sort that a unit test built from the same wrong
+    assumption will happily confirm.
+
+    So it no longer counts turns. It reads back to the most recent parent turn
+    that tripped the gate and reports what kind it was, which is also what lets
+    the handoff turn carry the same reason code as the turns before it. The
+    history handed in is already the recent window, and the clock check below
+    bounds it the rest of the way.
     """
-    seen = 0
     for message in reversed(list(history or ())):
         if (message or {}).get("role") != "user":
             continue
-        seen += 1
-        if seen > _EMERGENCY_LOOKBACK_TURNS:
-            return False
-        if ports.is_urgent(str((message or {}).get("text") or ""), ""):
-            return True
-    return False
+        text = str((message or {}).get("text") or "")
+        if not ports.is_urgent(text, ""):
+            continue
+        if not _within_open_window(message.get("created_at"), now):
+            return ""
+        category = ports.urgent_category(text) if ports.urgent_category else ""
+        return category or "other"
+    return ""
+
+
+def _within_open_window(created_at, now=None) -> bool:
+    """Recent enough for the emergency to still be running.
+
+    An unreadable or missing timestamp counts as recent. This decides whether a
+    turn gets emergency handling, and of the two ways to be wrong, treating a
+    stale emergency as live is the one that costs a parent an unnecessary
+    sentence rather than a missed one.
+    """
+    if not created_at:
+        return True
+    try:
+        stamp = temporal.parse_created_at(created_at)
+        reference = now or datetime.now(timezone.utc)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return (reference - stamp).total_seconds() <= _EMERGENCY_OPEN_WINDOW_S
+    except Exception:
+        return True
 
 
 def _body(plan: DialoguePlan, heading: str) -> str:

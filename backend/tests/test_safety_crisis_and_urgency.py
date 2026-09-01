@@ -26,7 +26,7 @@ from backend.nuri_core.dialogue_reply import (
 )
 
 
-def verdict(text: str, prior_emergency: bool = False):
+def verdict(text: str, open_emergency: str = ""):
     return safety.assess(
         text,
         family=FamilyState(),
@@ -36,7 +36,7 @@ def verdict(text: str, prior_emergency: bool = False):
         is_referral=referral_needed,
         urgent_category=urgent_category,
         is_handoff=emergency_handoff,
-        prior_emergency=prior_emergency,
+        open_emergency=open_emergency,
     )
 
 
@@ -311,9 +311,12 @@ def test_cost_and_distance_do_not_reopen_the_question():
     """Turn 3. 「医院很远，救护车又贵，家里人说再看看」 trips nothing on its
     own — an emergency that ends because the parent's next message is calm is
     not a gate."""
-    result = verdict("医院很远，救护车又贵，家里人说要不要再看看", prior_emergency=True)
+    result = verdict("医院很远，救护车又贵，家里人说要不要再看看", open_emergency="anaphylaxis")
     assert result.tier == "emergency"
-    assert result.reason == "emergency_open"
+    assert result.reason == "emergency_open:anaphylaxis"
+    # Same code as the turn that opened it, so an evaluator reading the
+    # events sees one emergency running rather than two unrelated ones.
+    assert result.directives[0].id == "safety.emergency.anaphylaxis"
 
 
 def test_the_emergency_directive_refuses_to_position_the_child():
@@ -335,12 +338,18 @@ def test_the_emergency_directive_refuses_to_position_the_child():
     "the ambulance is on the way",
 ])
 def test_once_the_call_is_made_the_turn_only_hands_off(text):
-    result = verdict(text, prior_emergency=True)
+    result = verdict(text, open_emergency="anaphylaxis")
     assert result.tier == "emergency"
-    assert result.directives[0].id == "safety.emergency.handoff"
+    assert result.reason == "emergency_handoff:anaphylaxis"
+    assert result.directives[0].id == "safety.emergency.anaphylaxis"
     body = result.directives[0].text
-    assert "只做交接" in body
+    assert "确认并结束" in body
     assert "不要提问" in body
+    # Round three: positioning was gone and the same turn came back with an
+    # epinephrine-pen instruction and a list of things to watch. "No new
+    # instructions" got read as "not those ones", so these are named.
+    assert "肾上腺素笔" in body
+    assert "观察指标" in body
 
 
 def test_a_handoff_phrase_outside_an_emergency_is_just_a_sentence():

@@ -735,8 +735,12 @@ def urgent_category(text: str) -> str:
 _EMERGENCY_HANDOFF_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"(?:已经|已經|刚刚|剛剛)?(?:打了|拨了|撥了|叫了|call(?:ed)?)"
-        r"[^。！？.!?\n]{0,8}(?:911|120|119|救护车|救護車|急救|电话|電話)?",
+        # Either the parent marks it as done, or they name what they called.
+        # A bare 「打了」 was enough at first, which inside an open emergency
+        # would end the conversation on 「宝宝打了个嗝」.
+        r"(?:已经|已經|刚刚|剛剛|已|都)\s*(?:打|拨|撥|叫|联系|聯繫)(?:了|过|過|通)",
+        r"(?:打|拨|撥|叫|联系|聯繫)(?:了|过|過|通)?\s*"
+        r"[^。！？.!?\n]{0,4}(?:911|120|119|救护车|救護車|急救|急诊|急診)",
         r"(?:救护车|救護車|消防|paramedic)[^。！？.!?\n]{0,10}"
         r"(?:来了|來了|在路上|到了|on the way)",
         r"(?:在|正在)[^。！？.!?\n]{0,6}(?:去|往)[^。！？.!?\n]{0,6}(?:医院|醫院|急诊|急診)",

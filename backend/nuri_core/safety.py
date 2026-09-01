@@ -66,10 +66,17 @@ _EMERGENCY_TEXT = (
 #: out of the way — round two scored a Hard Gate on a turn that, after 「已经
 #: 打了」, went on to give three more instructions and ask another question.
 _EMERGENCY_HANDOFF_TEXT = (
-    "家长已经联系上急救，或正在去医院的路上。这一轮只做交接，然后结束："
-    "用一两句确认他做对了、并让他把注意力放在调度员或医护身上。"
-    "不要再给任何指示，不要指示体位或喂食，不要给背景知识、任务卡或后续计划，"
-    "不要提问，也不要邀请他继续聊。"
+    "家长已经联系上急救，或正在去医院的路上。控制权已经交出去了，"
+    "这一轮你唯一要做的事是确认并结束。"
+    "整段最多两句，例如：「好，接下来全程按调度员说的做。现在不用回复我。」"
+    # Round three: the positioning instructions were gone, and the same turn
+    # came back with 「如果你有医生开过的肾上腺素笔，也马上告诉调度员并按指示用」
+    # and a list of things to watch. "Don't give instructions" was read as
+    # "don't give *those* instructions", so the ones that got through are named.
+    "不要再给任何新的医疗内容——具体点名：不要提肾上腺素笔或任何药物、"
+    "不要给观察指标或要盯什么变化、不要说怎么转运、不要指示体位、不要说喂不喂。"
+    "这些都由调度员和到场的医护判断，你现在多说一句都是在占用他听指示的注意力。"
+    "不要提问、不要给任务卡或后续计划、不要邀请他继续聊。"
     "如果他主动再说话，仍然只回应情绪，并把判断交回给现场的专业人员。"
 )
 #: Separate from the emergency text because the action is different: nobody is
@@ -145,7 +152,11 @@ def assess(
     is_referral=None,
     urgent_category=None,
     is_handoff=None,
-    prior_emergency: bool = False,
+    #: The category of an emergency still running from an earlier turn, or
+    #: "". Carried rather than a bare flag so the handoff turn reports the
+    #: same reason code as the turn that opened it, which is what an
+    #: evaluator reads to see that one emergency happened and not two.
+    open_emergency: str = "",
     is_medical: bool = False,
 ) -> SafetyVerdict:
     """Classify the turn before anything expensive happens.
@@ -184,16 +195,19 @@ def assess(
     # 路上」 still trips the urgent patterns through the words that opened the
     # emergency, and answering it with another round of instructions is the
     # failure round two gated on.
-    if prior_emergency and is_handoff is not None and is_handoff(user_text):
+    if open_emergency and is_handoff is not None and is_handoff(user_text):
         return SafetyVerdict(
             tier="emergency",
-            reason="emergency_handoff",
+            reason=f"emergency_handoff:{open_emergency}",
             minimal_context=True,
             allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
-                    id="safety.emergency.handoff",
+                    # Same id as the turn that opened it. A grader checking
+                    # that the escalation held has to see one code, not a
+                    # code that changes the moment control transfers.
+                    id=f"safety.emergency.{open_emergency}",
                     text=_EMERGENCY_HANDOFF_TEXT,
                     layer="safety",
                     kind="gate",
@@ -226,16 +240,16 @@ def assess(
     # An emergency does not end because the parent's next message is calm. Until
     # they say the call is made, a follow-up inside an open emergency stays in
     # it rather than sliding back to an ordinary parenting turn.
-    if prior_emergency:
+    if open_emergency:
         return SafetyVerdict(
             tier="emergency",
-            reason="emergency_open",
+            reason=f"emergency_open:{open_emergency}",
             minimal_context=True,
             allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
-                    id="safety.emergency.open",
+                    id=f"safety.emergency.{open_emergency}",
                     text=_EMERGENCY_TEXT,
                     layer="safety",
                     kind="gate",
