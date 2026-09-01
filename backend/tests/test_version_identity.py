@@ -201,6 +201,38 @@ def test_the_safety_directives_reach_the_events_block():
     assert carried.directives[0].id == "safety.emergency.anaphylaxis"
 
 
+# ── a citation marker has to point at something ──────────────────────────────
+
+@pytest.mark.parametrize("text,expected", [
+    # LR02, verbatim. Nothing resolved, so the marker went out attached to
+    # nothing at all.
+    ("1岁前不要用牛奶或植物奶替代奶粉/母乳[1]。", "1岁前不要用牛奶或植物奶替代奶粉/母乳。"),
+    # And this one did resolve — which changes nothing, because the app renders
+    # no source list under a chat message. A marker only means something next
+    # to the list it indexes.
+    ("产科团队会包含哺乳支持[1]。", "产科团队会包含哺乳支持。"),
+    ("A[1]，B[2]。", "A，B。"),
+    ("没有标记的一句话。", "没有标记的一句话。"),
+])
+def test_no_citation_marker_reaches_the_parent(text, expected):
+    """`_cited_sources` already refuses to invent a link for an index it cannot
+    resolve. The prose was never held to the same rule, and 依据透明度 — 2.30,
+    the weakest metric of the low-risk round with seven of ten dialogues below
+    three — kept quoting exactly these sentences."""
+    assert main._strip_citation_markers(text) == expected
+
+
+def test_the_sources_themselves_are_still_recorded():
+    """Stripping the marker is a rendering decision, not a decision to stop
+    knowing where a claim came from. If the client ever shows a source list,
+    the data to index into is already on the message."""
+    class _Result:
+        title, url, site_name, lang, tier = "t", "https://example.org", "s", "zh", 1
+
+    resolved = main._cited_sources([1], [_Result()])
+    assert resolved and resolved[0]["url"] == "https://example.org"
+
+
 # ── task_created means a row exists ──────────────────────────────────────────
 
 def test_task_created_reports_what_was_actually_saved():

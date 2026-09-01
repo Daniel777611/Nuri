@@ -4845,6 +4845,29 @@ def _cited_sources(
     return out
 
 
+_CITATION_MARKER = re.compile(r"\s*\[(\d{1,2})\]")
+
+
+def _strip_citation_markers(text: str) -> str:
+    """Remove [n] markers from the reply body.
+
+    All of them, because the app does not render a source list under a chat
+    message. A marker only means something next to the list it indexes; without
+    one it is a citation shape pointing at nothing, and it reads as authority to
+    a parent who has no way to check it. `_cited_sources` already refuses to
+    invent a *link* for an unresolvable index — the prose was never held to the
+    same rule, so a turn that ran no search still shipped
+    「美国儿科学会也提醒…[1]」. 依据透明度 was the weakest metric of the low-risk
+    round at 2.30, seven of ten dialogues below three, and this is the sentence
+    the graders kept quoting back.
+
+    The resolved sources are still recorded on the message. If the client ever
+    renders them, this function is the one place to make the markers conditional
+    again — and `sources` will already be there to index into.
+    """
+    return _CITATION_MARKER.sub("", text or "")
+
+
 class _PersistedChatMessage(dict):
     """A normal response dict with non-serialized write ownership metadata."""
 
@@ -5127,9 +5150,9 @@ async def post_message(
                     temporal_context=turn.temporal,
                 )
             )
-            ai_text = reply["text"]
             quick_replies = reply.get("quick_replies", [])
             sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
+            ai_text = _strip_citation_markers(reply["text"])
             transition = await _task_suggestion(
                 reply, turn.msgs, body.text or "", ai_text, metrics,
                 allow=rc.plan.allow_task_cards if rc.plan else True,
@@ -5241,9 +5264,11 @@ async def post_message_stream(
                     else:
                         reply = value
                 reply = reply or dict(core_dialogue_reply.NURI_FALLBACK)
-                ai_text = reply["text"]
                 quick_replies = reply.get("quick_replies", [])
                 sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
+                # The streamed deltas already carried the raw marker; this
+                # is what gets persisted and what the transcript shows.
+                ai_text = _strip_citation_markers(reply["text"])
                 # The primary reply normally already carries proposals. If it
                 # does not, the fallback call still runs only after the text is
                 # visible, so it cannot delay the parent's first token.
