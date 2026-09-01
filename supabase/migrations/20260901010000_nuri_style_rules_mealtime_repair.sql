@@ -35,4 +35,15 @@ values
    'eval:round-03',
    'advisory',
    38,
-   '{"topics": ["吃饭", "用餐", "进食", "挑食", "喂"]}'::jsonb);
+   '{"topics": ["吃饭", "用餐", "进食", "挑食", "喂"]}'::jsonb)
+-- Re-running a migration should be boring. Without this the second run stops
+-- on the primary key and takes the rest of the file with it, which is how a
+-- seeding migration ends up half applied.
+on conflict (id) do update set
+  rule         = excluded.rule,
+  category     = excluded.category,
+  source_note  = excluded.source_note,
+  mode         = excluded.mode,
+  priority     = excluded.priority,
+  applies_when = excluded.applies_when,
+  active       = true;

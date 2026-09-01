@@ -147,6 +147,25 @@ def test_an_emotional_pivot_outranks_the_plan_in_progress():
     assert _band_containing(register.render("persona"), pivot.zh) == "hard"
 
 
+def test_a_language_barrier_gets_the_words_and_not_just_sympathy():
+    """LR02, the only LOW of the low-risk round. The parent said 英文不好 three
+    turns running; each reply took that in warmly and then told them to search
+    "WIC near me" and look for "apply online". Free interpreters — which any
+    federally funded programme must provide — never came up."""
+    rule = _rule("language_bridge")
+    assert register.band_of(register.weight_of(rule)) == "hard"
+    assert "interpreter" in rule.zh          # the sentence they can read aloud
+    assert "口译" in rule.zh
+    assert _band_containing(register.render("persona"), rule.zh) == "hard"
+
+
+def test_keeping_it_small_does_not_mean_dropping_the_finish_line():
+    """The same dialogue asked for three simple things and got three, with the
+    completion line dropped alongside. Honouring "keep it small" is right; the
+    finish line goes inside the step rather than after it."""
+    assert "简单一点" in _rule("done_looks_like").zh
+
+
 def test_not_knowing_a_source_outranks_sounding_like_you_do():
     """Asked to verify a statistic, NURI named a survey it had inferred. That
     is a different failure from not knowing an answer, so it is a different
