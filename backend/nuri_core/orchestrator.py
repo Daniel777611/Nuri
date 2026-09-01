@@ -80,7 +80,9 @@ async def run_turn_context(
     with trace.stage("safety"):
         verdict = safety.assess(
             user_text, family=core, is_urgent=ports.is_urgent,
-            is_crisis=ports.is_crisis, is_medical=False,
+            is_crisis=ports.is_crisis,
+            is_caregiver_harm=ports.is_caregiver_harm,
+            is_referral=ports.is_referral, is_medical=False,
         )
     trace.note(
         risk_tier=verdict.tier,

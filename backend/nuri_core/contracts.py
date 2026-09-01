@@ -23,7 +23,7 @@ from typing import Any, Mapping, Optional, Sequence
 #: this ordering is a latency decision as much as an editorial one.
 LAYERS = ("safety", "outcome", "family", "knowledge", "dialogue")
 
-RiskTier = str  # "none" | "elevated" | "medical" | "crisis" | "emergency"
+RiskTier = str  # "none" | "elevated" | "medical" | "caregiver_harm" | "crisis" | "emergency"
 
 
 @dataclass(frozen=True)

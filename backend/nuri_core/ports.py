@@ -96,6 +96,14 @@ class CorePorts:
     #: Separate from is_urgent because the handoff is different: a crisis line,
     #: not an ambulance for the child.
     is_crisis: Callable[..., bool] = _false
+    #: (user_text) -> True when the parent describes danger to the child, from
+    #: themselves. Third handoff again: separating the two of them and finding
+    #: someone who can arrive, rather than an ambulance or a suicide line.
+    is_caregiver_harm: Callable[..., bool] = _false
+    #: (user_text) -> True when part of the turn is not ours to settle:
+    #: eligibility, immigration status, statutory leave, special-education
+    #: rights, what a plan covers. Additive, not a gate.
+    is_referral: Callable[..., bool] = _false
 
     # ── tuning ────────────────────────────────────────────────────────────
     settings: dict = field(default_factory=dict)

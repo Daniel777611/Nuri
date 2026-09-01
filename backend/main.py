@@ -4134,6 +4134,11 @@ async def _prepare_turn(session_id: str, body: "UserMessageIn", uid: str) -> _Tu
     session = await _load_owned_session(session_id, uid, sb)
     owner_uid = uid
 
+    # Warms the cache the synchronous response envelope reads. Cheap: it is one
+    # cached read per minute per process, and it happens here rather than in the
+    # envelope so a turn never blocks on the rule table to report its version.
+    await core_dialogue_reply.style_rules_fingerprint()
+
     requested_timezone = (
         body.client_context.timezone if body.client_context else None
     )
@@ -4568,6 +4573,8 @@ def _core_ports() -> CorePorts:
             # 横切 Safety Layer
             is_urgent=core_dialogue_reply.urgent_task_suppressed,
             is_crisis=core_dialogue_reply.crisis_detected,
+            is_caregiver_harm=core_dialogue_reply.caregiver_harm_detected,
+            is_referral=core_dialogue_reply.referral_needed,
         )
     return _core_ports_singleton
 
@@ -4908,32 +4915,45 @@ _BACKEND_BUILD = next(
 _ESCALATION_BY_TIER = {
     "none": "none",
     "elevated": "none",
+    #: Not a safety escalation — an authority one. The parent is being sent
+    #: to whoever actually decides eligibility, status, or coverage.
+    "referral": "suggest_professional",
     "medical": "suggest_professional",
+    #: A parent about to hurt the child is "urgent" to a grader for the same
+    #: reason it is to us: the next few minutes decide it. That the handoff is a
+    #: support line rather than an ambulance shows up in escalation_reason_code.
+    "caregiver_harm": "urgent",
     "crisis": "urgent",
     "emergency": "urgent",
 }
 
 
-def _prompt_version(style_ctx: str = "") -> str:
+def _prompt_version(rules_fingerprint: str = "") -> str:
     """Identify the prompt without disclosing it.
 
     Hashes the stable half — persona, output contract, operator style rules —
     so the id changes by itself whenever any of them do. A hand-maintained
     version number is one deploy away from being a lie, and a test protocol
     uses this value to decide whether two runs may be compared at all.
+
+    The third input is a digest of the whole active rule table, never the rules
+    one turn happened to match. That distinction cost round one of the D01–D20
+    evaluation two aborted batches: the four-model pipeline passed the matched
+    block, so the id moved with the conversation's topic and the harness's
+    version guard stopped the run. See `style_rules_fingerprint`.
     """
     material = "|".join((
         core_dialogue_reply.NURI_PERSONA,
         core_dialogue_reply.NURI_JSON_SUFFIX,
-        style_ctx or "",
+        rules_fingerprint or "",
     ))
     return "p_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
-def _version_info(style_ctx: str = "", model: str = "") -> dict:
+def _version_info(rules_fingerprint: str = "", model: str = "") -> dict:
     return {
         "model": model or core_dialogue_reply.REPLY_MODEL,
-        "prompt_version": _prompt_version(style_ctx),
+        "prompt_version": _prompt_version(rules_fingerprint),
         "backend_build": _BACKEND_BUILD,
         "pipeline": NURI_PIPELINE,
         "pipeline_version": PIPELINE_VERSION,
@@ -4978,21 +4998,30 @@ def _turn_envelope(
     transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
 ) -> dict:
     """The chat response body, shared by the blocking and streaming paths."""
-    style_ctx = getattr(rc, "style", "") or ""
+    # Not `rc.style`. That is the subset of rules this turn matched, and hashing
+    # it made the reported prompt_version a function of what the parent asked
+    # about — see `_prompt_version`. `_prepare_turn` has already warmed this.
     model = (metrics.row.get("model") if metrics else "") or ""
     return {
         "user_message": turn.user_msg,
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
         "events": _turn_events(rc, transition, turn.session),
-        "version": _version_info(style_ctx, model),
+        "version": _version_info(
+            core_dialogue_reply.style_rules_fingerprint_cached(), model,
+        ),
     }
 
 
 @api.get("/version")
 async def version_info():
-    """Read-only build identity. No prompt text, by design."""
-    return _version_info(await core_dialogue_reply.get_style_rules_ctx())
+    """Read-only build identity. No prompt text, by design.
+
+    Must agree with what a chat turn reports, or an evaluator comparing the two
+    sees a version change that never happened — so both read the same digest of
+    the rule table rather than each hashing their own view of it.
+    """
+    return _version_info(await core_dialogue_reply.style_rules_fingerprint())
 
 
 @api.post("/chat/sessions/{session_id}/messages")

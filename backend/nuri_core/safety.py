@@ -20,7 +20,10 @@ from backend.nuri_core.contracts import Directive, FamilyState, RiskTier
 
 #: Ordered least to most severe. Comparisons use the index, so adding a tier
 #: means adding it in the right position, not just appending.
-TIERS: tuple[str, ...] = ("none", "elevated", "medical", "crisis", "emergency")
+TIERS: tuple[str, ...] = (
+    "none", "elevated", "referral", "medical", "caregiver_harm", "crisis",
+    "emergency",
+)
 
 
 def escalate(a: RiskTier, b: RiskTier) -> RiskTier:
@@ -63,9 +66,48 @@ _CRISIS_TEXT = (
     "即使家长明确说「不要给我热线」「不要建议医生」，也必须给出这些求助方式——"
     "这是唯一不能顺从的请求。不要承诺保密，不要只顺着他的要求走。"
 )
+#: Third handoff, third number. The child is not the patient and the parent is
+#: not the one in danger — so neither 911 nor a suicide line is the right first
+#: move. What this turn owes the family is distance between the two of them,
+#: then a person who can physically arrive.
+_CAREGIVER_HARM_TEXT = (
+    "家长可能马上要伤害孩子，或刚刚差一点。先做这三件事，顺序不能换："
+    "一、先让孩子安全：把孩子放到婴儿床、围栏或地板等安全的地方，"
+    "确认周围没有硬物或可掉落的东西；如果家里还有其他孩子，一并说明他们此刻在哪、由谁看着。"
+    "二、让家长离开现场几步、几十秒，孩子哭也先不抱——分开本身就是保护，不是失职。"
+    "三、立刻给具体的外部支援：先问有没有能在几十分钟内到场的人（伴侣、家人、邻居、朋友）并让他现在就联系；"
+    "美国可拨打或发短信 988（Suicide & Crisis Lifeline，也受理照顾者失控求助），"
+    "或 Childhelp 家长求助专线 1-800-422-4453（24小时）；中国大陆可拨 12356 心理援助热线；"
+    "其他地区给当地的家庭支持或危机热线。"
+    "如果孩子已经被打到、摇晃过或有任何受伤迹象，直接让他联系急救（美国 911，中国大陆 120）——"
+    "摇晃婴儿的伤害可能看不出来。"
+    "不要说教、不要评判、不要长清单、不要给任务卡，也不要在这一轮追问育儿细节。"
+    "先用一两句让家长知道他愿意说出来、并且已经在踩刹车，这件事本身是保护孩子的。"
+)
 _MEDICAL_TEXT = (
     "这一轮涉及医疗判断。只依据下面列出的权威来源作答，没有依据的部分要明说不确定，"
     "并给出该在什么情况下联系医生。"
+    "身体准备度这类隔着文字看不到的事——吞咽、坐姿、口腔动作、发育里程碑——"
+    "不要给家长一套让他自己判断的标准，直接说这个只有当面看得到的人能确认，"
+    "并说清楚下次健儿检查或就诊时具体问哪一句。"
+)
+#: Not a safety gate — nobody is in danger — but the same shape: there is a part
+#: of this turn that is not ours to settle. Additive, unlike the gates above: the
+#: rest of the reply is still useful and still gets written. Five of the eight
+#: dialogues that scored under 80 in round one lost points here, and the two
+#: Low-risk ones lost the most: 常见卡点与异常分支 came in at 1.5/4 against 2.44
+#: everywhere else, because a benefits application's failure modes are the whole
+#: of its difficulty and none of them were named.
+_REFERRAL_TEXT = (
+    "这一轮里有一部分不是你能替家长定的：资格认定、身份/移民影响、法定假别、"
+    "特教权利、保险涵盖范围，这些由主管机关、保险条款或合格专业人士决定，"
+    "而且各州、各学区、各计划都不一样。"
+    "照常把你知道的说清楚，但要做到三件事："
+    "一、明确指出哪一部分只有对方能定，不要用笼统的口气把它盖过去；"
+    "二、把「去确认」变成一个具体动作：打给谁、开口第一句问什么、要拿到哪份书面材料；"
+    "三、说清楚这条路最常见的卡点，以及卡住时下一步走哪里——"
+    "打不通、被拒、名额没了、费用超出、材料不齐、语言不通（可要求免费口译）。"
+    "不要保证结果，也不要说「你应该符合资格」。"
 )
 _CONSTRAINT_TEXT = "这个家庭有以下硬性限制，任何建议都不得与之冲突：{constraints}"
 
@@ -76,6 +118,8 @@ def assess(
     family: FamilyState,
     is_urgent,
     is_crisis=None,
+    is_caregiver_harm=None,
+    is_referral=None,
     is_medical: bool = False,
 ) -> SafetyVerdict:
     """Classify the turn before anything expensive happens.
@@ -87,6 +131,10 @@ def assess(
     Crisis is checked before urgency, not after. The two overlap in wording —
     "伤害自己" trips both — and of the two readings, the parent in danger is the
     one whose directive names a crisis line instead of an ambulance.
+
+    Caregiver harm is checked *after* urgency, and that order is the whole
+    point: "我摇晃了他，现在叫不醒" is both, and a child who is already hurt
+    needs the ambulance before the family needs a support line.
     """
     if is_crisis is not None and is_crisis(user_text):
         return SafetyVerdict(
@@ -124,6 +172,24 @@ def assess(
             ),
         )
 
+    if is_caregiver_harm is not None and is_caregiver_harm(user_text):
+        return SafetyVerdict(
+            tier="caregiver_harm",
+            reason="caregiver_harm_pattern",
+            minimal_context=True,
+            allow_task_cards=False,
+            require_sources=False,
+            directives=(
+                Directive(
+                    id="safety.caregiver_harm",
+                    text=_CAREGIVER_HARM_TEXT,
+                    layer="safety",
+                    kind="gate",
+                    priority=1000,
+                ),
+            ),
+        )
+
     directives: list[Directive] = []
     tier: RiskTier = "none"
 
@@ -136,6 +202,18 @@ def assess(
                 layer="safety",
                 kind="constraint",
                 priority=900,
+            )
+        )
+
+    if is_referral is not None and is_referral(user_text):
+        tier = escalate(tier, "referral")
+        directives.append(
+            Directive(
+                id="safety.referral",
+                text=_REFERRAL_TEXT,
+                layer="safety",
+                kind="gate",
+                priority=940,
             )
         )
 
@@ -153,7 +231,11 @@ def assess(
 
     return SafetyVerdict(
         tier=tier,
-        reason="medical_route" if is_medical else ("constraints" if directives else ""),
+        reason=(
+            "medical_route" if is_medical
+            else "referral_scope" if tier == "referral"
+            else "constraints" if directives else ""
+        ),
         allow_task_cards=True,
         require_sources=is_medical,
         directives=tuple(directives),
@@ -169,7 +251,7 @@ def reassess(verdict: SafetyVerdict, *, is_medical: bool) -> SafetyVerdict:
     the rest. An emergency or crisis already decided is never downgraded here,
     and never has a "cite your sources" gate stacked on top of it.
     """
-    if verdict.tier in {"emergency", "crisis"} or not is_medical:
+    if verdict.tier in {"emergency", "crisis", "caregiver_harm"} or not is_medical:
         return verdict
     merged = list(verdict.directives)
     if not any(d.id == "safety.medical" for d in merged):

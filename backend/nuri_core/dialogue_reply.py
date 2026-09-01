@@ -17,6 +17,7 @@ to write a reply is coupled to something it does not need.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,7 @@ from backend.nuri_core import (
     exemplars,
     image_input,
     knowledge_store,
+    register,
     temporal,
 )
 from backend import llm_usage, runtime
@@ -42,6 +44,13 @@ from backend.runtime import (
     oai,
 )
 
+# Identity, language and the safety floor are stated here and are not in
+# the register table: which language to answer in is correctness, and the
+# hotline floor is a gate. Everything about *how* NURI talks is a weighted
+# clause — see nuri_core/register.py, and NURI_REGISTER_WEIGHTS to tune it.
+#
+# Rendered once at import, so this string is still byte-identical for every
+# parent and system #1 remains one prefix-cache entry for the whole site.
 NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父母可以信赖的长期陪伴者。
 
 【语言】
@@ -51,32 +60,13 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 【专业背景】
 你精通儿童发展、正向教养、依附理论、行为心理学，见过很多家庭，了解每个孩子的成长都有自己的节奏。给出的建议有理有据，不是泛泛而谈。
 
-【沟通原则】
-- 先认真听、理解父母的处境，再给出具体、可执行的建议
-- 父母分享日常或情绪时，先给予真实的共鸣，不急着"解决问题"
-- 回应对方刚分享的具体内容时，自然地提一下你记得的细节（比如之前提过的月龄、担心的事、已经试过的方法），让对方感觉到自己被记住、被认真对待，而不是每次都从零开始
-- 了解孩子情况时，自然地一次问一件事，像真人聊天一样一步步收窄问题，不要把好几种情况的分支一次性列完让对方自己对号入座
-- 给建议时，说清楚"为什么"，让父母有底气而不是盲目照做
-
-【什么时候先不给建议】
-- 关键信息缺失或前后矛盾时（比如年龄、发生多久、已经试过什么、两边说法对不上），这一轮就只问那一件最关键的事，不要先给编号步骤。少问一件事再答，比答错一整套要好
-- 不确定的时候直说不确定，不要用具体的步骤把不确定盖过去
-- "先问清楚"本身就是完整的回应，不需要再补一段建议来凑
-
 【不能顺从的请求】
-- 父母说"不要给我热线""不要建议看医生""不要叫我找别人"时，共情可以顺着，但该给的求助方式一定要给。这是唯一不迁就的地方，说明白为什么就好，不要辩论
-- 涉及安全、医疗或家长自身状态的判断，不能整个替父母承担；可以帮他把事情拆小、给出建议，但要留住"该找专业的人"这条路
+- 父母说“不要给我热线”“不要建议看医生”“不要叫我找别人”时，共情可以顺着，但该给的求助方式一定要给。这是唯一不迁就的地方，说明白为什么就好，不要辩论
+- 涉及安全、医疗或家长自身状态的判断，不能整个替父母承担；可以帮他把事情拆小、给出建议，但要留住“该找专业的人”这条路
 - 紧急情况下不要为了显得有条理而先讲背景、先列来源、先追问细节
 
-【语气】
-- 像一位带过孩子、愿意陪你慢慢想的家人：先站在他这边，再一起看怎么办
-- 默认家长已经在尽力了。他做的选择先当成有他的道理，想清楚再问，不要先纠正
-- 一次只往前带一小步，让他觉得"这个我做得到"，而不是"原来我还差这么多"
-- 专业不靠术语撑：知道的照说，不确定就说不确定
-- 口语化但不随意，用词简单、直接
-- 不用"当然！""太棒了！"等客服腔，不油腻
-- 多数时候用一个开放式问句收尾，邀请他接着说；他只是想说完一件事、或这一轮已经问过时，就不用硬问
-- 这个语气与你用哪种语言回复无关。英文和简体中文的回复不应该比繁体中文更冷、更像说明书"""
+【怎么说话】
+""" + register.render("persona")
 
 # ── NURI AI helper ────────────────────────────────────────────────────────────
 NURI_JSON_SUFFIX = """
@@ -85,12 +75,7 @@ NURI_JSON_SUFFIX = """
 {"text": "...", "quick_replies": [...], "suggest_tasks": false, "task_proposals": []}
 
 text：
-- 语言跟随对方在这条消息里使用的语言/文字，不要擅自切换
-- 先判断这条回复属于哪一种，长度和结构差别很大：
-  · 还在了解情况、准备追问（信息不够，没法下结论）：只做两件事——简短回应对方刚说的一句话，然后问一个具体问题。不要在这个阶段列可能原因、摆多个假设、给成套建议，那是"结论阶段"才做的事，提前做会让人觉得在看报告而不是聊天
-  · 已经有足够信息、要下结论/给建议/整理任务/推荐资源：可以写得完整、分点、说明原因，不要为了精简砍掉关键推理和细节
-- 先回应对方刚分享的内容（可以自然提一句你记得的细节），再自然延伸，不要用模板化开场白
-- 口语化但有专业感；不强迫以问句结尾
+{TEXT_STYLE}
 
 quick_replies（用户可能说的下一句话，不是菜单）：
 - 打招呼/寒暄：0-2个，像真人回应
@@ -117,7 +102,9 @@ cited（你在正文里引用了哪几条来源）：
 - 只填系统给你的来源清单里的编号，例如 [1] [3] 就填 [1, 3]
 - 正文里标了几号，这里就填几号，两边必须一致
 - 没有来源清单、或者没有一条真的用得上，就填 []
-- 你永远不需要、也绝对不要自己写出网址"""
+- 你永远不需要、也绝对不要自己写出网址""".replace(
+    "{TEXT_STYLE}", register.render("output"),
+)
 
 # 单一持续对话不再按话题分成多个 session，历史会无限增长。每轮都把全部历史
 # 发给模型既贵又慢，长期还会撞上模型的上下文长度上限。这里只带最近的原文，
@@ -727,6 +714,125 @@ def crisis_detected(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in _CRISIS_PATTERNS)
 
 
+# The third party neither set above models: the parent who is about to hurt the
+# *child*. The urgent set reads the child's body, the crisis set reads the
+# parent's own danger, and D13/D20 of the first evaluation round fell exactly
+# between them — 「我真的差点打下去」 and 「感觉自己快控制不住了」 both scored
+# risk_tier "none", so the turn carried no gate, no directive and no escalation
+# event, and the graders hard-gated all three dialogues.
+#
+# Drawn narrower than the urgent patterns, deliberately. A false alarm there
+# costs one unnecessary 「先打 911」; a false alarm here drops a crisis block on
+# a parent who only said they were tired, which is its own harm and which the
+# same evaluation would score as over-escalation. So the two admitted shapes are
+# a physical act against the child, and losing control in the first person —
+# never mere exhaustion, never anger already spent and regretted.
+_CAREGIVER_HARM_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # Nearly did it. The strongest single signal in the round-one logs, and
+        # the one D13 opened with.
+        r"(?:差点|差點|差一点|差一點|险些|險些)[^。！？.!?\n]{0,8}"
+        r"(?:打|揍|摔|扔|甩|掐|捏|推|摇|搖|动手|動手)",
+        # Wanting to. 「想打她」 is not 「想打疫苗」, so the object is required.
+        r"(?:想|要)(?:打|揍|摔|扔|甩|掐|捏|推)"
+        r"[^。！？.!?\n]{0,4}(?:他|她|孩子|宝宝|寶寶|小孩|娃|婴儿|嬰兒)",
+        # Did it. Negation is not handled on purpose: 「没有打她」 is written by
+        # a parent who is telling us how close it came, and that turn wants the
+        # gate as much as the one without the 没有.
+        #
+        # The verb has to sit right against the child. Replaying this detector
+        # over all 85 user turns of round one caught the reason: D07 turn 4 says
+        # 「吐舌推出来时她还是有声音的」 — a tongue-thrust reflex — and a
+        # three-character window read 推…她 as the parent pushing the child. On a
+        # feeding turn that would have replaced the whole reply with a crisis
+        # block. 推 and 捏 are out of this clause for the same reason; they
+        # survive in the 差点/想 patterns above, where the intent word is doing
+        # the disambiguating.
+        r"(?:打|揍|掐|甩|摔|摇晃|搖晃)(?:了|过|過)?"
+        r"[^。！？.!?\n]{0,1}(?:他|她|孩子|宝宝|寶寶|小孩|娃|婴儿|嬰兒)"
+        r"(?!的?(?:疫苗|针|針|预防针|預防針))",
+        # Losing control, first person and still happening. The subject and the
+        # verb have to sit in one clause — commas excluded — because 「她像失控
+        # 一样」 is a description of the toddler, and D18 was hard-gated by a
+        # judge for exactly that conflation.
+        r"(?:我|自己)[^。，、！？,.!?\n]{0,8}"
+        r"(?:控制不住|克制不住|压不住|壓不住|快失控|要失控|忍不下去)",
+        # Afraid of what they will do next. 「怕自己顾不上」 is capacity, not
+        # harm, so the fear needs an act attached to it.
+        r"(?:怕|害怕|担心|擔心)[^。！？.!?\n]{0,6}自己[^。！？.!?\n]{0,10}"
+        r"(?:伤害|傷害|打|动手|動手|失控|发火|發火|发飙|發飆|做出|出手)",
+        r"(?:伤害|傷害)[^。！？.!?\n]{0,4}(?:孩子|宝宝|寶寶|小孩|他|她|娃)",
+        r"\b(?:hurt|hit|hitting|smack|shake|shaking|shook|harm)\b"
+        r"[^.?!\n]{0,12}\b(?:my|the)\s+(?:baby|child|kid|son|daughter|toddler)\b",
+        r"\b(?:almost|nearly|about to|going to|scared i(?:'?m| will| might)?)\b"
+        r"[^.?!\n]{0,20}\b(?:hurt|hit|shake|smack|lose control|lost it)\b",
+        r"\b(?:can'?t|cannot|couldn'?t)\s+(?:control|stop)\s+myself\b",
+        r"\bi'?m\s+(?:about to|going to)\s+(?:lose it|snap)\b",
+    )
+)
+
+
+_REFERRAL_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # Immigration status. The one domain where a wrong-but-confident answer
+        # can cost a family more than the question was worth, and D17 was hard
+        # gated for answering a school-evaluation question from a parent who had
+        # just raised it without ever naming the boundary.
+        r"(?:身份|移民|绿卡|綠卡|签证|簽證|公民|居留|遣返|驱逐|驅逐)"
+        r"[^。！？.!?\n]{0,20}(?:影响|影響|有关|有關|会不会|會不會|算不算|怕|担心|擔心|问题|問題)",
+        r"(?:影响|影響|牵连|牽連)[^。！？.!?\n]{0,10}(?:身份|移民|绿卡|綠卡|签证|簽證)",
+        r"(?<![A-Za-z])(?:public charge|uscis|green card|immigration status"
+        r"|deportation)(?![A-Za-z])",
+        # Eligibility for a benefit — the determination itself, not the topic.
+        # 「WIC 怎么用」 is a question we answer; 「我有没有资格」 is not ours.
+        r"(?:资格|資格|符不符合|合不合格|符合(?:条件|條件)|能不能申请|能不能申請|"
+        r"能不能领|能不能領|够不够格|夠不夠格|会不会被拒|會不會被拒)",
+        r"\b(?:eligib|qualif)\w*\b[^.?!\n]{0,20}\b(?:for|to)\b",
+        r"\b(?:am i|are we|do i|would i)\b[^.?!\n]{0,16}\b(?:eligible|qualify|entitled)\b",
+        # Employment and leave law. Named statutes only: 「产假」 alone is most
+        # often an ordinary sentence about a date, and firing there would staple
+        # a legal caveat onto a turn about going back to work.
+        r"(?<![A-Za-z])(?:fmla|short[- ]term disability|paid family leave|pfl)"
+        r"(?![A-Za-z])",
+        r"(?:劳工法|勞工法|劳动法|勞動法|雇主.{0,6}(?:必须|必須|有义务|有義務)|"
+        r"(?:能不能|可不可以|会不会|會不會).{0,8}(?:被解雇|被辞退|被辭退|不让我复职|不讓我復職))",
+        # Special education and school records — statutory rights, and the rules
+        # differ by state and district.
+        r"(?<![A-Za-z])(?:iep|504 plan|idea evaluation|due process)(?![A-Za-z])",
+        r"(?:特教|个别化教育|個別化教育|评估记录|評估記錄|家长权利|家長權利)"
+        r"[^。！？.!?\n]{0,16}(?:能不能|可不可以|有没有|有沒有|规定|規定|要求|保存|查看)",
+        # Insurance coverage decisions. The plan document decides, not us.
+        r"(?:保险|保險)[^。！？.!?\n]{0,12}(?:给不给|給不給|理赔|理賠|涵盖|涵蓋|"
+        r"报销|報銷|承保|算不算|包不包)",
+        r"(?<![A-Za-z])(?:in[- ]network|deductible|copay|coverage)[^.?!\n]{0,20}"
+        r"\b(?:cover|covered|apply|applies)\b",
+    )
+)
+
+
+def referral_needed(text: str) -> bool:
+    """Is the parent asking us to settle something only an authorized party can?
+
+    Eligibility, immigration status, statutory leave, special-education rights,
+    what a plan covers. Distinct from `is_medical`: the answer is not "cite a
+    source", it is "this one is not mine to decide, and here is how you get it
+    decided". Round one lost points on five dialogues for answering these
+    without ever saying which part was not ours.
+    """
+    return any(pattern.search(text or "") for pattern in _REFERRAL_PATTERNS)
+
+
+def caregiver_harm_detected(text: str) -> bool:
+    """Is the parent describing danger to the child, from themselves?
+
+    The user's own words only, for the same reason `crisis_detected` reads only
+    them: a reply that offers a crisis line must never be what proves the crisis.
+    """
+    return any(pattern.search(text or "") for pattern in _CAREGIVER_HARM_PATTERNS)
+
+
 def requested_task_count(text: str) -> Optional[int]:
     normalized = " ".join((text or "").strip().lower().split())
     task_term = r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦]|tasks?|task cards?|plans?)"
@@ -1126,6 +1232,78 @@ async def get_style_rules_ctx(limit: int = 50) -> str:
         body = "\n".join(f"- {rule}" for _p, rule in kept)
         blocks.append(f"{dialogue.HEADINGS['advisory']}\n{body}")
     return "\n\n".join(blocks)
+
+
+#: Last fingerprint that came from a successful read, and when. The cache is
+#: what makes the value survive a Supabase hiccup: a version id that changes
+#: because a query timed out is worse than one that is a minute stale, since
+#: every consumer of it reads a change as "the prompt is different now".
+_STYLE_FINGERPRINT: dict = {"value": "", "at": 0.0, "loaded": False}
+_STYLE_FINGERPRINT_TTL_S = 60.0
+
+
+async def style_rules_fingerprint(limit: int = 200) -> str:
+    """A stable digest of the whole active rule table.
+
+    Deliberately *not* `get_style_rules_ctx`, and deliberately not the rules a
+    given turn matched. This feeds the reported `prompt_version`, and that value
+    answers one question for an external evaluator: may these two runs be
+    compared? So it has to move when an operator edits a rule, and hold still
+    when the only thing that differs is what the parent happened to write.
+
+    Round one of the D01–D20 evaluation was stopped twice and lost two batches
+    to the other reading: the four-model pipeline hashed the rules *matched this
+    turn*, so a feeding question and a bedtime question reported different
+    prompt versions on one unchanged deploy, and the harness — correctly —
+    refused to merge them.
+
+    Conditional rows are included, unlike the prompt block: a condition is part
+    of the configuration even on the turns where it does not fire.
+    """
+    now = time.monotonic()
+    cached = _STYLE_FINGERPRINT
+    if cached["loaded"] and now - cached["at"] < _STYLE_FINGERPRINT_TTL_S:
+        return cached["value"]
+    sb = runtime.get_supabase()
+    if not sb:
+        return cached["value"]
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("nuri_style_rules").select("*")
+            .eq("active", True).limit(limit).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        # Last good value, not "". An empty string is itself a distinct
+        # fingerprint, so returning it on a transient error would announce a
+        # prompt change that did not happen.
+        print(f"[warn] style_rules_fingerprint: {e}")
+        return cached["value"]
+    material = "\n".join(sorted(
+        "|".join((
+            str(row.get("id") or ""),
+            str(row.get("mode") or ""),
+            str(row.get("priority") or 0),
+            json.dumps(row.get("applies_when") or {}, sort_keys=True,
+                       ensure_ascii=False),
+            str(row.get("rule") or "").strip(),
+        ))
+        for row in rows
+    ))
+    cached["value"] = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    cached["at"] = now
+    cached["loaded"] = True
+    return cached["value"]
+
+
+def style_rules_fingerprint_cached() -> str:
+    """The last fingerprint read, without touching the network.
+
+    For the synchronous response-assembly path. A turn is not the place to
+    discover the rule table: `style_rules_fingerprint` is awaited once while the
+    turn is being prepared, and this reads what that left behind.
+    """
+    return _STYLE_FINGERPRINT["value"]
 
 def gen_tasks_ai_sync(
     msgs: list[dict], requested_count: Optional[int] = None,
