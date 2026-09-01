@@ -48,6 +48,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
+from backend.nuri_core import register
+
 #: Turn the whole mechanism off without a deploy.
 ENABLED = os.getenv("FEWSHOT_EXEMPLARS", "1").lower() not in ("0", "false", "no")
 
@@ -56,71 +58,23 @@ ENABLED = os.getenv("FEWSHOT_EXEMPLARS", "1").lower() not in ("0", "false", "no"
 #: material to answer from rather than a register to write in.
 COUNT = int(os.getenv("FEWSHOT_EXEMPLAR_COUNT", "2"))
 
-#: Hard ceiling on the reply, in characters. NURI answers as a friend, not as a
-#: lecturer: a reply long enough to need scrolling is one the parent does not
-#: read.
-#:
-#: The corpus fits inside it while still opening with an acknowledgement and
-#: closing on a question, which is the thing worth knowing here — brevity and
-#: warmth were never the trade-off they looked like. The real transcript runs
-#: longer at the median because its advisory turns do; its opening turns, which
-#: are the shape being copied, land around 110.
-MAX_CHARS = int(os.getenv("FEWSHOT_MAX_CHARS", "150"))
+#: The reply-length ceilings and the four rendered guard strings now come from
+#: `register`, which owns every clause that shapes how NURI talks and gives
+#: each one a weight. Re-exported under the names they have always had, because
+#: what they mean has not changed — only how they are assembled. See
+#: register.REGISTER_RULES for the clause table and NURI_REGISTER_WEIGHTS for
+#: tuning it without a deploy.
+MAX_CHARS = register.MAX_CHARS
+MAX_CHARS_EN = register.MAX_CHARS_EN
 
-#: The same ceiling for English, in the unit English is measured in. Not the
-#: same number: 150 Chinese characters is roughly ninety English words, and
-#: handing the English guard "150 characters" would ask for a reply a third the
-#: length of the Chinese one — the register would come out clipped rather than
-#: warm, which is the failure this whole module exists to avoid.
-MAX_CHARS_EN = int(os.getenv("FEWSHOT_MAX_CHARS_EN", "500"))
-
-#: Appended to the system message, and only when a pair actually fires. Says the
-#: three things the examples themselves cannot: copy the shape not the content,
-#: do not copy the script they happen to be written in, and stop at a length the
-#: examples only imply. Measured: the pairs alone halve the median reply but
-#: leave a third of turns past 300 characters, because an example is a prior and
-#: not a bound.
-GUARD = (
-    "下面对话里的前几轮是运营团队提供的回复范例，不是这位家长的真实对话。"
-    "参考它们的长度、语气和结构，照着这三步写：\n"
-    "1. 先接住家长刚说的这句话——具体到只有他适用，不要「你做得很好」这种套话；\n"
-    "2. 给一个可以马上试的做法，带一个具体例子；\n"
-    "3. 用一个开放式问句收尾，让他愿意接着说。\n"
-    "句子之间换行，不要加粗。做法有先后顺序时可以用 1. 2. 3. 分步写，每步一行、"
-    "一句话说完；没有顺序就不要硬编号。问题永远不编号，也不要一次问好几个——"
-    "问一个就好，但一定要问，而且放在最后。可以用一两个 emoji 表达温度，不要每句都堆。"
-    f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
-    "不要照搬范例里的内容，也不要跟着范例用繁体，文字仍然跟随这位家长自己在用的语言。"
-)
-
-#: GUARD for the English corpus, written in English rather than translated back
-#: and forth. Same three steps, and one addition the Chinese guard does not
-#: need: English parenting advice has a strong pull toward the clinical
-#: register — "ensure", "it is recommended that", "consult your pediatrician" —
-#: and that pull is most of why replies in English read colder than the same
-#: reply in Chinese. Naming it is cheaper than hoping the examples outvote it.
-GUARD_EN = (
-    "The first few turns below are reply samples written by the team, not this "
-    "parent's real conversation. Match their length, warmth and structure, and "
-    "write in three steps:\n"
-    "1. Start from what this parent just said — specific enough that it could "
-    "only be said to them, never \"you're doing great\";\n"
-    "2. Give one thing they can try today, with a concrete example;\n"
-    "3. End on one open question they will want to answer.\n"
-    "Break lines between sentences; no bold. Number steps 1. 2. 3. only when "
-    "they genuinely happen in order, one line each. Never number questions, and "
-    "never ask more than one — ask exactly one, and put it last. One or two "
-    "emoji are welcome; do not put one in every sentence.\n"
-    "Write the way a family member who has raised a child would talk, not the "
-    "way a leaflet does: no \"ensure\", no \"it is recommended that\", no "
-    "\"studies suggest\" as a way of avoiding a view. Say \"a lot of parents "
-    "find...\", \"you could try...\", \"I'd probably...\". Warmth in English is "
-    "carried by plain words and by naming what is hard, not by exclamation "
-    "marks.\n"
-    f"Keep the whole `text` under {MAX_CHARS_EN} characters; better to give the "
-    "one thing that matters most than to cover everything. Do not reuse the "
-    "samples' content. "
-)
+#: Appended to the system message, and only when a pair actually fires. Says
+#: the things the examples themselves cannot: copy the shape not the content,
+#: do not copy the script they happen to be written in, and stop at a length
+#: the examples only imply. Measured: the pairs alone halve the median reply
+#: but leave a third of turns past 300 characters, because an example is a
+#: prior and not a bound.
+GUARD = register.render("guard", "zh")
+GUARD_EN = register.render("guard", "en")
 
 #: Characters that exist in only one script, frequent enough that a sentence or
 #: two of either contains several. Counting them is enough for the one question
@@ -210,23 +164,11 @@ _SCRIPT_CLAUSE = {
 #: than clipped. Set FEWSHOT_GLOBAL_CEILING=0 to take it back out.
 GLOBAL_CEILING = os.getenv("FEWSHOT_GLOBAL_CEILING", "1").lower() not in ("0", "false", "no")
 
-CEILING_RULE = (
-    "这一轮没有可参考的回复范例，但写法不变：先接住家长刚说的这句话，"
-    "再给一个可以马上试的做法，最后用一个开放式问句收尾。"
-    "句子之间换行，不要加粗。做法有先后顺序时可以用 1. 2. 3. 分步写，每步一行；"
-    "问题永远不编号，也不要一次问好几个——问一个就好，但一定要问，而且放在最后。"
-    f"整段 text 控制在 {MAX_CHARS} 字以内；宁可只讲一个最重要的做法，也不要为了讲全而写长。"
-)
-
-CEILING_RULE_EN = (
-    "There are no reply samples for this turn, but the shape is the same: "
-    "start from what the parent just said, give one thing they can try today, "
-    "and end on one open question. Break lines between sentences; no bold. "
-    "Number steps only when they happen in order. Never ask more than one "
-    "question, and put it last. Write like a family member who has raised a "
-    "child, not like a leaflet — no \"ensure\", no \"it is recommended that\". "
-    f"Keep the whole `text` under {MAX_CHARS_EN} characters."
-)
+#: Same clause table, minus the ones that talk *about* the samples — a note
+#: about examples that are not there is a rule the model reconciles against
+#: nothing. See register._CEILING_ALSO.
+CEILING_RULE = register.render("ceiling", "zh")
+CEILING_RULE_EN = register.render("ceiling", "en")
 
 
 def ceiling_rule_for(parent_texts: Sequence[str]) -> str:

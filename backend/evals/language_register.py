@@ -18,6 +18,9 @@ full underneath because that is the part worth reading:
     warm_words  lexical, and weak: empathy phrasings in either language. A low
                 count is not evidence of a cold reply, only that this list did
                 not happen to contain the phrasing used
+    recites     NURI quoting its own prompt back at the parent. Must be 0 —
+                anything else is a leak, and one that gets worse the more
+                specific the register instructions become
     clinical    the leaflet register — "ensure", "it is recommended",
                 "consult", 「建议您」「应当」「须」
     lists       bulleted or numbered lines
@@ -28,24 +31,33 @@ The claim being tested is that the three rows now look like each other. If
 `en` alone loses `ack` or gains `clinical`, the English exemplars are the thing
 to change — not the persona, and not the style rules.
 
-Measured 2026-08-31, one rep, on the 八個月喝不飽 turn:
+Measured 2026-08-31, one rep, after the register table went in:
 
-    lang     chars  ack  warm_words  clinical  lists  questions  emoji
-    zh-TW       89    1           2         0      0          1      0
-    zh-CN      100    1           1         0      0          1      0
-    en         473    1           2         0      0          1      0
+    [advice]  八個月喝不飽 — exemplars fire
+    turn     chars  ack  warm_words  recites  clinical  lists  questions  emoji
+    zh-TW       90    1           2        0         0      0          1      0
+    zh-CN      139    1           0        0         0      0          1      0
+    en         307    1           2        0         0      0          1      0
 
-All three opened on the parent, none listed, none reached for the clinical
-register, and each asked exactly one question. That is the result this was
-built to check.
+    [light]   greeting and meta — no exemplar, ceiling clauses only
+    greet       46    1           0        0         0      0          1      0
+    meta        78    1           0        0         0      0          1      0
+    greet-en   136    1           0        0         0      0          1      0
 
-Two things the table does not say, and one rep cannot settle:
+The `light` rows are the ones worth reading. Before the guard was split into
+weighted clauses, the three beats were stated at full force, so 你好呀 came back
+with an acknowledgement, a technique and a question about the parent's feelings
+— every beat correct and the whole thing visibly assembled. At 46 characters it
+is now a greeting answered as a greeting. `shape` sits at 0.35, which renders
+it under "usually, and not a template"; raising it back above 0.8 brings the
+recipe back, and that is the check this row exists for.
 
-`chars` is not comparable here. The two Chinese replies withheld advice and
-asked for the missing fact; the English one gave a thing to try and then asked.
-Those are different reply types with different budgets, so 473 against 89 is
-mostly that, not a language difference. Re-read it with --reps 3 before drawing
-any conclusion about English running long.
+`recites` is 0 across both groups, including the meta turn that previously came
+back quoting this repo's own guard wording. See the `no_meta` clause.
+
+`chars` is not comparable across rows and is not meant to be. A gathering turn,
+a concluding turn and a greeting have different budgets; the point is that they
+now differ, where before they did not.
 
 `emoji` is 0 everywhere because style-warmth-01 sits below the advisory cap
 after nuri_style_rules_selection.sql. The exemplars each carry one and the model
@@ -85,6 +97,17 @@ TURNS = (
            "I'm honestly at my limit."),
 )
 
+#: The turns that broke. None of them trips a topic gate, so no exemplar fires
+#: and the ceiling clauses are the only register instruction in the prompt —
+#: which is where both failures showed up: a greeting answered with an
+#: acknowledgement, a technique and a question about the parent's feelings,
+#: and a meta question answered by reciting the guard.
+LIGHT_TURNS = (
+    ("greet", "你好呀nuri，现在感觉如何呀？"),
+    ("meta", "我其实刚刚在后台修改完你的聊天温度，我来观察一下情况"),
+    ("greet-en", "hey nuri, how are you doing today?"),
+)
+
 #: Widened after the first run scored 0 on all three languages while every
 #: reply plainly did open with an acknowledgement — 「真的很煎熬」, 「很耗人」,
 #: "sounds really scary and draining". A marker list calibrated on the corpus
@@ -115,6 +138,18 @@ _CLINICAL = re.compile(
     r"|\bstudies (?:suggest|show)\b|\bit is (?:important|advisable)\b",
     re.IGNORECASE,
 )
+#: NURI quoting its own prompt back at the parent. Every phrase here was
+#: observed in a real reply on 2026-08-31 — 「先接住你，再给可执行的一小步，
+#: 而不是直接变说明书」 is this repo's own guard wording, near-verbatim. Asked a
+#: meta question, the model reached for the system prompt as the answer.
+_RECITES = re.compile(
+    r"先接住|可执行的一小步|变成?说明书|案例报告|保持默认|我的规则|我被要求"
+    r"|按照(?:设定|参数|指令)|后台参数"
+    r"|my (?:instructions?|rules?|system prompt|guidelines)"
+    r"|i(?:'m| am) (?:told|instructed|configured|designed) to"
+    r"|acknowledge.{0,12}then.{0,12}(?:suggest|ask)",
+    re.IGNORECASE,
+)
 _LIST = re.compile(r"^\s*(?:[-*•]|\d+[.、)])", re.MULTILINE)
 _EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]")
 
@@ -127,6 +162,8 @@ def measure(text: str) -> dict:
         # not from the answer. Structural, so it survives any phrasing.
         "ack": int(bool(_SECOND_PERSON.search(first)) and not _ADVICE.search(first)),
         "warm_words": len(_WARMTH.findall(text)),
+        # Must be 0. Anything else is the prompt reaching the parent.
+        "recites": len(_RECITES.findall(text)),
         "clinical": len(_CLINICAL.findall(text)),
         "lists": len(_LIST.findall(text)),
         "questions": text.count("？") + text.count("?"),
@@ -140,34 +177,38 @@ def main() -> None:
     ap.add_argument("--yes", action="store_true")
     args = ap.parse_args()
 
+    all_turns = TURNS + LIGHT_TURNS
     style = anyio.run(get_style_rules_ctx)
     print(f"style block: {len(style)} chars")
-    for label, text in TURNS:
+    for label, text in all_turns:
         chosen = exemplars.select(text)
-        print(f"  {label:<6} exemplars={len(chosen)} "
-              f"({', '.join(e.id for e in chosen) or 'none'})")
-    print(f"\n{len(TURNS) * args.reps} gpt-5.5 calls")
+        print(f"  {label:<9} exemplars={len(chosen)} "
+              f"({', '.join(e.id for e in chosen) or 'none — ceiling only'})")
+    print(f"\n{len(all_turns) * args.reps} gpt-5.5 calls")
     if not args.yes and input("run? [y/N] ").strip().lower() not in ("y", "yes"):
         raise SystemExit("aborted")
 
     llm_usage.new_request_id()
     llm_usage.set_user("eval:language_register")
 
+    columns = (
+        ("chars", 7), ("ack", 5), ("warm_words", 12), ("recites", 9),
+        ("clinical", 10), ("lists", 7), ("questions", 11), ("emoji", 7),
+    )
     replies: dict[str, list[str]] = {}
-    print(f"\n{'lang':<8}{'chars':>7}{'ack':>5}{'warm_words':>12}{'clinical':>10}"
-          f"{'lists':>7}{'questions':>11}{'emoji':>7}")
-    for label, text in TURNS:
-        history = [{"role": "user", "text": text}]
-        outs = [nuri_reply_sync(history, "", "", "", style)["text"]
-                for _ in range(args.reps)]
-        replies[label] = outs
-        rows = [measure(o) for o in outs]
-        print(f"{label:<8}" + "".join(
-            f"{st.median(r[k] for r in rows):>{w}.0f}"
-            for k, w in (("chars", 7), ("ack", 5), ("warm_words", 12),
-                         ("clinical", 10), ("lists", 7), ("questions", 11),
-                         ("emoji", 7))
-        ))
+    header = f"{'turn':<10}" + "".join(f"{k:>{w}}" for k, w in columns)
+    for group, turns in (("advice", TURNS), ("light", LIGHT_TURNS)):
+        print(f"\n[{group}]")
+        print(header)
+        for label, text in turns:
+            history = [{"role": "user", "text": text}]
+            outs = [nuri_reply_sync(history, "", "", "", style)["text"]
+                    for _ in range(args.reps)]
+            replies[label] = outs
+            rows = [measure(o) for o in outs]
+            print(f"{label:<10}" + "".join(
+                f"{st.median(r[k] for r in rows):>{w}.0f}" for k, w in columns
+            ))
 
     # The numbers are proxies; this is the evidence.
     for label, outs in replies.items():
