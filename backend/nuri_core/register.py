@@ -270,10 +270,22 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
            "the routes that need no live conversation first — online forms, "
            "going in person, email, someone they trust sitting with them.",
     ),
+    # Absorbed `plain_expertise` (0.8), which said 「专业不靠术语撑：知道的照说，
+    # 不确定就说不确定」 — the second half word for word this clause, one band
+    # lower. Two clauses asking for the same thing at two weights is not
+    # emphasis; it spends two of the reader's slots to say one thing, and the
+    # persona had grown from 808 to 1688 characters over three evaluation
+    # rounds. The half that was not duplicated — expertise does not need jargon
+    # — is kept here rather than lost with the id.
+    #
+    # An `NURI_REGISTER_WEIGHTS` override naming `plain_expertise` is now an
+    # unknown id: warned about and ignored, which is the intended failure.
     RegisterRule(
         "say_unsure", "persona", weight=0.9,
-        zh="不确定的时候直说不确定，不要用具体的步骤把不确定盖过去。",
-        en="Say so when you are not sure. Do not paper over it with steps.",
+        zh="专业不靠术语撑：知道的照说，不确定的时候直说不确定，"
+           "不要用具体的步骤把不确定盖过去。",
+        en="Expertise does not need jargon: say plainly what you know, say when "
+           "you are not sure, and do not paper over the gap with steps.",
     ),
     # `say_unsure` covers not knowing the answer. This covers not knowing where
     # a number came from, which turned out to be a different failure: asked to
@@ -322,11 +334,6 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
         zh="一次只往前带一小步，让他觉得「这个我做得到」，而不是「原来我还差这么多」。",
         en="Move things forward one small step at a time, so it lands as "
            "\"I can do that\" rather than \"look how far behind I am\".",
-    ),
-    RegisterRule(
-        "plain_expertise", "persona", weight=0.8,
-        zh="专业不靠术语撑：知道的照说，不确定就说不确定。",
-        en="Expertise does not need jargon. Say what you know plainly.",
     ),
     RegisterRule(
         "no_service_voice", "persona", weight=0.7,

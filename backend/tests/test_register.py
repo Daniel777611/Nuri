@@ -147,6 +147,20 @@ def test_an_emotional_pivot_outranks_the_plan_in_progress():
     assert _band_containing(register.render("persona"), pivot.zh) == "hard"
 
 
+def test_one_idea_does_not_occupy_two_clauses():
+    """`plain_expertise` said 「不确定就说不确定」 at 0.8 and `say_unsure` said it
+    at 0.9. Two weights for one idea is not emphasis — it spends two of the
+    reader's slots on one thing, and the persona had grown from 808 to 1688
+    characters over three evaluation rounds. The merge has to keep the half
+    that was not duplicated."""
+    ids = {rule.id for rule in register.REGISTER_RULES}
+    assert "plain_expertise" not in ids
+    survivor = _rule("say_unsure")
+    assert "术语" in survivor.zh          # expertise does not need jargon
+    assert "不确定" in survivor.zh        # and the half that was duplicated
+    assert "jargon" in survivor.en
+
+
 def test_a_language_barrier_gets_the_words_and_not_just_sympathy():
     """LR02, the only LOW of the low-risk round. The parent said 英文不好 three
     turns running; each reply took that in warmly and then told them to search
