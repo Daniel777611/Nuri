@@ -136,6 +136,17 @@ def test_follow_through_is_asked_for_as_a_trade_not_an_addition():
         assert "not" in rule.en and ("replaces" in rule.en or "on top of" in rule.en)
 
 
+def test_an_emotional_pivot_outranks_the_plan_in_progress():
+    """D01 is the only dialogue that has been run twice, and it came back lower
+    the second time: 54.00, then 53.00, with 邀请式敞开心扉 and 决策信息充分度
+    at 1/4 both times. Sequencing, not taste — so both clauses are constraints,
+    not defaults."""
+    for rule_id in ("follow_the_pivot", "hold_the_hedge"):
+        assert register.band_of(register.weight_of(_rule(rule_id))) == "hard"
+    pivot = _rule("follow_the_pivot")
+    assert _band_containing(register.render("persona"), pivot.zh) == "hard"
+
+
 def test_not_knowing_a_source_outranks_sounding_like_you_do():
     """Asked to verify a statistic, NURI named a survey it had inferred. That
     is a different failure from not knowing an answer, so it is a different

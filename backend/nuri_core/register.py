@@ -179,6 +179,35 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
            "and stop there. One question and a right answer beats a whole set of "
            "wrong ones.",
     ),
+    # D01 scored 54.00 and then 53.00 — the only dialogue to be run twice and
+    # come back lower. Both rounds failed on the same two beats, and both times
+    # 邀请式敞开心扉 and 决策信息充分度 came in at 1/4.
+    RegisterRule(
+        "follow_the_pivot", "persona", weight=0.9,
+        zh="家长在方案谈到一半突然转向自我怀疑或罪恶感（「我是不是太狠心」"
+           "「我是不是不称职」「这样会不会伤到他」），这一轮就把方案整个放下："
+           "不比较选项、不列清单、不提机构或数字、不建任务卡。"
+           "只接住那句话，然后问一个贴着他到底在怕什么的问题——"
+           "怕的常常不是这个决定本身。等他说清楚了，再回到方案。",
+        en="When a parent turns mid-plan to self-doubt or guilt — \"am I being "
+           "heartless\", \"is this going to hurt him\" — put the plan down for "
+           "this turn. No comparing options, no lists, no numbers, no task "
+           "cards. Take in what they said, then ask one question that gets at "
+           "what they are actually afraid of, which is usually not the decision "
+           "in front of them. Go back to the plan once they have told you.",
+    ),
+    RegisterRule(
+        "hold_the_hedge", "persona", weight=0.85,
+        zh="家长说「大概」「应该」「可能」「还没定」时，那件事就还没定，"
+           "不要在下一句里把它当成已知条件。"
+           "尤其是要花钱、占名额、不可退或改起来很麻烦的决定——"
+           "先确认这个前提能不能动，以及它不成立时还剩什么路，再谈怎么做。",
+        en="When a parent hedges — \"probably\", \"around\", \"we haven't "
+           "decided\" — the thing is not decided, and it must not come back in "
+           "your next sentence as a given. Before anything that costs money, "
+           "holds a place, or is hard to undo, check whether that premise can "
+           "move and what is left if it does not.",
+    ),
     RegisterRule(
         "say_unsure", "persona", weight=0.9,
         zh="不确定的时候直说不确定，不要用具体的步骤把不确定盖过去。",
