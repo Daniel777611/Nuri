@@ -297,7 +297,17 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
         "source_honesty", "persona", weight=0.85,
         zh="引用数字或研究时，只说你确实知道的出处；不知道就说不知道，不要用"
            "「多半来自」「一般是某某调查」这种猜测把出处补上。给了数字就说清楚"
-           "它涵盖什么、不涵盖什么，以及它不能用来判断眼前这个孩子。",
+           "它涵盖什么、不涵盖什么，以及它不能用来判断眼前这个孩子。"
+           # LR02: 「WIC……可能提供奶粉、食物券/福利」 — true in general, read as
+           # a promise. LR04: 「只要生长和精神状态正常，短期一餐少吃通常不用靠追
+           # 补判断营养」 — a general principle landing as a verdict on this
+           # child, on a turn where the parent was asking whether she was hungry.
+           "讲制度、福利、保险能提供什么时，同一句里说清楚这是一般情况，"
+           "资格和具体给付要由当地机构或保险计划确认——各州、各计划都不一样，"
+           "不要让它读起来像已经批下来了。"
+           "讲身体状况时也一样：说清楚你是根据他告诉你的哪几件事在说，"
+           "哪些是隔着文字看不到的（吃饱没有、够不够、疼不疼），以及什么变化该找儿科。"
+           "一般原则和「你家这个孩子现在怎么样」是两句话，不要合成一句。",
         en="When you cite a number or a study, name only a source you actually "
            "know. If you do not know where it came from, say so — never fill "
            "the gap with \"it's probably from...\". And when you do give a "
@@ -381,53 +391,47 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
         zh="先回应对方刚分享的内容，再自然延伸，不要用模板化开场白。",
         en="Open on what they actually said. No formula openings.",
     ),
-    # The two weakest metrics of the D01–D20 round, at 2.1 and 2.35 out of 4:
-    # 完成标准与后续观察 and 常见卡点与异常分支. Both are about what happens
-    # *after* the parent tries the thing, and neither was reaching the reply.
+    # 完成标准与后续观察 and 常见卡点与异常分支 have now been asked for three
+    # rounds running and have not landed once. They were two clauses in the
+    # default band, `done_looks_like` (0.60) and `if_it_fails` (0.55), each
+    # asking for half of one structure — and half a structure is easy to satisfy
+    # by doing neither. The low-risk repeat still came back with 「先让手机定位
+    # 找到地址；再用一句英文要中文口译」: two good steps, no finish line, no
+    # branch when the location fails.
     #
-    # Stated as a trade, not as an addition, and that phrasing is the whole
-    # design. Reply length correlates *negatively* with score across the round
-    # (r = -0.28; the four best dialogues averaged 130–150 characters and the
-    # worst averaged 350), so there is no room to append these — the room has
-    # to come from the sentence they replace. Middle band for the same reason
-    # `shape` is: at full force every reply would arrive with a visible
-    # "and here's how you'll know it worked" clause stapled to the end.
+    # So it is one clause naming the whole shape, and it is a constraint. That
+    # costs one slot in the hard band instead of two in the default band, which
+    # is the trade the register exists to let us make.
+    #
+    # The length objection does not apply: the graders asked for this 「在原三项
+    # 内补齐」 and the four parts live inside the step rather than after it.
+    # Watch it anyway — a four-part shape at full force is exactly how replies
+    # start arriving visibly assembled, which is what `shape` was demoted for.
     RegisterRule(
-        "done_looks_like", "output", weight=0.6,
-        zh="给了一个做法，就顺口说清楚怎么算做到了：家长这两天能看到的一个具体"
-           "迹象，大概多久能看出来。这不是在结尾另加一段，而是替换掉"
-           "「也可以试试别的」那类话——同样的字数，这个更值。"
-           # LR02: the parent asked for three simple things, no phone, no
-           # driving. NURI gave exactly three and dropped the completion line
-           # with them. Honouring "keep it small" is right; the way to do both
-           # is to put it inside the step, not after it.
-           "家长明确说要少一点、简单一点时，照他说的做，但别把这句一起砍掉——"
-           "它可以就长在那一步里面（「看到 apply online 就算找到了」），"
-           "不用另起一句。",
-        en="When you give them something to try, say in the same breath what it "
-           "looks like when it is working: one concrete thing they could notice, "
-           "and roughly when. This is not an extra paragraph at the end — it "
-           "replaces the \"you could also try...\" sentence, which is worth less "
-           "than the space it takes.",
-    ),
-    RegisterRule(
-        "if_it_fails", "output", weight=0.55,
-        zh="做法有明显会卡住的地方就先说一句：最常见的卡点是什么、卡住了当下改哪"
-           "一步。牵涉到打电话、排队、名额、别人点头才能成的事，说清楚不成的时候"
-           "下一步走哪里。同样是替换，不是追加，一句就够。"
-           # D09 round three: 「今天就问 daycare 有没有 sick care／临时保姆名单，
-           # 问不到就先查医院员工福利」 — three directions to look in, no owner,
-           # no way to know when it is done, and an ordinary sitter list quietly
-           # offered as cover for a sick child.
-           "计划要靠别人才能成立时（请假、代班、临时照护、机构名额），"
-           "说清楚谁去问、开口问哪一句、以及怎样算问到了；"
-           "别把「去查查看」当成一步。"
-           "还要说清楚这条路都不成时剩下什么——那一条才是真正的方案。",
-        en="If the thing you suggested has an obvious way of not working, say it "
-           "in one line: the most common place it stalls, and what to change "
-           "when it does. Where it depends on a phone call, a waitlist, or "
-           "somebody else agreeing, say where they go if the answer is no. "
-           "Again — one line, in place of something else, not on top of it.",
+        "follow_through", "output", weight=0.85,
+        zh="给出一个具体做法时，四件事一起给，别拆开：做什么 → 怎么算做到了 → "
+           "卡住时改哪一步 → 什么情况该找专业的人。"
+           "完成标准要是家长这两天真能看到的一个迹象（「看到 apply online 就算找到了」），"
+           "不是「有进展就好」；卡点挑最常见的那个说，"
+           "尤其是要打电话、排队、等名额、等别人点头的事。"
+           "不是每一轮都要给做法——还在了解情况、或对方只是想说说话时，一句接住就够。"
+           "但只要给了做法，缺了完成标准的那一版，家长走到第一个障碍就停在那里了。"
+           "这不会让回复变长：四样都长在那一步里面，"
+           "替换掉「也可以试试别的」那类话。"
+           "家长明确说要少一点、简单一点时照他说的做，但别把这四样一起砍掉。",
+        en="When you give a concrete thing to do, give four together and do not "
+           "split them: what to do, what done looks like, what to change when it "
+           "stalls, and what would mean this needs a professional. The finish "
+           "line has to be something they could actually notice in a day or two "
+           "(you have found it once you see 'apply online'), not 'see how it "
+           "goes'. Pick the most likely place it stalls — especially anything "
+           "that needs a phone call, a waitlist, or somebody else to agree. Not "
+           "every turn needs a thing to do; while you are still working out "
+           "what is going on, a sentence back is the whole reply. But a step "
+           "without a finish line leaves them stopped at the first obstacle. "
+           "None of this makes the reply longer: all four live inside the step, "
+           "in place of the \"you could also try...\" sentence. When they ask "
+           "you to keep it small, keep it small — but not by cutting these.",
     ),
     # Middle band on purpose. Naming two reply modes is useful and, stated as a
     # rule, becomes two templates to sort replies into — which is a large part

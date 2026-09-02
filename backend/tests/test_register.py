@@ -114,70 +114,33 @@ def test_asking_a_question_is_no_longer_mandatory_but_asking_two_still_is_banned
     assert register.band_of(register.weight_of(_rule("ask"))) == "optional"
 
 
-def test_the_follow_through_clauses_are_a_default_and_not_a_constraint():
-    """完成标准 and 异常分支 were the two weakest metrics of the D01–D20 round,
-    at 2.1 and 2.35 out of 4. They are still not constraints: reply length
-    correlates negatively with score across that round, so a clause that fired
-    on every turn would buy the metric back by spending the one — 口语自然 —
-    that is currently working."""
-    for rule_id in ("done_looks_like", "if_it_fails"):
-        rule = _rule(rule_id)
-        assert register.band_of(register.weight_of(rule)) == "default"
-        assert _band_containing(register.render("output"), rule.zh) == "default"
-
-
-def test_follow_through_is_asked_for_as_a_trade_not_an_addition():
-    """The room for "here's how you'll know" has to come out of the sentence it
-    replaces. A round where the four best dialogues averaged 130–150 characters
-    and the worst averaged 350 does not have room to append anything."""
-    for rule_id in ("done_looks_like", "if_it_fails"):
-        rule = _rule(rule_id)
-        assert "替换" in rule.zh
-        assert "not" in rule.en and ("replaces" in rule.en or "on top of" in rule.en)
-
-
-def test_an_emotional_pivot_outranks_the_plan_in_progress():
-    """D01 is the only dialogue that has been run twice, and it came back lower
-    the second time: 54.00, then 53.00, with 邀请式敞开心扉 and 决策信息充分度
-    at 1/4 both times. Sequencing, not taste — so both clauses are constraints,
-    not defaults."""
-    for rule_id in ("follow_the_pivot", "hold_the_hedge"):
-        assert register.band_of(register.weight_of(_rule(rule_id))) == "hard"
-    pivot = _rule("follow_the_pivot")
-    assert _band_containing(register.render("persona"), pivot.zh) == "hard"
-
-
-def test_one_idea_does_not_occupy_two_clauses():
-    """`plain_expertise` said 「不确定就说不确定」 at 0.8 and `say_unsure` said it
-    at 0.9. Two weights for one idea is not emphasis — it spends two of the
-    reader's slots on one thing, and the persona had grown from 808 to 1688
-    characters over three evaluation rounds. The merge has to keep the half
-    that was not duplicated."""
+def test_follow_through_is_one_constraint_and_not_two_suggestions():
+    """完成标准 and 常见卡点 were asked for three rounds running and landed
+    none of them. They were two default-band clauses each asking for half of one
+    structure, and half a structure is easy to satisfy by doing neither."""
     ids = {rule.id for rule in register.REGISTER_RULES}
-    assert "plain_expertise" not in ids
-    survivor = _rule("say_unsure")
-    assert "术语" in survivor.zh          # expertise does not need jargon
-    assert "不确定" in survivor.zh        # and the half that was duplicated
-    assert "jargon" in survivor.en
-
-
-def test_a_language_barrier_gets_the_words_and_not_just_sympathy():
-    """LR02, the only LOW of the low-risk round. The parent said 英文不好 three
-    turns running; each reply took that in warmly and then told them to search
-    "WIC near me" and look for "apply online". Free interpreters — which any
-    federally funded programme must provide — never came up."""
-    rule = _rule("language_bridge")
+    assert "done_looks_like" not in ids and "if_it_fails" not in ids
+    rule = _rule("follow_through")
     assert register.band_of(register.weight_of(rule)) == "hard"
-    assert "interpreter" in rule.zh          # the sentence they can read aloud
-    assert "口译" in rule.zh
-    assert _band_containing(register.render("persona"), rule.zh) == "hard"
+    assert _band_containing(register.render("output"), rule.zh) == "hard"
 
 
-def test_keeping_it_small_does_not_mean_dropping_the_finish_line():
-    """The same dialogue asked for three simple things and got three, with the
-    completion line dropped alongside. Honouring "keep it small" is right; the
-    finish line goes inside the step rather than after it."""
-    assert "简单一点" in _rule("done_looks_like").zh
+def test_follow_through_names_all_four_parts():
+    """The graders' own template: 动作 → 完成标准 → 卡住时fallback → 升级触发,
+    and explicitly 「在原三项内补齐」 rather than more steps."""
+    zh = _rule("follow_through").zh
+    for part in ("怎么算做到了", "卡住", "找专业的人", "不会让回复变长"):
+        assert part in zh
+    # And it still has to be skippable on a turn that is only listening.
+    assert "不是每一轮都要给做法" in zh
+
+
+def test_a_general_rule_and_this_child_stay_two_sentences():
+    """「WIC……可能提供奶粉、食物券」 read as a promise; 「只要生长和精神状态正常，
+    短期一餐少吃通常不用……」 read as a verdict on the child in front of them."""
+    zh = _rule("source_honesty").zh
+    assert "以当地" in zh or "当地机构" in zh
+    assert "隔着文字看不到" in zh
 
 
 def test_not_knowing_a_source_outranks_sounding_like_you_do():
