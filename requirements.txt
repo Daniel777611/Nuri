@@ -12,3 +12,6 @@ bcrypt
 email-validator
 cryptography>=42.0.8
 tzdata
+# APNs provider client: HTTP/2 is required by Apple's push endpoint,
+# and PyJWT needs cryptography (already listed) for the ES256 provider token.
+httpx[http2]>=0.28,<1

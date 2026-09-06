@@ -32,7 +32,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, io, json, logging, os, time, uuid, hashlib, random, re
+import asyncio, hmac, io, json, logging, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import List, Literal, NamedTuple, Optional, Sequence
@@ -53,7 +53,7 @@ from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import image_input as core_image_input
-from backend import llm_usage, locales, memstore, runtime, stores
+from backend import llm_usage, locales, memstore, push_apns, push_service, runtime, stores
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -5714,6 +5714,264 @@ async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
         memstore.recommendation_snapshots.clear()
         memstore.recommendation_events.clear(); memstore.recommendation_event_locks.clear()
     return {"ok": True}
+
+# ── Push notifications ────────────────────────────────────────────────────────
+# The HTTP surface from the iOS dynamic-notification handoff (v1.0, 2026-09-04),
+# §5 and §11.1. The handoff authenticates with `require_supabase_user` because
+# it was drafted against a Supabase-Auth project; NURI signs its own tokens, so
+# `_req_uid` is the equivalent here and carries the same rule the handoff states
+# twice: the account comes from the verified token, never from the request body.
+
+_APNS_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32,256}$")
+
+
+class PushDeviceUpsert(BaseModel):
+    installation_id: str
+    platform: Literal["ios"]
+    apns_token: str = Field(min_length=32, max_length=256)
+    apns_environment: Literal["sandbox", "production"]
+    bundle_id: str = Field(max_length=128)
+    app_version: Optional[str] = Field(default=None, max_length=32)
+    build_number: Optional[str] = Field(default=None, max_length=32)
+    locale: Optional[str] = Field(default=None, max_length=32)
+    time_zone: Optional[str] = Field(default=None, max_length=64)
+    permission_status: Literal[
+        "not_determined", "denied", "authorized", "provisional"
+    ] = "authorized"
+
+
+class NotificationPreferencesPatch(BaseModel):
+    enabled: Optional[bool] = None
+    reminders_enabled: Optional[bool] = None
+    chat_enabled: Optional[bool] = None
+    care_enabled: Optional[bool] = None
+    quiet_hours_start: Optional[str] = Field(default=None, max_length=8)
+    quiet_hours_end: Optional[str] = Field(default=None, max_length=8)
+    time_zone: Optional[str] = Field(default=None, max_length=64)
+    max_per_day: Optional[int] = Field(default=None, ge=0, le=20)
+    show_preview: Optional[bool] = None
+
+
+def _require_push_storage():
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Notification storage unavailable",
+        )
+    return sb
+
+
+@api.post("/mobile/push-devices")
+async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid)):
+    """Register or refresh one installation's APNs token.
+
+    Idempotent on (bundle_id, apns_environment, installation_id), so a token
+    refresh or an account switch overwrites the same row instead of leaving a
+    second one that would double-send. The response never echoes the token.
+    """
+    sb = _require_push_storage()
+    token = body.apns_token.lower()
+    if not _APNS_TOKEN_RE.fullmatch(token):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid token")
+    if body.bundle_id != push_apns.bundle_id():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unexpected bundle id")
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    is_active = body.permission_status in {"authorized", "provisional"}
+
+    # A live token belongs to one installation. If it shows up under a new
+    # install id, the older row is retired first — otherwise the partial unique
+    # index on active tokens would reject the write, and the parent would keep
+    # receiving notifications addressed to an account they signed out of.
+    def _retire_elsewhere() -> None:
+        sb.table("push_devices").update({
+            "is_active": False, "invalidated_at": now_iso, "updated_at": now_iso,
+        }).eq("bundle_id", body.bundle_id).eq(
+            "apns_environment", body.apns_environment
+        ).eq("token_hash", token_hash).neq(
+            "installation_id", body.installation_id
+        ).execute()
+    await anyio.to_thread.run_sync(_retire_elsewhere)
+
+    record = body.model_dump(exclude={"apns_token"}) | {
+        "user_id": uid,
+        "apns_token": token,
+        "token_hash": token_hash,
+        "is_active": is_active,
+        "last_seen_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    def _upsert() -> list[dict]:
+        return sb.table("push_devices").upsert(
+            record, on_conflict="bundle_id,apns_environment,installation_id",
+        ).execute().data or []
+
+    rows = await anyio.to_thread.run_sync(_upsert)
+    if not rows:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "device not stored")
+    row = rows[0]
+    return {"device_id": row["id"], "active": row["is_active"],
+            "updated_at": row["updated_at"]}
+
+
+@api.delete("/mobile/push-devices/{installation_id}", status_code=204)
+async def deactivate_push_device(installation_id: str, uid: str = Depends(_req_uid)):
+    """Stand down one installation, on sign-out or a revoked permission."""
+    sb = _require_push_storage()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await anyio.to_thread.run_sync(
+        lambda: sb.table("push_devices").update({
+            "is_active": False, "invalidated_at": now_iso, "updated_at": now_iso,
+        }).eq("installation_id", installation_id).eq("user_id", uid).execute()
+    )
+    return None
+
+
+@api.get("/notifications/preferences")
+async def get_notification_preferences(uid: str = Depends(_req_uid)):
+    sb = _require_push_storage()
+    prefs = await anyio.to_thread.run_sync(lambda: push_service._preferences(sb, uid))
+    return {k: v for k, v in prefs.items() if k != "user_id"}
+
+
+@api.patch("/notifications/preferences")
+async def patch_notification_preferences(
+    body: NotificationPreferencesPatch, uid: str = Depends(_req_uid),
+):
+    """Update only what the client sent; omitted keys keep their value."""
+    sb = _require_push_storage()
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not patch:
+        return await get_notification_preferences(uid)
+    patch |= {"user_id": uid, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+    def _upsert() -> list[dict]:
+        return sb.table("notification_preferences").upsert(
+            patch, on_conflict="user_id",
+        ).execute().data or []
+
+    rows = await anyio.to_thread.run_sync(_upsert)
+    row = rows[0] if rows else patch
+    return {k: v for k, v in row.items() if k != "user_id"}
+
+
+@api.get("/notifications/{notification_id}")
+async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
+    """The full content behind a tapped notification.
+
+    §11.1: "该接口必须验证 notification.user_id 等于当前用户 ... 通知 ID 不是
+    授权凭证." The id is a lookup key, so a row belonging to someone else is a
+    404 — the same answer as an id that does not exist, which keeps this from
+    confirming that another account received a notification.
+    """
+    sb = _require_push_storage()
+
+    def _load() -> list[dict]:
+        return sb.table("notification_events").select(
+            "id,user_id,type,title,body,route,data,full_content,created_at"
+        ).eq("id", notification_id).limit(1).execute().data or []
+
+    try:
+        rows = await anyio.to_thread.run_sync(_load)
+    except Exception:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    if not rows or rows[0].get("user_id") != uid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+
+    row = rows[0]
+    data = row.get("data") or {}
+    target: dict = {"kind": row["type"]}
+    card_id = data.get("card_id")
+    if card_id:
+        card = LEARNING_CONTENT_BY_ID.get(card_id)
+        if card:
+            # The card travels as an in-app reference, not a URL: §10 forbids a
+            # payload naming an external destination, and the same rule is worth
+            # keeping one step later so the client has nothing to follow blindly.
+            target = {
+                "kind": "learning_card",
+                "id": card["id"],
+                "route": f"/detail/{card['id']}",
+                "title": card["title"],
+                "summary": card.get("summary", ""),
+                "topic_label": card.get("topic_label", ""),
+                "type_label": card.get("type_label", ""),
+                "cta": card.get("cta", "浏览详情"),
+            }
+
+    return {
+        "id": row["id"],
+        "type": row["type"],
+        "title": row["title"],
+        "content": row.get("full_content") or row["body"],
+        "target": target,
+        "created_at": row.get("created_at"),
+    }
+
+
+# ── Internal cron entry points ────────────────────────────────────────────────
+# §9.3. Guarded by CRON_SECRET rather than a user token: no account is acting.
+
+def _require_cron_secret(authorization: Optional[str]) -> None:
+    secret = os.getenv("CRON_SECRET", "")
+    if not secret:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "cron not configured")
+    if not authorization or not hmac.compare_digest(authorization, f"Bearer {secret}"):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthorized")
+
+
+@api.get("/internal/push/dispatch")
+async def internal_push_dispatch(authorization: Optional[str] = Header(default=None)):
+    _require_cron_secret(authorization)
+    sb = _require_push_storage()
+    result = await push_service.dispatch_due_notifications(sb)
+    return {"ok": True, **result}
+
+
+@api.get("/internal/care/generate")
+async def internal_care_generate(
+    authorization: Optional[str] = Header(default=None),
+    limit: int = 50,
+):
+    """Queue one caring notification per eligible account.
+
+    Runs well before the send: an event created here still passes through the
+    dispatcher's quiet hours and daily cap, so producing one is never the same
+    as interrupting someone.
+    """
+    _require_cron_secret(authorization)
+    sb = _require_push_storage()
+
+    def _candidates() -> list[dict]:
+        # Only accounts with a live device: composing for someone who cannot be
+        # reached spends a model call to write something nobody will read.
+        return sb.table("push_devices").select("user_id").eq(
+            "is_active", True
+        ).in_("permission_status", ["authorized", "provisional"]).limit(
+            max(1, min(limit, 500))
+        ).execute().data or []
+
+    rows = await anyio.to_thread.run_sync(_candidates)
+    uids = list(dict.fromkeys(r["user_id"] for r in rows if r.get("user_id")))
+
+    queued = skipped = 0
+    for uid in uids:
+        try:
+            event = await push_service.generate_care_event(sb, uid)
+        except Exception as exc:  # noqa: BLE001 - one account must not stop the run
+            logging.getLogger("nuri.push").warning(
+                "care generation failed: %s", type(exc).__name__,
+            )
+            skipped += 1
+            continue
+        if event:
+            queued += 1
+        else:
+            skipped += 1
+    return {"ok": True, "candidates": len(uids), "queued": queued, "skipped": skipped}
+
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
 app.include_router(api)
