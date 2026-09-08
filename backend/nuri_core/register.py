@@ -403,12 +403,23 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
     # costs one slot in the hard band instead of two in the default band, which
     # is the trade the register exists to let us make.
     #
-    # The length objection does not apply: the graders asked for this 「在原三项
-    # 内补齐」 and the four parts live inside the step rather than after it.
-    # Watch it anyway — a four-part shape at full force is exactly how replies
-    # start arriving visibly assembled, which is what `shape` was demoted for.
+    # The length objection did apply, and this is what it cost. At 0.85 the
+    # four parts filled the reply to the 150-character ceiling and the closing
+    # question was what got dropped: over four repetitions of the seven-turn
+    # conversation in evals/followup_depth.py, the turn where the parent asks
+    # *how* ended on a question 1/4 at 0.85 and 4/4 at 0.5, with the median
+    # reply getting *shorter* (115 → 107 characters). Raising the ceiling to 200
+    # fixes the same turn and costs 80 characters a reply, which round one says
+    # is the wrong direction (r = -0.28 against score).
+    #
+    # So it sits in the default band. All four parts still arrive — 「做到他多睡
+    # 10分钟就算成功」、「若越拍越清醒，下一次只提前2分钟」 — because what the
+    # band changed is whether they are owed on a turn, not whether they are
+    # wanted. A four-part shape at full force turned out to be exactly how
+    # replies start arriving visibly assembled, which is what `shape` was
+    # demoted for and what this clause's own note predicted.
     RegisterRule(
-        "follow_through", "output", weight=0.85,
+        "follow_through", "output", weight=0.5,
         zh="给出一个具体做法时，四件事一起给，别拆开：做什么 → 怎么算做到了 → "
            "卡住时改哪一步 → 什么情况该找专业的人。"
            "完成标准要是家长这两天真能看到的一个迹象（「看到 apply online 就算找到了」），"
@@ -525,14 +536,33 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
            "saying hello, sharing something small, or already know what to do, "
            "a sentence back is the whole reply.",
     ),
-    # Was 「一定要问」, at full force, in both guards. That is what turned a
-    # greeting into an interview: NURI asked a parent what mood they were in
-    # when they said hello.
+    # Was 「一定要问」 at full force in both guards, which turned a greeting into
+    # an interview — NURI asked a parent what mood they were in when they said
+    # hello — and was rewritten into 「有真的想知道…没有就不用硬凑一个」 at 0.25.
+    #
+    # That went too far, and the weight was not what went too far. Measured over
+    # four repetitions of the seven-turn conversation in evals/followup_depth.py:
+    # the gathering turns still ask (d2-d6, 4/4 at every profile tried), and the
+    # turn where the parent asks *how* does not (d7, 1/4) — the reply hands over
+    # the method and stops, which is a complete answer and a dead conversation.
+    # Raising this clause to 1.0 changed that number by nothing, because a
+    # permissive sentence under a heading that says "these always hold" is still
+    # a permissive sentence. So the obligation is back in the text, and the
+    # exception is named rather than left to judgement.
     RegisterRule(
-        "ask", "guard", weight=0.25,
-        zh="有真的想知道、而且问了能让对话往前走的事，就问出来；没有就不用硬凑一个。",
-        en="If there is something you genuinely want to know and asking moves "
-           "things forward, ask it. If not, do not manufacture one.",
+        "ask", "guard", weight=0.85,
+        zh="回复停在一个问题上：问你真的想知道、而且答案会改变你下一步建议的那件事。"
+           "刚给完做法的那一轮也一样——做法讲完就收尾，对话就断在这里了，"
+           "问一句他这两天实际会看到什么，才接得下去。"
+           "只有对方在打招呼、道谢、或说「我试试看」这种本来就不需要回应的时候，"
+           "才不用问，也不要为了收尾硬凑一个。",
+        en="End on a question: the thing you actually want to know, whose answer "
+           "would change what you suggest next. That includes the turns where "
+           "you have just given them something to do — a method that ends where "
+           "it ends is where the conversation ends too; ask what they will "
+           "actually see over the next day or two. The exception is a turn that "
+           "needs no reply — a greeting, a thank-you, \"I'll give it a try\" — "
+           "and there, do not manufacture one to round the reply off.",
     ),
     RegisterRule(
         "emoji", "guard", weight=0.2,

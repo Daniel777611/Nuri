@@ -106,23 +106,37 @@ def test_the_three_beats_are_a_default_and_not_a_constraint():
     assert _band_containing(register.render("guard"), shape.zh) == "default"
 
 
-def test_asking_a_question_is_no_longer_mandatory_but_asking_two_still_is_banned():
+def test_the_ceiling_on_questions_and_the_floor_under_them_are_two_clauses():
     """These were one sentence — 「问一个就好，但一定要问」 — so the ceiling on
-    questions and the floor under them could not move apart. They are two
-    clauses now and they sit in different bands."""
+    questions and the floor under them could not move apart. Both are constraints
+    again, but as two clauses: at most one question, and the reply ends on it.
+
+    The floor was rewritten rather than merely reweighted. Its permissive
+    phrasing — 「没有就不用硬凑一个」 — read the same under every heading, and
+    raising it to 1.0 moved the measured closing-question rate by nothing."""
     assert register.band_of(register.weight_of(_rule("one_question"))) == "hard"
-    assert register.band_of(register.weight_of(_rule("ask"))) == "optional"
+    assert register.band_of(register.weight_of(_rule("ask"))) == "hard"
+    zh = _rule("ask").zh
+    # The obligation, and the exception that keeps a greeting from becoming an
+    # interview — the failure the demotion to 0.25 was originally for.
+    assert "回复停在一个问题上" in zh
+    assert "我试试看" in zh
 
 
-def test_follow_through_is_one_constraint_and_not_two_suggestions():
+def test_follow_through_is_one_clause_and_not_two_halves():
     """完成标准 and 常见卡点 were asked for three rounds running and landed
-    none of them. They were two default-band clauses each asking for half of one
-    structure, and half a structure is easy to satisfy by doing neither."""
+    none of them. They were two clauses each asking for half of one structure,
+    and half a structure is easy to satisfy by doing neither.
+
+    It names the whole shape now, and sits in the default band: at full force
+    the four parts filled the reply to the character ceiling and the closing
+    question was what got dropped — 1/4 against 4/4 at 0.5, measured over four
+    repetitions in evals/followup_depth.py, with the median reply shorter."""
     ids = {rule.id for rule in register.REGISTER_RULES}
     assert "done_looks_like" not in ids and "if_it_fails" not in ids
     rule = _rule("follow_through")
-    assert register.band_of(register.weight_of(rule)) == "hard"
-    assert _band_containing(register.render("output"), rule.zh) == "hard"
+    assert register.band_of(register.weight_of(rule)) == "default"
+    assert _band_containing(register.render("output"), rule.zh) == "default"
 
 
 def test_follow_through_names_all_four_parts():
