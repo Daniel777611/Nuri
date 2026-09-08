@@ -3,7 +3,7 @@
 Cross-cutting rather than a stage in the chain, because it has to act at three
 different points: before retrieval (an emergency must not wait on a web
 search), during assembly (its directives outrank every learned preference), and
-after (an emergency turn must never be turned into a routine task card).
+after (an emergency turn must never be followed by a routine suggestion).
 
 The detectors themselves stay in main.py — they are a hundred lines of tuned
 bilingual regex with their own tests, and forking them here to satisfy a
@@ -76,7 +76,7 @@ _EMERGENCY_HANDOFF_TEXT = (
     "不要再给任何新的医疗内容——具体点名：不要提肾上腺素笔或任何药物、"
     "不要给观察指标或要盯什么变化、不要说怎么转运、不要指示体位、不要说喂不喂。"
     "这些都由调度员和到场的医护判断，你现在多说一句都是在占用他听指示的注意力。"
-    "不要提问、不要给任务卡或后续计划、不要邀请他继续聊。"
+    "不要提问、不要给后续计划、不要邀请他继续聊。"
     "如果他主动再说话，仍然只回应情绪，并把判断交回给现场的专业人员。"
 )
 #: Separate from the emergency text because the action is different: nobody is
@@ -106,7 +106,7 @@ _CAREGIVER_HARM_TEXT = (
     "其他地区给当地的家庭支持或危机热线。"
     "如果孩子已经被打到、摇晃过或有任何受伤迹象，直接让他联系急救（美国 911，中国大陆 120）——"
     "摇晃婴儿的伤害可能看不出来。"
-    "不要说教、不要评判、不要长清单、不要给任务卡，也不要在这一轮追问育儿细节。"
+    "不要说教、不要评判、不要长清单，也不要在这一轮追问育儿细节。"
     "先用一两句让家长知道他愿意说出来、并且已经在踩刹车，这件事本身是保护孩子的。"
 )
 _MEDICAL_TEXT = (

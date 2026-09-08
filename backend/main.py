@@ -12,11 +12,11 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Supabase persistence   DB-backed helpers for feed cards / favorites / collections
   Pydantic models        request/response schemas for /api/*
   Admin models           request schemas for /admin/*
-  Static feed data       seed cards, chat scripts, per-card task templates
+  Static feed data       seed cards and chat scripts
   Daily email push       SMTP sender + fallback conversation scripts
   NURI persona           system prompt for the NURI chat persona
   Input & memory         normalized_inputs logging + user_memories extraction/retrieval
-  NURI AI helpers        chat reply / card generation / task generation via OpenAI
+  NURI AI helpers        chat reply and feed-card generation via OpenAI
   Auth routes            /api/auth/*
   Children               /api/children*
   Feed                   /api/feed*
@@ -799,56 +799,6 @@ CARD_TO_SCRIPT = {
     "card_sleep_routine":   "tip_food",
     "card_screen_time":     "news_bilingual",
     "card_thermometer":     "product_monitor",
-}
-
-CARD_TASKS = {
-    "tip_food": [
-        {"title": "今天晚餐桌上放一样新食物（不强迫吃）", "scope": "today", "task_type": "care",
-         "description": "食物新恐惧期很正常，重点是让孩子看到、接触，不强求吃下去。",
-         "steps": ["挑一样孩子没吃过的食物", "和大人的餐食一起摆盘，不单独强调", "孩子不吃也不催促，收走即可"]},
-        {"title": "记录宝宝今日实际进食的种类", "scope": "today", "task_type": "observation",
-         "description": "先摸清孩子真实的饮食范围，再决定要不要调整。",
-         "steps": ["三餐+加餐都记一下吃了什么", "标注是主动吃还是被喂"]},
-        {"title": "本周连续7天，每天尝试一次新食物", "scope": "week", "progress_total": 7, "task_type": "care",
-         "description": "重复暴露是克服挑食最有效的办法之一，通常需要8-10次接触。",
-         "steps": ["每天固定一餐加入1样新食物", "记录孩子的反应（尝了/拒绝/爱吃）"]},
-    ],
-    "news_bilingual": [
-        {"title": "今晚和伴侣聊10分钟，列出你们最在意的3件事", "scope": "today", "task_type": "interaction",
-         "description": "教育选择是家庭决定，先对齐彼此最在意的点，避免后面反复拉扯。",
-         "steps": ["各自写下最在意的3件事", "对照看哪些一致、哪些有分歧"]},
-        {"title": "联系1位已经送孩子去双语学校的朋友", "scope": "today", "task_type": "observation",
-         "description": "真实家长的反馈比宣传资料更可靠。",
-         "steps": ["列出认识的相关家长", "发消息约个10分钟电话"]},
-        {"title": "本周收集3所候选学校的真实家长反馈", "scope": "week", "progress_total": 7, "task_type": "observation",
-         "description": "多方交叉验证，避免只看到学校一面之词。",
-         "steps": ["每所学校至少找1位在读家长", "问入学后最意外的一点是什么"]},
-        {"title": "本周参观至少1所学校", "scope": "week", "progress_total": 7, "task_type": "observation",
-         "description": "实地看比资料更能感受到氛围是否合适。",
-         "steps": ["预约开放日或参观时段", "留意课堂氛围和师生互动"]},
-        {"title": "周末和伴侣坐下来做一次结构化讨论", "scope": "today", "task_type": "interaction",
-         "description": "把这周收集到的信息汇总，做一次有结论的讨论，而不是零散聊。",
-         "steps": ["带着收集到的反馈和参观笔记", "列出仍需要确认的问题"]},
-    ],
-    "product_monitor": [
-        {"title": "今天对比 Nanit / Owlet / VTech 的隐私政策", "scope": "today", "task_type": "observation",
-         "description": "婴儿监视器涉及家庭隐私数据，选购前先看清数据怎么存、谁能访问。",
-         "steps": ["查每家的数据存储位置和加密方式", "看是否支持本地存储、无需云端"]},
-        {"title": "本周内完成购买决策", "scope": "week", "progress_total": 7, "task_type": "care",
-         "description": "给自己一个明确期限，避免选择困难拖太久。",
-         "steps": ["列出3个候选的优先级", "对照预算和隐私顾虑做最终决定"]},
-    ],
-    "free": [
-        {"title": "今天选一个小目标坚持10分钟", "scope": "today", "task_type": "selfcare",
-         "description": "小而具体的目标更容易真正完成。",
-         "steps": ["挑一件今天想做的小事", "设10分钟专注去做"]},
-        {"title": "本周和孩子做一件\"专注陪伴\"的事", "scope": "week", "progress_total": 7, "task_type": "interaction",
-         "description": "放下手机，全情投入的陪伴比时长更重要。",
-         "steps": ["每天挑10-15分钟不被打断的时间", "让孩子主导玩什么"]},
-        {"title": "睡前花5分钟回顾今天3件好事", "scope": "today", "task_type": "selfcare",
-         "description": "简单的感恩记录有助于缓解育儿疲惫感。",
-         "steps": ["睡前想3件今天顺利/开心的小事", "写下来或者说给伴侣听"]},
-    ],
 }
 
 # ── Daily email push helpers ──────────────────────────────────────────────────
@@ -4385,10 +4335,7 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
         ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
         new_step = step
     if transition and transition.get("kind") == "tasks_generated":
-        transition = {
-            "kind": "task_suggestion",
-            "tasks": CARD_TASKS.get(script_key, CARD_TASKS["free"]),
-        }
+        transition = None
     return ai_text, quick_replies, transition, step, new_step
 
 
@@ -4764,106 +4711,23 @@ async def _after_turn(rc: _ReplyContext, turn: _Turn, session_id: str) -> None:
     )
 
 
-async def _task_suggestion(
-    reply: dict, msgs: list, user_text: str, ai_text: str,
-    metrics: Optional["_TurnMetrics"] = None,
-    allow: bool = True,
-) -> Optional[dict]:
-    """Build task drafts for either supported trigger.
-
-    The primary reply returns task proposals alongside its actionable guidance,
-    keeping the cards faithful to the plan already shown. A deterministic intent
-    recognizer guarantees that a parent's direct request still triggers even if
-    the model's boolean is conservative. The older second model call remains only
-    as a fallback when a triggered reply contains no usable proposals.
-
-    On the streaming path this runs *after* the reply is already on the parent's
-    screen, so a failure here must never take the reply down with it — the turn
-    just arrives without task cards.
-    """
-    # `allow` is the safety layer's gate, already decided for this turn. It
-    # subsumes the urgency check below rather than replacing it: the linear
-    # pipeline has no safety layer, so both paths keep the same floor.
-    if not allow or core_dialogue_reply.user_declined_tasks(user_text) or core_dialogue_reply.urgent_task_suppressed(user_text, ai_text):
-        return None
-    explicit_request = core_dialogue_reply.user_requested_tasks(user_text)
-    task_list = core_dialogue_reply.normalize_task_proposals(reply.get("task_proposals"))
-    if not (explicit_request or reply.get("suggest_tasks")):
-        return None
-
-    requested_count = core_dialogue_reply.requested_task_count(user_text) if explicit_request else None
-    if requested_count and task_list:
-        task_list = task_list[:requested_count]
-
-    started = time.perf_counter()
-    if not task_list or (requested_count and len(task_list) < requested_count):
-        task_context = msgs + [{"role": "ai", "text": ai_text}]
-        try:
-            fallback_tasks = await anyio.to_thread.run_sync(
-                lambda: core_dialogue_reply.gen_tasks_ai_sync(task_context, requested_count)
-            )
-            task_list = core_dialogue_reply.normalize_task_proposals(task_list + fallback_tasks)
-            if requested_count:
-                task_list = task_list[:requested_count]
-        except Exception as e:
-            print(f"[warn] task suggestion failed: {type(e).__name__}: {e}")
-            if metrics:
-                metrics.mark("tasks_ms", started)
-            return None
-    if metrics:
-        metrics.mark("tasks_ms", started)
-        metrics.set(suggested_tasks=bool(task_list))
-    return {
-        "kind": "task_suggestion",
-        "trigger": "explicit_request" if explicit_request else "actionable_reply",
-        "tasks": task_list,
-    } if task_list else None
-
-
-def _cited_sources(
-    cited: Optional[list], results: list, metrics: Optional["_TurnMetrics"] = None,
-) -> list[dict]:
-    """Turn the model's citation indices into the links the app renders.
-
-    The model only ever emits numbers, so the URLs here come from the search
-    results this backend fetched — a hallucinated link is not merely discouraged
-    but unrepresentable. Out-of-range indices are dropped rather than clamped;
-    guessing which source was meant would defeat the point.
-    """
-    out, seen = [], set()
-    for n in cited or []:
-        if not isinstance(n, int) or not (1 <= n <= len(results)) or n in seen:
-            continue
-        seen.add(n)
-        r = results[n - 1]
-        out.append({
-            "n": n, "title": r.title, "url": r.url,
-            "site_name": r.site_name, "lang": r.lang, "tier": r.tier,
-        })
-    if metrics:
-        metrics.set(cited_sources=len(out))
-    return out
-
-
 _CITATION_MARKER = re.compile(r"\s*\[(\d{1,2})\]")
 
 
 def _strip_citation_markers(text: str) -> str:
     """Remove [n] markers from the reply body.
 
-    All of them, because the app does not render a source list under a chat
-    message. A marker only means something next to the list it indexes; without
-    one it is a citation shape pointing at nothing, and it reads as authority to
-    a parent who has no way to check it. `_cited_sources` already refuses to
-    invent a *link* for an unresolvable index — the prose was never held to the
-    same rule, so a turn that ran no search still shipped
-    「美国儿科学会也提醒…[1]」. 依据透明度 was the weakest metric of the low-risk
-    round at 2.30, seven of ten dialogues below three, and this is the sentence
-    the graders kept quoting back.
+    All of them, because nothing indexes them any more: the reply contract no
+    longer asks for `cited`, no source list is resolved onto the message, and
+    the app renders none under a chat message. A marker only means something
+    next to the list it indexes; without one it is a citation shape pointing at
+    nothing, and it reads as authority to a parent who has no way to check it.
+    依据透明度 was the weakest metric of the low-risk round at 2.30, seven of ten
+    dialogues below three, and this is the sentence the graders kept quoting.
 
-    The resolved sources are still recorded on the message. If the client ever
-    renders them, this function is the one place to make the markers conditional
-    again — and `sources` will already be there to index into.
+    The search results still reach the model — they are what keeps a claim
+    accurate. What is gone is the numbered apparatus around them; the prompt
+    now asks NURI to name the institution inside the sentence instead.
     """
     return _CITATION_MARKER.sub("", text or "")
 
@@ -4985,56 +4849,10 @@ def _version_info(rules_fingerprint: str = "", model: str = "") -> dict:
     }
 
 
-async def _save_proposed_tasks(
-    uid: str, message_id: str, transition: Optional[dict],
-) -> list[str]:
-    """Persist this turn's task proposals and return their ids.
-
-    The chat turn used to only *propose*: a row appeared when the parent
-    accepted one through `POST /api/tasks`, and `events.task_created` was
-    hardcoded false to say so. In the shipped product nothing asks the parent
-    to accept — the cards are the tasks — so the flag described a confirmation
-    step that does not exist, and an evaluator driving the API saw a turn that
-    proposed four Daycare questions and saved none of them.
-
-    Safe to run alongside a client that also posts them: a suggestion's id is a
-    uuid5 of the message id and the proposal's index, so both writes resolve to
-    one row and the loser is a no-op. Failures here are logged and dropped —
-    a task that did not save is not a reason to lose the reply it came with.
-    """
-    proposals = list((transition or {}).get("tasks") or [])
-    if not proposals or not uid or not message_id:
-        return []
-    saved: list[str] = []
-    for index, proposal in enumerate(proposals):
-        try:
-            body = TaskCreate(
-                title=str(proposal.get("title") or "").strip(),
-                description=proposal.get("description") or "",
-                steps=proposal.get("steps") or [],
-                task_type=proposal.get("task_type") or "interaction",
-                scope=proposal.get("scope") or "today",
-                source_message_id=message_id,
-                suggestion_index=index,
-            )
-        except Exception as e:
-            print(f"[warn] _save_proposed_tasks: unusable proposal {index}: {e}")
-            continue
-        if not body.title:
-            continue
-        try:
-            row = await create_task(body, uid)
-            saved.append(str(row.get("id") or ""))
-        except Exception as e:
-            print(f"[warn] _save_proposed_tasks: {type(e).__name__}: {e}")
-    return [task_id for task_id in saved if task_id]
-
-
 def _turn_events(
     rc: Optional["_ReplyContext"],
     transition: Optional[dict],
     session: dict,
-    task_ids: Optional[Sequence[str]] = None,
 ) -> dict:
     """Machine-readable product outcomes for one turn."""
     evidence = getattr(rc, "evidence", None)
@@ -5045,19 +4863,16 @@ def _turn_events(
         if directive_id.startswith("safety."):
             reason = directive_id
             break
-    proposals = list((transition or {}).get("tasks") or [])
     card_id = str(session.get("source_card_id") or "") or None
-    created = [str(task_id) for task_id in (task_ids or ()) if task_id]
     return {
-        # Both, because they are different facts. `task_proposed` is what the
-        # reply offered; `task_created` is what is now a row. They came apart
-        # when the turn proposed something the save could not keep — an
-        # unusable proposal, or Supabase refusing the write — and a grader
-        # reading only one of them would not see that.
-        "task_created": bool(created),
-        "task_ids": created,
-        "task_proposed": bool(proposals),
-        "task_proposal_count": len(proposals),
+        # A chat turn no longer proposes or creates task cards. The four keys
+        # stay, permanently empty, because an external runner asserts on this
+        # envelope and a missing key reads as a broken build rather than as a
+        # feature that was removed.
+        "task_created": False,
+        "task_ids": [],
+        "task_proposed": False,
+        "task_proposal_count": 0,
         "card_ids": [card_id] if card_id else [],
         "escalation_level": _ESCALATION_BY_TIER.get(tier, "none"),
         "escalation_reason_code": reason,
@@ -5069,7 +4884,6 @@ def _turn_events(
 def _turn_envelope(
     turn: "_Turn", ai_messages: list, rc: Optional["_ReplyContext"],
     transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
-    task_ids: Optional[Sequence[str]] = None,
 ) -> dict:
     """The chat response body, shared by the blocking and streaming paths."""
     # Not `rc.style`. That is the subset of rules this turn matched, and hashing
@@ -5080,7 +4894,7 @@ def _turn_envelope(
         "user_message": turn.user_msg,
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
-        "events": _turn_events(rc, transition, turn.session, task_ids),
+        "events": _turn_events(rc, transition, turn.session),
         "version": _version_info(
             core_dialogue_reply.style_rules_fingerprint_cached(), model,
         ),
@@ -5111,22 +4925,14 @@ async def post_message(
         # A replay must report the events of the turn it is replaying, not an
         # empty set: an idempotent retry that silently loses the escalation
         # flag is worse than no flag at all.
-        # The save is idempotent on the replayed message's id, so this
-        # reports the same task ids the first attempt did rather than an
-        # empty list — same reason the events are replayed at all.
         return _turn_envelope(
             turn, [turn.replayed_ai_message], None,
             turn.replayed_ai_message.get("transition"),
-            task_ids=await _save_proposed_tasks(
-                turn.owner_uid,
-                str(turn.replayed_ai_message.get("id") or ""),
-                turn.replayed_ai_message.get("transition"),
-            ),
         )
     transition = None
     quick_replies: list = []
-    # Both the #fix and scripted branches below skip the model, and so produce
-    # no citations; without this the persist call a few lines down raises.
+    # No turn resolves a source list any more; the column is still written so
+    # an older row and a new one deserialize the same way.
     sources: list = []
     rc: Optional[_ReplyContext] = None
     script_step: Optional[tuple[int, int]] = None
@@ -5151,12 +4957,7 @@ async def post_message(
                 )
             )
             quick_replies = reply.get("quick_replies", [])
-            sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
             ai_text = _strip_citation_markers(reply["text"])
-            transition = await _task_suggestion(
-                reply, turn.msgs, body.text or "", ai_text, metrics,
-                allow=rc.plan.allow_task_cards if rc.plan else True,
-            )
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
@@ -5198,10 +4999,7 @@ async def post_message(
             temporal_context=turn.temporal,
         )
 
-    saved_task_ids = await _save_proposed_tasks(
-        turn.owner_uid, str(ai_msg.get("id") or ""), transition,
-    )
-    return _turn_envelope(turn, [ai_msg], rc, transition, metrics, saved_task_ids)
+    return _turn_envelope(turn, [ai_msg], rc, transition, metrics)
 
 
 def _sse(payload: dict) -> str:
@@ -5265,17 +5063,9 @@ async def post_message_stream(
                         reply = value
                 reply = reply or dict(core_dialogue_reply.NURI_FALLBACK)
                 quick_replies = reply.get("quick_replies", [])
-                sources = _cited_sources(reply.get("cited"), rc.search_results, metrics)
                 # The streamed deltas already carried the raw marker; this
                 # is what gets persisted and what the transcript shows.
                 ai_text = _strip_citation_markers(reply["text"])
-                # The primary reply normally already carries proposals. If it
-                # does not, the fallback call still runs only after the text is
-                # visible, so it cannot delay the parent's first token.
-                transition = await _task_suggestion(
-                    reply, turn.msgs, body.text or "", ai_text, metrics,
-                    allow=rc.plan.allow_task_cards if rc.plan else True,
-                )
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,
@@ -5294,12 +5084,7 @@ async def post_message_stream(
             claim_completed = True
             yield _sse({
                 "type": "done",
-                **_turn_envelope(
-                    turn, [ai_msg], rc, transition, metrics,
-                    await _save_proposed_tasks(
-                        turn.owner_uid, str(ai_msg.get("id") or ""), transition,
-                    ),
-                ),
+                **_turn_envelope(turn, [ai_msg], rc, transition, metrics),
             })
 
             ai_message_created = getattr(ai_msg, "created", True)

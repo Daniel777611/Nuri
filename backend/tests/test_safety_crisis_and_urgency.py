@@ -176,7 +176,6 @@ def test_caregiver_harm_directive_separates_them_and_names_who_can_arrive():
     assert "988" in text                    # also takes caregiver calls
     assert "1-800-422-4453" in text         # Childhelp, the parent-facing line
     assert "到场" in text                    # someone who can physically come
-    assert "任务卡" in text                  # and no task cards on this turn
 
 
 def test_an_injured_child_still_gets_the_ambulance_first():

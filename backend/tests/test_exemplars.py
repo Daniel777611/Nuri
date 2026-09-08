@@ -196,11 +196,7 @@ def test_pairs_alternate_and_the_reply_matches_the_response_schema():
         # A few-shot whose shape differs from NURI_RESPONSE_FORMAT teaches the
         # model two conflicting things at once.
         payload = json.loads(reply["content"])
-        assert set(payload) == {
-            "text", "quick_replies", "suggest_tasks", "task_proposals", "cited",
-        }
-        assert payload["suggest_tasks"] is False
-        assert payload["task_proposals"] == []
+        assert set(payload) == {"text", "quick_replies"}
 
 
 #: An emoji, in the ranges the transcript actually uses.

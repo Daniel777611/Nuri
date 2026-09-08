@@ -221,8 +221,8 @@ class Exemplar:
     """One operator-authored (question, reply) pair.
 
     `tags` are the patterns that make this exemplar the right one for a turn;
-    `quick_replies` and `suggest_tasks` are carried because a few-shot teaches
-    the whole object it shows, not just the prose — see `as_messages`.
+    `quick_replies` is carried because a few-shot teaches the whole object it
+    shows, not just the prose — see `as_messages`.
     """
     id: str
     question: str
@@ -237,7 +237,6 @@ class Exemplar:
     lang: str = "zh"
     tags: tuple[str, ...] = ()
     quick_replies: tuple[str, ...] = ()
-    suggest_tasks: bool = False
     _compiled: list = field(default_factory=list, compare=False, repr=False)
 
     def score(self, text: str) -> int:
@@ -246,8 +245,7 @@ class Exemplar:
         return sum(1 for pattern in self._compiled if pattern.search(text))
 
 
-#: Language/communication signal. Written to catch both scripts, the same way
-#: the task-intent tables in dialogue_reply.py do.
+#: Language/communication signal. Written to catch both scripts.
 #:
 #: Bare 說/講 is deliberately not on the list — 「醫生說」 appears in every kind of
 #: conversation. What is on the list is 說/講 in the shapes a language question
@@ -1336,10 +1334,8 @@ def as_messages(chosen: Sequence[Exemplar]) -> list[dict]:
     The assistant side is serialised JSON rather than bare prose because the
     reply is produced under NURI_RESPONSE_FORMAT: an example whose shape differs
     from the required output shape teaches the model two conflicting things at
-    once. It also means every field is being taught, not just `text` — which is
-    why `suggest_tasks` is false throughout. These are all conclusion-stage
-    answers, and a conclusion that arrives with task cards attached is exactly
-    what the examples are meant to stop.
+    once. Which is also why nothing but `text` and `quick_replies` appears here
+    — the contract has no other fields left to teach.
     """
     msgs: list[dict] = []
     for e in chosen:
@@ -1350,9 +1346,6 @@ def as_messages(chosen: Sequence[Exemplar]) -> list[dict]:
                 {
                     "text": e.reply,
                     "quick_replies": list(e.quick_replies),
-                    "suggest_tasks": e.suggest_tasks,
-                    "task_proposals": [],
-                    "cited": [],
                 },
                 ensure_ascii=False,
             ),

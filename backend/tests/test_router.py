@@ -29,7 +29,6 @@ FULL = {
     "search_query_zh": "4个月 宝宝 抗拒 副食品",
     "search_scope": "both",
     "is_medical": False,
-    "suggest_tasks": True,
     "topic": "辅食添加",
     "reason": "具体喂养困扰，背景够清楚",
 }
@@ -74,7 +73,7 @@ def _route(client, **kwargs):
 
 def test_parses_a_well_formed_route():
     r = parse_route(_raw())
-    assert r.needs_search and r.suggest_tasks and not r.is_medical
+    assert r.needs_search and not r.is_medical
     assert r.search_query == "4 month old refusing solids"
     assert r.search_query_zh == "4个月 宝宝 抗拒 副食品"
     assert r.search_scope == "both"
@@ -100,15 +99,6 @@ def test_queries_are_cleared_when_not_searching():
 @pytest.mark.parametrize("bad", ["EN", "english", "", None, "zh-CN"])
 def test_unknown_scope_falls_back_to_both(bad):
     assert parse_route(_raw(search_scope=bad)).search_scope == "both"
-
-
-def test_suggest_tasks_is_passed_through_untouched():
-    """The router only judges whether the *moment* is right. Whether cards are
-    actually drawn is a budget decision main.py's _plan_task_cards makes, and
-    the router must not pre-empt it — that split is what let a new topic get
-    cards again after the old one-set-per-conversation gate."""
-    assert parse_route(_raw(suggest_tasks=True)).suggest_tasks
-    assert not parse_route(_raw(suggest_tasks=False)).suggest_tasks
 
 
 def test_topic_is_captured():
@@ -169,14 +159,14 @@ def test_condense_keeps_only_the_recent_window():
 
 def test_a_dead_model_returns_a_safe_route_not_an_exception():
     r = _route(_Client(exc=RuntimeError("503")))
-    assert not r.ok and not r.needs_search and not r.suggest_tasks
+    assert not r.ok and not r.needs_search
     assert "RuntimeError" in r.error
 
 
 def test_a_hanging_model_is_cut_off():
     r = _route(_Client(raw=_raw(), delay=5), timeout_s=0.05)
     assert not r.ok and r.error == "timeout"
-    assert not r.needs_search and not r.suggest_tasks
+    assert not r.needs_search
 
 
 def test_unparsable_json_returns_a_safe_route():
@@ -197,7 +187,7 @@ def test_empty_history_skips_the_call_entirely():
 def test_a_failed_route_is_flagged_not_silently_default():
     """The failure mode that has bitten this project before is a feature that
     looks wired up and does nothing. ok=False is what makes it visible."""
-    good = _route(_Client(raw=_raw(needs_search=False, suggest_tasks=False)))
+    good = _route(_Client(raw=_raw(needs_search=False)))
     bad = _route(_Client(exc=RuntimeError("boom")))
     assert good.needs_search == bad.needs_search == False  # noqa: E712
     assert good.ok and not bad.ok, "the two must be distinguishable"
@@ -271,7 +261,10 @@ def test_strict_json_schema_is_requested():
 def test_route_metrics_carry_the_reason():
     row = route_metrics(parse_route(_raw()))
     assert row["route_ok"] is True
-    assert row["suggested_tasks"] is True
+    # The column outlives the feature: a chat turn no longer draws task cards,
+    # and False is what keeps months of history readable next to a NULL that
+    # would otherwise mean "the write failed".
+    assert row["suggested_tasks"] is False
     assert row["route_reason"] == "具体喂养困扰，背景够清楚"
     assert row["route_topic"] == "辅食添加"
     assert row["search_scope"] == "both"

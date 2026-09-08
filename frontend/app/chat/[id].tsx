@@ -31,13 +31,10 @@ import {
   prepareChatImage,
   type PreparedChatImage,
 } from "@/src/chatImageInput";
-import { taskTypeMeta } from "@/src/taskMeta";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
-const taskApprovalId = (messageId: string, index: number) => `${messageId}-${index}`;
-const taskSourceKey = (messageId: string, index: number) => `NURI 对话:${messageId}:${index}`;
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
@@ -51,7 +48,6 @@ type Msg = {
   image_base64?: string | null;
   quick_replies?: string[];
   transition?: any;
-  sources?: Source[];
 };
 
 type MemoryContextItem = {
@@ -67,30 +63,16 @@ type MemoryContextTransition = {
   notice?: string;
 };
 
-// Built server-side from the search results the backend fetched, indexed by the
-// citation numbers the model emitted — the model never writes a URL, so a link
-// here can't be invented.
-type Source = {
-  n: number;
-  title: string;
-  url: string;
-  site_name: string;
-  lang: "en" | "zh";
-  tier: "authority" | "good" | "neutral";
-};
-
 // ── Sub-component: inline markup ────────────────────────────────────────────
-// The model writes two things a plain <Text> renders as literal characters:
-// **bold** headings, which is how alternative approaches get their titles, and
-// [1] citation markers. Both are handled in one pass so a heading containing a
-// citation doesn't need either rule to know about the other.
+// The model writes **bold** headings, which a plain <Text> renders as literal
+// asterisks. Citation markers used to be handled here too; nothing emits them
+// any more, and the backend strips any that survive.
 //
 // Segments are nested <Text>, not <Pressable> or <View>: anything else breaks
 // wrapping mid-paragraph.
-const MARKUP_RE = /(\*\*[^*\n]+\*\*)|(\[\d{1,2}\])/g;
+const MARKUP_RE = /(\*\*[^*\n]+\*\*)/g;
 
-function RichText({ text, sources }: { text: string; sources: Source[] }) {
-  const byIndex = new Map(sources.map((s) => [s.n, s]));
+function RichText({ text }: { text: string }) {
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -98,63 +80,17 @@ function RichText({ text, sources }: { text: string; sources: Source[] }) {
   MARKUP_RE.lastIndex = 0;
   while ((match = MARKUP_RE.exec(text)) !== null) {
     const token = match[0];
-    const isBold = token.startsWith("**");
-    // A citation number with no matching source stays literal: the model
-    // occasionally writes [1] as list punctuation, and a dead tap target
-    // would be worse than leaving it alone.
-    const source = isBold ? undefined : byIndex.get(Number(token.slice(1, -1)));
-    if (!isBold && !source) continue;
-
     if (match.index > cursor) parts.push(text.slice(cursor, match.index));
     parts.push(
-      isBold ? (
-        <Text key={`b${match.index}`} style={styles.bold}>
-          {token.slice(2, -2)}
-        </Text>
-      ) : (
-        <Text
-          key={`c${match.index}`}
-          style={styles.citationMark}
-          onPress={() => WebBrowser.openBrowserAsync(source!.url).catch(() => {})}
-        >
-          {` ${source!.n} `}
-        </Text>
-      ),
+      <Text key={`b${match.index}`} style={styles.bold}>
+        {token.slice(2, -2)}
+      </Text>,
     );
     cursor = match.index + token.length;
   }
   if (!parts.length) return <>{text}</>;
   if (cursor < text.length) parts.push(text.slice(cursor));
   return <>{parts}</>;
-}
-
-// ── Sub-component: cited sources ────────────────────────────────────────────
-// Numbered to match the [1] [2] markers in the reply. Authority sources are
-// marked because the institution is the trust signal — "AAP" tells a parent
-// something that "healthychildren.org" does not.
-function SourceChips({ sources }: { sources: Source[] }) {
-  const { t } = useT();
-  return (
-    <View style={styles.sources}>
-      <Text style={styles.sourcesLabel}>{t("参考来源")}</Text>
-      <View style={styles.sourceRow}>
-        {sources.map((s) => (
-          <Pressable
-            key={`${s.n}-${s.url}`}
-            onPress={() => WebBrowser.openBrowserAsync(s.url).catch(() => {})}
-            style={[styles.sourceChip, s.tier === "authority" && styles.sourceChipAuthority]}
-            testID={`source-${s.n}`}
-          >
-            <Text style={styles.sourceIndex}>{s.n}</Text>
-            <Text style={styles.sourceName} numberOfLines={1}>
-              {s.site_name}
-            </Text>
-            {s.lang === "en" ? <Text style={styles.sourceLang}>EN</Text> : null}
-          </Pressable>
-        ))}
-      </View>
-    </View>
-  );
 }
 
 // ── Sub-component: avatar ────────────────────────────────────────────────────
@@ -283,32 +219,14 @@ export default function ChatDetail() {
   // the persisted message arrives and replaces it.
   const [streamingText, setStreamingText] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [approvedTaskIds, setApprovedTaskIds] = useState<string[]>([]);
-  const addingTaskIdsRef = useRef(new Set<string>());
   const scrollRef = useRef<ScrollView>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     setHistoryLoadState("loading");
     try {
-      const [msgs, tasks] = await Promise.all([
-        api.getMessages(id),
-        api.listTasks().catch(() => []),
-      ]);
+      const msgs = await api.getMessages(id);
       setMessages(msgs);
-      const savedSources = new Set(tasks.map((task: any) => task.source));
-      setApprovedTaskIds(
-        msgs.flatMap((msg: Msg) => {
-          const suggested = msg.transition?.kind === "task_suggestion"
-            ? (msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []))
-            : [];
-          return suggested.flatMap((_: any, index: number) =>
-            savedSources.has(taskSourceKey(msg.id, index))
-              ? [taskApprovalId(msg.id, index)]
-              : []
-          );
-        })
-      );
       setHistoryLoadState("ready");
     } catch (error) {
       // Old clients could keep a deleted session URL in navigation history.
@@ -591,25 +509,6 @@ export default function ChatDetail() {
     // acceptPickerResult implementation is sufficient for the recovered file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const addGeneratedTask = async (msg: Msg, task: any, index: number) => {
-    const approvalId = taskApprovalId(msg.id, index);
-    if (approvedTaskIds.includes(approvalId) || addingTaskIdsRef.current.has(approvalId)) return;
-    addingTaskIdsRef.current.add(approvalId);
-    try {
-      await api.createTask({
-        ...task,
-        source_message_id: msg.id,
-        suggestion_index: index,
-      });
-      setApprovedTaskIds((ids) => [...ids, approvalId]);
-      showToast(t("已添加至“我的任务”"));
-    } catch {
-      showToast(t("任务添加失败，请重试"));
-    } finally {
-      addingTaskIdsRef.current.delete(approvalId);
-    }
-  };
-
   return (
     <LinearGradient
       colors={GRADIENT}
@@ -667,18 +566,11 @@ export default function ChatDetail() {
               </Pressable>
             ) : null}
             {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                msg={m}
-                onAddTask={(task, index) => addGeneratedTask(m, task, index)}
-                isTaskAdded={(index) => approvedTaskIds.includes(`${m.id}-${index}`)}
-              />
+              <MessageBubble key={m.id} msg={m} />
             ))}
             {streamingText ? (
               <MessageBubble
                 msg={{ id: "__streaming__", role: "ai", text: streamingText }}
-                onAddTask={() => {}}
-                isTaskAdded={() => false}
               />
             ) : null}
             {typing ? <TypingDots /> : null}
@@ -834,15 +726,7 @@ export default function ChatDetail() {
 }
 
 // ── Sub-component: message bubble (text, image, transitions) ────────────────
-function MessageBubble({
-  msg,
-  onAddTask,
-  isTaskAdded,
-}: {
-  msg: Msg;
-  onAddTask: (task: any, index: number) => void;
-  isTaskAdded: (index: number) => boolean;
-}) {
+function MessageBubble({ msg }: { msg: Msg }) {
   const { t } = useT();
   const isAI = msg.role === "ai";
 
@@ -865,40 +749,6 @@ function MessageBubble({
           </Text>
         </View>
         <View style={styles.cardDividerLine} />
-      </View>
-    );
-  }
-
-  if (msg.transition?.kind === "task_suggestion") {
-    const suggestedTasks = msg.transition.tasks || (msg.transition.task ? [msg.transition.task] : []);
-    return (
-      <View style={[styles.row, { justifyContent: "flex-start" }]}>
-        <View style={styles.transitionCard} testID="chat-transition-tasks">
-          <Text style={styles.transitionPrompt}>{msg.text}</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={276} decelerationRate="fast" contentContainerStyle={styles.taskCarousel}>
-            {suggestedTasks.map((task: any, taskIndex: number) => {
-              const added = isTaskAdded(taskIndex);
-              const taskType = taskTypeMeta(task.task_type);
-              return <View key={`${msg.id}-${taskIndex}`} style={styles.generatedSlide}>
-                <LinearGradient colors={["#A6AEFF", "#FFD092"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.generatedCard}>
-                  <Text style={styles.generatedType}>{taskType.prefix}：{task.title}</Text>
-                  <View style={styles.generatedInner}>
-                    <Text style={styles.generatedSection}>{t("任务介绍")}</Text>
-                    <Text style={styles.generatedBody}>{task.description}</Text>
-                    <Text style={styles.generatedSection}>{t("频率：")}</Text>
-                    <Text style={styles.generatedBody}>{task.scope === "week" ? t("本周持续") : t("今天一次")}</Text>
-                    <Text style={styles.generatedSection}>{t("做法：")}</Text>
-                    {task.steps.map((step: string, index: number) => <Text key={step} style={styles.generatedBody}>{index + 1}. {step}</Text>)}
-                    <Pressable onPress={() => onAddTask(task, taskIndex)} disabled={added} style={[styles.addTaskBtn, added && styles.addTaskDone]} testID={`chat-add-task-${taskIndex}`}>
-                      <Text style={styles.addTaskText}>{added ? t("已添加至任务") : t("添加计划")}</Text>
-                    </Pressable>
-                  </View>
-                </LinearGradient>
-                {added ? <Text style={styles.addedHint}>{t("成功添加至“我的任务”")}</Text> : null}
-              </View>;
-            })}
-          </ScrollView>
-        </View>
       </View>
     );
   }
@@ -953,13 +803,12 @@ function MessageBubble({
         {msg.text ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
             {isAI ? (
-              <RichText text={msg.text} sources={msg.sources ?? []} />
+              <RichText text={msg.text} />
             ) : (
               msg.text
             )}
           </Text>
         ) : null}
-        {isAI && msg.sources?.length ? <SourceChips sources={msg.sources} /> : null}
       </View>
     </View>
   );
@@ -1101,42 +950,6 @@ const styles = StyleSheet.create({
   },
 
   bold: { fontWeight: "700" },
-  // Sits inline in a sentence, so it has to read as a marker rather than as a
-  // word: small, tinted, and padded enough to be tappable without pushing the
-  // surrounding line height around.
-  citationMark: {
-    color: colors.brand,
-    fontSize: 11,
-    fontWeight: "700",
-    backgroundColor: "#EFEBFD",
-  },
-  sources: {
-    marginTop: spacing.sm,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(58,47,90,0.10)",
-  },
-  sourcesLabel: { fontSize: 11, color: colors.muted, marginBottom: 6 },
-  sourceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  sourceChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    maxWidth: "100%",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: radius.pill,
-    backgroundColor: "#FFFFFF",
-    borderColor: colors.border,
-    borderWidth: 1,
-  },
-  // Institutional sources are visually distinct: for a parenting question the
-  // publisher is most of the signal.
-  sourceChipAuthority: { borderColor: colors.brand, backgroundColor: "#F4F1FE" },
-  sourceIndex: { fontSize: 10, fontWeight: "700", color: colors.brand },
-  sourceName: { fontSize: 11, color: colors.onSurface, flexShrink: 1 },
-  sourceLang: { fontSize: 9, color: colors.muted, fontWeight: "700" },
-
   typingBubble: { paddingVertical: spacing.md },
   dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },
   dot: {
@@ -1230,17 +1043,6 @@ const styles = StyleSheet.create({
     fontSize: type.sm,
     lineHeight: 20,
   },
-  transitionCard: {
-    flex: 1, gap: 12,
-  },
-  transitionPrompt: { backgroundColor: "#fff", borderRadius: 24, padding: 16, color: "#241C3F", fontSize: 16, lineHeight: 21, shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 5, elevation: 2 },
-  taskCarousel: { gap: 10, paddingRight: 18 }, generatedSlide: { width: 266 }, generatedCard: { borderRadius: 28, padding: 6 },
-  generatedType: { color: "#3A2F5A", fontSize: 16, fontWeight: "900", paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8 },
-  generatedInner: { backgroundColor: "#fff", borderRadius: 20, padding: 12 },
-  generatedSection: { color: "#3A2F5A", fontSize: 14, fontWeight: "900", marginTop: 2 },
-  generatedBody: { color: "#3A2F5A", fontSize: 12, lineHeight: 17 },
-  addTaskBtn: { alignSelf: "flex-start", backgroundColor: "#3A2F5A", borderRadius: 10, marginTop: 8, paddingHorizontal: 14, paddingVertical: 8 },
-  addTaskDone: { opacity: 0.5 }, addTaskText: { color: "#fff", fontSize: 12, fontWeight: "900" }, addedHint: { color: "#3A2F5A", fontSize: 12, textAlign: "center" },
   transitionTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   transitionTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface },
   transitionSub: {
