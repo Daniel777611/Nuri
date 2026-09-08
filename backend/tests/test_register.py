@@ -117,10 +117,16 @@ def test_the_ceiling_on_questions_and_the_floor_under_them_are_two_clauses():
     assert register.band_of(register.weight_of(_rule("one_question"))) == "hard"
     assert register.band_of(register.weight_of(_rule("ask"))) == "hard"
     zh = _rule("ask").zh
-    # The obligation, and the exception that keeps a greeting from becoming an
-    # interview — the failure the demotion to 0.25 was originally for.
-    assert "回复停在一个问题上" in zh
-    assert "我试试看" in zh
+    # The obligation. A closing question is what keeps the parent talking, so
+    # it is the product's way of speaking rather than a turn-by-turn judgement.
+    assert "每一条回复都停在一个问题上" in zh
+    # Two exceptions, both narrow: a parent who has said they are done, and an
+    # emergency handoff. A greeting is not one of them — the approved
+    # conversation answers 「你好呀」 with a question of its own.
+    assert "聊完了" in zh and "紧急情况" in zh
+    # And it says what to ask about, which is the difference between this and
+    # the 「一定要问」 that once asked a parent what mood they were in.
+    assert "会改变你下一步建议" in zh
 
 
 def test_follow_through_is_one_clause_and_not_two_halves():

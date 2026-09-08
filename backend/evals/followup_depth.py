@@ -14,18 +14,22 @@ by turn. The table split that sentence into two weighted clauses:
 that asking is optional, and the conversation stops walking forward: it answers
 the turn and waits. That is the regression, and it is one number.
 
-Both failures are real, which is why this runs two groups rather than one:
+Two groups, and — since the product owner's requirement is that a reply ends on
+a question wherever it can, because that is what keeps the parent talking — the
+two now want the same thing for different reasons:
 
-    depth   a six-turn conversation, the one from the reported screenshot — a
-            father in Houston, a ten-month-old, the mother covering the whole
+    depth   a seven-turn conversation, the one from the approved screenshot —
+            a father in Houston, a ten-month-old, the mother covering the whole
             morning. Every turn is a fragment of the situation, never a
             question. What should come back is a short reply ending on the
             single most useful question. This is what the weights broke.
 
-    light   a greeting and a meta turn. What the weights *fixed*: at full force
-            「你好呀」 came back with an acknowledgement, a technique and a
-            question about the parent's mood. Raising `ask` without watching
-            this row trades one regression for the other.
+    light   a greeting, a meta turn, an acknowledgement, and a parent saying
+            the conversation is over. The first three should also end on a
+            question — the approved conversation opens with one — but they are
+            where an obligation to ask turns into an interrogation, so this
+            group is read for `chars` and `qs`, not only for `ends_q`. The
+            closing turn is the one place a question is wrong.
 
 Reported per turn:
 
@@ -33,13 +37,14 @@ Reported per turn:
              round one (r = -0.28), so more is not better here
     ends_q   1 when the reply's last sentence is a question. The metric the
              screenshot is about
-    qs       question marks in the whole reply. Should be 1 on a depth turn:
-             `one_question` is a hard clause, and more than one is its own bug
+    qs       question marks in the whole reply. Should be 1 everywhere:
+             `one_question` is a hard clause, and more than one is its own bug —
+             it is also the first thing to go wrong on a greeting
     lists    bulleted or numbered lines — the assembled-report shape
 
 Profiles are the ladder, run top down, exactly as asked: everything at 1.0
-first, then successively less until the depth rows keep ends_q and the light
-rows stay short.
+first, then successively less until the depth rows keep ends_q without the
+light rows growing.
 
     .venv/Scripts/python.exe backend/evals/followup_depth.py --yes
     .venv/Scripts/python.exe backend/evals/followup_depth.py --profiles max,ask_hard --yes
@@ -78,13 +83,15 @@ TURNS = (
     "那我该怎么帮他把这一觉睡长一点？",
 )
 
-#: What the demotion was for. These must not come back assembled, and `ack` in
-#: particular must not come back with a manufactured question: a parent saying
-#: "ok, I'll try it" has not asked for another round.
+#: Where an obligation to ask turns into an interrogation. The first three
+#: should still end on a question — lightly, tied to what was just said — and
+#: what is watched here is whether they grow instead. `close` is the one turn
+#: that should end without one.
 LIGHT_TURNS = (
     ("greet", "你好呀nuri，现在感觉如何呀？"),
     ("meta", "我其实刚刚在后台修改完你的聊天温度，我来观察一下情况"),
     ("ack", "好的，我试试看。"),
+    ("close", "今天就先聊到这儿吧，我去忙了。"),
 )
 
 #: The ladder. "__all__" is expanded against the live clause table, so a clause

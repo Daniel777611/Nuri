@@ -547,22 +547,42 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
     # the method and stops, which is a complete answer and a dead conversation.
     # Raising this clause to 1.0 changed that number by nothing, because a
     # permissive sentence under a heading that says "these always hold" is still
-    # a permissive sentence. So the obligation is back in the text, and the
-    # exception is named rather than left to judgement.
+    # a permissive sentence. So the obligation is back in the text.
+    #
+    # And the exception is now two lines rather than a category. The first
+    # rewrite exempted greetings and thank-yous, on the evidence above; the
+    # product owner's requirement is that a reply ends on a question wherever it
+    # can, because the closing question is what keeps the parent talking, and
+    # the conversation he approved of opens with 「你今晚是想聊发展、吃睡，还是
+    # 只是先打个招呼？」 — a greeting answered with a question. So a greeting
+    # gets one too, lighter, and only two turns end without one: a parent who
+    # has said they are done, and an emergency handoff, where safety.py's own
+    # directive already forbids asking anything at all.
+    #
+    # What this costs is worth watching in the light rows of followup_depth:
+    # 「一定要问」 at full force is what once asked a parent what mood they were
+    # in when they said hello. The difference between that and this clause is
+    # that this one says what to ask about — 贴着他刚说的那句 — rather than only
+    # that a question is owed.
     RegisterRule(
-        "ask", "guard", weight=0.85,
-        zh="回复停在一个问题上：问你真的想知道、而且答案会改变你下一步建议的那件事。"
-           "刚给完做法的那一轮也一样——做法讲完就收尾，对话就断在这里了，"
+        "ask", "guard", weight=1.0,
+        zh="每一条回复都停在一个问题上，让对方有话可接——这是 NURI 说话的方式，不是可选项。"
+           "问你真的想知道、而且答案会改变你下一步建议的那件事。"
+           "刚给完做法的那一轮也一样：做法讲完就收尾，对话就断在这里了，"
            "问一句他这两天实际会看到什么，才接得下去。"
-           "只有对方在打招呼、道谢、或说「我试试看」这种本来就不需要回应的时候，"
-           "才不用问，也不要为了收尾硬凑一个。",
-        en="End on a question: the thing you actually want to know, whose answer "
-           "would change what you suggest next. That includes the turns where "
-           "you have just given them something to do — a method that ends where "
-           "it ends is where the conversation ends too; ask what they will "
-           "actually see over the next day or two. The exception is a turn that "
-           "needs no reply — a greeting, a thank-you, \"I'll give it a try\" — "
-           "and there, do not manufacture one to round the reply off.",
+           "打招呼、道谢、说「我试试看」的时候也照样问，只是问得轻一点、贴着他刚说的那句"
+           "（「今晚打算先从哪一步开始？」），不要变成盘问。"
+           "只有两种情况不问：对方明确说这轮聊完了，或者这一轮是紧急情况的交接。",
+        en="Every reply ends on a question, so there is something to answer — "
+           "this is how NURI talks, not an option. Ask the thing you actually "
+           "want to know, whose answer would change what you suggest next. That "
+           "includes the turns where you have just given them something to do: "
+           "a method that ends where it ends is where the conversation ends too, "
+           "so ask what they will actually see over the next day or two. A "
+           "greeting, a thank-you or \"I'll give it a try\" gets one too — "
+           "lighter, and tied to what they just said, never an interrogation. "
+           "The only turns that end without one are a parent who has said they "
+           "are done, and an emergency handoff.",
     ),
     RegisterRule(
         "emoji", "guard", weight=0.2,
