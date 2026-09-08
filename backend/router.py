@@ -1,28 +1,26 @@
-"""The per-turn router: one small-model call that decides two things.
+"""The per-turn router: one small-model call that decides what a turn needs.
 
     * whether this turn needs external sources, and what to search for
-    * whether this turn should produce task cards
+    * what the turn is about, as a stable short topic
 
-Both decisions used to be made elsewhere and worse. Task cards were a
-`suggest_tasks` boolean the main model set while writing its reply, judged
-against four fairly subjective sentences — which is why testers reported the
-cards appearing with "no rules". Moving it here makes it a separate, cheap,
-auditable call with explicit criteria and a logged reason.
+It once also decided whether the turn should produce task cards. That feature
+is gone from the conversation, and the clause went with it: a router question
+nothing reads is latency and tokens spent on the parent's critical path.
 
-It is also what makes the search step affordable: routing runs inside the
-existing parallel context phase, so the only latency actually added to a turn is
-the search itself.
+Routing is what makes the search step affordable: it runs inside the existing
+parallel context phase, so the only latency actually added to a turn is the
+search itself.
 
 Two properties everything downstream depends on:
 
   * It never raises. Any failure returns `NO_ROUTE` with `ok=False` — no search,
-    no task cards, reply unaffected.
+    reply unaffected.
   * It never blocks past `timeout_s`. This sits in front of the parent's first
     visible token.
 
 `ok=False` is deliberately visible rather than silent: a wrong ROUTER_MODEL
-would otherwise degrade every turn to "never search, never suggest tasks" and
-look exactly like a product decision. Log it, and record it on the turn metrics.
+would otherwise degrade every turn to "never search" and look exactly like a
+product decision. Log it, and record it on the turn metrics.
 """
 
 from __future__ import annotations
@@ -77,14 +75,11 @@ class TurnRoute:
     search_query_zh: str = ""
     search_scope: Scope = "both"
     is_medical: bool = False
-    suggest_tasks: bool = False
     #: Short noun phrase naming what this turn is about ("睡眠倒退", "辅食添加").
-    #: The task budget is spent per topic per day, so this is what decides
-    #: whether a turn is a new concern or more of the one already handled —
-    #: see _plan_task_cards in main.py. Filled on every turn, not only the ones
-    #: that suggest tasks, so the log shows what a day actually covered.
+    #: Filled on every turn, so a day of logs shows what was actually covered,
+    #: and stable across turns so the same concern reads as one thread.
     topic: str = ""
-    #: Short rationale, logged so the task-card criteria can be tuned against
+    #: Short rationale, logged so the routing criteria can be tuned against
     #: real turns instead of guessed at.
     reason: str = ""
     #: False when the call failed and these are defaults, not decisions.
@@ -126,21 +121,15 @@ en：只跟北美体系有关时，例如美国疫苗时程、保险、托育制
 **is_medical 为 true 时 needs_search 也必须是 true，并给出两组关键词。**
 医疗问题正是最需要权威依据的场合，绝不能凭印象直接回答
 
-【suggest_tasks】全部满足才是 true：
-- 出现了具体的育儿场景、困扰或目标，不是泛泛聊天
-- 背景已经够清楚，知道给什么任务有意义
-- 自然到了"我来帮你整理几件可以做的事"的时机
-纯情绪倾诉、寒暄、还在追问了解情况的阶段，一律 false
-
 【topic】这一轮在谈的核心话题，4-10 个字的名词短语
 例：「睡眠倒退」「辅食添加」「入园分离焦虑」「兄弟争抢玩具」
-- **每轮都要填**，包括 suggest_tasks 为 false 的时候
-- **标签要稳定**：同一个困扰在后续几轮里必须给出同样的词。一天里同一个话题
-  只会生成一次任务，标签飘移会让同一件事重复占用额度
+- **每轮都要填**
+- **标签要稳定**：同一个困扰在后续几轮里必须给出同样的词，否则同一件事在日志里
+  会散成好几个话题
 - 填这一轮真正在谈的事，不要填「育儿」「带娃」这种没有区分度的大词
 
-【reason】30字以内，中文，**必须同时说明 needs_search 和 suggest_tasks 两个判断**
-例：「要讲副食品准备信号，需依据；已有具体目标，给任务」"""
+【reason】30字以内，中文，说明 needs_search 这个判断
+例：「要讲副食品准备信号，需要权威依据」"""
 
 
 def _condense(history: Sequence[dict], window: int = ROUTER_HISTORY_WINDOW) -> str:
@@ -169,13 +158,12 @@ _ROUTER_RESPONSE_FORMAT = {
                 "search_query_zh": {"type": "string"},
                 "search_scope": {"type": "string", "enum": list(_VALID_SCOPES)},
                 "is_medical": {"type": "boolean"},
-                "suggest_tasks": {"type": "boolean"},
                 "topic": {"type": "string"},
                 "reason": {"type": "string"},
             },
             "required": [
                 "needs_search", "search_query", "search_query_zh",
-                "search_scope", "is_medical", "suggest_tasks", "topic", "reason",
+                "search_scope", "is_medical", "topic", "reason",
             ],
             "additionalProperties": False,
         },
@@ -189,11 +177,6 @@ def parse_route(raw: str) -> TurnRoute:
     Separated from the network call so the invariants below are testable without
     a model: a route that says "search" but supplies no query is corrected here
     rather than surfacing as a confusing no-op further down.
-
-    `suggest_tasks` here is only the model's opinion that the *moment* is right.
-    Whether cards are actually drafted — and how many — is a budget decision
-    that needs the day's history and the parent's open tasks, so it lives in
-    main.py's `_plan_task_cards`.
     """
     data = json.loads(raw)
 
@@ -212,7 +195,6 @@ def parse_route(raw: str) -> TurnRoute:
         search_query_zh=query_zh if needs_search else "",
         search_scope=scope,
         is_medical=bool(data.get("is_medical")),
-        suggest_tasks=bool(data.get("suggest_tasks")),
         topic=(data.get("topic") or "").strip()[:40],
         reason=(data.get("reason") or "").strip()[:120],
     )
@@ -324,14 +306,18 @@ async def route_turn(
 def route_metrics(route: TurnRoute) -> dict:
     """Flatten a route into columns for chat_turn_logs. `route_reason` is the
     one that earns its keep: it's what lets someone look at a week of real
-    turns and actually tune when task cards should appear."""
+    turns and actually tune when a search should happen.
+
+    `suggested_tasks` is written as False rather than dropped: the column holds
+    months of history, and a NULL that means "the feature is gone" is
+    indistinguishable from a NULL that means the write failed."""
     return {
         "route_ok": route.ok,
         "route_error": route.error,
         "needs_search": route.needs_search,
         "search_scope": route.search_scope,
         "is_medical": route.is_medical,
-        "suggested_tasks": route.suggest_tasks,
+        "suggested_tasks": False,
         "route_reason": route.reason,
         "route_topic": route.topic,
     }

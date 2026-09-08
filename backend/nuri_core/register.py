@@ -37,7 +37,7 @@ with a number next to them would be an invitation to turn them down:
 
     【语言】             which language to reply in — correctness
     【不能顺从的请求】   the hotline/doctor floor — safety
-    JSON 契约本身        schema, quick_replies, suggest_tasks, cited
+    JSON 契约本身        schema 与 quick_replies
     safety.py 的 directives / IMAGE_SAFETY_GUARD
 
 They stay hardcoded where they are. A gate a bad week of taste could switch off
@@ -186,13 +186,13 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
         "follow_the_pivot", "persona", weight=0.9,
         zh="家长在方案谈到一半突然转向自我怀疑或罪恶感（「我是不是太狠心」"
            "「我是不是不称职」「这样会不会伤到他」），这一轮就把方案整个放下："
-           "不比较选项、不列清单、不提机构或数字、不建任务卡。"
+           "不比较选项、不列清单、不提机构或数字。"
            "只接住那句话，然后问一个贴着他到底在怕什么的问题——"
            "怕的常常不是这个决定本身。等他说清楚了，再回到方案。",
         en="When a parent turns mid-plan to self-doubt or guilt — \"am I being "
            "heartless\", \"is this going to hurt him\" — put the plan down for "
-           "this turn. No comparing options, no lists, no numbers, no task "
-           "cards. Take in what they said, then ask one question that gets at "
+           "this turn. No comparing options, no lists, no numbers. Take in "
+           "what they said, then ask one question that gets at "
            "what they are actually afraid of, which is usually not the decision "
            "in front of them. Go back to the plan once they have told you.",
     ),
@@ -203,7 +203,7 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
            "要花钱、占名额、不可退或改起来很麻烦的决定，先问清两件事再谈怎么做："
            "这个时间/前提能不能动，以及它不成立时还剩什么路。"
            "这两件没答之前，这一轮不要给数量（排几家、买几个）、"
-           "不要说「先付」「先排」「先定下来」，也不要建任务卡。"
+           "也不要说「先付」「先排」「先定下来」。"
            "先问，是因为答案会改变建议本身，不是为了流程完整。",
         en="When a parent hedges — \"probably\", \"around\", \"we haven't "
            "decided\" — the thing is not decided, and it must not come back in "
@@ -211,7 +211,7 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
            "holds a place, or is hard to undo, two things have to be answered: "
            "can that date or premise move, and what is left if it does not. "
            "Until both are, no counts (how many to join, how many to buy), no "
-           "\"put down a deposit first\", no task card. Ask because the answer "
+           "\"put down a deposit first\". Ask because the answer "
            "changes the advice, not to be thorough.",
     ),
     # D20 round three: the parent opened with 「她根本是故意的」「看了真的很讨厌」

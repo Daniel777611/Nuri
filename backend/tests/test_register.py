@@ -160,8 +160,12 @@ def test_safety_and_language_are_not_in_the_table():
     assert "【不能顺从的请求】" in NURI_PERSONA
     assert "【语言】" in NURI_PERSONA
     # The output contract is a contract, not a preference.
-    assert "suggest_tasks" in NURI_JSON_SUFFIX
-    assert "task_proposals" in NURI_JSON_SUFFIX
+    assert "以合法 JSON 格式回复" in NURI_JSON_SUFFIX
+    assert "quick_replies" in NURI_JSON_SUFFIX
+    # Task cards and citation indices left the conversation entirely; the
+    # contract must not ask for a field the schema no longer accepts.
+    for gone in ("suggest_tasks", "task_proposals", "cited（"):
+        assert gone not in NURI_JSON_SUFFIX
 
 
 def test_every_rule_says_something_in_at_least_one_language():

@@ -2,9 +2,8 @@
 
 The persona, the reply contract, and every call that turns assembled context
 into words: the blocking and streaming reply paths, the streamed-JSON parser
-that lets text appear before the object closes, the task-card contract, the
-`#fix` distillation that keeps a reviewer's correction as a reusable rule, and
-the proactive check-in.
+that lets text appear before the object closes, the `#fix` distillation that
+keeps a reviewer's correction as a reusable rule, and the proactive check-in.
 
 Split from `dialogue.py`, which decides *what* to say — which directives apply,
 in what order, and whether to raise anything unprompted. That module is pure
@@ -38,7 +37,6 @@ from backend.nuri_core import (
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
-    OPENAI_TASKS_TIMEOUT_S,
     aoai,
     now,
     oai,
@@ -72,7 +70,7 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 NURI_JSON_SUFFIX = """
 
 以合法 JSON 格式回复：
-{"text": "...", "quick_replies": [...], "suggest_tasks": false, "task_proposals": []}
+{"text": "...", "quick_replies": [...]}
 
 text：
 {TEXT_STYLE}
@@ -83,24 +81,8 @@ quick_replies（用户可能说的下一句话，不是菜单）：
 - 刚给结论/建议：0个也行
 - 每个不超过10字
 
-suggest_tasks 和 task_proposals：
-- 每一轮都独立判断；历史上生成过任务，不妨碍这轮生成新的任务
-- 以下两种情况必须设 suggest_tasks=true，并填写1-4个 task_proposals：
-  1. 用户明确要求生成任务、任务卡、待办、行动清单或计划
-  2. 你的本轮 text 已经给出了用户今天或本周可以实际执行/观察的具体方案
-- task_proposals 必须忠实对应本轮 text 中的方案，不能另起话题；用户指定数量时遵守其数量
-- 仍在了解情况、只是共情/解释、只提出澄清问题时，suggest_tasks=false 且 task_proposals=[]
-- 紧急医疗、安全风险或需要立即寻求专业帮助的场景，不生成普通任务卡
-- task_proposals 字段：
-  · title：20字内的清楚行动名称
-  · scope：today（今天做一次）或 week（本周持续）
-  · task_type：interaction（亲子互动）、observation（发展观察）、care（照顾陪伴）或 selfcare（家长自我照顾）
-  · description：一句具体、可衡量、低负担的说明
-  · steps：1-3条可以直接照做的步骤
-
-cited（这一轮你实际用到了来源清单里的哪几条）：
-- 只填系统给你的来源清单里的编号；没有清单、或没有一条真的用得上，就填 []
-- 这个字段只用于溯源，不会显示给家长
+来源与依据：
+- 系统给你的来源清单只是让你把事实说准，不是要你标注出处
 - 正文里不要写 [1] 这种编号：App 不会在消息下面列出来源，家长看到的只是一个查不到的标记
 - 要让家长知道依据，就在句子里直接点名机构（「美国儿科学会建议…」）；不知道出处就说不知道，不要猜
 - 你永远不需要、也绝对不要自己写出网址""".replace(
@@ -155,35 +137,8 @@ NURI_RESPONSE_FORMAT = {
                 # streaming path surfaces it while the rest is still arriving.
                 "text": {"type": "string"},
                 "quick_replies": {"type": "array", "items": {"type": "string"}},
-                "suggest_tasks": {"type": "boolean"},
-                "task_proposals": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "scope": {"type": "string", "enum": ["today", "week"]},
-                            "task_type": {
-                                "type": "string",
-                                "enum": ["interaction", "observation", "care", "selfcare"],
-                            },
-                            "description": {"type": "string"},
-                            "steps": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                        },
-                        "required": ["title", "scope", "task_type", "description", "steps"],
-                        "additionalProperties": False,
-                    },
-                },
-                # Indices into the numbered source list in the prompt — never
-                # URLs. The model physically cannot invent a link it was not
-                # given, which is the one guarantee worth designing the schema
-                # around for a parenting product.
-                "cited": {"type": "array", "items": {"type": "integer"}},
             },
-            "required": ["text", "quick_replies", "suggest_tasks", "task_proposals", "cited"],
+            "required": ["text", "quick_replies"],
             "additionalProperties": False,
         },
     },
@@ -204,8 +159,6 @@ def reply_model_kwargs() -> dict:
 NURI_FALLBACK = {
     "text": "抱歉，AI 暂时无法回应，请稍后再试。",
     "quick_replies": [],
-    "suggest_tasks": False,
-    "task_proposals": [],
 }
 
 #: Two things the single fallback got wrong, both found by running the red-team
@@ -418,64 +371,6 @@ def _user_texts(history: list[dict], limit: int = 4) -> list[str]:
             if len(out) >= limit:
                 break
     return out
-
-_TASK_REQUEST_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:请|請|帮我|幫我|麻烦|麻煩|可以|能不能|给我|給我|替我|为我|為我).{0,12}"
-        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,10}"
-        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
-        r"(?:生成|创建|創建|制定|安排|布置|列出|列成|列为|列為|整理成|转成|轉成|转为|轉為|变成|變成|做成|加入|添加).{0,8}"
-        r"(?:任[务務](?:卡)?|计[划劃]|行[动動]清[单單]|待[办辦])",
-        r"(?:给|給).{0,6}(?:我|我们|我們)?.{0,6}(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
-        r"(?:我想要|我要|我需要|来个|來個)\s*"
-        r"(?:一|一个|一個|两|兩|二|三|四|[1-4])?\s*"
-        r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
-        r"(?:帮我|幫我|替我|为我|為我).{0,6}(?:做|做成|布置).{0,6}"
-        r"(?:任[务務](?:卡)?|计[划劃]|待[办辦])",
-        r"\b(?:make|create|generate|give|build|add|turn|organize|schedule)\b.{0,32}"
-        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b",
-        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?|action items?)\b.{0,24}"
-        r"\b(?:for me|from this|from that|out of this|please)\b",
-    )
-)
-_TASK_NEGATION_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:不要|不用|无需|無需|先别|先別|别|別)\s*(?:再\s*)?(?:"
-        r"(?:(?:给|給)\s*)?(?:我|我们|我們)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
-        r"|(?:生成|创建|創建|添加|安排|布置|整理成|转成|轉成|转为|轉為|变成|變成|做成)"
-        r".{0,5}(?:任[务務](?:卡)?|计[划劃]|待[办辦])"
-        r"|把.{0,8}(?:整理成|转成|轉成|转为|轉為|变成|變成|做成)"
-        r".{0,4}(?:任[务務](?:卡)?|计[划劃]|待[办辦]))",
-        r"\b(?:do not|don't|dont|no need to|without)\b.{0,32}"
-        r"\b(?:tasks?|task cards?|plans?|checklists?|to-?dos?)\b",
-    )
-)
-_TASK_META_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"(?:列出|分析|评价|評價|比较|比較|讲讲|講講|解释|解釋|介绍|介紹)"
-        r"[^，。！？,;!?\n]{0,12}(?:任[务務](?:卡)?|计[划劃])"
-        r"[^，。！？,;!?\n]{0,12}(?:优缺点|優缺點|利弊|详情|詳情|细节|細節|内容|內容)?",
-        r"(?:给|給)[^，。！？,;!?\n]{0,5}(?:我|我们|我們)?"
-        r"[^，。！？,;!?\n]{0,8}(?:讲讲|講講|解释|解釋|介绍|介紹)"
-        r"[^，。！？,;!?\n]{0,8}"
-        r"(?:任[务務](?:卡)?|计[划劃])",
-        r"\b(?:create|make|give|add)\b[^,.;!?\n]{0,24}\b(?:summary|information|details?|"
-        r"context|explanation)\b[^,.;!?\n]{0,24}\b(?:plans?|task cards?)\b",
-        r"\b(?:tell me about|explain|describe|summarize|add more detail to)"
-        r"\b[^,.;!?\n]{0,32}"
-        r"\b(?:plans?|task cards?)\b",
-    )
-)
-_TASK_COUNT_WORDS = {
-    "一": 1, "一个": 1, "一個": 1, "1": 1, "one": 1,
-    "二": 2, "两": 2, "兩": 2, "两个": 2, "兩個": 2, "2": 2, "two": 2,
-    "三": 3, "三个": 3, "三個": 3, "3": 3, "three": 3,
-    "四": 4, "四个": 4, "四個": 4, "4": 4, "four": 4,
-}
-_TASK_TYPES = {"interaction", "observation", "care", "selfcare"}
 
 # The first block below names the catastrophe; the second describes it. A swept
 # set of 31 phrasings a frightened parent might actually type found the naming
@@ -763,55 +658,6 @@ def emergency_handoff(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in _EMERGENCY_HANDOFF_PATTERNS)
 
 
-def task_intent(text: str) -> Optional[str]:
-    """Resolve the latest unambiguous request/decline about task cards.
-
-    Positive phrases inside a negative phrase ("不要生成任务") do not count as
-    requests. A later clause can intentionally override an earlier one, as in
-    "先不要解释，直接给我两个任务".
-    """
-    normalized = " ".join((text or "").strip().split())
-    if not normalized:
-        return None
-    declines = [
-        match
-        for pattern in _TASK_NEGATION_PATTERNS
-        for match in pattern.finditer(normalized)
-    ]
-    meta_requests = [
-        match
-        for pattern in _TASK_META_PATTERNS
-        for match in pattern.finditer(normalized)
-    ]
-    requests = [
-        match
-        for pattern in _TASK_REQUEST_PATTERNS
-        for match in pattern.finditer(normalized)
-        if not any(
-            decline.start() <= match.start() and match.end() <= decline.end()
-            for decline in declines
-        )
-        and not any(
-            meta.start() <= match.start() and match.end() <= meta.end()
-            for meta in meta_requests
-        )
-    ]
-    latest_request = max((match.start() for match in requests), default=-1)
-    latest_decline = max((match.start() for match in declines), default=-1)
-    if latest_request < 0 and latest_decline < 0:
-        return None
-    return "request" if latest_request > latest_decline else "decline"
-
-
-def user_requested_tasks(text: str) -> bool:
-    """Deterministically recognise a direct request for task cards."""
-    return task_intent(text) == "request"
-
-
-def user_declined_tasks(text: str) -> bool:
-    return task_intent(text) == "decline"
-
-
 def urgent_task_suppressed(user_text: str, ai_text: str = "") -> bool:
     """Never turn an emergency or immediate safety handoff into a routine card."""
     combined = f"{user_text or ''}\n{ai_text or ''}"
@@ -974,64 +820,11 @@ def caregiver_harm_detected(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in _CAREGIVER_HARM_PATTERNS)
 
 
-def requested_task_count(text: str) -> Optional[int]:
-    normalized = " ".join((text or "").strip().lower().split())
-    task_term = r"(?:个|個|条|條|项|項)?\s*(?:任[务務](?:卡)?|计[划劃]|待[办辦]|tasks?|task cards?|plans?)"
-    count_terms = "|".join(sorted((re.escape(key) for key in _TASK_COUNT_WORDS), key=len, reverse=True))
-    match = re.search(rf"({count_terms})\s*{task_term}", normalized, re.IGNORECASE)
-    return _TASK_COUNT_WORDS.get(match.group(1).lower()) if match else None
-
-
-def normalize_task_proposals(raw_tasks) -> list[dict]:
-    """Validate the compact task contract before it reaches the frontend."""
-    tasks: list[dict] = []
-    seen_titles: set[str] = set()
-    for raw in raw_tasks or []:
-        if not isinstance(raw, dict):
-            continue
-        title = str(raw.get("title") or "").strip()[:40]
-        normalized_title = re.sub(r"\s+", "", title).lower()
-        if not title or normalized_title in seen_titles:
-            continue
-        raw_steps = raw.get("steps") or []
-        if isinstance(raw_steps, str):
-            raw_steps = [raw_steps]
-        elif not isinstance(raw_steps, list):
-            raw_steps = []
-        steps = [
-            step.strip()[:160]
-            for step in raw_steps
-            if isinstance(step, str) and step.strip()
-        ][:3]
-        description = str(raw.get("description") or "").strip()[:280]
-        if not description and steps:
-            description = steps[0]
-        if not description:
-            continue
-        if not steps:
-            continue
-        task_type = str(raw.get("task_type") or "interaction")
-        tasks.append({
-            "title": title,
-            "scope": raw.get("scope") if raw.get("scope") in {"today", "week"} else "today",
-            "task_type": task_type if task_type in _TASK_TYPES else "interaction",
-            "description": description,
-            "steps": steps,
-        })
-        seen_titles.add(normalized_title)
-        if len(tasks) == 4:
-            break
-    return tasks
-
-
 def parse_nuri_reply(raw: str) -> dict:
     data = json.loads(raw)
     return {
         "text": data.get("text", ""),
         "quick_replies": data.get("quick_replies", [])[:3],
-        "suggest_tasks": bool(data.get("suggest_tasks", False)),
-        "task_proposals": normalize_task_proposals(data.get("task_proposals")),
-        "cited": [n for n in (data.get("cited") or []) if isinstance(n, int)],
     }
 
 def nuri_reply_sync(
@@ -1048,8 +841,6 @@ def nuri_reply_sync(
         return {
             "text": "AI 暂时不可用。",
             "quick_replies": [],
-            "suggest_tasks": False,
-            "task_proposals": [],
         }
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
                                   internal_ctx, sources_ctx, system_prompt, history_window,
@@ -1173,8 +964,6 @@ async def nuri_reply_stream(
         yield "final", {
             "text": "AI 暂时不可用。",
             "quick_replies": [],
-            "suggest_tasks": False,
-            "task_proposals": [],
         }
         return
     msgs, fewshot = nuri_messages(history, card_ctx, memory_ctx, profile_ctx, style_ctx,
@@ -1248,8 +1037,6 @@ async def nuri_reply_stream(
             yield "final", {
                 "text": salvaged,
                 "quick_replies": [],
-                "suggest_tasks": False,
-                "task_proposals": [],
             }
         else:
             yield "final", fallback_reply(
@@ -1445,79 +1232,6 @@ def style_rules_fingerprint_cached() -> str:
     turn is being prepared, and this reads what that left behind.
     """
     return _STYLE_FINGERPRINT["value"]
-
-def gen_tasks_ai_sync(
-    msgs: list[dict], requested_count: Optional[int] = None,
-) -> list[dict]:
-    """Fallback task generation when the primary structured reply has no cards."""
-    if not oai:
-        return []
-    history = "\n".join(
-        f"{'用户' if m['role'] == 'user' else 'NURI'}: {m.get('text', '')}"
-        for m in msgs[-14:]
-        if m.get("text") and not (m.get("transition") or {}).get("kind")
-    )
-    resp = oai.chat.completions.create(
-        model="gpt-5.5",
-        messages=[{"role": "user", "content":
-            f"根据以下育儿对话，生成"
-            f"{requested_count if requested_count else '1-3'}个具体可执行的小任务。\n\n"
-            f"{history}\n\n"
-            '以JSON返回：{"tasks": [{"title": "任务（20字内）", "scope": "today或week", '
-            '"task_type": "interaction|observation|care|selfcare", "description": "一句话任务说明", '
-            '"steps": ["具体做法1", "具体做法2"]}]}\n'
-            "- 对话最后一条 NURI 回复是刚刚给用户的方案，任务必须优先忠实转换其中的行动\n"
-            "- 任务必须针对对话中的具体情况，不要泛泛的通用任务\n"
-            "- 不要创建内容重叠的任务；每张卡只承载一个清楚行动\n"
-            "- today=今天完成，week=本周持续追踪\n"
-            "- task_type：interaction=亲子互动，observation=发展观察，care=照顾陪伴，selfcare=自我照顾\n"
-            "- steps 给1-3条具体做法，不是套话\n"
-            "- 如果对话信息不足，返回空数组"
-        }],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "task_list",
-                "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "tasks": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "scope": {"type": "string", "enum": ["today", "week"]},
-                                    "task_type": {
-                                        "type": "string",
-                                        "enum": ["interaction", "observation", "care", "selfcare"],
-                                    },
-                                    "description": {"type": "string"},
-                                    "steps": {"type": "array", "items": {"type": "string"}},
-                                },
-                                "required": ["title", "scope", "task_type", "description", "steps"],
-                                "additionalProperties": False,
-                            },
-                        }
-                    },
-                    "required": ["tasks"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        timeout=OPENAI_TASKS_TIMEOUT_S,
-    )
-    llm_usage.record(
-        "chat.tasks_fallback", "gpt-5.5", usage=getattr(resp, "usage", None),
-    )
-    try:
-        tasks = normalize_task_proposals(
-            json.loads(resp.choices[0].message.content).get("tasks", [])
-        )
-        return tasks[:requested_count] if requested_count else tasks
-    except Exception:
-        return []
 
 async def compose_follow_up_message(nickname: str, item: dict) -> str:
     """Write the check-in in NURI's voice, not from a template.

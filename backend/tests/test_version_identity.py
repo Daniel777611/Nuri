@@ -215,49 +215,32 @@ def test_the_safety_directives_reach_the_events_block():
     ("没有标记的一句话。", "没有标记的一句话。"),
 ])
 def test_no_citation_marker_reaches_the_parent(text, expected):
-    """`_cited_sources` already refuses to invent a link for an index it cannot
-    resolve. The prose was never held to the same rule, and 依据透明度 — 2.30,
-    the weakest metric of the low-risk round with seven of ten dialogues below
-    three — kept quoting exactly these sentences."""
+    """Nothing indexes a [n] any more — the contract does not ask for `cited`,
+    no source list is resolved onto the message, and the app renders none. 依据
+    透明度 — 2.30, the weakest metric of the low-risk round with seven of ten
+    dialogues below three — kept quoting exactly these sentences."""
     assert main._strip_citation_markers(text) == expected
 
 
-def test_the_sources_themselves_are_still_recorded():
-    """Stripping the marker is a rendering decision, not a decision to stop
-    knowing where a claim came from. If the client ever shows a source list,
-    the data to index into is already on the message."""
-    class _Result:
-        title, url, site_name, lang, tier = "t", "https://example.org", "s", "zh", 1
-
-    resolved = main._cited_sources([1], [_Result()])
-    assert resolved and resolved[0]["url"] == "https://example.org"
+def test_the_reply_path_resolves_no_source_list():
+    """Removing the display without removing the resolver would leave a source
+    list on every message that nothing reads and no parent can see."""
+    assert not hasattr(main, "_cited_sources")
 
 
-# ── task_created means a row exists ──────────────────────────────────────────
+# ── the task-card keys outlive the feature ───────────────────────────────────
 
-def test_task_created_reports_what_was_actually_saved():
-    """It was hardcoded false, describing an acceptance step the shipped product
-    does not have: nothing asks the parent to confirm, the cards are the tasks.
-    An evaluator saw a turn propose four Daycare questions and save none."""
+def test_a_turn_reports_no_task_cards_and_still_reports_the_keys():
+    """A chat turn no longer proposes or creates task cards. The keys stay in
+    the envelope because an external runner asserts on it, and a key that
+    vanishes reads as a broken build rather than as a removed feature."""
     class _RC:
         evidence = EvidenceDecision(risk_tier="none")
 
-    proposed = {"tasks": [{"title": "问 Daycare 四个问题", "steps": ["…"]}]}
-    saved = main._turn_events(_RC(), proposed, {}, ["task-abc"])
-    assert saved["task_proposed"] is True
-    assert saved["task_created"] is True
-    assert saved["task_ids"] == ["task-abc"]
-
-
-def test_a_proposal_that_could_not_be_saved_still_reads_as_proposed():
-    """The two facts come apart when the write fails, and a grader reading only
-    `task_created` would not see that anything was offered at all."""
-    class _RC:
-        evidence = EvidenceDecision(risk_tier="none")
-
-    events = main._turn_events(_RC(), {"tasks": [{"title": "x"}]}, {}, [])
-    assert events["task_proposed"] is True
+    events = main._turn_events(_RC(), None, {})
+    assert events["task_proposed"] is False
     assert events["task_created"] is False
+    assert events["task_proposal_count"] == 0
     assert events["task_ids"] == []
 
 
