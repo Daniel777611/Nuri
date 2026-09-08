@@ -612,6 +612,122 @@ def decide(
                     verdict.result)
 
 
+def from_model(
+    state: OrchestrationState, payload: Mapping[str, object],
+) -> OrchestrationState:
+    """Fold the reply model's reading of the turn into the carried state.
+
+    The division of labour, which is the whole reason this is a function and
+    not a dict update:
+
+      the model  says what kind of scenario this is, what the goal is, whether
+                 enough is known to plan, and what the plan is — judgements
+                 about content, which is what a language model is for
+      this code  keeps the acceptance signal, because 「嗯」 becoming a yes is
+                 the failure the spec opens with, and a model asked whether the
+                 parent agreed will find agreement
+
+    Anything malformed is dropped rather than raising: a turn whose
+    orchestration block came back wrong should lose its card, not its reply.
+    Facts already established are not un-set by a turn that simply did not
+    mention them — `core_goal_confirmed` going false because the model was
+    answering a side question is how a confirmed goal gets re-litigated three
+    turns later.
+    """
+    def _bool(key: str, current: bool) -> bool:
+        value = payload.get(key)
+        return bool(value) if isinstance(value, bool) else current
+
+    def _text(key: str, current) -> object:
+        value = payload.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else current
+
+    stage = payload.get("stage")
+    complexity = payload.get("complexity")
+    plan = _plan_from_model(payload.get("plan"), state.plan_candidate)
+    topics = payload.get("remaining_topics")
+    missing = payload.get("missing_decision_facts")
+
+    return replace(
+        state,
+        conversation_stage=stage if stage in STAGES else state.conversation_stage,
+        scenario_complexity=(
+            complexity if complexity in COMPLEXITIES else state.scenario_complexity
+        ),
+        core_goal=_text("core_goal", state.core_goal),
+        core_goal_confirmed=_bool("core_goal_confirmed", state.core_goal_confirmed),
+        active_topic=_text("active_topic", state.active_topic),
+        remaining_topics=(
+            tuple(str(t) for t in topics if str(t).strip())
+            if isinstance(topics, (list, tuple)) else state.remaining_topics
+        ),
+        topic_priority_confirmed=_bool(
+            "topic_priority_confirmed", state.topic_priority_confirmed,
+        ),
+        decision_facts_sufficient=_bool(
+            "decision_facts_sufficient", state.decision_facts_sufficient,
+        ),
+        missing_decision_facts=(
+            tuple(str(m) for m in missing if str(m).strip())
+            if isinstance(missing, (list, tuple)) else state.missing_decision_facts
+        ),
+        major_constraint_known=_bool(
+            "major_constraint_known", state.major_constraint_known,
+        ),
+        user_support_preference_known=_bool(
+            "user_support_preference_known", state.user_support_preference_known,
+        ),
+        plan_candidate=plan,
+        plan_proposed=_bool("plan_proposed", state.plan_proposed) and plan is not None,
+    )
+
+
+def _plan_from_model(raw: object, current: Optional[PlanCandidate]) -> Optional[PlanCandidate]:
+    """Read a plan out of the model's JSON, keeping the version honest.
+
+    The version only moves when the plan actually changes, because it is half
+    of the idempotency key: a plan restated in the same words across two turns
+    must not become two writes, and a plan the parent asked to change must not
+    collide with the one it replaces.
+    """
+    if not isinstance(raw, Mapping):
+        return current
+    goal = str(raw.get("core_goal") or "").strip()
+    tasks_raw = raw.get("tasks")
+    tasks = tuple(
+        PlanTask(
+            action=str(t.get("action") or "").strip(),
+            owner=str(t.get("owner") or "user").strip() or "user",
+            timing=str(t.get("timing") or "").strip(),
+            trigger=str(t.get("trigger") or "").strip(),
+            completion_criterion=str(t.get("completion_criterion") or "").strip(),
+            fallback=str(t.get("fallback") or "").strip(),
+        )
+        for t in (tasks_raw if isinstance(tasks_raw, (list, tuple)) else ())
+        if isinstance(t, Mapping)
+    )
+    if not goal and not tasks:
+        return current
+    candidate = PlanCandidate(
+        core_goal=goal or (current.core_goal if current else ""),
+        title=str(raw.get("title") or "").strip(),
+        tasks=tasks,
+        completion_criteria=tuple(
+            str(c).strip() for c in (raw.get("completion_criteria") or ())
+            if str(c).strip()
+        ),
+        fallback=tuple(
+            str(f).strip() for f in (raw.get("fallback") or ()) if str(f).strip()
+        ),
+        review_at=str(raw.get("review_at") or "").strip(),
+        version=current.version if current else 1,
+    )
+    if current is None:
+        return candidate
+    same = replace(candidate, version=current.version) == current
+    return current if same else replace(candidate, version=current.version + 1)
+
+
 def idempotency_key(conversation_id: str, plan: PlanCandidate, action: str) -> str:
     """`conversation_id + confirmed_plan_version + action` (§15).
 

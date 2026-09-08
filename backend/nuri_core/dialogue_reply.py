@@ -32,6 +32,7 @@ from backend.nuri_core import (
     image_input,
     knowledge_store,
     register,
+    task_card,
     temporal,
 )
 from backend import llm_usage, runtime
@@ -70,7 +71,7 @@ NURI_PERSONA = """你叫 NURI，是专注儿童发展的育儿顾问，也是父
 NURI_JSON_SUFFIX = """
 
 以合法 JSON 格式回复：
-{"text": "...", "quick_replies": [...]}
+{"text": "...", "quick_replies": [...], "orchestration": {...}}
 
 text：
 {TEXT_STYLE}
@@ -85,7 +86,36 @@ quick_replies（用户可能说的下一句话，不是菜单）：
 - 系统给你的来源清单只是让你把事实说准，不是要你标注出处
 - 正文里不要写 [1] 这种编号：App 不会在消息下面列出来源，家长看到的只是一个查不到的标记
 - 要让家长知道依据，就在句子里直接点名机构（「美国儿科学会建议…」）；不知道出处就说不知道，不要猜
-- 你永远不需要、也绝对不要自己写出网址""".replace(
+- 你永远不需要、也绝对不要自己写出网址
+
+orchestration（这一轮的对话状态，家长看不到；后端据此决定要不要保存计划卡）：
+- 这里填的是「你对这轮对话的判断」，不是你希望发生什么。是否真的建卡由后端决定，
+  你不需要、也不要在 text 里宣称已经保存
+- stage：DISCOVERY（还在弄清楚他为什么来）/ CLARIFICATION（在补会改变方案的事实）/
+  PRIORITIZATION（在多个主题里定先后）/ PLAN_PROPOSAL（这轮给了方案）/
+  PLAN_CONFIRMATION（在问这个方案对他现实不现实）/ FOLLOW_UP（在跟进已有计划）
+- complexity：simple_knowledge（答案稳定、不依赖他家具体情况）/ personalized_decision /
+  emotional_relational（情绪、伴侣或代际关系、照护压力）/ multi_topic_complex（两个以上
+  互相牵扯的大问题）/ safety_sensitive
+- core_goal：他这一轮真正想解决的那一件事，一句话；不确定就填空字符串。
+  只有你复述过、而且他没有纠正，才把 core_goal_confirmed 设为 true。
+  不要凭话题关键词推断：他说「我快被挤奶、夜班和托婴弄炸了」，不等于目标是「增加奶量」
+- decision_facts_sufficient：只有「再问下去也不会改变第一步、优先级或安全判断」时才是 true。
+  不是「背景都收集齐了」。还缺什么就写进 missing_decision_facts
+- active_topic / remaining_topics / topic_priority_confirmed：多主题时用。
+  他自己选了先处理哪个，或你提了顺序而他接受了，才算 topic_priority_confirmed
+- major_constraint_known / user_support_preference_known：情绪与多主题场景才需要，
+  分别是「时间、班表、预算、语言、家里有没有人搭手这类硬限制你已经知道」和
+  「他现在要的是倾诉、拿主意，还是一个马上能做的步骤，你已经知道」
+- plan：只有你在 text 里真的给出了一个具体方案时才填，否则整个留空。
+  · core_goal：这个方案服务的那一个目标
+  · title：20字内
+  · tasks：1-4条，每条 action（具体做什么）、owner（user/partner/caregiver/other）、
+    timing 或 trigger（什么时候或什么情况下做）、completion_criterion（怎么算做到了，
+    要是他这两天真能看到的迹象）、fallback（卡住时改哪一步）
+  · completion_criteria / fallback / review_at：整个方案层面的，没有就留空
+  · 「建立规律」「多沟通」这种方向不是方案，不要填进来
+- plan_proposed：这一轮的 text 是否真的把这个方案摆在他面前了""".replace(
     "{TEXT_STYLE}", register.render("output"),
 )
 
@@ -135,10 +165,89 @@ NURI_RESPONSE_FORMAT = {
             "properties": {
                 # `text` is declared first so it also streams first: the
                 # streaming path surfaces it while the rest is still arriving.
+                # `orchestration` is last for the same reason — it is the part
+                # the parent never sees, and it must not delay the part they do.
                 "text": {"type": "string"},
                 "quick_replies": {"type": "array", "items": {"type": "string"}},
+                "orchestration": {
+                    "type": "object",
+                    "properties": {
+                        "stage": {"type": "string", "enum": list(task_card.STAGES)},
+                        "complexity": {
+                            "type": "string", "enum": list(task_card.COMPLEXITIES),
+                        },
+                        "core_goal": {"type": "string"},
+                        "core_goal_confirmed": {"type": "boolean"},
+                        "active_topic": {"type": "string"},
+                        "remaining_topics": {
+                            "type": "array", "items": {"type": "string"},
+                        },
+                        "topic_priority_confirmed": {"type": "boolean"},
+                        "decision_facts_sufficient": {"type": "boolean"},
+                        "missing_decision_facts": {
+                            "type": "array", "items": {"type": "string"},
+                        },
+                        "major_constraint_known": {"type": "boolean"},
+                        "user_support_preference_known": {"type": "boolean"},
+                        "plan_proposed": {"type": "boolean"},
+                        # Empty `core_goal` means "no plan this turn". A nullable
+                        # object would say it more plainly, but every field of a
+                        # strict schema is required, and an empty string is the
+                        # one shape that cannot be half-filled by accident.
+                        "plan": {
+                            "type": "object",
+                            "properties": {
+                                "core_goal": {"type": "string"},
+                                "title": {"type": "string"},
+                                "tasks": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action": {"type": "string"},
+                                            "owner": {
+                                                "type": "string",
+                                                "enum": ["user", "partner",
+                                                         "caregiver", "other"],
+                                            },
+                                            "timing": {"type": "string"},
+                                            "trigger": {"type": "string"},
+                                            "completion_criterion": {"type": "string"},
+                                            "fallback": {"type": "string"},
+                                        },
+                                        "required": [
+                                            "action", "owner", "timing", "trigger",
+                                            "completion_criterion", "fallback",
+                                        ],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                                "completion_criteria": {
+                                    "type": "array", "items": {"type": "string"},
+                                },
+                                "fallback": {
+                                    "type": "array", "items": {"type": "string"},
+                                },
+                                "review_at": {"type": "string"},
+                            },
+                            "required": [
+                                "core_goal", "title", "tasks", "completion_criteria",
+                                "fallback", "review_at",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": [
+                        "stage", "complexity", "core_goal", "core_goal_confirmed",
+                        "active_topic", "remaining_topics", "topic_priority_confirmed",
+                        "decision_facts_sufficient", "missing_decision_facts",
+                        "major_constraint_known", "user_support_preference_known",
+                        "plan_proposed", "plan",
+                    ],
+                    "additionalProperties": False,
+                },
             },
-            "required": ["text", "quick_replies"],
+            "required": ["text", "quick_replies", "orchestration"],
             "additionalProperties": False,
         },
     },
@@ -825,6 +934,10 @@ def parse_nuri_reply(raw: str) -> dict:
     return {
         "text": data.get("text", ""),
         "quick_replies": data.get("quick_replies", [])[:3],
+        # Never trusted as-is: `task_card.from_model` decides what of this is
+        # allowed to change the carried state, and the acceptance signal is
+        # read from the parent's own words rather than from here.
+        "orchestration": data.get("orchestration") or {},
     }
 
 def nuri_reply_sync(

@@ -753,6 +753,59 @@ function MessageBubble({ msg }: { msg: Msg }) {
     );
   }
 
+  // A plan the parent agreed to, already saved. There is no "add" button on
+  // purpose: the card exists because they said yes in the conversation, and a
+  // second confirmation here would make the one in the conversation meaningless.
+  // What the reply says out loud is how to change or cancel it (spec §11.2).
+  if (msg.transition?.kind === "task_card") {
+    const card = msg.transition;
+    const tasks: any[] = Array.isArray(card.tasks) ? card.tasks : [];
+    const criteria: string[] = Array.isArray(card.completion_criteria)
+      ? card.completion_criteria
+      : [];
+    return (
+      <View style={[styles.row, { justifyContent: "flex-start" }]}>
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
+        <View style={styles.planCard} testID="chat-task-card">
+          <View style={styles.planHead}>
+            <Ionicons name="bookmark" size={14} color={colors.brand} />
+            <Text style={styles.planBadge}>
+              {card.action === "create" ? t("已存成计划") : t("已更新计划")}
+            </Text>
+          </View>
+          <Text style={styles.planTitle}>{card.title || card.core_goal}</Text>
+          {card.core_goal && card.title !== card.core_goal ? (
+            <Text style={styles.planGoal}>{card.core_goal}</Text>
+          ) : null}
+          {tasks.map((task, index) => (
+            <View key={`${msg.id}-task-${index}`} style={styles.planTask}>
+              <Text style={styles.planAction}>{index + 1}. {task.action}</Text>
+              {task.timing || task.trigger ? (
+                <Text style={styles.planMeta}>{task.timing || task.trigger}</Text>
+              ) : null}
+              {task.completion_criterion ? (
+                <Text style={styles.planMeta}>
+                  {t("做到这样就算成功：")}{task.completion_criterion}
+                </Text>
+              ) : null}
+              {task.fallback ? (
+                <Text style={styles.planMeta}>{t("卡住时：")}{task.fallback}</Text>
+              ) : null}
+            </View>
+          ))}
+          {criteria.length ? (
+            <Text style={styles.planMeta}>
+              {t("整体完成标准：")}{criteria.join("；")}
+            </Text>
+          ) : null}
+          <Text style={styles.planFoot}>{t("已同步到「我的任务」")}</Text>
+        </View>
+      </View>
+    );
+  }
+
   if (msg.transition?.kind === "hospital_card") {
     return (
       <View style={[styles.row, { justifyContent: "flex-start" }]}>
@@ -1063,6 +1116,23 @@ const styles = StyleSheet.create({
   },
   transitionBtnText: { color: "#fff", fontWeight: "700", fontSize: type.base },
 
+  planCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderColor: colors.brand,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: 6,
+  },
+  planHead: { flexDirection: "row", alignItems: "center", gap: 5 },
+  planBadge: { fontSize: 11, fontWeight: "700", color: colors.brand },
+  planTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },
+  planGoal: { fontSize: 12, color: colors.muted },
+  planTask: { gap: 2, marginTop: 4 },
+  planAction: { fontSize: 13, color: colors.onSurface, lineHeight: 19 },
+  planMeta: { fontSize: 12, color: colors.muted, lineHeight: 18 },
+  planFoot: { fontSize: 11, color: colors.muted, marginTop: 4 },
   hospitalCard: {
     flex: 1,
     backgroundColor: "#fff",

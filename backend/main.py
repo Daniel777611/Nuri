@@ -39,6 +39,7 @@ from typing import List, Literal, NamedTuple, Optional, Sequence
 from urllib.parse import urlparse
 
 import anyio
+from dataclasses import replace
 import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
@@ -62,6 +63,8 @@ from backend.nuri_core import outcome as core_outcome
 from backend.nuri_core import outcome_store as core_outcome_store
 from backend.nuri_core import provenance as core_provenance
 from backend.nuri_core import state_store as core_state_store
+from backend.nuri_core import task_card as core_task_card
+from backend.nuri_core import task_card_store as core_task_card_store
 from backend.nuri_core import temporal as core_temporal
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
@@ -4849,12 +4852,157 @@ def _version_info(rules_fingerprint: str = "", model: str = "") -> dict:
     }
 
 
+async def _orchestrate_card(
+    turn: "_Turn", body: "UserMessageIn", reply: dict, ai_text: str,
+    session_id: str, message_id: str, rc: Optional["_ReplyContext"],
+) -> tuple[Optional[dict], Optional[dict]]:
+    """Run the Task/Card gate for this turn. Returns (transition, event).
+
+    Ordered the way the spec orders it (§3): the safety layer's verdict first,
+    the parent's own words for acceptance second, the model's reading of the
+    conversation last. A model asked "did they agree?" finds agreement — so it
+    is asked what the turn was *about*, and 「嗯」 is classified here.
+
+    Never raises. A failure anywhere costs the turn its card and leaves the
+    reply exactly as it was, which is the same trade `_after_turn` makes.
+    """
+    if not turn.owner_uid:
+        return None, None
+    task_ids: list[str] = []
+    try:
+        state = await core_task_card_store.load_state(session_id)
+        state = core_task_card.from_model(state, reply.get("orchestration") or {})
+        state = replace(state, safety_state=_safety_state(rc))
+        # 1-based, and the parent's message is the one before the reply.
+        user_index = max(1, len(turn.msgs))
+        state = state.with_turn(body.text or "", user_index)
+
+        existing = await core_task_card_store.open_cards(turn.owner_uid, session_id)
+        decision = core_task_card.decide(state, existing, conversation_id=session_id)
+
+        card_id = decision.card_id
+        replaces = None
+        if decision.writes and state.plan_candidate is not None:
+            if decision.action in ("update", "merge"):
+                replaces = await core_task_card_store.last_event_for_goal(
+                    session_id, decision.goal_id,
+                )
+            card_id = await core_task_card_store.write_card(
+                decision, state.plan_candidate,
+                user_id=turn.owner_uid, session_id=session_id,
+                message_id=message_id, message_index=user_index,
+            )
+            if card_id and decision.action == "create":
+                task_ids = await _save_card_tasks(
+                    state.plan_candidate, card_id, message_id, turn.owner_uid,
+                )
+        event = core_task_card_store.event_payload(
+            decision, state.plan_candidate, card_id=card_id,
+            message_index=user_index + 1, replaces_event_id=replaces,
+            prompt_version=core_dialogue_reply.style_rules_fingerprint_cached(),
+            pipeline_version=PIPELINE_VERSION,
+            status="succeeded" if (card_id or not decision.writes) else "failed",
+        )
+        event = await core_task_card_store.record(
+            event, user_id=turn.owner_uid, session_id=session_id,
+        )
+        await core_task_card_store.save_state(
+            session_id, replace(state, existing_card_id=card_id or state.existing_card_id),
+        )
+    except Exception as e:
+        print(f"[warn] task card orchestration failed: {type(e).__name__}: {e}")
+        return None, None
+
+    if decision.action in ("create", "update", "merge") and card_id:
+        plan = state.plan_candidate
+        transition = {
+            "kind": "task_card",
+            "action": decision.action,
+            "card_id": card_id,
+            "goal_id": decision.goal_id,
+            "task_ids": task_ids,
+            "title": plan.title or plan.core_goal,
+            "core_goal": plan.core_goal,
+            "tasks": [
+                {
+                    "action": t.action, "owner": t.owner, "timing": t.timing,
+                    "trigger": t.trigger,
+                    "completion_criterion": t.completion_criterion,
+                    "fallback": t.fallback,
+                }
+                for t in plan.tasks
+            ],
+            "completion_criteria": list(plan.completion_criteria),
+            "fallback": list(plan.fallback),
+            "review_at": plan.review_at or None,
+        }
+        return transition, event
+    return None, event
+
+
+#: Risk tiers, in the vocabulary the orchestration state speaks. `elevated` maps
+#: to `monitor` rather than to a block: watching a situation is not being in
+#: one, and a turn that merely mentioned a fever still gets to keep its plan.
+_SAFETY_STATE_BY_TIER = {
+    "none": "none",
+    "elevated": "monitor",
+    "medical": "suggest_professional",
+    "caregiver_harm": "caregiver_harm",
+    "crisis": "crisis",
+    "emergency": "emergency",
+}
+
+
+def _safety_state(rc: Optional["_ReplyContext"]) -> str:
+    """The safety layer's verdict, translated for `task_card`.
+
+    `allow_task_cards` is honoured as an outright block even when the tier
+    would not be one. That flag is the safety layer's own decision about this
+    turn, and the spec is explicit that safety outranks the card flow rather
+    than negotiating with it (§12).
+    """
+    plan = getattr(rc, "plan", None)
+    if plan is not None and getattr(plan, "allow_task_cards", True) is False:
+        return "urgent"
+    tier = str(getattr(getattr(rc, "evidence", None), "risk_tier", "") or "none")
+    return _SAFETY_STATE_BY_TIER.get(tier, "none")
+
+
+async def _save_card_tasks(
+    plan, card_id: str, message_id: str, uid: str,
+) -> list[str]:
+    """Write the card's tasks into the tasks tab as well.
+
+    A card the parent cannot tick off is a plan the product forgot to give
+    them. Ids are a uuid5 of the message and the index, same as every other
+    suggestion, so the client saving the same task is a no-op rather than a
+    duplicate row.
+    """
+    saved: list[str] = []
+    for draft in core_task_card_store.tasks_for_card(plan, card_id, message_id):
+        draft.pop("card_id", None)
+        try:
+            row = await create_task(TaskCreate(**draft), uid)
+            saved.append(str(row.get("id") or ""))
+        except Exception as e:
+            print(f"[warn] card task write failed: {type(e).__name__}: {e}")
+    return [task_id for task_id in saved if task_id]
+
+
 def _turn_events(
     rc: Optional["_ReplyContext"],
     transition: Optional[dict],
     session: dict,
+    card_event: Optional[dict] = None,
 ) -> dict:
-    """Machine-readable product outcomes for one turn."""
+    """Machine-readable product outcomes for one turn.
+
+    The aggregate task keys stay where they were — the runner and months of
+    stored results read them — and `task_card_events` carries what they cannot
+    say: which decision this was, which goal it belonged to, and which earlier
+    event an update supersedes. A suppression is in the list too, because
+    `task_created=false` is the row that could never be diagnosed.
+    """
     evidence = getattr(rc, "evidence", None)
     tier = str(getattr(evidence, "risk_tier", "") or "none")
     reason = None
@@ -4863,17 +5011,20 @@ def _turn_events(
         if directive_id.startswith("safety."):
             reason = directive_id
             break
-    card_id = str(session.get("source_card_id") or "") or None
+    feed_card_id = str(session.get("source_card_id") or "") or None
+    written = (transition or {}).get("kind") == "task_card"
+    proposed = written or (card_event or {}).get("spec_event_type") == "task_card.proposed"
+    task_card_id = (transition or {}).get("card_id")
     return {
-        # A chat turn no longer proposes or creates task cards. The four keys
-        # stay, permanently empty, because an external runner asserts on this
-        # envelope and a missing key reads as a broken build rather than as a
-        # feature that was removed.
-        "task_created": False,
-        "task_ids": [],
-        "task_proposed": False,
-        "task_proposal_count": 0,
-        "card_ids": [card_id] if card_id else [],
+        # `task_created` is a card that now exists; `task_proposed` includes the
+        # turn that put a plan in front of the parent without saving it, which
+        # is the state most turns are supposed to end in.
+        "task_created": bool(written),
+        "task_ids": list((transition or {}).get("task_ids") or []),
+        "task_proposed": bool(proposed),
+        "task_proposal_count": len((transition or {}).get("tasks") or []),
+        "card_ids": [c for c in (feed_card_id, task_card_id) if c],
+        "task_card_events": [card_event] if card_event else [],
         "escalation_level": _ESCALATION_BY_TIER.get(tier, "none"),
         "escalation_reason_code": reason,
         #: Unmapped tier, for graders that want the full resolution.
@@ -4884,6 +5035,7 @@ def _turn_events(
 def _turn_envelope(
     turn: "_Turn", ai_messages: list, rc: Optional["_ReplyContext"],
     transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
+    card_event: Optional[dict] = None,
 ) -> dict:
     """The chat response body, shared by the blocking and streaming paths."""
     # Not `rc.style`. That is the subset of rules this turn matched, and hashing
@@ -4894,7 +5046,7 @@ def _turn_envelope(
         "user_message": turn.user_msg,
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
-        "events": _turn_events(rc, transition, turn.session),
+        "events": _turn_events(rc, transition, turn.session, card_event),
         "version": _version_info(
             core_dialogue_reply.style_rules_fingerprint_cached(), model,
         ),
@@ -4937,6 +5089,11 @@ async def post_message(
     rc: Optional[_ReplyContext] = None
     script_step: Optional[tuple[int, int]] = None
     claim_completed = False
+    # The model's reply, when there was one. The #fix and scripted branches
+    # produce text without a conversation state to fold in, and a card decided
+    # from a state nobody updated is a card decided from the previous turn.
+    orchestrated: Optional[dict] = None
+    card_event: Optional[dict] = None
     sb = _require_chat_storage()
 
     try:
@@ -4958,12 +5115,21 @@ async def post_message(
             )
             quick_replies = reply.get("quick_replies", [])
             ai_text = _strip_citation_markers(reply["text"])
+            orchestrated = reply
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
             ) = await _scripted_reply(turn.session, session_id)
             script_step = (step_from, step_to)
 
+        # The card decision runs before the reply is persisted, because its
+        # transition is part of the message: a card that arrives in a later
+        # write would show up under the wrong turn in the transcript.
+        if orchestrated is not None:
+            transition, card_event = await _orchestrate_card(
+                turn, body, orchestrated, ai_text, session_id,
+                _ai_message_id(session_id, turn.user_msg["id"]), rc,
+            )
         ai_msg = await _persist_ai_turn(
             session_id, turn, ai_text, quick_replies, transition, sources,
             script_step=script_step,
@@ -4999,7 +5165,7 @@ async def post_message(
             temporal_context=turn.temporal,
         )
 
-    return _turn_envelope(turn, [ai_msg], rc, transition, metrics)
+    return _turn_envelope(turn, [ai_msg], rc, transition, metrics, card_event)
 
 
 def _sse(payload: dict) -> str:
@@ -5029,6 +5195,8 @@ async def post_message_stream(
         rc: Optional[_ReplyContext] = None
         script_step: Optional[tuple[int, int]] = None
         claim_completed = False
+        orchestrated: Optional[dict] = None
+        card_event: Optional[dict] = None
         sb = _require_chat_storage()
         try:
             if turn.replayed_ai_message is not None:
@@ -5066,6 +5234,7 @@ async def post_message_stream(
                 # The streamed deltas already carried the raw marker; this
                 # is what gets persisted and what the transcript shows.
                 ai_text = _strip_citation_markers(reply["text"])
+                orchestrated = reply
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,
@@ -5073,6 +5242,14 @@ async def post_message_stream(
                 script_step = (step_from, step_to)
                 yield _sse({"type": "delta", "text": ai_text})
 
+            # After the text is on screen, before the message is written: the
+            # card is part of the turn's record, and the parent has already
+            # read the reply by the time this runs.
+            if orchestrated is not None:
+                transition, card_event = await _orchestrate_card(
+                    turn, body, orchestrated, ai_text, session_id,
+                    _ai_message_id(session_id, turn.user_msg["id"]), rc,
+                )
             ai_msg = await _persist_ai_turn(
                 session_id, turn, ai_text, quick_replies, transition, sources,
                 script_step=script_step,
@@ -5084,7 +5261,7 @@ async def post_message_stream(
             claim_completed = True
             yield _sse({
                 "type": "done",
-                **_turn_envelope(turn, [ai_msg], rc, transition, metrics),
+                **_turn_envelope(turn, [ai_msg], rc, transition, metrics, card_event),
             })
 
             ai_message_created = getattr(ai_msg, "created", True)
