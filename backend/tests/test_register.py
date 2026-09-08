@@ -114,15 +114,72 @@ def test_asking_a_question_is_no_longer_mandatory_but_asking_two_still_is_banned
     assert register.band_of(register.weight_of(_rule("ask"))) == "optional"
 
 
-def test_follow_through_is_one_constraint_and_not_two_suggestions():
+def test_follow_through_is_one_clause_and_not_two_halves():
     """完成标准 and 常见卡点 were asked for three rounds running and landed
-    none of them. They were two default-band clauses each asking for half of one
-    structure, and half a structure is easy to satisfy by doing neither."""
+    none of them. They were two clauses each asking for half of one structure,
+    and half a structure is easy to satisfy by doing neither.
+
+    It sits in the default band because the dialogue spec names the per-turn
+    version of it as its own failure (§16.6, 模板化完成度) and says where
+    completeness belongs: 完整性跨多轮实现. What a *saved plan* needs is
+    enforced at the gate instead — see `task_card.plan_gaps`."""
     ids = {rule.id for rule in register.REGISTER_RULES}
     assert "done_looks_like" not in ids and "if_it_fails" not in ids
     rule = _rule("follow_through")
-    assert register.band_of(register.weight_of(rule)) == "hard"
-    assert _band_containing(register.render("output"), rule.zh) == "hard"
+    assert register.band_of(register.weight_of(rule)) == "default"
+    assert _band_containing(register.render("output"), rule.zh) == "default"
+
+
+# ── the dialogue behaviour spec ──────────────────────────────────────────────
+
+def test_the_scenario_decides_the_depth_rather_than_a_fixed_process():
+    """§5.1 and §16.3: a stable-answer question answered with a round of
+    feelings is the spec's 机械深挖."""
+    zh = _rule("scenario_fit").zh
+    assert "不要为了显得关心去挖情绪" in zh
+    assert register.band_of(register.weight_of(_rule("scenario_fit"))) == "hard"
+
+
+def test_a_tangle_is_restated_before_it_is_answered():
+    """§7. The parent had to say 「你没有回答我真正的问题」 while NURI kept the
+    frame for three more turns."""
+    zh = _rule("restate_goal").zh
+    assert "对吗" in zh
+    assert "换目标" in zh
+
+
+def test_emotional_depth_is_four_layers_and_not_more_questions():
+    """§9: 好的深入不是问题数量更多，而是问题更能改变理解."""
+    zh = _rule("feel_the_layers").zh
+    assert "最消耗" in zh
+    assert "问得更多不等于更深" in zh
+
+
+def test_several_big_problems_get_split_and_prioritised():
+    """§5.4 and §10 — and the clause it contradicts has to say so, or the model
+    is left holding 「一次问一件事」 against 「拆成两到三个方向让他挑」."""
+    zh = _rule("split_topics").zh
+    assert "两到三个" in zh
+    assert "不要报" in zh          # no framework names, no numbered matrix
+    assert "例外" in _rule("one_thing_at_a_time").zh
+
+
+def test_a_plan_is_confirmed_before_it_is_saved():
+    """§11.1, §12.2 and §12.5. This is the half of the flow the backend cannot
+    do alone: a card exists because the parent agreed, so someone has to ask."""
+    zh = _rule("plan_then_confirm").zh
+    assert "对你来说做得到吗" in zh
+    assert "不算答应" in zh
+    # §11.3: never claim a save that the backend has not made.
+    assert "已经存好了" in zh
+
+
+def test_a_question_has_to_change_something():
+    """§8.1's list, plus the product-specific one: a turn whose only question is
+    about the card is a turn that learned nothing."""
+    zh = _rule("question_earns_its_place").zh
+    assert "还有吗" in zh
+    assert "唯一的问题" in zh
 
 
 def test_follow_through_names_all_four_parts():
