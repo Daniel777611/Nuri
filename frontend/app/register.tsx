@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -20,7 +20,7 @@ import { useFonts } from "expo-font";
 import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
-import { api, auth } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import { isPreviewMode } from "@/src/preview-api";
 import { useT } from "@/src/i18n";
 
@@ -35,7 +35,47 @@ export default function Register() {
   const [password, setPassword] = useState(isPreviewMode ? "preview" : "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(!isPreviewMode);
   const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
+
+  // Someone who is already signed in must never reach this form. Submitting it
+  // with a second email replaces the stored token, so the app silently lands on
+  // a brand-new empty account while the real one — children included — stays in
+  // the database under the old id. That is what "孩子没了" actually was.
+  // Preview mode is exempt: it has no real session and exists to review screens.
+  useEffect(() => {
+    if (isPreviewMode) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await auth.getToken();
+        if (!token) return;
+
+        try {
+          const me: any = await api.me();
+          if (cancelled) return;
+          await auth.setOnboarded(!!me?.onboarding_completed);
+          router.replace(me?.onboarding_completed ? "/(tabs)" : "/onboarding");
+          return;
+        } catch (err) {
+          // Only a rejected token means the session is really gone; then the
+          // form is legitimate. A timeout or a 5xx says nothing about the
+          // credentials, so route on the last known state rather than handing
+          // back a form that can strand the account.
+          if (isAuthError(err)) {
+            await auth.clearToken();
+            return;
+          }
+          if (cancelled) return;
+          router.replace((await auth.getOnboarded()) ? "/(tabs)" : "/onboarding");
+          return;
+        }
+      } finally {
+        if (!cancelled) setCheckingSession(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [router]);
 
   const canNext = /\S+@\S+\.\S+/.test(email) && password.length >= 6;
 
@@ -62,7 +102,7 @@ export default function Register() {
     }
   };
 
-  if (!fontsLoaded) {
+  if (!fontsLoaded || checkingSession) {
     return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
   }
 
