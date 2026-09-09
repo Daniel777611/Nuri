@@ -39,12 +39,20 @@ comment on column public.chat_sessions.orchestration_state is
   'plan; the reply path treats that as the default state, never as an error.';
 
 
+-- Identity note: this application does not use Supabase Auth. It signs its own
+-- JWTs and reaches the database with the service role key, so the account table
+-- is `public.users`, whose `id` is **text** — as is `chat_sessions.id`. Typing
+-- these foreign keys as uuid made the constraint unbuildable (42804) and the
+-- whole migration fail. RLS therefore follows the same shape as every other
+-- table here: enabled, with a service_role policy, not an `auth.uid()` one that
+-- could never match a text id.
+
 -- ── 2. cards ─────────────────────────────────────────────────────────────────
 
 create table if not exists public.nuri_task_cards (
   id                          uuid primary key default gen_random_uuid(),
-  user_id                     uuid not null references auth.users(id) on delete cascade,
-  session_id                  uuid references public.chat_sessions(id) on delete cascade,
+  user_id                     text not null references public.users(id) on delete cascade,
+  session_id                  text references public.chat_sessions(id) on delete cascade,
   -- Stable across rewordings of the same goal: uuid5 of the normalised goal
   -- inside one conversation. This is the key the fragmentation metric counts.
   goal_id                     text not null,
@@ -88,7 +96,7 @@ begin
       and policyname = 'nuri_task_cards_owner'
   ) then
     create policy nuri_task_cards_owner on public.nuri_task_cards
-      for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+      for all to service_role using (true) with check (true);
   end if;
 end $$;
 
@@ -97,8 +105,8 @@ end $$;
 
 create table if not exists public.nuri_task_card_events (
   event_id          uuid primary key default gen_random_uuid(),
-  user_id           uuid references auth.users(id) on delete cascade,
-  conversation_id   uuid references public.chat_sessions(id) on delete cascade,
+  user_id           text references public.users(id) on delete cascade,
+  conversation_id   text references public.chat_sessions(id) on delete cascade,
   -- task_card.create | update | merge | proposed | suppressed | error | ...
   event_type        text not null,
   card_id           uuid references public.nuri_task_cards(id) on delete set null,
@@ -138,7 +146,7 @@ begin
       and policyname = 'nuri_task_card_events_owner'
   ) then
     create policy nuri_task_card_events_owner on public.nuri_task_card_events
-      for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+      for all to service_role using (true) with check (true);
   end if;
 end $$;
 
