@@ -58,6 +58,7 @@ from backend.nuri_core import image_input as core_image_input
 from backend import (
     email_verification, llm_usage, locales, mailer, memstore, runtime, stores, usage_dashboard,
 )
+from backend.feed import daily_post as feed_daily_post
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -391,7 +392,7 @@ async def _protect_personalized_feed_cache(request: Request, call_next):
                 )
     response = await call_next(request)
     path = request.url.path
-    is_private_feed = path.endswith("/feed/personalized") or bool(
+    is_private_feed = path.endswith(("/feed/personalized", "/feed/daily-post")) or bool(
         re.search(r"/feed/[^/]+/(?:detail|research)$", path)
     )
     is_private_chat = path.startswith("/api/chat/")
@@ -877,7 +878,23 @@ SCRIPTS: dict = {
 # The persona, the reply calls, the task-card contract, the streamed-JSON
 # parser, the #fix distillation and the proactive check-in now live in
 # backend/nuri_core/dialogue_reply.py. Aliased for the chat routes below.
+#: Reply context for cards that exist only in one parent's conversation — the
+#: daily post card — keyed by card id. Filled from the "card opened" marker by
+#: _active_card_id, which both pipelines call before asking for card context,
+#: so a cold serverless instance learns it from the transcript itself.
+_MARKER_CARD_CONTEXT: dict[str, str] = {}
+_MARKER_CARD_CONTEXT_MAX = 512
+
+
+def _remember_marker_context(card_id: str, context: str) -> None:
+    if len(_MARKER_CARD_CONTEXT) >= _MARKER_CARD_CONTEXT_MAX and card_id not in _MARKER_CARD_CONTEXT:
+        _MARKER_CARD_CONTEXT.pop(next(iter(_MARKER_CARD_CONTEXT)))
+    _MARKER_CARD_CONTEXT[card_id] = context
+
+
 def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
+    if card_id in _MARKER_CARD_CONTEXT:
+        return _MARKER_CARD_CONTEXT[card_id]
     for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
             d = CARD_DETAILS.get(card_id, {})
@@ -1485,6 +1502,27 @@ async def delete_child(child_id: str, uid: str = Depends(_req_uid)):
 # Aliased for the route handlers below, which are the last thing left in this
 # file that calls them.
 
+
+
+@api.get("/feed/daily-post")
+async def get_daily_post(tz: Optional[str] = None, uid: str = Depends(_req_uid)):
+    """Home's daily card: one real post from another parent, fixed for the
+    parent's local day (`tz` is the device's IANA zone). The first request of
+    the day builds it, which takes several seconds; `state` tells the client
+    whether to render, wait (`pending`, retry in `retry_after_s`), or show the
+    empty state. See backend/feed/daily_post.py."""
+    return await feed_daily_post.get_daily_post(uid, tz)
+
+
+class DailyPostEventIn(BaseModel):
+    event: Literal["open", "source_click", "chat"]
+
+
+@api.post("/feed/daily-post/{row_id}/events", status_code=status.HTTP_202_ACCEPTED)
+async def daily_post_event(row_id: str, body: DailyPostEventIn, uid: str = Depends(_req_uid)):
+    """First open / tap-through / chat of today's card, for the dashboard."""
+    recorded = await feed_daily_post.record_event(uid, row_id, body.event)
+    return {"recorded": recorded}
 
 
 @api.get("/feed/personalized")
@@ -3308,16 +3346,25 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
 CARD_OPENED = "card_opened"
 
 
-def _card_marker_message(session_id: str, card_id: str, gen_cards: list[dict]) -> dict:
+def _card_marker_message(
+    session_id: str, card_id: str, gen_cards: list[dict], extra: Optional[dict] = None,
+) -> dict:
     title = ""
     for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
             title = c.get("title") or ""
             break
+    transition = {"kind": CARD_OPENED, "card_id": card_id, "title": title}
+    if extra:
+        # A card with no shared catalogue entry carries its own title and the
+        # context the reply model needs; see _MARKER_CARD_CONTEXT.
+        transition["title"] = extra.get("title") or title
+        if extra.get("context"):
+            transition["context"] = extra["context"]
     return {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": "", "quick_replies": [],
-        "transition": {"kind": CARD_OPENED, "card_id": card_id, "title": title},
+        "transition": transition,
         "created_at": _now(),
     }
 
@@ -3337,11 +3384,14 @@ def _active_card_id(turn: "_Turn") -> str:
     for m in reversed(turn.msgs or []):
         transition = m.get("transition") or {}
         if transition.get("kind") == CARD_OPENED and transition.get("card_id"):
-            return str(transition["card_id"])
+            card_id = str(transition["card_id"])
+            if transition.get("context"):
+                _remember_marker_context(card_id, str(transition["context"]))
+            return card_id
     return turn.session.get("source_card_id") or ""
 
 
-async def _append_card_marker(session_id: str, card_id: str) -> None:
+async def _append_card_marker(session_id: str, card_id: str, extra: Optional[dict] = None) -> None:
     """Record that the parent opened this card, unless it is already current.
 
     Re-opening the same card must not stack dividers: the home screen can send
@@ -3360,7 +3410,7 @@ async def _append_card_marker(session_id: str, card_id: str) -> None:
         last = last_row.get("transition") or {}
         if last.get("kind") == CARD_OPENED and last.get("card_id") == card_id:
             return
-        marker = _card_marker_message(session_id, card_id, gen_cards)
+        marker = _card_marker_message(session_id, card_id, gen_cards, extra)
         marker["id"] = str(uuid.uuid5(
             uuid.NAMESPACE_URL,
             f"nuri:card-marker:{session_id}:{card_id}:{last_row.get('id') or 'start'}",
@@ -4155,6 +4205,18 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
     # Returning what already exists makes the route idempotent, which is what
     # the client was trying and failing to achieve from the outside.
     # one_session_per_user_migration.sql enforces it underneath.
+    # A daily post card lives in one parent's row, not the shared catalogue:
+    # it opens only for its owner, and brings its title and context with it.
+    marker_extra: Optional[dict] = None
+    if body.card_id and body.card_id.startswith(feed_daily_post.CARD_ID_PREFIX):
+        marker_extra = await feed_daily_post.marker_fields(uid, body.card_id)
+        if marker_extra is None:
+            body = body.model_copy(update={"card_id": None})
+        else:
+            await feed_daily_post.record_event(
+                uid, body.card_id[len(feed_daily_post.CARD_ID_PREFIX):], "chat",
+            )
+
     existing = await _existing_session_for(uid)
     if existing:
         await _ensure_initial_greeting(existing, uid)
@@ -4164,7 +4226,7 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
         # path reads card context from — the job source_card_id did while
         # every card had a session of its own.
         if body.card_id:
-            await _append_card_marker(existing["id"], body.card_id)
+            await _append_card_marker(existing["id"], body.card_id, marker_extra)
         return existing
 
     card_id = body.card_id
@@ -4198,7 +4260,7 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
             if winner:
                 await _ensure_initial_greeting(winner, uid, wait_for_peer=True)
                 if body.card_id:
-                    await _append_card_marker(winner["id"], body.card_id)
+                    await _append_card_marker(winner["id"], body.card_id, marker_extra)
                 return winner
         except HTTPException:
             pass
@@ -4206,7 +4268,7 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
 
     await _ensure_initial_greeting(session, uid)
     if body.card_id:
-        await _append_card_marker(session["id"], body.card_id)
+        await _append_card_marker(session["id"], body.card_id, marker_extra)
 
     return session
 
@@ -5860,6 +5922,7 @@ _PRIVACY_WIPE_USER_TABLES = (
     "nuri_turn_traces",
     "email_logs",
     "user_visits",
+    "daily_post_cards",
 )
 
 

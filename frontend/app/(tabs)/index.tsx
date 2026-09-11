@@ -6,32 +6,22 @@ import {
   ScrollView,
   Pressable,
   Image,
-  Linking,
   Platform,
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import * as WebBrowser from "expo-web-browser";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 
 import {
   api,
+  type DailyPostCard as DailyPost,
   type MainConversationPreview,
-  type PersonalizedFeedItem,
-  type PreparedFeedItem,
-  type PreparedLearningResource,
-  type ResourceReadiness,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
-import HeroCarousel, {
-  type DailySelectionResource,
-  type HeroCard,
-  type HeroFeedState,
-} from "@/src/components/HeroCarousel";
-import { preparePersonalizedFeedOnce } from "@/src/feedPreparation";
+import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
 import { useT } from "@/src/i18n";
 
 const mascotImage = require("@/assets/images/homepage/mascot.png");
@@ -46,9 +36,10 @@ const C = {
 };
 
 const FIGMA_FRAME_WIDTH = 402;
-const PREPARATION_RETRY_BASE_DELAY_MS = 30000;
-const PREPARATION_RETRY_MAX_DELAY_MS = 300000;
-const PREPARATION_RETRY_MAX_EXPONENT = 7;
+// While today's card is being built elsewhere, look again this often, for at
+// most this long before showing the empty state.
+const DAILY_POST_POLL_MS = 5000;
+const DAILY_POST_POLL_LIMIT = 12;
 
 type NuriPreview = {
   sessionId: string | null;
@@ -59,105 +50,6 @@ type NuriPreview = {
 };
 
 type NuriPreviewStatus = "loading" | "ready" | "empty" | "error";
-
-type HeroFeedMeta = {
-  feedRequestId?: string;
-  generatedAt?: string;
-  initialContentCategory?: "authority" | "featured" | "case";
-};
-
-function exactPreparedPair(
-  resources: PreparedLearningResource[] | undefined,
-  category: HeroCard["content_category"],
-) {
-  if (!category || !Array.isArray(resources) || resources.length !== 2) return null;
-  const article = resources.find(
-    (resource) =>
-      resource.kind === "article" && resource.content_category === category,
-  );
-  const video = resources.find(
-    (resource) =>
-      resource.kind === "video" && resource.content_category === category,
-  );
-  return article && video ? { article, video } : null;
-}
-
-function isReadyHeroCard(card: HeroCard): boolean {
-  return (
-    card.resource_readiness === "ready" &&
-    card.resource_pair_complete === true &&
-    exactPreparedPair(card.resources, card.content_category) !== null
-  );
-}
-
-function awaitingPreparationCard(card: PersonalizedFeedItem): HeroCard {
-  if (isReadyHeroCard(card as HeroCard)) return card as HeroCard;
-  const resourceReadiness: ResourceReadiness = card.recommendation_id
-    ? "preparing"
-    : "unavailable";
-  return {
-    ...card,
-    resource_readiness: resourceReadiness,
-    resource_pair_complete: false,
-    prepared_content_set_id: null,
-  };
-}
-
-function mergePreparedCard(card: HeroCard, prepared: PreparedFeedItem | undefined): HeroCard {
-  if (!prepared) {
-    return {
-      ...card,
-      resource_readiness: "retryable",
-      resource_pair_complete: false,
-    };
-  }
-  const pair = exactPreparedPair(prepared.resources, card.content_category);
-  const ready =
-    prepared.resource_readiness === "ready" &&
-    prepared.resource_pair_complete === true &&
-    pair !== null;
-  if (!ready) {
-    return {
-      ...card,
-      resource_readiness:
-        prepared.resource_readiness === "unavailable" ? "unavailable" : "retryable",
-      resource_pair_complete: false,
-      prepared_content_set_id: null,
-      research_status: prepared.research_status,
-    };
-  }
-  const category = card.content_category!;
-  return {
-    ...card,
-    title: pair.article.title,
-    delivery_title: prepared.delivery_title || card.delivery_title,
-    publisher: pair.article.publisher,
-    source_label: prepared.source_label || card.source_label || pair.article.publisher,
-    language_label: prepared.language_label || card.language_label,
-    estimated_time_label:
-      prepared.estimated_time_label || card.estimated_time_label,
-    applicable_stage: prepared.applicable_stage || card.applicable_stage,
-    child_age_context: prepared.child_age_context || card.child_age_context,
-    guide: prepared.guide || card.guide,
-    action_steps: prepared.action_steps || card.action_steps,
-    summary: pair.article.description || card.summary,
-    resource_readiness: "ready",
-    resource_pair_complete: true,
-    prepared_content_set_id: prepared.prepared_content_set_id || null,
-    active_pair_id: prepared.active_pair_id || null,
-    alternate_count: prepared.alternate_count || 0,
-    alternate_resource_pairs: prepared.alternate_resource_pairs || [],
-    resources: [pair.article, pair.video],
-    research_status: prepared.research_status,
-    resource_summary: {
-      ...card.resource_summary,
-      categories: {
-        ...(card.resource_summary?.categories || {}),
-        [category]: { article: 1, video: 1 },
-      },
-    },
-  };
-}
 
 const conversationExcerpt = (text: string, maxLength = 18) => {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -229,10 +121,6 @@ export default function Home() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
-  const { feed_refresh: feedRefreshParam } = useLocalSearchParams<{
-    feed_refresh?: string;
-  }>();
-  const feedRefresh = typeof feedRefreshParam === "string" ? feedRefreshParam : "";
   const { width: viewportWidth } = useWindowDimensions();
   // Keep the same content geometry as the 402px Figma phone frame. On a real
   // phone the frame shrinks with the viewport; on desktop it remains centered.
@@ -245,32 +133,66 @@ export default function Home() {
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
   const [nuriPreviewStatus, setNuriPreviewStatus] =
     useState<NuriPreviewStatus>("loading");
-  const [heroCards, setHeroCards] = useState<HeroCard[]>([]);
-  const [heroFeedState, setHeroFeedState] = useState<HeroFeedState>("loading");
-  const [heroFeedRefreshing, setHeroFeedRefreshing] = useState(false);
-  const [heroPublicationState, setHeroPublicationState] =
-    useState<"idle" | "preparing">("idle");
-  const [heroFeedMeta, setHeroFeedMeta] = useState<HeroFeedMeta>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
-  const heroRequest = useRef(0);
-  // Distinguish a warm return from chat from a cold URL load that happens to
-  // carry a refresh nonce. Only the warm path has real cards/fallback content
-  // worth preserving while the replacement request is in flight.
-  const heroCardsPresent = useRef(false);
-  const consumedFeedRefreshes = useRef(new Set<string>());
-  const activeFeedRefresh = useRef<string | null>(null);
-  const heroImpressionKeys = useRef(new Set<string>());
   const openingNuriChat = useRef(false);
-  const preparationRetryAttempt = useRef(0);
-  const preparationRetrySet = useRef("");
-  const publicationPollInFlight = useRef(false);
+  // Today's card. Built once per local day on the server; every focus just
+  // re-reads it, which is also how a new day's card appears after midnight.
+  const [dailyPost, setDailyPost] = useState<DailyPost | null>(null);
+  const [dailyPostStatus, setDailyPostStatus] = useState<DailyPostStatus>("loading");
+  const dailyPostRequest = useRef(0);
+  const dailyPostPolls = useRef(0);
 
   const showToast = useCallback((m: string) => {
     setToastMsg(m);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
   }, []);
+
+  const loadDailyPost = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const requestId = ++dailyPostRequest.current;
+    // A warm focus keeps the card on screen while it is re-read.
+    if (!quiet) setDailyPostStatus((current) => (current === "ready" ? current : "loading"));
+    try {
+      const res = await api.getDailyPost();
+      if (requestId !== dailyPostRequest.current) return;
+      if (res.state === "ready" && res.card) {
+        setDailyPost(res.card);
+        setDailyPostStatus("ready");
+        dailyPostPolls.current = 0;
+      } else if (res.state === "pending") {
+        setDailyPostStatus("pending");
+      } else {
+        setDailyPost(null);
+        setDailyPostStatus(res.state === "unavailable" ? "error" : "empty");
+      }
+    } catch {
+      if (requestId === dailyPostRequest.current) {
+        setDailyPostStatus((current) => (current === "ready" ? current : "error"));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (dailyPostStatus !== "pending" || !isHomeFocused) return;
+    if (dailyPostPolls.current >= DAILY_POST_POLL_LIMIT) {
+      setDailyPostStatus("empty");
+      return;
+    }
+    const timer = setTimeout(() => {
+      dailyPostPolls.current += 1;
+      void loadDailyPost({ quiet: true });
+    }, DAILY_POST_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [dailyPostStatus, isHomeFocused, loadDailyPost]);
+
+  const openDailyPost = useCallback(
+    (card: DailyPost) => {
+      void api.dailyPostEvent(card.id, "open").catch(() => {});
+      router.push("/daily-post");
+    },
+    [router],
+  );
 
   const loadNuriPreview = useCallback(async () => {
     const requestId = ++nuriPreviewRequest.current;
@@ -304,309 +226,6 @@ export default function Home() {
       }
     }
   }, []);
-
-  const loadPersonalizedFeed = useCallback(async ({
-    preserveExisting = false,
-    clientRefresh,
-  }: {
-    preserveExisting?: boolean;
-    clientRefresh?: string;
-  } = {}) => {
-    const requestId = ++heroRequest.current;
-    if (clientRefresh) activeFeedRefresh.current = clientRefresh;
-    if (preserveExisting) {
-      setHeroFeedRefreshing(true);
-    } else {
-      setHeroFeedRefreshing(false);
-      setHeroPublicationState("idle");
-      heroCardsPresent.current = false;
-      setHeroCards([]);
-      setHeroFeedState("loading");
-      setHeroFeedMeta({});
-    }
-    try {
-      const response = await api.getPersonalizedFeed(3, clientRefresh);
-      if (requestId !== heroRequest.current) {
-        if (clientRefresh) {
-          consumedFeedRefreshes.current.delete(clientRefresh);
-          if (activeFeedRefresh.current === clientRefresh) {
-            activeFeedRefresh.current = null;
-          }
-        }
-        return;
-      }
-      const items = Array.isArray(response?.items) ? response.items : [];
-      if (preserveExisting && response.publication_state === "preparing") {
-        // The server keeps returning the last published package while it builds
-        // the next complete three-lane set. Never replace or block that old
-        // package; a focus-aware poll below atomically picks up the new one.
-        setHeroFeedRefreshing(true);
-        setHeroPublicationState("preparing");
-        if (activeFeedRefresh.current === clientRefresh) {
-          activeFeedRefresh.current = null;
-        }
-        return;
-      }
-      const categoryOrder = { authority: 0, featured: 1, case: 2 } as const;
-      const validItems = items
-        .filter(
-          (item): item is PersonalizedFeedItem =>
-            typeof item?.id === "string" &&
-            typeof item?.title === "string" &&
-            item.content_category !== undefined &&
-            item.content_category in categoryOrder,
-        )
-        .sort(
-          (left, right) =>
-            categoryOrder[left.content_category!] - categoryOrder[right.content_category!],
-        );
-      const uniqueCategories = new Set(validItems.map((item) => item.content_category));
-      const categoryCards =
-        validItems.length === 3 && uniqueCategories.size === 3 ? validItems : [];
-      if (preserveExisting && categoryCards.length === 0) {
-        throw new Error("personalized refresh returned no complete category set");
-      }
-      const nextFeedMeta: HeroFeedMeta = {
-        feedRequestId: response.feed_request_id || undefined,
-        generatedAt: response.generated_at || undefined,
-        initialContentCategory: response.initial_content_category,
-      };
-      const nextFeedState: HeroFeedState =
-        categoryCards.length > 0 &&
-          ["conversation", "profile"].includes(response.personalization_mode)
-          ? "personalized"
-          : "curated";
-      const candidateCards = categoryCards.map(awaitingPreparationCard);
-
-      // A cold load may show honest per-card preparation states immediately.
-      // A warm return from chat keeps the previous feed untouched until the
-      // replacement cards and their exact article/video pairs are all resolved.
-      if (!preserveExisting) {
-        setHeroCards(candidateCards);
-        setHeroFeedMeta(nextFeedMeta);
-        setHeroFeedState(nextFeedState);
-        heroCardsPresent.current = candidateCards.length > 0;
-      }
-
-      const needsPreparation = candidateCards.some(
-        (card) =>
-          Boolean(card.recommendation_id) &&
-          (!isReadyHeroCard(card) ||
-            !card.prepared_content_set_id),
-      );
-      // Prepare the complete three-lane set together. Sending only the missing
-      // lane can produce a different content_set_id and mix two research runs.
-      const cardsToPrepare = needsPreparation
-        ? candidateCards.filter((card) => Boolean(card.recommendation_id))
-        : [];
-      let preparedCards = candidateCards;
-      if (cardsToPrepare.length > 0) {
-        try {
-          const prepared = await preparePersonalizedFeedOnce(
-            cardsToPrepare.map((card) => ({
-              card_id: card.id,
-              recommendation_id: card.recommendation_id!,
-            })),
-          );
-          if (requestId !== heroRequest.current) return;
-          const preparedItems = Array.isArray(prepared?.items) ? prepared.items : [];
-          const preparedSetIds = new Set(
-            preparedItems
-              .map((item) => item.prepared_content_set_id)
-              .filter((value): value is string => Boolean(value)),
-          );
-          const completePreparedSet =
-            preparedItems.length === cardsToPrepare.length &&
-            preparedItems.every(
-              (item) =>
-                item.resource_readiness === "ready" &&
-                item.resource_pair_complete === true &&
-                Boolean(item.prepared_content_set_id),
-            ) &&
-            preparedSetIds.size === 1;
-          if (!completePreparedSet) {
-            if (
-              preserveExisting &&
-              (prepared?.publication_state === "preparing" ||
-                prepared?.upgrade_state === "preparing")
-            ) {
-              setHeroPublicationState("preparing");
-            }
-            console.warn("[home-feed] preparation response incomplete", {
-              requestedCount: cardsToPrepare.length,
-              receivedCount: preparedItems.length,
-              readyCount: preparedItems.filter(
-                (item) =>
-                  item.resource_readiness === "ready" &&
-                  item.resource_pair_complete === true,
-              ).length,
-              contentSetCount: preparedSetIds.size,
-            });
-            throw new Error("prepared recommendation set was incomplete");
-          }
-          const preparedByRecommendation = new Map(
-            preparedItems.map((item) => [
-              item.recommendation_id,
-              item,
-            ]),
-          );
-          preparedCards = candidateCards.map((card) =>
-            !card.recommendation_id
-              ? card
-              : mergePreparedCard(
-                  card,
-                  preparedByRecommendation.get(card.recommendation_id),
-                ),
-          );
-        } catch (error) {
-          if (requestId !== heroRequest.current) return;
-          const status =
-            error && typeof error === "object" && "status" in error
-              ? Number((error as { status?: unknown }).status) || undefined
-              : undefined;
-          console.warn("[home-feed] preparation attempt failed", {
-            errorName: error instanceof Error ? error.name : typeof error,
-            status,
-            requestedCount: cardsToPrepare.length,
-            preserveExisting,
-          });
-          if (preserveExisting) {
-            throw new Error("replacement recommendations were not fully prepared");
-          }
-          preparedCards = candidateCards.map((card) =>
-            isReadyHeroCard(card) || !card.recommendation_id
-              ? card
-              : {
-                  ...card,
-                  resource_readiness: "retryable" as const,
-                  resource_pair_complete: false,
-                },
-          );
-        }
-      }
-      if (requestId !== heroRequest.current) return;
-      if (
-        preserveExisting &&
-        (preparedCards.length !== 3 || !preparedCards.every(isReadyHeroCard))
-      ) {
-        throw new Error("replacement recommendations were not fully prepared");
-      }
-
-      // This is the only warm-refresh commit point: title, source, resources,
-      // feed metadata and readiness switch together, so old/new feeds never mix.
-      setHeroCards(preparedCards);
-      setHeroFeedMeta(nextFeedMeta);
-      setHeroFeedState(nextFeedState);
-      heroCardsPresent.current = preparedCards.length > 0;
-      if (activeFeedRefresh.current === clientRefresh) {
-        activeFeedRefresh.current = null;
-      }
-      setHeroFeedRefreshing(false);
-      setHeroPublicationState("idle");
-    } catch (error) {
-      const status =
-        error && typeof error === "object" && "status" in error
-          ? Number((error as { status?: unknown }).status) || undefined
-          : undefined;
-      console.warn("[home-feed] load attempt failed", {
-        errorName: error instanceof Error ? error.name : typeof error,
-        status,
-        preserveExisting,
-        hasClientRefresh: Boolean(clientRefresh),
-      });
-      // A nonce is a single successful refresh, not a single network attempt.
-      // Releasing it here lets the next focus recover from a transient failure
-      // without requiring another chat turn or a document reload.
-      if (clientRefresh) {
-        consumedFeedRefreshes.current.delete(clientRefresh);
-        if (activeFeedRefresh.current === clientRefresh) {
-          activeFeedRefresh.current = null;
-        }
-      }
-      if (requestId === heroRequest.current) {
-        setHeroFeedRefreshing(false);
-        if (
-          preserveExisting &&
-          heroCardsPresent.current &&
-          (status === undefined ||
-            status === 408 ||
-            status === 409 ||
-            status === 425 ||
-            status === 429 ||
-            status >= 500)
-        ) {
-          // A warm refresh always keeps the last published package usable.
-          // Retry in the background even when /feed/personalized itself does
-          // not expose publication_state (older deployments omit that field).
-          setHeroPublicationState("preparing");
-        }
-        if (!preserveExisting) {
-          setHeroCards([]);
-          setHeroFeedState("curated");
-          setHeroFeedMeta({});
-          heroCardsPresent.current = false;
-        }
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (
-      heroPublicationState !== "preparing" ||
-      !isHomeFocused ||
-      !heroCardsPresent.current
-    ) {
-      return;
-    }
-    const poll = () => {
-      if (publicationPollInFlight.current) return;
-      publicationPollInFlight.current = true;
-      void loadPersonalizedFeed({ preserveExisting: true }).finally(() => {
-        publicationPollInFlight.current = false;
-      });
-    };
-    const timer = setInterval(poll, 5000);
-    return () => clearInterval(timer);
-  }, [heroPublicationState, isHomeFocused, loadPersonalizedFeed]);
-
-  useEffect(() => {
-    const recommendationSetKey = heroCards
-      .map((card) => card.recommendation_id || `${card.id}:${card.content_category || ""}`)
-      .sort()
-      .join("|");
-    if (preparationRetrySet.current !== recommendationSetKey) {
-      preparationRetrySet.current = recommendationSetKey;
-      preparationRetryAttempt.current = 0;
-    }
-    const hasRetryableCard = heroCards.some(
-      (card) => card.resource_readiness === "retryable" && card.recommendation_id,
-    );
-    if (!hasRetryableCard) {
-      if (heroCards.length > 0 && heroCards.every(isReadyHeroCard)) {
-        preparationRetryAttempt.current = 0;
-      }
-      return;
-    }
-    // A transient provider or network failure must never strand the carousel in
-    // a terminal-looking state. Keep recovering while Home is visible, but
-    // start at 30 seconds and back off to five minutes so rate limits or a
-    // scarce high-quality result do not create an expensive request loop.
-    if (!isHomeFocused || heroFeedRefreshing) return;
-
-    const delayMs = Math.min(
-      PREPARATION_RETRY_MAX_DELAY_MS,
-      PREPARATION_RETRY_BASE_DELAY_MS *
-        2 ** Math.min(preparationRetryAttempt.current, PREPARATION_RETRY_MAX_EXPONENT),
-    );
-    const timer = setTimeout(() => {
-      preparationRetryAttempt.current = Math.min(
-        preparationRetryAttempt.current + 1,
-        PREPARATION_RETRY_MAX_EXPONENT + 1,
-      );
-      void loadPersonalizedFeed({ preserveExisting: true });
-    }, delayMs);
-    return () => clearTimeout(timer);
-  }, [heroCards, heroFeedRefreshing, isHomeFocused, loadPersonalizedFeed]);
 
   const openNuriChat = async () => {
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
@@ -650,40 +269,22 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
+      dailyPostPolls.current = 0;
+      void loadDailyPost();
+      return () => {
+        dailyPostRequest.current += 1;
+      };
+    }, [loadDailyPost])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
       void loadNuriPreview();
       return () => {
         nuriPreviewRequest.current += 1;
         openingNuriChat.current = false;
       };
     }, [loadNuriPreview])
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      const isNewChatRefresh =
-        !!feedRefresh && !consumedFeedRefreshes.current.has(feedRefresh);
-      if (isNewChatRefresh) {
-        consumedFeedRefreshes.current.add(feedRefresh);
-      }
-      void loadPersonalizedFeed({
-        // Keep the last good cards visible while every warm-focus refresh is
-        // resolved. This preserves profile/age edits as ranking inputs without
-        // flashing an empty carousel, and the chat nonce still guarantees that
-        // a just-completed turn bypasses intermediary caches.
-        preserveExisting: heroCardsPresent.current,
-        clientRefresh: isNewChatRefresh ? feedRefresh : undefined,
-      });
-      return () => {
-        heroRequest.current += 1;
-        if (
-          isNewChatRefresh &&
-          activeFeedRefresh.current === feedRefresh
-        ) {
-          activeFeedRefresh.current = null;
-          consumedFeedRefreshes.current.delete(feedRefresh);
-        }
-      };
-    }, [feedRefresh, loadPersonalizedFeed])
   );
 
   const hasLoadedPreview = !!nuriPreview;
@@ -720,78 +321,6 @@ export default function Home() {
         : hasPersonalContext
           ? t("从这里聊起")
           : t("和我聊聊");
-
-  const trackHeroImpression = useCallback(
-    (card: HeroCard, position: number) => {
-      const feedKey = heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt || "curated";
-      const impressionKey = `${feedKey}:${card.recommendation_id || card.id}:${position}`;
-      if (heroImpressionKeys.current.has(impressionKey)) return;
-      heroImpressionKeys.current.add(impressionKey);
-      api
-        .trackRecommendationEvent({
-          event: "feed_impression",
-          card_id: card.id,
-          recommendation_id: card.recommendation_id || undefined,
-          feed_request_id: heroFeedMeta.feedRequestId,
-          locale: card.resource_summary?.preferred_locale,
-          content_category: card.content_category,
-          position: card.rank || position,
-        })
-        .catch(() => {});
-    },
-    [heroFeedMeta.feedRequestId, heroFeedMeta.generatedAt],
-  );
-
-  const openHeroCard = useCallback(
-    (
-      card: HeroCard,
-      resource: DailySelectionResource | undefined,
-      carouselPosition: number,
-    ) => {
-      if (!resource || !/^https:\/\//i.test(resource.url)) {
-        showToast(t("这项每日精选还在准备中，请稍后再试"));
-        return;
-      }
-      const position = card.rank || carouselPosition;
-      // Open inside the original user-activation call stack. Awaiting analytics
-      // first makes Safari/Chrome treat the new tab as an unsolicited popup.
-      try {
-        const opening =
-          Platform.OS === "web"
-            ? Linking.openURL(resource.url)
-            : WebBrowser.openBrowserAsync(resource.url);
-        void opening.catch(() => showToast(t("这个外部链接暂时不可用")));
-      } catch {
-        showToast(t("这个外部链接暂时不可用"));
-        return;
-      }
-      void api
-        .trackRecommendationEvent({
-          event: "card_open",
-          card_id: card.id,
-          recommendation_id: card.recommendation_id || undefined,
-          feed_request_id: heroFeedMeta.feedRequestId,
-          locale: card.resource_summary?.preferred_locale,
-          content_category: card.content_category,
-          position,
-        })
-        .catch(() => {});
-      void api
-        .trackRecommendationEvent({
-          event: "external_resource_click",
-          card_id: card.id,
-          recommendation_id: card.recommendation_id || undefined,
-          feed_request_id: heroFeedMeta.feedRequestId,
-          resource_id: resource.id,
-          resource_kind: resource.kind,
-          locale: card.resource_summary?.preferred_locale,
-          content_category: card.content_category,
-          position,
-        })
-        .catch(() => {});
-    },
-    [heroFeedMeta.feedRequestId, showToast, t],
-  );
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -844,18 +373,13 @@ export default function Home() {
             <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
           </View>
 
-          <HeroCarousel
+          <DailyPostCard
             width={dailyCardWidth}
-            cards={heroCards}
-            feedState={
-              heroFeedRefreshing || heroPublicationState === "preparing"
-                ? "refreshing"
-                : heroFeedState
-            }
-            onCardPress={openHeroCard}
-            onCardVisible={trackHeroImpression}
-            visibilityScope={heroFeedMeta.feedRequestId || heroFeedMeta.generatedAt}
-            initialContentCategory={heroFeedMeta.initialContentCategory}
+            nickname={dailyPost?.nickname ?? ""}
+            status={dailyPostStatus}
+            card={dailyPost}
+            onPress={openDailyPost}
+            onRetry={() => void loadDailyPost()}
           />
 
           <View style={[styles.sectionHeading, styles.nuriSectionHeading]}>

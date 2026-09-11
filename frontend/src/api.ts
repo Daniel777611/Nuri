@@ -215,6 +215,50 @@ function createRecommendationEventId(): string {
   return `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
 }
 
+// ── Daily post card (backend/feed/daily_post.py) ────────────────────────────
+export type DailyPostCard = {
+  id: string;
+  /** Pass to startSession({ card_id }) to talk it through with NURI. */
+  card_id: string;
+  day: string;
+  platform: "facebook" | "instagram" | "threads";
+  source_url: string;
+  source_label: string;
+  published_at: string | null;
+  headline: string;
+  takeaways: string[];
+  /** Verbatim from the post, or "" when no clean quote could be verified. */
+  excerpt: string;
+  excerpt_lang: "zh" | "en" | "";
+  why_this: string;
+  caution: string;
+  author_kind: "parent" | "parent_group_answers";
+  summary_source: "post" | "facebook_ai_summary";
+  concern: string;
+  basis: "conversation" | "profile";
+  locale: string;
+  /** Who the greeting addresses: "其他妈妈" for a mom, "其他家长" otherwise. */
+  audience: "mom" | "parent";
+  nickname: string;
+};
+
+export type DailyPostResponse = {
+  state: "ready" | "pending" | "empty" | "unavailable" | "disabled";
+  day: string;
+  tz: string;
+  card: DailyPostCard | null;
+  retry_after_s?: number;
+};
+
+/** The device's IANA zone, so "today" is the parent's today. */
+export function deviceTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type RegisterResult = {
   verification_required: true;
   email: string;
@@ -689,6 +733,19 @@ export const api = {
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
+
+  // ── Daily post card ───────────────────────────────────────────────────────
+  // The first request of the parent's day builds the card (search + two model
+  // calls), so it gets a long timeout; every later request is a row read.
+  getDailyPost: (): Promise<DailyPostResponse> => {
+    const tz = deviceTimeZone();
+    return req(`/feed/daily-post${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+  },
+  dailyPostEvent: (id: string, event: "open" | "source_click" | "chat") =>
+    req(`/feed/daily-post/${encodeURIComponent(id)}/events`, {
+      method: "POST",
+      body: JSON.stringify({ event }),
+    }),
 
   // ── Presence ──────────────────────────────────────────────────────────────
   // keepalive lets the last beat of a closing tab still reach the server.

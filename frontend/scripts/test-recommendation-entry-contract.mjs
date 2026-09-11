@@ -93,79 +93,63 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
   assert.equal(stored.preparationItems[0].card_id, "learn_serve_and_return");
 }
 
-function testHomeDailySelectionOpensVerifiedExternalResource() {
+function testHomeDailyPostCard() {
+  // 每日精选 is one card a day: a real post from another parent on Meta,
+  // previewed with a greeting to the parent. It replaced the topic-driven
+  // three-card carousel, which Home must no longer drive.
   const home = read("../app/(tabs)/index.tsx");
-  const start = home.indexOf("const openHeroCard = useCallback(");
-  const end = home.indexOf("\n  return (", start);
-  assert.ok(start >= 0 && end > start, "openHeroCard callback was not found");
-  const handler = home.slice(start, end);
-
-  assert.match(
-    handler,
-    /DailySelectionResource\s*\|\s*undefined/,
-    "the homepage click contract must receive the exact article/video selected by the carousel",
-  );
-  assert.match(
-    handler,
-    /\^https:\\\/\\\//,
-    "the homepage must reject any selected resource that is not HTTPS",
-  );
-  assert.match(
-    handler,
-    /event:\s*["']card_open["']/,
-    "opening a daily selection must retain the card_open recommendation event",
-  );
-  assert.match(
-    handler,
-    /event:\s*["']external_resource_click["']/,
-    "opening a daily selection must record the outbound resource click",
-  );
-  assert.match(
-    handler,
-    /resource_id:\s*resource\.id/,
-    "the outbound event must identify the exact resource",
-  );
-  assert.match(
-    handler,
-    /resource_kind:\s*resource\.kind/,
-    "the outbound event must identify whether the selection is an article or video",
-  );
-  assert.match(
-    handler,
-    /Linking\.openURL\(resource\.url\)/,
-    "web daily selections must open the selected external URL directly",
-  );
-  assert.match(
-    handler,
-    /WebBrowser\.openBrowserAsync\(resource\.url\)/,
-    "native daily selections must open the selected external URL in the system browser",
-  );
   assert.doesNotMatch(
-    handler,
-    /storeRecommendationDetailHandoff\(|pathname:\s*["']\/detail\/\[id\]["']/,
-    "daily selections must not route through the internal recommendation detail page",
+    home,
+    /HeroCarousel|getPersonalizedFeed|preparePersonalizedFeedOnce/,
+    "Home must not rebuild the old per-topic carousel",
+  );
+  assert.match(
+    home,
+    /api\.getDailyPost\(\)/,
+    "Home must read today's card from the daily-post endpoint",
+  );
+  assert.match(
+    home,
+    /useFocusEffect\([\s\S]*?void loadDailyPost\(\)/,
+    "every focus re-reads the card, which is how the next day's card appears",
+  );
+  assert.match(
+    home,
+    /dailyPostEvent\(card\.id, "open"\)/,
+    "opening the card must be recorded for the admin dashboard",
   );
 
-  const carousel = read("../src/components/HeroCarousel.tsx");
+  const card = read("../src/components/DailyPostCard.tsx");
+  assert.match(card, /\{nickname\}你好呀，其他妈妈可能会这么处理/, "the preview greets a mom by name");
+  assert.match(card, /\{nickname\}你好呀，其他家长可能会这么处理/, "and any other parent as a parent");
+  assert.match(card, /testID="home-daily-post-empty"/, "a day without a post needs an explicit state");
+
+  const detail = read("../app/daily-post.tsx");
   assert.match(
-    carousel,
+    detail,
     /\^https:\\\/\\\//,
-    "the carousel must only expose resources with an HTTPS URL",
+    "the original post may only be opened over HTTPS",
+  );
+  assert.match(detail, /Linking\.openURL\(card\.source_url\)/, "web opens the post directly");
+  assert.match(
+    detail,
+    /WebBrowser\.openBrowserAsync\(card\.source_url\)/,
+    "native opens the post in the system browser",
   );
   assert.match(
-    carousel,
-    /dailySelectionResource\(card,\s*index\)/,
-    "each visible card must resolve one concrete external article/video resource",
+    detail,
+    /dailyPostEvent\(card\.id, "source_click"\)/,
+    "tapping through to the post must be recorded",
   );
   assert.match(
-    carousel,
-    /onCardPress\(card,\s*resource,\s*index\s*\+\s*1\)/,
-    "the carousel must pass the chosen resource and its position to the homepage handler",
+    detail,
+    /startSession\(\{ card_id: card\.card_id \}\)/,
+    "talking it through must hand NURI the card, not start a blank chat",
   );
   assert.match(
-    carousel,
-    /accessibilityRole="link"/,
-    "daily selection cards must expose link semantics",
+    detail,
+    /不是专业建议/,
+    "the card must say it is one parent's experience, not professional advice",
   );
 }
 
@@ -315,7 +299,7 @@ function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
 }
 
 testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput();
-testHomeDailySelectionOpensVerifiedExternalResource();
+testHomeDailyPostCard();
 testDetailPaintsTheGuideWhileExternalLinksStayAtomic();
 testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming();
 console.log("recommendation entry contracts passed");

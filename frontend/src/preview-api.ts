@@ -378,6 +378,38 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     profile = { ...profile, email: body.email || profile.email };
     return { access_token: "preview-token", user: profile };
   }
+  // A fixed sample so the daily card can be reviewed without search or a model.
+  if (routePath === "/feed/daily-post") {
+    return {
+      state: "ready",
+      day: new Date().toISOString().slice(0, 10),
+      tz: "America/Los_Angeles",
+      card: {
+        id: "preview-daily-post",
+        card_id: "dailypost:preview-daily-post",
+        day: new Date().toISOString().slice(0, 10),
+        platform: "facebook",
+        source_url: "https://www.facebook.com/groups/babysleeptrainingtipshelp/posts/1012295830523712",
+        source_label: "Facebook 群组「Baby Sleep Training Tips & Help」",
+        published_at: null,
+        headline: "夜醒多的时候，先把入睡环境稳定下来",
+        takeaways: ["睡前多喂一点奶", "整晚开白噪音，音量低于 50 分贝", "房间温度保持在 23–25 度"],
+        excerpt: "What I did was give a little more bottle before bed, white noises do magic",
+        excerpt_lang: "en",
+        why_this: "你提到宝宝最近夜里醒好几次，这位家长的做法可以先试试。",
+        caution: "",
+        author_kind: "parent_group_answers",
+        summary_source: "post",
+        concern: "夜醒频繁",
+        basis: "conversation",
+        locale: "zh-CN",
+        audience: "mom",
+        nickname: profile.nickname || "",
+      },
+    };
+  }
+  if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
+
   if (path === "/auth/me" && method === "PUT") return (profile = { ...profile, ...body });
   if (path === "/auth/me") return profile;
 
