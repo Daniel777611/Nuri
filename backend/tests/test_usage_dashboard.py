@@ -160,6 +160,39 @@ def test_a_database_without_the_new_columns_falls_back_to_the_email_rule():
     assert [u["id"] for u in out["users"]] == ["b"]
 
 
+# ── Daily post cards ─────────────────────────────────────────────────────────
+
+def _post(user, day, status="ready", **extra):
+    card = {"headline": f"{user} card", "source_url": f"https://www.facebook.com/groups/g/posts/{day}",
+            "source_label": "Facebook 家长群", "platform": "facebook", "author_kind": "parent",
+            "excerpt": "quote", "basis": "conversation"} if status == "ready" else None
+    return {"user_id": user, "day": f"2026-09-{day:02d}", "status": status, "basis": "conversation",
+            "card": card, "updated_at": _la(day, 9), **extra}
+
+
+def test_daily_cards_are_counted_per_day_for_testers_only():
+    posts = [
+        _post("mom", 10, opened_at=_la(10, 9), chat_started_at=_la(10, 9, 5)),
+        _post("dad", 10, status="empty"),
+        _post("mom", 9, source_clicked_at=_la(9, 20)),
+        _post("bot", 10, opened_at=_la(10, 9)),  # internal account
+    ]
+    out = ud.build_overview(_sources(daily_posts=posts), days=7, tz=LA, now=NOW)
+    dp_ = out["daily_posts"]
+    today = dp_["days"][-1]
+    assert today == {"day": "2026-09-10", "ready": 1, "empty": 1, "failed": 0,
+                     "opened": 1, "source_clicks": 0, "chats": 1}
+    assert dp_["totals"]["ready"] == 2 and dp_["totals"]["source_clicks"] == 1
+    assert [r["day"] for r in dp_["recent"]] == ["2026-09-10", "2026-09-09"]
+    assert dp_["recent"][0]["user"] == "mom" and dp_["recent"][0]["chat"] is True
+    assert dp_["basis"] == {"conversation": 2}
+
+
+def test_no_daily_card_table_is_not_zero_cards():
+    out = ud.build_overview(_sources(daily_posts=None), days=7, tz=LA, now=NOW)
+    assert out["daily_posts"] is None
+
+
 # ── Quota incidents ──────────────────────────────────────────────────────────
 
 QUOTA_ERR = (
@@ -357,6 +390,26 @@ def test_heartbeat_before_the_migration_tells_the_client_to_stop(monkeypatch):
     assert res.json() == {"visit_id": None, "disabled": True}
 
 
+def test_a_token_for_a_deleted_account_stops_beating(monkeypatch):
+    class _Gone(_DB):
+        def table(self, name):
+            q = super().table(name)
+            real = q.execute
+
+            def execute():
+                if q._op == "insert":
+                    raise RuntimeError("{'code': '23503', 'message': 'violates foreign key constraint'}")
+                return real()
+
+            q.execute = execute
+            return q
+
+    monkeypatch.setattr(runtime, "get_supabase", lambda: _Gone())
+    headers = {"Authorization": f"Bearer {main._make_token('deleted-user')}"}
+    res = TestClient(main.app).post("/api/activity/heartbeat", json={}, headers=headers)
+    assert res.json() == {"visit_id": None, "disabled": True}
+
+
 # ── Admin routes ─────────────────────────────────────────────────────────────
 
 def _seeded_db(missing=()):
@@ -390,12 +443,13 @@ def test_overview_route_needs_the_admin_key_and_answers(monkeypatch):
 
 
 def test_overview_works_before_the_presence_table_exists(monkeypatch):
-    db = _seeded_db(missing={"user_visits"})
+    db = _seeded_db(missing={"user_visits", "daily_post_cards"})
     monkeypatch.setattr(runtime, "get_supabase", lambda: db)
     monkeypatch.setattr(main, "ADMIN_KEY", "k")
     res = TestClient(main.app).get("/admin/usage/overview", headers={"x-admin-key": "k"})
     assert res.status_code == 200
     assert res.json()["visits_available"] is False
+    assert res.json()["daily_posts"] is None
 
 
 def test_paging_reads_past_the_postgrest_page_size(monkeypatch):

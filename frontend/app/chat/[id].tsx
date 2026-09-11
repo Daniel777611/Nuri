@@ -211,9 +211,8 @@ export default function ChatDetail() {
   } | null>(null);
   // A parent may tap Back while the SSE turn is still being persisted.  Keep
   // that intent and navigate only after the server returns the durable turn;
-  // otherwise the home feed can race the chat insert and rank stale context.
+  // otherwise Home's NURI preview can read the conversation before it lands.
   const pendingHomeReturnRef = useRef(false);
-  const completedTurnNonceRef = useRef<string | null>(null);
   const [typing, setTyping] = useState(false);
   // Reply text accumulated from the SSE stream, rendered as a live bubble until
   // the persisted message arrives and replaces it.
@@ -255,16 +254,10 @@ export default function ChatDetail() {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages, typing, streamingText]);
 
+  // Home's daily card is fixed for the day, so a finished turn no longer
+  // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
   const returnHome = () => {
-    const feedRefresh = completedTurnNonceRef.current;
-    router.dismissTo(
-      feedRefresh
-        ? {
-            pathname: "/(tabs)",
-            params: { feed_refresh: feedRefresh },
-          }
-        : "/(tabs)",
-    );
+    router.dismissTo("/(tabs)");
   };
 
   const requestHomeReturn = () => {
@@ -329,9 +322,6 @@ export default function ChatDetail() {
         ...res.ai_messages,
       ]);
       failedSendRef.current = null;
-      completedTurnNonceRef.current = String(
-        res.user_message?.id || res.user_message?.created_at || Date.now(),
-      );
       if (pendingHomeReturnRef.current) {
         pendingHomeReturnRef.current = false;
         returnHome();

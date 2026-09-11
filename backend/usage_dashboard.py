@@ -174,6 +174,8 @@ class Sources:
     #: started_at of the earliest visit ever recorded, window or not.
     tracking_since: Optional[str] = None
     truncated: list[str] = field(default_factory=list)
+    #: daily_post_cards rows in the window; None when the table doesn't exist.
+    daily_posts: Optional[list[dict]] = None
 
 
 def build_overview(
@@ -302,6 +304,7 @@ def build_overview(
     ]
     today = daily[-1]
     return {
+        "daily_posts": summarize_daily_posts(src.daily_posts, counted, day_keys),
         "tz": str(tz.key),
         "days": day_keys,
         "generated_at": now.isoformat(),
@@ -326,6 +329,58 @@ def build_overview(
             "labelled_turns": labelled,
             "unlabelled_turns": unlabelled,
         },
+    }
+
+
+# ── Daily post cards ─────────────────────────────────────────────────────────
+
+def summarize_daily_posts(rows: Optional[list[dict]], counted: dict, day_keys: list[str]) -> Optional[dict]:
+    """Was today's card built, and was it used? Per day, plus the latest
+    cards themselves so the team can read what testers were actually shown."""
+    if rows is None:
+        return None
+    in_window = set(day_keys)
+    kept = [r for r in rows if r.get("user_id") in counted and str(r.get("day")) in in_window]
+    per_day = {key: {"day": key, "ready": 0, "empty": 0, "failed": 0, "opened": 0,
+                     "source_clicks": 0, "chats": 0} for key in day_keys}
+    for row in kept:
+        bucket = per_day[str(row["day"])]
+        status = row.get("status")
+        if status in ("ready", "empty", "failed"):
+            bucket[status] += 1
+        bucket["opened"] += 1 if row.get("opened_at") else 0
+        bucket["source_clicks"] += 1 if row.get("source_clicked_at") else 0
+        bucket["chats"] += 1 if row.get("chat_started_at") else 0
+    ready = [r for r in kept if r.get("status") == "ready"]
+    recent = sorted(ready, key=lambda r: (str(r.get("day")), str(r.get("updated_at") or "")), reverse=True)[:30]
+
+    def row_out(r: dict) -> dict:
+        card = r.get("card") or {}
+        user = counted.get(r.get("user_id"), {})
+        return {
+            "day": str(r.get("day")),
+            "user": user.get("nickname") or user.get("email") or "",
+            "email": user.get("email") or "",
+            "headline": card.get("headline") or "",
+            "source_label": card.get("source_label") or "",
+            "source_url": card.get("source_url") or "",
+            "platform": card.get("platform") or r.get("platform") or "",
+            "author_kind": card.get("author_kind") or "",
+            "basis": r.get("basis") or card.get("basis") or "",
+            "has_excerpt": bool(card.get("excerpt")),
+            "opened": bool(r.get("opened_at")),
+            "source_clicked": bool(r.get("source_clicked_at")),
+            "chat": bool(r.get("chat_started_at")),
+        }
+
+    totals = {k: sum(d[k] for d in per_day.values()) for k in
+              ("ready", "empty", "failed", "opened", "source_clicks", "chats")}
+    return {
+        "days": [per_day[k] for k in day_keys],
+        "totals": totals,
+        "recent": [row_out(r) for r in recent],
+        "basis": dict(Counter(str(r.get("basis") or "") for r in ready)),
+        "platforms": dict(Counter(str((r.get("card") or {}).get("platform") or "") for r in ready)),
     }
 
 
@@ -427,11 +482,24 @@ def fetch_sources(sb, since: datetime) -> Sources:
             raise
         turn_topics = []
 
+    try:
+        daily_posts: Optional[list[dict]] = _page_through(
+            lambda: sb.table("daily_post_cards")
+            .select("user_id,day,status,basis,platform,card,opened_at,source_clicked_at,"
+                    "chat_started_at,updated_at")
+            .gte("day", since.date().isoformat()).order("day"),
+            "daily_post_cards", truncated,
+        )
+    except Exception as exc:
+        if not _table_missing(exc):
+            raise
+        daily_posts = None
+
     return Sources(
         users=users, sessions=sessions, user_messages=user_messages,
         visits=visits, turn_topics=turn_topics,
         visits_available=visits_available, tracking_since=tracking_since,
-        truncated=truncated,
+        truncated=truncated, daily_posts=daily_posts,
     )
 
 

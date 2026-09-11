@@ -1299,12 +1299,21 @@ async def resend_verification(body: EmailCodeRequest):
     return {"ok": True, "resend_after": resend_after}
 
 
+#: Checked against when no account matches, so a wrong address costs the same
+#: bcrypt round as a wrong password — otherwise response time alone tells an
+#: attacker which addresses are registered.
+_DUMMY_PASSWORD_HASH = _hash_pw("nuri-timing-equalizer")
+
+
 @api.post("/auth/login")
 async def login(body: UserLogin):
     sb = _require_auth_storage()
     email = email_verification.normalize(body.email)
     doc = await _user_by_email(sb, email)
-    if not doc or not _verify_pw(body.password, doc["hashed_password"]):
+    if not doc:
+        _verify_pw(body.password, _DUMMY_PASSWORD_HASH)
+        raise HTTPException(401, "邮箱或密码错误")
+    if not _verify_pw(body.password, doc["hashed_password"]):
         raise HTTPException(401, "邮箱或密码错误")
     if not doc.get("email_verified_at"):
         # Right password, unproven address: send them to the code screen with
@@ -3045,7 +3054,9 @@ async def activity_heartbeat(body: HeartbeatIn, uid: str = Depends(_req_uid)):
             )
         )
     except Exception as exc:
-        if usage_dashboard._table_missing(exc):
+        # No table yet, or a token for an account that no longer exists (the
+        # visit's foreign key refuses it): either way, beating again is waste.
+        if usage_dashboard._table_missing(exc) or "23503" in str(exc):
             return {"visit_id": None, "disabled": True}
         logger.warning("activity_heartbeat_failed", extra={
             "event": "activity_heartbeat_failed", "error_type": type(exc).__name__,

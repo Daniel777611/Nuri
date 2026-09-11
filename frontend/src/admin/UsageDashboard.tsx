@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -64,6 +65,7 @@ type Overview = {
   daily: Daily[];
   hours: { turns: number[]; visits: number[] };
   users: UsageUser[];
+  daily_posts?: DailyPosts;
   topics: {
     categories: { key: string; label: string; turns: number; share: number }[];
     top: { topic: string; turns: number }[];
@@ -71,6 +73,23 @@ type Overview = {
     unlabelled_turns: number;
   };
 };
+
+type DailyPostDay = {
+  day: string; ready: number; empty: number; failed: number;
+  opened: number; source_clicks: number; chats: number;
+};
+type DailyPostRow = {
+  day: string; user: string; email: string; headline: string; source_label: string;
+  source_url: string; platform: string; author_kind: string; basis: string;
+  has_excerpt: boolean; opened: boolean; source_clicked: boolean; chat: boolean;
+};
+type DailyPosts = {
+  days: DailyPostDay[];
+  totals: Omit<DailyPostDay, "day">;
+  recent: DailyPostRow[];
+  basis: Record<string, number>;
+  platforms: Record<string, number>;
+} | null;
 
 type SpendSplit = { key: "chat" | "cards" | "other"; label: string; tokens: number; share: number };
 type QuotaPeriod = { period_start: string; turns: number; tokens: number; split: SpendSplit[] };
@@ -399,6 +418,12 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
             </View>
           ) : null}
 
+          {/* ── The daily card: built, opened, used ── */}
+          <View style={styles.panelBlock} testID="usage-daily-posts">
+            <Text style={styles.panelTitle}>每日家长经验卡片（近 {days} 天）</Text>
+            <DailyPostsSection posts={data.daily_posts} tz={data.tz} />
+          </View>
+
           {/* ── What they talk about / when ── */}
           <View style={styles.multiples}>
             <View style={[styles.panel, { flexGrow: 2 }]}>
@@ -443,7 +468,7 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
           </View>
 
           {/* ── OpenAI quota: how far one top-up goes, and who spends it ── */}
-          <View style={[styles.panel, { marginBottom: spacing.md }]}>
+          <View style={styles.panelBlock}>
             <View style={styles.panelHead}>
               <Text style={styles.panelTitle}>OpenAI 额度耗光记录</Text>
               <View style={styles.segment}>
@@ -685,6 +710,79 @@ function Matrix({
   );
 }
 
+function pct(part: number, whole: number): string {
+  return whole ? `${Math.round((part / whole) * 100)}%` : "–";
+}
+
+function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: string }) {
+  if (posts === undefined) return null;
+  if (posts === null) {
+    return (
+      <Text style={styles.warnText}>
+        daily_post_cards 表还没建：先在 Supabase 跑 20260911010000_daily_post_cards.sql。
+      </Text>
+    );
+  }
+  const { totals } = posts;
+  const attempted = totals.ready + totals.empty + totals.failed;
+  return (
+    <View>
+      <View style={styles.tileRow}>
+        <Tile
+          label="生成成功"
+          value={String(totals.ready)}
+          hint={attempted ? `共尝试 ${attempted} 次 · 成功率 ${pct(totals.ready, attempted)}` : undefined}
+        />
+        <Tile label="打开" value={String(totals.opened)} hint={`占生成 ${pct(totals.opened, totals.ready)}`} />
+        <Tile
+          label="点原帖"
+          value={String(totals.source_clicks)}
+          hint={`占打开 ${pct(totals.source_clicks, totals.opened)}`}
+        />
+        <Tile label="去聊天" value={String(totals.chats)} hint={`占打开 ${pct(totals.chats, totals.opened)}`} />
+      </View>
+      <Text style={styles.hint}>
+        {`按对话找到 ${posts.basis.conversation || 0} 张 · 按孩子月龄找到 ${posts.basis.profile || 0} 张`}
+        {totals.empty ? ` · ${totals.empty} 次当天没找到合适的帖子` : ""}
+        {totals.failed ? ` · ${totals.failed} 次出错` : ""}
+        。按对话找需要家长打开“外部内容检索”开关。
+      </Text>
+      {posts.recent.length ? (
+        <>
+          <Text style={[styles.panelTitle, { marginTop: spacing.sm }]}>最近发出的卡片（点标题看原帖）</Text>
+          {posts.recent.map((row) => (
+            <View key={`${row.day}:${row.email}`} style={styles.postRow}>
+              <Text style={styles.postMeta} numberOfLines={1}>
+                {row.day.slice(5).replace("-", "/")} · {row.user}
+                {"  "}
+                {row.basis === "conversation" ? "按对话" : "按月龄"}
+                {row.author_kind === "parent_group_answers" ? " · 家长群讨论" : " · 家长分享"}
+                {row.has_excerpt ? "" : " · 无原文摘录"}
+              </Text>
+              <Pressable
+                onPress={() => /^https:\/\//i.test(row.source_url) && void Linking.openURL(row.source_url)}
+                accessibilityRole="link"
+              >
+                <Text style={styles.postTitle} numberOfLines={2}>{row.headline}</Text>
+              </Pressable>
+              <Text style={styles.postMeta} numberOfLines={1}>
+                {row.source_label}
+                {"   "}
+                {[row.opened ? "已打开" : "未打开", row.source_clicked ? "点了原帖" : "", row.chat ? "去聊天了" : ""]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
+            </View>
+          ))}
+        </>
+      ) : (
+        <Text style={styles.hint}>这个范围内还没有发出的卡片。</Text>
+      )}
+      <Text style={styles.hint}>卡片的日期是测试者自己时区的“当天”，不随上面选的时区（{tz}）变。</Text>
+    </View>
+  );
+}
+
 function SpendBar({ split }: { split: SpendSplit[] }) {
   const parts = split.filter((s) => s.tokens > 0);
   if (!parts.length) return <Text style={styles.hint}>这段时间没有 token 记录。</Text>;
@@ -834,6 +932,12 @@ const styles = StyleSheet.create({
     flexGrow: 1, flexBasis: 260, borderRadius: radius.md, borderWidth: 1,
     borderColor: colors.border, padding: spacing.md,
   },
+  // A full-width panel on its own row. `panel`'s flexBasis is a width inside a
+  // row of panels, but in a column it becomes a fixed height and clips.
+  panelBlock: {
+    borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.md, marginBottom: spacing.md,
+  },
   panelHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   panelTitle: { fontSize: 12, fontWeight: "700", color: INK_SECONDARY, marginBottom: 4 },
   segment: { flexDirection: "row", gap: 4 },
@@ -913,6 +1017,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.md, backgroundColor: colors.surface, padding: spacing.md,
     marginVertical: spacing.sm,
   },
+  postRow: {
+    paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border,
+  },
+  postMeta: { fontSize: 11, color: INK_MUTED },
+  postTitle: { fontSize: 13, fontWeight: "600", color: colors.brandPrimary, marginVertical: 2 },
   quotaRow: {
     paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,

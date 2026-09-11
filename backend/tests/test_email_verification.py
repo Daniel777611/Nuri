@@ -314,6 +314,15 @@ def test_a_wrong_password_never_learns_about_verification(env):
     assert res.status_code == 401
 
 
+def test_an_unknown_address_still_pays_for_a_password_check(env, monkeypatch):
+    checked = []
+    real = main._verify_pw
+    monkeypatch.setattr(main, "_verify_pw", lambda pw, hashed: checked.append(hashed) or real(pw, hashed))
+    res = env.client.post("/api/auth/login", json={"email": "ghost@realmail.com", "password": "whatever1"})
+    assert res.status_code == 401
+    assert checked == [main._DUMMY_PASSWORD_HASH]
+
+
 def test_grandfathered_accounts_log_in_unchanged(env):
     env.db.tables["users"] = [{
         "id": "old-1", "email": "early@tester.com", "hashed_password": main._hash_pw("secret12"),
