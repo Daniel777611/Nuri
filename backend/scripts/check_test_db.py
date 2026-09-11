@@ -44,7 +44,7 @@ OPTIONAL = (
     "books", "source_domains",
     "nuri_turn_outcomes", "recommendation_events",
     "chat_turn_logs", "llm_call_logs", "nuri_turn_traces",
-    "feed_cards", "fix_reviewers", "email_logs",
+    "feed_cards", "fix_reviewers", "email_logs", "user_visits",
 )
 
 

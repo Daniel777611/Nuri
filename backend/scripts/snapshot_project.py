@@ -38,7 +38,7 @@ TABLES = (
     "users", "children", "chat_sessions", "chat_messages",
     "user_memories", "normalized_inputs", "follow_ups",
     "tasks", "collections", "favorites",
-    "recommendation_events", "email_logs",
+    "recommendation_events", "email_logs", "user_visits",
     "app_settings", "feed_cards", "nuri_style_rules", "nuri_directives",
     "source_domains", "books", "fix_reviewers",
     "chat_turn_logs", "llm_call_logs", "nuri_turn_outcomes", "nuri_turn_traces",

@@ -37,6 +37,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import List, Literal, NamedTuple, Optional, Sequence
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import anyio
 from dataclasses import replace
@@ -54,7 +55,9 @@ from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import image_input as core_image_input
-from backend import email_verification, llm_usage, locales, mailer, memstore, runtime, stores
+from backend import (
+    email_verification, llm_usage, locales, mailer, memstore, runtime, stores, usage_dashboard,
+)
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -2978,6 +2981,41 @@ async def save_favorite(body: FavSave, uid: str = Depends(_req_uid)):
     saved = await stores.save_fav(uid, body.card_id, body.collection_id)
     return {"saved": saved, "card_id": body.card_id, "collection_id": body.collection_id}
 
+# ── Presence ──────────────────────────────────────────────────────────────────
+class HeartbeatIn(BaseModel):
+    visit_id: Optional[str] = Field(default=None, max_length=64)
+    platform: Optional[Literal["web", "ios", "android"]] = None
+
+
+@api.post("/activity/heartbeat")
+async def activity_heartbeat(body: HeartbeatIn, uid: str = Depends(_req_uid)):
+    """One beat a minute while the app is open and in use; feeds the online
+    time and visit counts on /admin. Returns the visit id for the next beat.
+
+    Never an error the client has to handle: presence is a measurement, and a
+    failed write must not surface in the app. `disabled` tells the client to
+    stop beating for this session when the table doesn't exist yet.
+    """
+    sb = _get_supabase()
+    if not sb:
+        return {"visit_id": None, "disabled": True}
+    try:
+        visit_id = await anyio.to_thread.run_sync(
+            lambda: usage_dashboard.record_heartbeat(
+                sb, user_id=uid, visit_id=body.visit_id, platform=body.platform,
+                now=datetime.now(timezone.utc), new_id=str(uuid.uuid4()),
+            )
+        )
+    except Exception as exc:
+        if usage_dashboard._table_missing(exc):
+            return {"visit_id": None, "disabled": True}
+        logger.warning("activity_heartbeat_failed", extra={
+            "event": "activity_heartbeat_failed", "error_type": type(exc).__name__,
+        })
+        return {"visit_id": body.visit_id, "disabled": False}
+    return {"visit_id": visit_id, "disabled": False}
+
+
 # ── Analytics ─────────────────────────────────────────────────────────────────
 @api.post("/analytics")
 async def track_event(ev: AnalyticsIn):
@@ -5821,6 +5859,7 @@ _PRIVACY_WIPE_USER_TABLES = (
     "nuri_turn_outcomes",
     "nuri_turn_traces",
     "email_logs",
+    "user_visits",
 )
 
 
@@ -6482,22 +6521,27 @@ async def admin_list_accounts(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    def _query():
-        sel = sb.table("users").select(
-            "id,email,nickname,city,parent_role,top_concerns,onboarding_completed,"
-            "email_verified_at,created_at",
-            count="exact",
-        )
+    def _query(columns: str):
+        sel = sb.table("users").select(columns, count="exact")
         if q:
             safe = q.replace(",", " ").replace("*", " ").strip()
             if safe:
                 sel = sel.or_(f"email.ilike.%{safe}%,nickname.ilike.%{safe}%")
         return sel.order("created_at", desc=True).range(offset, offset + limit).execute()
 
+    base_columns = (
+        "id,email,nickname,city,parent_role,top_concerns,onboarding_completed,"
+        "email_verified_at,created_at"
+    )
     try:
-        res = await anyio.to_thread.run_sync(_query)
-    except Exception as e:
-        raise HTTPException(503, f"accounts unavailable: {e}")
+        res = await anyio.to_thread.run_sync(lambda: _query(base_columns + ",is_internal"))
+    except Exception:
+        # is_internal arrives with the usage-dashboard migration; the list
+        # must keep working on a database that hasn't run it.
+        try:
+            res = await anyio.to_thread.run_sync(lambda: _query(base_columns))
+        except Exception as e:
+            raise HTTPException(503, f"accounts unavailable: {e}")
     rows = getattr(res, "data", None) or []
     page = rows[:limit]
 
@@ -6593,9 +6637,23 @@ async def admin_create_test_account(body: TestAccountCreate, _: None = Depends(_
         "id": str(uuid.uuid4()), "email": email, "nickname": body.nickname,
         "city": "", "top_concerns": [], "hashed_password": _hash_pw(body.password),
         "created_at": now_iso, "email_verified_at": now_iso,
+        # Kept out of the tester count on the usage dashboard.
+        "is_internal": True,
     }
+
+    def _insert(row: dict):
+        return sb.table("users").insert(row).execute()
+
     try:
-        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+        try:
+            await anyio.to_thread.run_sync(lambda: _insert(doc))
+        except Exception as e:
+            if "is_internal" not in str(e):
+                raise
+            # Database without the usage-dashboard migration.
+            await anyio.to_thread.run_sync(
+                lambda: _insert({k: v for k, v in doc.items() if k != "is_internal"})
+            )
     except Exception as e:
         err = str(e)
         if "23505" in err or "duplicate" in err.lower() or "unique" in err.lower():
@@ -6603,6 +6661,86 @@ async def admin_create_test_account(body: TestAccountCreate, _: None = Depends(_
         raise HTTPException(500, f"create failed: {type(e).__name__}")
     print(f"[admin] created test account {doc['id']} <{email}>")
     return {"user": _to_public(doc)}
+
+
+class AccountFlagsUpdate(BaseModel):
+    is_internal: bool
+
+
+@app.patch("/admin/accounts/{user_id}")
+async def admin_update_account_flags(
+    user_id: str, body: AccountFlagsUpdate, _: None = Depends(_require_admin),
+):
+    """Mark an account as internal (team/scripted) or back as a tester."""
+    sb = _require_auth_storage()
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").update({"is_internal": body.is_internal})
+            .eq("id", user_id).execute()
+        )
+    except Exception as e:
+        if "is_internal" in str(e):
+            raise HTTPException(503, "users.is_internal 不存在 —— 先跑 20260910020000_usage_dashboard.sql")
+        raise HTTPException(503, f"update failed: {type(e).__name__}")
+    if not getattr(res, "data", None):
+        raise HTTPException(404, "account not found")
+    return {"id": user_id, "is_internal": body.is_internal}
+
+
+@app.get("/admin/usage/overview")
+async def admin_usage_overview(
+    days: int = 14, tz: str = "America/Los_Angeles", include_internal: bool = False,
+    _: None = Depends(_require_admin),
+):
+    """Testers, presence, conversation and topics for the last `days` days,
+    bucketed into calendar days in `tz` — the admin's own timezone, sent by
+    the page."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days = max(1, min(days, usage_dashboard.MAX_DAYS))
+    try:
+        zone = ZoneInfo(tz)
+    except Exception:
+        raise HTTPException(400, f"unknown timezone: {tz}")
+    now = datetime.now(timezone.utc)
+    first_day = usage_dashboard.window_days(days, zone, now)[0]
+    since = usage_dashboard.window_start_utc(first_day, zone)
+    try:
+        sources = await anyio.to_thread.run_sync(
+            lambda: usage_dashboard.fetch_sources(sb, since)
+        )
+    except Exception as e:
+        raise HTTPException(503, f"usage data unavailable: {type(e).__name__}: {e}")
+    return usage_dashboard.build_overview(
+        sources, days=days, tz=zone, now=now, include_internal=include_internal,
+    )
+
+
+@app.get("/admin/usage/quota")
+async def admin_usage_quota(days: int = 60, _: None = Depends(_require_admin)):
+    """Each time the OpenAI account ran dry in the last `days` days: how many
+    turns the period before it held, and how its tokens split between
+    conversation and knowledge cards. Separate from the overview because it
+    reads llm_call_logs, the largest table here, over a longer window."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days = max(1, min(days, 180))
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    try:
+        turn_logs, call_logs, truncated = await anyio.to_thread.run_sync(
+            lambda: usage_dashboard.fetch_quota_sources(sb, since)
+        )
+    except Exception as e:
+        raise HTTPException(503, f"quota data unavailable: {type(e).__name__}: {e}")
+    return {
+        "days": days,
+        **usage_dashboard.build_quota_incidents(
+            turn_logs, call_logs, since=since, now=now, truncated=truncated,
+        ),
+    }
 
 
 @app.get("/admin/settings")

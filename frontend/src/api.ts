@@ -690,6 +690,14 @@ export const api = {
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
 
+  // ── Presence ──────────────────────────────────────────────────────────────
+  // keepalive lets the last beat of a closing tab still reach the server.
+  heartbeat: (b: {
+    visit_id: string | null;
+    platform: "web" | "ios" | "android";
+  }): Promise<{ visit_id: string | null; disabled: boolean }> =>
+    req(`/activity/heartbeat`, { method: "POST", body: JSON.stringify(b), keepalive: true }, 10000),
+
   // ── Auth ──────────────────────────────────────────────────────────────────
   // Register returns no token: it mails a code, and verifyEmail trades the
   // code for the session. Mail-sending routes get a longer timeout because

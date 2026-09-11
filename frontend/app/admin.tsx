@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Link } from "expo-router";
+import UsageDashboard from "@/src/admin/UsageDashboard";
 import { colors, radius, spacing } from "@/src/theme";
 
 // ── Supabase client (anon key — safe to expose, RLS controls access) ──────────
@@ -76,6 +77,8 @@ type Account = {
   city?: string;
   parent_role?: string | null;
   onboarding_completed?: boolean;
+  email_verified_at?: string | null;
+  is_internal?: boolean;
   created_at: string;
   children?: number;
   sessions?: number;
@@ -133,6 +136,11 @@ export default function AdminPage() {
   // Holds the id awaiting confirmation, so deletion always takes two taps.
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Scripted/team accounts: verified on creation, no mail sent.
+  const [testEmail, setTestEmail] = useState("");
+  const [testPassword, setTestPassword] = useState("");
+  const [creatingTest, setCreatingTest] = useState(false);
+  const [testAccountStatus, setTestAccountStatus] = useState("");
 
   // "#fix" 白名单：只有这里列出的账号在聊天里发 #fix 才会被当成指令
   const [reviewers, setReviewers] = useState<FixReviewer[]>([]);
@@ -375,6 +383,29 @@ export default function AdminPage() {
     setAccountsLoading(false);
   }, [key, accountQuery]);
 
+  const createTestAccount = async () => {
+    setCreatingTest(true);
+    setTestAccountStatus("");
+    try {
+      const res = await fetch(`${BACKEND}/admin/test-accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-key": key },
+        body: JSON.stringify({ email: testEmail.trim().toLowerCase(), password: testPassword }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      setTestAccountStatus(`已创建：${d.user?.email}，可以直接登录。`);
+      setTestEmail("");
+      setTestPassword("");
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      setTestAccountStatus(
+        msg.includes("已注册") ? "这个邮箱已经有账号了。" : `创建失败: ${msg.slice(0, 160)}`,
+      );
+    }
+    setCreatingTest(false);
+  };
+
   const deleteAccount = async (id: string) => {
     setDeletingId(id);
     setAccountError("");
@@ -561,7 +592,7 @@ export default function AdminPage() {
       <ScrollView contentContainerStyle={styles.page}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.pageTitle}>Books Admin</Text>
+          <Text style={styles.pageTitle}>NURI Admin</Text>
           <Link href="/admin/logs" style={styles.navLink}>
             对话性能日志 →
           </Link>
@@ -569,6 +600,11 @@ export default function AdminPage() {
             <Text style={styles.logoutText}>退出</Text>
           </Pressable>
         </View>
+
+        {/* The main thing this page is for: who is using NURI, how much. */}
+        <UsageDashboard adminKey={key} backend={BACKEND} />
+
+        <Text style={styles.sectionDivider}>知识库与配置</Text>
 
         {/* Stats */}
         <View style={styles.statsRow}>
@@ -772,7 +808,11 @@ export default function AdminPage() {
           {accounts.map((a) => (
             <View key={a.id} style={styles.ruleRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.bookTitle}>{a.nickname || "(无昵称)"}</Text>
+                <Text style={styles.bookTitle}>
+                  {a.nickname || "(无昵称)"}
+                  {a.is_internal ? "  · 内部" : ""}
+                  {a.email_verified_at === null ? "  · 邮箱未验证" : ""}
+                </Text>
                 <Text style={styles.bookMeta}>{a.email}</Text>
                 <Text style={styles.bookMeta}>
                   {[
@@ -808,6 +848,38 @@ export default function AdminPage() {
               )}
             </View>
           ))}
+
+          <Text style={[styles.modeTitle, { marginTop: spacing.lg }]}>创建测试账号</Text>
+          <Text style={styles.modeHint}>
+            不发验证邮件、直接可登录，地址可以是 automated_test_01@example.com 这类假地址。自动标记为内部账号，不计入测试人数。
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.sm, flexWrap: "wrap" }}>
+            <TextInput
+              style={[styles.input, { flex: 2, minWidth: 200 }]}
+              placeholder="邮箱"
+              autoCapitalize="none"
+              value={testEmail}
+              onChangeText={setTestEmail}
+              testID="admin-test-account-email"
+            />
+            <TextInput
+              style={[styles.input, { flex: 1, minWidth: 140 }]}
+              placeholder="密码（至少6位）"
+              autoCapitalize="none"
+              value={testPassword}
+              onChangeText={setTestPassword}
+              testID="admin-test-account-password"
+            />
+            <Pressable
+              style={[styles.smallBtn, (creatingTest || !testEmail || testPassword.length < 6) && { opacity: 0.5 }]}
+              onPress={createTestAccount}
+              disabled={creatingTest || !testEmail || testPassword.length < 6}
+              testID="admin-create-test-account"
+            >
+              <Text style={styles.smallBtnText}>{creatingTest ? "创建中…" : "创建"}</Text>
+            </Pressable>
+          </View>
+          {testAccountStatus ? <Text style={styles.modeHint}>{testAccountStatus}</Text> : null}
         </View>
 
         {/* "#fix" 白名单 */}
@@ -980,6 +1052,10 @@ const styles = StyleSheet.create({
   page: { padding: spacing.lg, gap: spacing.md },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   pageTitle: { fontSize: 22, fontWeight: "700" as const, color: colors.onSurface },
+  sectionDivider: {
+    fontSize: 13, fontWeight: "700", color: colors.onSurfaceTertiary,
+    letterSpacing: 0.5, marginTop: spacing.sm,
+  },
   logoutText: { color: colors.error, fontSize: 14, fontWeight: "500" },
   navLink: { color: colors.brand, fontSize: 14, fontWeight: "600" },
 
