@@ -13,15 +13,17 @@ tokens. There is no flag; the only lever is what comes first. So the blocks are
 laid out strictly most-stable to most-volatile:
 
     system persona + JSON contract + style rules   identical for every user
-    child profile                                  stable for one family
-    conversation state                             changes every few thousand tokens
-    long-term memory                               changes as the parent tells us things
-    recent messages                                changes every turn
+    child profile + conversation state             stable for one family
+    exemplar pairs                                 stable across a run on one topic
+    recent messages                                append-only; window start snapped
+    per-turn block (rules, memory, retrieval,      new every turn
+      clock, gaps, register rule)
     current user message                           always new
 
-Everything above the first line that moves gets cached. Putting retrieved
-sources or the current question anywhere but last would truncate the cache to
-whatever precedes them, which is what the old single concatenated string did.
+Everything above the first line that moves gets cached. The per-turn block
+used to sit before the recent messages, and its clock changes every minute, so
+the history was never cached; it now sits directly before the question (see
+dialogue_reply._assemble). Cache hits on gpt-5.5 come in 2,048-token steps.
 
 Nothing here does I/O or calls a model, so the whole budget is testable without
 spending anything.
