@@ -11,7 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { DailyPostCard as Card } from "@/src/api";
 import { useT } from "@/src/i18n";
 
-export type DailyPostStatus = "loading" | "pending" | "ready" | "empty" | "error";
+export type DailyPostStatus = "loading" | "pending" | "ready" | "empty" | "error" | "disabled";
 
 const PLATFORM_NAMES: Record<Card["platform"], string> = {
   facebook: "Facebook",

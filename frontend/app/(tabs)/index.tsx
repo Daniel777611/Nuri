@@ -162,6 +162,11 @@ export default function Home() {
         dailyPostPolls.current = 0;
       } else if (res.state === "pending") {
         setDailyPostStatus("pending");
+      } else if (res.state === "disabled") {
+        // Switched off, or its table not migrated yet: no section at all,
+        // rather than a daily "nothing found" that isn't true.
+        setDailyPost(null);
+        setDailyPostStatus("disabled");
       } else {
         setDailyPost(null);
         setDailyPostStatus(res.state === "unavailable" ? "error" : "empty");
@@ -360,27 +365,31 @@ export default function Home() {
             </Pressable>
           </View>
 
-          <View style={styles.sectionHeading}>
-            {Platform.OS === "web" ? (
-              <Image
-                source={{ uri: "/homepage/daily-selection-icon.svg" }}
-                style={styles.dailySectionIcon}
-                resizeMode="contain"
-              />
-            ) : (
-              <Ionicons name="stats-chart" size={25} color={C.text} />
-            )}
-            <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
-          </View>
+          {dailyPostStatus !== "disabled" ? (
+            <>
+              <View style={styles.sectionHeading}>
+                {Platform.OS === "web" ? (
+                  <Image
+                    source={{ uri: "/homepage/daily-selection-icon.svg" }}
+                    style={styles.dailySectionIcon}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <Ionicons name="stats-chart" size={25} color={C.text} />
+                )}
+                <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
+              </View>
 
-          <DailyPostCard
-            width={dailyCardWidth}
-            nickname={dailyPost?.nickname ?? ""}
-            status={dailyPostStatus}
-            card={dailyPost}
-            onPress={openDailyPost}
-            onRetry={() => void loadDailyPost()}
-          />
+              <DailyPostCard
+                width={dailyCardWidth}
+                nickname={dailyPost?.nickname ?? ""}
+                status={dailyPostStatus}
+                card={dailyPost}
+                onPress={openDailyPost}
+                onRetry={() => void loadDailyPost()}
+              />
+            </>
+          ) : null}
 
           <View style={[styles.sectionHeading, styles.nuriSectionHeading]}>
             {Platform.OS === "web" ? (

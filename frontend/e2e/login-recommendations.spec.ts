@@ -1,11 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const RECOMMENDATION_CATEGORIES = [
-  { key: "authority", label: "权威答案" },
-  { key: "featured", label: "精选方法" },
-  { key: "case", label: "相似案例" },
-] as const;
-
 async function loginFromCleanPage(page: Page) {
   const email = process.env.NURI_E2E_EMAIL?.trim();
   const password = process.env.NURI_E2E_PASSWORD;
@@ -54,81 +48,36 @@ async function loginFromCleanPage(page: Page) {
   await expect(page).not.toHaveURL(/\/onboarding(?:\/|$)/);
 }
 
-async function readyRecommendationCard(page: Page, category: string) {
-  const card = page.locator(
-    `[data-testid^="home-hero-card-"][data-testid$="-${category}"]`,
-  );
-  await expect(card).toHaveCount(1, { timeout: 120_000 });
-  await expect(card).toContainText("内容已准备好 · 文章 + 视频", {
-    timeout: 120_000,
-  });
-  await expect(card).not.toContainText("正在准备");
-  return card;
-}
-
-test("real login keeps its session and opens three ready recommendation lanes", async ({
-  page,
-}) => {
+test("real login keeps its session and shows today's parent post", async ({ page }) => {
   await loginFromCleanPage(page);
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByTestId("home-avatar")).toBeVisible({
-    timeout: 60_000,
-  });
+  await expect(page.getByTestId("home-avatar")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("login-email")).toHaveCount(0);
 
-  const cardTexts: string[] = [];
-  for (const category of RECOMMENDATION_CATEGORIES) {
-    const card = await readyRecommendationCard(page, category.key);
-    await expect(card).toContainText(category.label);
-    if (category.key === "authority" || category.key === "featured") {
-      await expect(card).toContainText(/机构官方(?:简体)?中文|简体中文|普通话/);
-      await expect(card).not.toContainText(/英文原文|英文视频|英文原声/);
-    }
-    cardTexts.push(await card.innerText());
+  // The first visit of the day builds the card (search + two model calls), so
+  // allow for that; a day with no usable post shows an explicit empty state.
+  const card = page.getByTestId("home-daily-post-card");
+  const empty = page.getByTestId("home-daily-post-empty");
+  await expect(card.or(empty)).toBeVisible({ timeout: 120_000 });
+  if (await empty.isVisible()) {
+    test.info().annotations.push({ type: "note", description: "no usable post today" });
+    return;
   }
-  expect(new Set(cardTexts).size, "the three lanes must not reuse one card").toBe(
-    3,
+
+  await expect(page.getByTestId("home-daily-post-greeting")).toContainText(
+    /你好呀，其他(?:妈妈|家长)可能会这么处理/,
   );
+  await card.click();
+  await expect(page).toHaveURL(/\/daily-post/, { timeout: 30_000 });
+  await expect(page.getByTestId("daily-post-greeting")).toBeVisible();
+  await expect(page.getByTestId("daily-post-source")).toBeVisible();
+  await expect(page.getByTestId("daily-post-chat")).toBeVisible();
 
-  for (const category of RECOMMENDATION_CATEGORIES) {
-    const card = await readyRecommendationCard(page, category.key);
-    await card.click();
-
-    await expect(page).toHaveURL(/\/detail\//, { timeout: 30_000 });
-    await expect(page.getByTestId("content-detail-scroll")).toBeVisible();
-    await expect(page.getByTestId("detail-error-state")).toHaveCount(0);
-    await expect(
-      page.getByTestId(`detail-resource-category-${category.key}`),
-    ).toBeVisible();
-
-    const resources = page.locator(
-      '[data-testid^="detail-resource-"]:not([data-testid^="detail-resource-category-"])',
-    );
-    await expect(resources).toHaveCount(2, { timeout: 60_000 });
-
-    const resourceSection = page.getByTestId("detail-learning-resources");
-    await expect(resourceSection).toContainText("文章");
-    await expect(resourceSection).toContainText("视频");
-    await expect(resourceSection).not.toContainText("正在准备");
-    if (category.key === "authority" || category.key === "featured") {
-      const article = resources.filter({
-        has: page.getByText("文章", { exact: true }),
-      });
-      const video = resources.filter({
-        has: page.getByText("视频", { exact: true }),
-      });
-      await expect(article).toHaveCount(1);
-      await expect(video).toHaveCount(1);
-      await expect(article).toContainText(/机构官方(?:简体)?中文|简体中文/);
-      await expect(article).not.toContainText(/英文原文|英文文章/);
-      await expect(video).toContainText(/普通话|国语|华语/);
-      await expect(video).not.toContainText(/英文视频|英文原声|English/);
-    }
-
-    await page.goto("/", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("home-avatar")).toBeVisible({
-      timeout: 60_000,
-    });
-  }
+  // Same card on a second visit the same day: it is decided once.
+  const headline = await page.getByTestId("daily-post-headline").innerText();
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  await card.click();
+  await expect(page.getByTestId("daily-post-headline")).toHaveText(headline);
 });

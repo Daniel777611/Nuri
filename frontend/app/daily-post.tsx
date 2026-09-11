@@ -138,7 +138,7 @@ export default function DailyPostScreen() {
             <Text style={styles.basis} numberOfLines={2}>{basisNote}</Text>
           </View>
 
-          <Text style={styles.headline}>{card.headline}</Text>
+          <Text style={styles.headline} testID="daily-post-headline">{card.headline}</Text>
 
           <Text style={styles.sectionLabel}>
             {card.author_kind === "parent_group_answers" ? t("大家的建议") : t("这位家长的做法")}
