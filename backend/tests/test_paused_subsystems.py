@@ -55,7 +55,10 @@ def test_paused_feed_generate_serves_the_curated_pool(client, monkeypatch):
         main, "_gen_feed_cards_sync",
         lambda *a, **k: pytest.fail("paused generator was called"),
     )
-    res = client.post("/api/feed/generate", json={"count": 3})
+    res = client.post(
+        "/api/feed/generate", json={"count": 3},
+        headers={"Authorization": f"Bearer {main._make_token('parent-1')}"},
+    )
     assert res.status_code == 200
     cards = res.json()
     assert len(cards) == 3

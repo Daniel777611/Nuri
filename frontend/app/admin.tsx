@@ -500,7 +500,7 @@ export default function AdminPage() {
         setIndexStatus("正在向量化，可能需要几分钟……");
         const res = await fetch(`${BACKEND}/api/index-from-url`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-admin-key": key },
           body: JSON.stringify({ url: pdfUrl, filename: file.name }),
         });
         if (!res.ok) throw new Error(await res.text());

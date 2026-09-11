@@ -54,7 +54,7 @@ from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import image_input as core_image_input
-from backend import llm_usage, locales, memstore, runtime, stores
+from backend import email_verification, llm_usage, locales, mailer, memstore, runtime, stores
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -476,6 +476,7 @@ def _to_public(doc: dict) -> dict:
         "info_source":          doc.get("info_source", ""),
         "content_frequency":    doc.get("content_frequency", ""),
         "onboarding_completed": bool(doc.get("onboarding_completed", False)),
+        "email_verified":       bool(doc.get("email_verified_at")),
     })
     return base
 
@@ -496,6 +497,19 @@ Concern    = Literal[
     "health", "childcare", "family", "unknown", "other",
 ]
 
+#: The language a verification mail is written in; the client sends its locale.
+AuthLanguage = Literal["zh-CN", "zh-TW", "en"]
+
+
+def _password_fits_bcrypt(value: str) -> str:
+    # bcrypt reads at most 72 bytes, and bcrypt 5 raises rather than truncate:
+    # an unchecked long password was a 500 at registration. 72 bytes is 24 CJK
+    # characters, far past anything a person types.
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("password is longer than 72 bytes")
+    return value
+
+
 class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
@@ -506,10 +520,29 @@ class UserRegister(BaseModel):
     # grandparent. Left unset, the profile block simply omits the role.
     parent_role: Optional[ParentRole] = None
     top_concerns: List[Concern] = Field(default_factory=list)
+    language: Optional[AuthLanguage] = None
+
+    _password_length = field_validator("password")(_password_fits_bcrypt)
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    language: Optional[AuthLanguage] = None
+
+class EmailCodeRequest(BaseModel):
+    email: EmailStr
+    language: Optional[AuthLanguage] = None
+
+class EmailCodeVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=1, max_length=16)
+
+class PasswordReset(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=1, max_length=16)
+    new_password: str = Field(..., min_length=6)
+
+    _password_length = field_validator("new_password")(_password_fits_bcrypt)
 
 class UserUpdate(BaseModel):
     nickname:     Optional[str]          = None
@@ -806,31 +839,8 @@ CARD_TO_SCRIPT = {
 
 # ── Daily email push helpers ──────────────────────────────────────────────────
 
-def _send_email_smtp(to_addr: str, subject: str, body: str) -> None:
-    import smtplib, ssl
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    from email.header import Header
-
-    sender = SMTP_FROM or SMTP_USER
-    msg = MIMEMultipart()
-    msg["Subject"] = Header(subject, "utf-8").encode()
-    msg["From"] = sender
-    msg["To"] = to_addr
-    msg.attach(MIMEText(body, "plain", "utf-8"))
-    raw = msg.as_bytes()
-
-    ctx = ssl.create_default_context()
-    if SMTP_PORT == 465:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as s:
-            s.login(SMTP_USER, SMTP_PASSWORD)
-            s.sendmail(sender, to_addr, raw)
-    else:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-            s.ehlo()
-            s.starttls(context=ctx)
-            s.login(SMTP_USER, SMTP_PASSWORD)
-            s.sendmail(sender, to_addr, raw)
+# Moved to backend/mailer.py, which verification codes send through too.
+_send_email_smtp = mailer.send_smtp
 
 # Fallback scripts (used when OpenAI is not configured)
 SCRIPTS: dict = {
@@ -1085,56 +1095,247 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
-@api.post("/auth/register", status_code=201)
-async def register(body: UserRegister):
+# An account exists from the moment it registers, but it gets no token until
+# the address is proven: register mails a six-digit code and returns none, and
+# the token comes from /auth/verify-email. Accounts that predate verification
+# were backfilled as verified by 20260910010000_email_verification.sql, so
+# nobody already testing is affected.
+#
+# New failures answer with a stable code in `detail` (CODE_WRONG,
+# MAILBOX_UNDELIVERABLE, …) rather than a sentence, so each client can say it
+# in the parent's language. "该邮箱已注册" and "邮箱或密码错误" predate that
+# and stay as they were, because clients already match on them.
+
+def _auth_response(doc: dict) -> dict:
+    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+
+
+def _require_auth_storage():
     sb = _get_supabase()
     if not sb:
         raise HTTPException(503, "Database not configured")
-    email = body.email.lower()
+    return sb
+
+
+async def _user_by_email(sb, email: str) -> Optional[dict]:
     try:
-        existing = await anyio.to_thread.run_sync(
-            lambda: sb.table("users").select("id").eq("email", email).execute()
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("*").eq("email", email).limit(1).execute()
         )
-        if existing.data:
-            raise HTTPException(400, "该邮箱已注册")
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[warn] register email-check error: {e}")
-    doc = {
-        "id": str(uuid.uuid4()), "email": email,
+    except Exception as exc:
+        # Deciding "no such account" from a failed read would let register
+        # try to create a duplicate and reset tell a real owner nothing.
+        logger.error("auth_user_lookup_failed", extra={
+            "event": "auth_user_lookup_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    return res.data[0] if res.data else None
+
+
+async def _send_email_code(
+    sb, email: str, purpose: email_verification.Purpose, language: Optional[str],
+    *, tolerate_cooldown: bool = False,
+) -> int:
+    """Issue a code and mail it. Returns seconds until another may be sent.
+
+    With `tolerate_cooldown`, an address that was sent a code moments ago is
+    not an error — the code already in the inbox still works — and the wait is
+    returned instead. Register and login want that; an explicit "resend" tap
+    wants the 429.
+    """
+    try:
+        row_id, code = await anyio.to_thread.run_sync(
+            lambda: email_verification.issue_code(sb, email, purpose)
+        )
+    except email_verification.CodeRateLimited as exc:
+        if tolerate_cooldown:
+            return exc.retry_after
+        raise HTTPException(
+            429, "CODE_RATE_LIMITED", headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+    except Exception as exc:
+        logger.error("email_code_issue_failed", extra={
+            "event": "email_code_issue_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "MAIL_SEND_FAILED") from exc
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: email_verification.send_code(email, code, purpose, language)
+        )
+    except Exception as exc:
+        try:
+            await anyio.to_thread.run_sync(lambda: email_verification.discard_code(sb, row_id))
+        except Exception:
+            pass
+        logger.error("email_code_send_failed", extra={
+            "event": "email_code_send_failed", "purpose": purpose,
+            "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "MAIL_SEND_FAILED") from exc
+    return email_verification.RESEND_COOLDOWN_S
+
+
+async def _check_email_code(
+    sb, email: str, purpose: email_verification.Purpose, code: str,
+) -> None:
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: email_verification.check_code(sb, email, purpose, code)
+        )
+    except Exception as exc:
+        logger.error("email_code_check_failed", extra={
+            "event": "email_code_check_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    if result != "ok":
+        raise HTTPException(400, f"CODE_{result.upper()}")
+
+
+@api.post("/auth/register", status_code=201)
+async def register(body: UserRegister):
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    problem = await anyio.to_thread.run_sync(
+        lambda: email_verification.mailbox_problem(email)
+    )
+    if problem:
+        raise HTTPException(400, f"MAILBOX_{problem.upper()}")
+
+    profile = {
         "nickname": body.nickname, "city": body.city,
         "top_concerns": list(body.top_concerns),
-        "hashed_password": _hash_pw(body.password), "created_at": _now(),
+        "hashed_password": _hash_pw(body.password),
     }
     # Omitted rather than sent as null: the column is still NOT NULL on
     # databases that haven't run parent_role_nullable_migration.sql, where an
     # explicit null fails the insert. Omitting works either way — the old
     # schema falls back to its default, the migrated one stores null.
     if body.parent_role:
-        doc["parent_role"] = body.parent_role
+        profile["parent_role"] = body.parent_role
+
+    existing = await _user_by_email(sb, email)
+    if existing and existing.get("email_verified_at"):
+        raise HTTPException(400, "该邮箱已注册")
     try:
-        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+        if existing:
+            # Registered before but never verified. Whoever proves the mailbox
+            # owns the account, so a second registration takes it over instead
+            # of being refused — refusing would let anyone park an address
+            # they don't own and lock its real owner out of it.
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("users").update(profile)
+                .eq("id", existing["id"]).is_("email_verified_at", "null").execute()
+            )
+        else:
+            doc = {
+                "id": str(uuid.uuid4()), "email": email, "created_at": _now(),
+                "email_verified_at": None, **profile,
+            }
+            await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
     except Exception as e:
         err = str(e)
         if "23505" in err or "duplicate" in err.lower() or "unique" in err.lower():
             raise HTTPException(400, "该邮箱已注册")
-        print(f"[error] register insert error: {e}")
+        print(f"[error] register write error: {type(e).__name__}")
         raise HTTPException(500, "注册失败，请稍后重试")
-    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+
+    resend_after = await _send_email_code(
+        sb, email, "verify", body.language, tolerate_cooldown=True,
+    )
+    return {"verification_required": True, "email": email, "resend_after": resend_after}
+
+
+@api.post("/auth/verify-email")
+async def verify_email(body: EmailCodeVerify):
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    user = await _user_by_email(sb, email)
+    if not user:
+        # Same answer as a stale code: this route must not be a way to ask
+        # whether an address has an account.
+        raise HTTPException(400, "CODE_EXPIRED")
+    if user.get("email_verified_at"):
+        raise HTTPException(400, "EMAIL_ALREADY_VERIFIED")
+    await _check_email_code(sb, email, "verify", body.code)
+    stamp = _now()
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("users").update({"email_verified_at": stamp})
+            .eq("id", user["id"]).execute()
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    return _auth_response({**user, "email_verified_at": stamp})
+
+
+@api.post("/auth/resend-verification")
+async def resend_verification(body: EmailCodeRequest):
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    user = await _user_by_email(sb, email)
+    if not user or user.get("email_verified_at"):
+        return {"ok": True, "resend_after": email_verification.RESEND_COOLDOWN_S}
+    resend_after = await _send_email_code(sb, email, "verify", body.language)
+    return {"ok": True, "resend_after": resend_after}
+
 
 @api.post("/auth/login")
 async def login(body: UserLogin):
-    sb = _get_supabase()
-    if not sb:
-        raise HTTPException(503, "Database not configured")
-    res = await anyio.to_thread.run_sync(
-        lambda: sb.table("users").select("*").eq("email", body.email.lower()).execute()
-    )
-    if not res.data or not _verify_pw(body.password, res.data[0]["hashed_password"]):
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    doc = await _user_by_email(sb, email)
+    if not doc or not _verify_pw(body.password, doc["hashed_password"]):
         raise HTTPException(401, "邮箱或密码错误")
-    doc = res.data[0]
-    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+    if not doc.get("email_verified_at"):
+        # Right password, unproven address: send them to the code screen with
+        # a fresh code already on its way. A mail failure doesn't change the
+        # answer — that screen has its own resend button.
+        try:
+            await _send_email_code(sb, email, "verify", body.language, tolerate_cooldown=True)
+        except HTTPException:
+            pass
+        raise HTTPException(403, "EMAIL_NOT_VERIFIED")
+    return _auth_response(doc)
+
+
+@api.post("/auth/password/forgot")
+async def forgot_password(body: EmailCodeRequest):
+    """Mail a reset code. The answer is the same whether or not the address
+    has an account, so this can't be used to find out who has one."""
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    user = await _user_by_email(sb, email)
+    if user:
+        try:
+            await _send_email_code(sb, email, "reset", body.language)
+        except HTTPException as exc:
+            # A cooldown stays silent like everything else here. A mail that
+            # could not be sent is reported: making someone wait for a message
+            # that will never come is worse than what it reveals.
+            if exc.status_code != 429:
+                raise
+    return {"ok": True, "resend_after": email_verification.RESEND_COOLDOWN_S}
+
+
+@api.post("/auth/password/reset")
+async def reset_password(body: PasswordReset):
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    user = await _user_by_email(sb, email)
+    if not user:
+        raise HTTPException(400, "CODE_EXPIRED")
+    await _check_email_code(sb, email, "reset", body.code)
+    updates = {"hashed_password": _hash_pw(body.new_password)}
+    # The code just proved the mailbox, which is everything verification asks.
+    if not user.get("email_verified_at"):
+        updates["email_verified_at"] = _now()
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("users").update(updates).eq("id", user["id"]).execute()
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    return _auth_response({**user, **updates})
 
 @api.get("/auth/me")
 async def me(uid: str = Depends(_req_uid)):
@@ -1975,7 +2176,7 @@ async def search_feed(q: str = "", type: Optional[str] = None):
     return results
 
 @api.post("/feed/generate")
-async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = Depends(_opt_uid)):
+async def generate_feed_cards(body: GenerateCardsRequest, uid: str = Depends(_req_uid)):
     feed_mode = await stores.get_feed_mode()
     # The curated pool is also what a paused card generator serves. Answering
     # with it rather than an empty list keeps the home screen populated, and
@@ -1986,7 +2187,12 @@ async def generate_feed_cards(body: GenerateCardsRequest, uid: Optional[str] = D
         random.shuffle(pool)
         return pool[:body.count]
     keywords = list(body.keywords or [])
-    if not keywords and body.session_id and oai:
+    # Generated cards go into a pool every account sees, so the words they are
+    # built from may only come from the caller's own conversation.
+    owns_session = (
+        (memstore.sessions.get(body.session_id or "") or {}).get("user_id") == uid
+    )
+    if not keywords and body.session_id and owns_session and oai:
         msgs = memstore.messages.get(body.session_id, [])
         user_texts = [m.get("text", "") for m in msgs if m.get("role") == "user" and m.get("text")]
         if user_texts:
@@ -2702,13 +2908,16 @@ async def get_card_research(
 # ── Collections ───────────────────────────────────────────────────────────────
 MAX_COLLECTIONS = 12
 
+# Collections and favorites used to fall back to a shared "anon" key when no
+# token came with the request, so every signed-out caller read and wrote the
+# same bucket. They are account data; they need an account.
 @api.get("/collections")
-async def list_collections(uid: Optional[str] = Depends(_opt_uid)):
-    return await stores.list_collections(uid or "anon")
+async def list_collections(uid: str = Depends(_req_uid)):
+    return await stores.list_collections(uid)
 
 @api.post("/collections")
-async def create_collection(body: CollectionCreate, uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
+async def create_collection(body: CollectionCreate, uid: str = Depends(_req_uid)):
+    key = uid
     existing = await stores.list_collections(key)
     if len(existing) >= MAX_COLLECTIONS:
         raise HTTPException(400, f"已达上限，最多创建 {MAX_COLLECTIONS} 个收藏夹")
@@ -2716,23 +2925,21 @@ async def create_collection(body: CollectionCreate, uid: Optional[str] = Depends
     return col
 
 @api.put("/collections/{col_id}")
-async def rename_collection(col_id: str, body: CollectionRename, uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
-    ok = await stores.rename_collection(key, col_id, body.name)
+async def rename_collection(col_id: str, body: CollectionRename, uid: str = Depends(_req_uid)):
+    ok = await stores.rename_collection(uid, col_id, body.name)
     if not ok:
         raise HTTPException(404, "收藏夹不存在")
     return {"id": col_id, "name": body.name}
 
 @api.delete("/collections/{col_id}")
-async def delete_collection(col_id: str, uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
-    await stores.delete_collection(key, col_id)
+async def delete_collection(col_id: str, uid: str = Depends(_req_uid)):
+    await stores.delete_collection(uid, col_id)
     return {"ok": True}
 
 # ── Favorites ─────────────────────────────────────────────────────────────────
 @api.get("/favorites")
-async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
+async def list_favorites(uid: str = Depends(_req_uid)):
+    key = uid
     sb = _get_supabase()
     if sb:
         try:
@@ -2757,15 +2964,18 @@ async def list_favorites(uid: Optional[str] = Depends(_opt_uid)):
     return [{**by_id[cid], "collection_id": col_map.get(cid)} for cid in ids if cid in by_id]
 
 @api.post("/favorites/toggle")
-async def toggle_favorite(body: FavToggle, uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
-    favorited = await stores.toggle_fav(key, body.card_id)
+async def toggle_favorite(body: FavToggle, uid: str = Depends(_req_uid)):
+    favorited = await stores.toggle_fav(uid, body.card_id)
     return {"favorited": favorited, "card_id": body.card_id}
 
 @api.post("/favorites/save")
-async def save_favorite(body: FavSave, uid: Optional[str] = Depends(_opt_uid)):
-    key = uid or "anon"
-    saved = await stores.save_fav(key, body.card_id, body.collection_id)
+async def save_favorite(body: FavSave, uid: str = Depends(_req_uid)):
+    # A collection id is only a uuid; nothing else stops a favorite from being
+    # filed under another account's collection.
+    owned = {c.get("id") for c in await stores.list_collections(uid)}
+    if body.collection_id not in owned:
+        raise HTTPException(404, "收藏夹不存在")
+    saved = await stores.save_fav(uid, body.card_id, body.collection_id)
     return {"saved": saved, "card_id": body.card_id, "collection_id": body.collection_id}
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
@@ -5435,10 +5645,10 @@ async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
 @api.patch("/tasks/{task_id}")
 async def update_task(
     task_id: str, body: TaskUpdate, background_tasks: BackgroundTasks,
-    uid: Optional[str] = Depends(_opt_uid),
+    uid: str = Depends(_req_uid),
 ):
     sb = _get_supabase()
-    if sb and uid:
+    if sb:
         try:
             tr = await anyio.to_thread.run_sync(
                 lambda: sb.table("tasks").select("*").eq("id", task_id).eq("user_id", uid).execute()
@@ -5464,7 +5674,8 @@ async def update_task(
                 updates["backfilled"] = body.backfilled
             if updates:
                 res = await anyio.to_thread.run_sync(
-                    lambda: sb.table("tasks").update(updates).eq("id", task_id).execute()
+                    lambda: sb.table("tasks").update(updates)
+                    .eq("id", task_id).eq("user_id", uid).execute()
                 )
                 result = res.data[0] if res.data else {**t, **updates}
                 if oai and body.note:
@@ -5480,7 +5691,7 @@ async def update_task(
         except Exception as e:
             print(f"[warn] update_task error: {e}")
     for t in memstore.tasks:
-        if t["id"] != task_id:
+        if t["id"] != task_id or t.get("user_id") != uid:
             continue
         if body.done is not None:
             t["done"] = body.done
@@ -5501,9 +5712,9 @@ async def update_task(
     raise HTTPException(404, "task not found")
 
 @api.delete("/tasks/{task_id}", status_code=204)
-async def delete_task(task_id: str, uid: Optional[str] = Depends(_opt_uid)):
+async def delete_task(task_id: str, uid: str = Depends(_req_uid)):
     sb = _get_supabase()
-    if sb and uid:
+    if sb:
         try:
             await anyio.to_thread.run_sync(
                 lambda: sb.table("tasks").delete().eq("id", task_id).eq("user_id", uid).execute()
@@ -5511,13 +5722,16 @@ async def delete_task(task_id: str, uid: Optional[str] = Depends(_opt_uid)):
             return
         except Exception as e:
             print(f"[warn] delete_task error: {e}")
-    memstore.tasks[:] = [t for t in memstore.tasks if t["id"] != task_id]
+    memstore.tasks[:] = [
+        t for t in memstore.tasks
+        if not (t["id"] == task_id and t.get("user_id") == uid)
+    ]
 
 @api.post("/tasks/clear-completed")
-async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
+async def clear_completed_tasks(uid: str = Depends(_req_uid)):
     """Delete completed, non-favorited tasks. Favorited tasks are kept."""
     sb = _get_supabase()
-    if sb and uid:
+    if sb:
         try:
             await anyio.to_thread.run_sync(
                 lambda: sb.table("tasks").delete()
@@ -5529,15 +5743,16 @@ async def clear_completed_tasks(uid: Optional[str] = Depends(_opt_uid)):
             print(f"[warn] clear_completed_tasks error: {e}")
     memstore.tasks[:] = [
         t for t in memstore.tasks
-        if not (t.get("user_id", uid) == uid and t.get("done") and not t.get("is_favorited"))
+        if not (t.get("user_id") == uid and t.get("done") and not t.get("is_favorited"))
     ]
     return {"ok": True}
 
 @api.get("/tasks/insights")
-async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
+async def task_insights(uid: str = Depends(_req_uid)):
     sb = _get_supabase()
-    source: list = memstore.tasks
-    if sb and uid:
+    # Only this account's tasks — the fallback used to count every account's.
+    source: list = [t for t in memstore.tasks if t.get("user_id") == uid]
+    if sb:
         try:
             res = await anyio.to_thread.run_sync(
                 lambda: sb.table("tasks").select("done,scope,progress_done,completed_at").eq("user_id", uid).execute()
@@ -5568,9 +5783,12 @@ async def task_insights(uid: Optional[str] = Depends(_opt_uid)):
     }
 
 # ── Privacy ───────────────────────────────────────────────────────────────────
+# Privacy settings and the wipe are per account. Without a token they used to
+# read and write one shared default — and the wipe, with no token at all,
+# cleared every account's in-process data.
 @api.get("/privacy")
-async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
-    settings = await stores.get_privacy(uid, fail_closed=bool(uid))
+async def get_privacy(uid: str = Depends(_req_uid)):
+    settings = await stores.get_privacy(uid, fail_closed=True)
     if settings.get(stores.PRIVACY_STORAGE_UNAVAILABLE):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -5579,9 +5797,9 @@ async def get_privacy(uid: Optional[str] = Depends(_opt_uid)):
     return stores.normalized_privacy_settings(settings)
 
 @api.put("/privacy")
-async def update_privacy(body: PrivacySettings, uid: Optional[str] = Depends(_opt_uid)):
+async def update_privacy(body: PrivacySettings, uid: str = Depends(_req_uid)):
     settings = await stores.set_privacy(uid, body.model_dump())
-    if uid and settings.get("allow_history_training") is False:
+    if settings.get("allow_history_training") is False:
         await stores.delete_snapshots(uid)
         await core_outcome_store.delete_events(uid)
     return settings
@@ -5646,35 +5864,30 @@ async def _delete_persistent_user_history(uid: str) -> None:
 
 
 @api.post("/privacy/wipe")
-async def wipe_all(uid: Optional[str] = Depends(_opt_uid)):
-    if uid:
-        # Keep an explicit opt-out tombstone instead of deleting the privacy
-        # row.  If any later deletion fails, history must remain disabled rather
-        # than falling back to the default-on setting while user data survives.
-        await stores.set_privacy(
-            uid,
-            {
-                "allow_history_training": False,
-                "allow_external_content_research": False,
-                "daily_push": False,
-                "anonymous_community_share": False,
-                "language": "zh-CN",
-            },
-        )
-        await stores.delete_snapshots(uid)
-        await core_outcome_store.delete_events(uid)
-        await _delete_persistent_user_history(uid)
-        memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
-        memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
-        for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:
-            memstore.sessions.pop(sid, None); memstore.messages.pop(sid, None)
-        memstore.favorites.pop(uid, None)
-    else:
-        memstore.children.clear(); memstore.tasks.clear()
-        memstore.sessions.clear(); memstore.messages.clear()
-        memstore.favorites.clear(); memstore.analytics.clear(); memstore.privacy.clear()
-        memstore.recommendation_snapshots.clear()
-        memstore.recommendation_events.clear(); memstore.recommendation_event_locks.clear()
+async def wipe_all(uid: str = Depends(_req_uid)):
+    # Keep an explicit opt-out tombstone instead of deleting the privacy
+    # row.  If any later deletion fails, history must remain disabled rather
+    # than falling back to the default-on setting while user data survives.
+    await stores.set_privacy(
+        uid,
+        {
+            "allow_history_training": False,
+            "allow_external_content_research": False,
+            "daily_push": False,
+            "anonymous_community_share": False,
+            "language": "zh-CN",
+        },
+    )
+    await stores.delete_snapshots(uid)
+    await core_outcome_store.delete_events(uid)
+    await _delete_persistent_user_history(uid)
+    memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
+    memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
+    for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:
+        memstore.sessions.pop(sid, None); memstore.messages.pop(sid, None)
+    memstore.favorites.pop(uid, None)
+    memstore.fav_cols.pop(uid, None)
+    memstore.collections.pop(uid, None)
     return {"ok": True}
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
@@ -5734,8 +5947,10 @@ def _generate_rag_answer(question: str, chunks: List[str], book_name: Optional[s
     return resp.choices[0].message.content
 
 # ── Legacy RAG routes: PDF ingest & ask ────────────────────────────────────────
+# Both ingest routes write into the knowledge base every account's replies are
+# grounded on, and they had no authentication at all. /admin sends its key.
 @app.post("/index")
-async def index_pdf(file: UploadFile = File(...)):
+async def index_pdf(file: UploadFile = File(...), _: None = Depends(_require_admin)):
     if not _get_supabase():
         raise HTTPException(503, "Supabase not configured")
     if not oai:
@@ -5751,12 +5966,16 @@ async def index_pdf(file: UploadFile = File(...)):
     return {"doc_id": doc_id, "total_chunks": total, "namespace": VECTOR_NAMESPACE, "already_indexed": False}
 
 @api.post("/index-from-url")
-async def index_from_url(req: IndexFromUrlRequest):
+async def index_from_url(req: IndexFromUrlRequest, _: None = Depends(_require_admin)):
     """Index a PDF fetched from a URL (e.g. Supabase Storage). Bypasses Vercel 4.5MB payload limit."""
     if not _get_supabase():
         raise HTTPException(503, "Supabase not configured")
     if not oai:
         raise HTTPException(503, "OpenAI not configured")
+    # urlopen also follows file:// and plain http; the upload flow only ever
+    # hands over an https Storage URL.
+    if urlparse(req.url).scheme != "https":
+        raise HTTPException(400, "url must be https")
     import urllib.request
     with urllib.request.urlopen(req.url) as r:
         pdf_bytes = r.read()
@@ -6265,7 +6484,8 @@ async def admin_list_accounts(
 
     def _query():
         sel = sb.table("users").select(
-            "id,email,nickname,city,parent_role,top_concerns,onboarding_completed,created_at",
+            "id,email,nickname,city,parent_role,top_concerns,onboarding_completed,"
+            "email_verified_at,created_at",
             count="exact",
         )
         if q:
@@ -6337,8 +6557,52 @@ async def admin_delete_account(user_id: str, _: None = Depends(_require_admin)):
     except Exception as e:
         print(f"[error] admin_delete_account {user_id}: {e}")
         raise HTTPException(500, "delete failed")
+    # Keyed by address, not user id, so no foreign key cascades them.
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("email_codes").delete().eq("email", rows[0].get("email")).execute()
+        )
+    except Exception as e:
+        print(f"[warn] admin_delete_account email_codes {user_id}: {type(e).__name__}")
     print(f"[admin] deleted account {user_id} <{rows[0].get('email')}>")
     return {"deleted": user_id, "email": rows[0].get("email")}
+
+
+class TestAccountCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+    nickname: str = ""
+
+    _password_length = field_validator("password")(_password_fits_bcrypt)
+
+
+@app.post("/admin/test-accounts", status_code=201)
+async def admin_create_test_account(body: TestAccountCreate, _: None = Depends(_require_admin)):
+    """An account for scripted test runs: verified on creation, no mail sent.
+
+    Registration now needs a mailbox that receives a code, which the
+    placeholder addresses test runs use (automated_test_01@example.com) never
+    will. This is the one way around that, and it takes the admin key.
+    """
+    sb = _require_auth_storage()
+    email = email_verification.normalize(body.email)
+    if await _user_by_email(sb, email):
+        raise HTTPException(400, "该邮箱已注册")
+    now_iso = _now()
+    doc = {
+        "id": str(uuid.uuid4()), "email": email, "nickname": body.nickname,
+        "city": "", "top_concerns": [], "hashed_password": _hash_pw(body.password),
+        "created_at": now_iso, "email_verified_at": now_iso,
+    }
+    try:
+        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+    except Exception as e:
+        err = str(e)
+        if "23505" in err or "duplicate" in err.lower() or "unique" in err.lower():
+            raise HTTPException(400, "该邮箱已注册")
+        raise HTTPException(500, f"create failed: {type(e).__name__}")
+    print(f"[admin] created test account {doc['id']} <{email}>")
+    return {"user": _to_public(doc)}
 
 
 @app.get("/admin/settings")

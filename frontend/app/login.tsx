@@ -12,13 +12,14 @@ import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api, auth, isAuthError } from "@/src/api";
+import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
+import { savePendingVerification } from "@/src/authFlow";
 import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Login() {
   const router = useRouter();
-  const { t, setLocale } = useT();
+  const { t, locale, setLocale } = useT();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -27,10 +28,12 @@ export default function Login() {
   const submit = async () => {
     setError(null);
     setSubmitting(true);
+    const normalizedEmail = email.trim().toLowerCase();
     try {
       const res = await api.login({
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         password,
+        language: locale,
       });
       await auth.setToken(res.access_token);
       // Old users must also complete the basic-info flow before entering tabs
@@ -39,6 +42,13 @@ export default function Login() {
       await auth.setOnboarded(onboarded);
       router.replace(onboarded ? "/(tabs)" : "/onboarding");
     } catch (e: any) {
+      // Right password, address never confirmed: the server has just mailed
+      // a fresh code, so go straight to the screen that takes it.
+      if (apiErrorDetail(e) === "EMAIL_NOT_VERIFIED") {
+        await savePendingVerification(normalizedEmail, 60);
+        router.push("/verify-email");
+        return;
+      }
       const msg = String(e?.message || "");
       if (isAuthError(e) || msg.includes("401")) setError(t("邮箱或密码错误"));
       else setError(t("登录失败，请重试"));
@@ -84,6 +94,13 @@ export default function Login() {
             style={styles.input}
             testID="login-password"
           />
+          <Pressable
+            onPress={() => router.push("/forgot-password")}
+            style={styles.forgot}
+            testID="login-forgot-password"
+          >
+            <Text style={styles.forgotText}>{t("忘记密码？")}</Text>
+          </Pressable>
 
           {error ? (
             <View style={styles.errorBox} testID="login-error">
@@ -165,6 +182,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   errorText: { color: colors.error, flex: 1 },
+  forgot: { alignSelf: "flex-end", marginTop: spacing.sm, paddingVertical: spacing.xs },
+  forgotText: { color: colors.brand, fontSize: type.base },
   cta: {
     marginTop: spacing.xl,
     backgroundColor: colors.brand,

@@ -95,7 +95,9 @@ EMBED_DIM        = 1024
 APP_URL          = os.getenv("APP_URL", "https://family-growth-ktm1oyan2-ordashlabs.vercel.app")
 SMTP_HOST        = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER        = os.getenv("SMTP_USER", "")
+# SMTP_USERNAME is accepted too: it's the name most provider docs use, and the
+# one the deployed environment was first configured with.
+SMTP_USER        = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM        = os.getenv("SMTP_FROM", "")
 

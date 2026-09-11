@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import pytest
@@ -2122,8 +2123,41 @@ def test_privacy_model_accepts_supported_resource_locales(locale):
     assert body.language == locale
 
 
+class _AppSettings:
+    """app_settings, which is where an account's privacy row lives."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a, **_k):
+        self._op = "select"
+        return self
+
+    def eq(self, _col, value):
+        self._key = value
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def upsert(self, row, **_k):
+        self._op, self._row = "upsert", row
+        return self
+
+    def execute(self):
+        if self._op == "upsert":
+            self.rows[self._row["key"]] = self._row
+            return SimpleNamespace(data=[self._row])
+        row = self.rows.get(self._key)
+        return SimpleNamespace(data=[row] if row else [])
+
+
 def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
-    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    settings_table = _AppSettings()
+    monkeypatch.setattr(runtime, "get_supabase", lambda: settings_table)
     monkeypatch.setattr(memstore, "privacy", {})
     payload = {
         "allow_history_training": True,
@@ -2133,10 +2167,12 @@ def test_privacy_endpoint_round_trips_traditional_chinese(monkeypatch):
         "language": "zh-TW",
     }
 
+    # Privacy settings are per account now; there is no signed-out default.
+    headers = {"Authorization": f"Bearer {main._make_token('parent-privacy')}"}
     with TestClient(main.app) as client:
-        saved = client.put("/api/privacy", json=payload)
-        loaded = client.get("/api/privacy")
-        rejected = client.put("/api/privacy", json={**payload, "language": "fr"})
+        saved = client.put("/api/privacy", json=payload, headers=headers)
+        loaded = client.get("/api/privacy", headers=headers)
+        rejected = client.put("/api/privacy", json={**payload, "language": "fr"}, headers=headers)
 
     assert saved.status_code == 200
     assert saved.json()["language"] == "zh-TW"

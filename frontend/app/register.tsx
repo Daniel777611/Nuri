@@ -21,13 +21,14 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
 import { useT } from "@/src/i18n";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 
 export default function Register() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -83,19 +84,21 @@ export default function Register() {
     setError(null);
     setSubmitting(true);
     try {
+      // No token comes back: the server mails a code, and the next screen
+      // trades it for the session.
       const res = await api.register({
         email: email.trim().toLowerCase(),
         password,
+        language: locale,
       });
-      await auth.setToken(res.access_token);
-      await auth.setOnboarded(false);
-      router.replace("/onboarding");
+      await savePendingVerification(res.email, res.resend_after);
+      router.replace("/verify-email");
     } catch (e: any) {
       const msg = String(e?.message || "");
       setError(
         msg.includes("已注册")
           ? t("该邮箱已注册，请直接登录")
-          : t("注册失败，请检查信息后重试"),
+          : authErrorMessage(e, t) || t("注册失败，请检查信息后重试"),
       );
     } finally {
       setSubmitting(false);
@@ -141,7 +144,7 @@ export default function Register() {
             <View style={styles.form} testID="register-step-account">
               <Text style={styles.title}>{t("创建账号")}</Text>
               <Text style={styles.description}>
-                {t("邮箱+密码，保护你的家人和隐私数据。注册后还需要一分钟完善基本信息。")}
+                {t("用真实邮箱注册，我们会发一个验证码确认是你本人，保护你的家人和隐私数据。")}
               </Text>
 
               <Field label={t("邮箱")}>

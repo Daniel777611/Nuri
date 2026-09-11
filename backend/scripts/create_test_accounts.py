@@ -9,10 +9,12 @@ described as an obstacle to testing twenty parallel dialogues; it is actually
 the cleanest way to get them, since separate accounts cannot leak facts or
 product events into each other the way twenty sessions under one account could.
 
-Accounts are created through the real /api/auth/register route rather than by
-inserting rows, so the password hashing, validation and column defaults are the
-ones production uses. Re-running is safe: an address that already exists is
-reported and kept.
+Accounts are created through the app's own /admin/test-accounts route rather
+than by inserting rows, so the password hashing and validation are the ones
+production uses. Not /api/auth/register: that now mails a verification code,
+and a placeholder address never receives one. The admin route creates the
+account already verified, and needs ADMIN_KEY in .env. Re-running is safe: an
+address that already exists is reported and kept.
 
 Credentials are written to a git-ignored Markdown file. They are worthless
 outside the test project, but a credential in a repository is a habit worth not
@@ -87,6 +89,8 @@ def main() -> int:
     args = parser.parse_args()
     if not args.password:
         sys.exit("[fail] no password: pass --password or set NURI_TEST_PASSWORD")
+    if not runtime.ADMIN_KEY:
+        sys.exit("[fail] ADMIN_KEY is not set — /admin/test-accounts needs it")
 
     _guard_not_a_real_database(args.prefix, args.force)
     print(f"project: {_project_ref()}   creating {args.count} account(s)")
@@ -95,14 +99,15 @@ def main() -> int:
     rows: list[tuple[str, str, str]] = []
     for index in range(1, args.count + 1):
         email = f"{args.prefix}{index:02d}@{args.domain}"
-        response = client.post("/api/auth/register", json={
+        response = client.post("/admin/test-accounts", headers={
+            "x-admin-key": runtime.ADMIN_KEY,
+        }, json={
             "email": email,
             "password": args.password,
             # The blueprint supplies the family details in conversation. A
             # seeded nickname would put a fact in the prompt that the dialogue
             # never established.
             "nickname": "",
-            "city": "",
         })
         if response.status_code == 201:
             status = "created"

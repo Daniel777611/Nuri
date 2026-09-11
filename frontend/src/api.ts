@@ -215,6 +215,15 @@ function createRecommendationEventId(): string {
   return `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
 }
 
+export type RegisterResult = {
+  verification_required: true;
+  email: string;
+  /** Seconds until the server will send another code. */
+  resend_after: number;
+};
+
+export type CodeSent = { ok: true; resend_after: number };
+
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
 // Last known onboarding state. Lets the launch route send a returning user to
@@ -246,15 +255,30 @@ const CHAT_TIMEOUT_MS = 90000;
 // 401 — and treating the two alike is how a cold start became a forced logout.
 export class ApiError extends Error {
   readonly status: number;
+  /** The server's `detail` when it is a string — the auth routes put a stable
+   *  code there (CODE_WRONG, EMAIL_NOT_VERIFIED, …) for the screen to word. */
+  readonly detail: string;
+  /** From the error envelope; set on 429s. */
+  readonly retryAfterMs: number | null;
   constructor(status: number, path: string, detail: string) {
     super(`API ${path} ${status}: ${detail}`);
     this.status = status;
+    let parsed: any = null;
+    try { parsed = JSON.parse(detail); } catch { /* not JSON */ }
+    this.detail = typeof parsed?.detail === "string" ? parsed.detail : "";
+    this.retryAfterMs =
+      typeof parsed?.error?.retry_after_ms === "number" ? parsed.error.retry_after_ms : null;
   }
 }
 
 /** True only when the server actively rejected the credentials. */
 export function isAuthError(err: unknown): boolean {
   return !!(err && typeof err === "object" && (err as any).status === 401);
+}
+
+/** The `detail` code of a failed API call, or "" for anything else. */
+export function apiErrorDetail(err: unknown): string {
+  return err && typeof err === "object" ? String((err as any).detail || "") : "";
 }
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
@@ -667,8 +691,20 @@ export const api = {
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
 
   // ── Auth ──────────────────────────────────────────────────────────────────
-  register: (b: any) => req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }),
-  login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }),
+  // Register returns no token: it mails a code, and verifyEmail trades the
+  // code for the session. Mail-sending routes get a longer timeout because
+  // the server waits on SMTP before answering.
+  register: (b: any): Promise<RegisterResult> =>
+    req(`/auth/register`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  verifyEmail: (b: { email: string; code: string }) =>
+    req(`/auth/verify-email`, { method: "POST", body: JSON.stringify(b) }),
+  resendVerification: (b: { email: string; language?: string }): Promise<CodeSent> =>
+    req(`/auth/resend-verification`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  forgotPassword: (b: { email: string; language?: string }): Promise<CodeSent> =>
+    req(`/auth/password/forgot`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  resetPassword: (b: { email: string; code: string; new_password: string }) =>
+    req(`/auth/password/reset`, { method: "POST", body: JSON.stringify(b) }),
+  login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }, 30000),
   // Generous timeout: this is the launch check, and it's the request most
   // likely to hit a serverless cold start.
   me: () => req(`/auth/me`, undefined, 30000),

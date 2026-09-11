@@ -362,7 +362,19 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   const body = bodyOf(init);
   const routePath = path.split("?")[0];
 
-  if (path === "/auth/register" || path === "/auth/login") {
+  if (path === "/auth/register") {
+    profile = { ...profile, email: body.email || profile.email };
+    return { verification_required: true, email: profile.email, resend_after: 60 };
+  }
+  if (path === "/auth/resend-verification" || path === "/auth/password/forgot") {
+    return { ok: true, resend_after: 60 };
+  }
+  // Any six digits pass in preview; there is no mailbox to read one from.
+  if (
+    path === "/auth/login" ||
+    path === "/auth/verify-email" ||
+    path === "/auth/password/reset"
+  ) {
     profile = { ...profile, email: body.email || profile.email };
     return { access_token: "preview-token", user: profile };
   }
