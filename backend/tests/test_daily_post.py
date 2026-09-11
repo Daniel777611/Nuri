@@ -117,12 +117,19 @@ def _cand(url="https://www.facebook.com/groups/momsgroup123/posts/1", text=None,
 
 def _pick(**over):
     data = {
-        "choice": 0, "author_kind": "parent", "headline": "把菠菜打进松饼",
+        "choice": 0, "author_kind": "parent", "fit": "strong", "headline": "把菠菜打进松饼",
         "takeaways": ["把蔬菜打碎做进松饼"], "excerpt": "What I did was blend spinach into pancakes",
         "why_this": "同样是不吃菜", "caution": "",
     }
     data.update(over)
     return data
+
+
+def test_long_english_is_cut_at_a_word_not_mid_word():
+    long = "Your child's tantrums around screens match this parent's experience of more irritability " * 3
+    cut = dp.validate_pick(_pick(why_this=long), [_cand()])["why_this"]
+    assert cut.endswith("…") and len(cut) <= 201
+    assert not cut[:-1].endswith(("irritabil", "experien"))
 
 
 def test_a_parents_post_with_a_verbatim_quote_is_kept():
@@ -143,6 +150,8 @@ def test_a_facebook_summary_is_never_quoted():
 @pytest.mark.parametrize("override", [
     {"author_kind": "professional"},
     {"author_kind": "organization"},
+    {"fit": "weak"},
+    {"fit": ""},
     {"choice": -1},
     {"choice": 5},
     {"headline": ""},

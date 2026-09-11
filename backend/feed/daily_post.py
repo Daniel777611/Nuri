@@ -211,6 +211,8 @@ def _group_name(path: str, title: str, snippet: str) -> str:
     for option in options:
         cleaned = re.sub(r"^\s*Facebook\s+", "", option).strip()
         key = _alnum(cleaned)
+        if key == "facebook":
+            continue
         if len(key) >= 6 and (key == slug_key or key in slug_key or slug_key in key):
             return cleaned[:40]
     return ""
@@ -275,9 +277,17 @@ def to_candidates(results, *, exclude_urls: set[str]) -> list[Candidate]:
 
 # ── What to look for ─────────────────────────────────────────────────────────
 
+#: Onboarding concerns in the words mom groups use for them. Measured: a
+#: search ending in "moms" came back ~90% parent-group posts; the same topic
+#: phrased as "advice parents" returned no posts at all.
 CONCERN_EN = {
-    "sleep": "sleep", "food": "picky eating", "emotion": "tantrums", "development": "development",
-    "parenting": "discipline", "health": "health", "childcare": "daycare", "family": "family",
+    "sleep": "sleep", "food": "picky eating", "emotion": "tantrums", "development": "milestones",
+    "parenting": "discipline", "health": "teething", "childcare": "daycare drop off crying",
+    "family": "sibling jealousy",
+}
+CONCERN_ZH_QUERY = {
+    "sleep": "睡眠 夜醒", "food": "挑食", "emotion": "发脾气", "development": "发育",
+    "parenting": "管教", "health": "长牙", "childcare": "入托 分离焦虑", "family": "二胎 吃醋",
 }
 
 
@@ -321,8 +331,12 @@ def profile_plan(children: list[dict], concerns: list[str], day: date, locale: s
     usable = [c for c in concerns if c in CONCERN_EN]
     concern = usable[day.toordinal() % len(usable)] if usable else ""
     concern_zh = family_store.CONCERN_LABELS.get(concern, "")
-    zh = " ".join(p for p in (age_zh, "宝宝" if age_zh else "", concern_zh or "带娃", "妈妈经验分享") if p)
-    en = " ".join(p for p in (age_en, CONCERN_EN.get(concern, "parenting"), "what worked for us mom") if p)
+    topic_zh, topic_en = CONCERN_ZH_QUERY.get(concern, "带娃"), CONCERN_EN.get(concern, "parenting tips")
+    if concern == "health" and months is not None and months >= 24:
+        # Teething is a baby's health question; a preschooler's is the next cold.
+        topic_zh, topic_en = "生病 发烧", "sick toddler"
+    zh = " ".join(p for p in (age_zh, "宝宝" if age_zh else "", topic_zh, "宝妈") if p)
+    en = " ".join(p for p in (age_en or "toddler", topic_en, "moms") if p)
     if locale == "en":
         shown = " · ".join(p for p in (age_en, CONCERN_EN.get(concern, "")) if p) or "new parents"
     else:
@@ -336,8 +350,10 @@ _QUERY_SYSTEM = """你帮 NURI 为一位家长找今天值得看的"其他家长
 根据家长最近说的话，判断他们眼下最想解决的一个具体育儿问题，再写两条去 Facebook、Instagram、Threads 搜家长帖子的检索词。
 规则：
 - 检索词里不能出现孩子名字、城市、学校、日期、医院等任何能认出这家人的信息，只保留月龄段和问题本身。
-- 用家长自己发帖会用的说法。中文示例："18个月 夜醒 怎么办 妈妈经验"；英文示例："18 month old waking up at night what worked for you"。
-- 中文检索词用简体。每条不超过 12 个词。
+- 用妈妈群里发帖会用的简短说法：几个主题词加上"宝妈"/"moms"，不要写成完整的问句，不要用 advice、what worked 这类词。
+  中文示例："18个月 夜醒 奶睡 宝妈"；英文示例："18 month old waking at night moms"、"toddler jealous of new baby sibling moms"。
+- 英文里用 toddler / baby / kid 这类词点明是孩子，避免 meltdown 这种也常用来说大人的词（改用 tantrum）。
+- 中文检索词用简体。每条不超过 8 个词。
 - 如果最近的话里没有具体的育儿问题（只是打招呼、闲聊），concern 和两条检索词都返回空字符串。
 - concern 用一句不超过 20 个字的话，写这位家长想解决的问题，不含任何可识别信息。{concern_language}"""
 
@@ -442,14 +458,19 @@ _PICK_SYSTEM = """你为 NURI 的每日卡片从候选帖子里选出一条，�
 只能选满足全部条件的一条：
 1. 内容来自家长或照顾者的真实经历，二选一：
    - author_kind = "parent"：发帖人是家长/照顾者，讲自己家的经历或自己怎么处理的。
-   - author_kind = "parent_group_answers"：家长群里有人提问，而文本里能看到其他家长的回答或建议（包括 Facebook 对讨论的摘要）。只有提问、看不到任何回答的，不算。
+   - author_kind = "parent_group_answers"：家长群里有人提问，而文本里能看到其他家长的回答或建议（包括 Facebook 对讨论的摘要）。只有提问、看不到任何回答的，不算。群组必须是家长/育儿相关的群；社区群、买卖群、兴趣群不算。
    营销号、商家、带货、机构、医生/营养师自己的科普、新闻，都不算（author_kind 填 professional / organization / unclear）。
 2. 和这位家长的问题相关，孩子年龄段大体相近。
 3. 与宠物、成人自己、怀旧回忆、抽奖促销无关。
 4. 做法不危险：不推荐药物剂量、偏方、体罚、违背安全睡眠等。有风险但仍可参考时，在 caution 里写一句提醒。
 帖子里混着广告、AI 助手的回答或专家的回答时，只根据其中家长自己的经历或建议来写，忽略其余部分。
-尽量选出最合适的一条：年龄差几个月、问题不完全一样，只要家长的做法对这位家长有参考价值就可以选。
-只有全部候选都与育儿无关、只有提问没有回答、或只能靠危险做法时，choice 才返回 -1，其余字段返回空。
+尽量选出最合适的一条：年龄差几个月没关系，但帖子讲的必须是同一个问题。
+先填 post_topic：只看被选帖子本身，用不超过 12 个字写它实际在讲什么问题（例如"入睡困难"、"辅食添加"），不要参考这位家长的问题。
+再拿 post_topic 和这位家长的问题比，如实填写 fit：
+- "strong"：讲的就是这个问题；
+- "partial"：问题相近（例如同样是入睡难，只是场景不同），做法能直接借鉴；
+- "weak"：只是年龄段相同，问题不同（例如问的是睡眠却讲辅食，问的是分离焦虑却讲找托育）。
+只有全部候选都与育儿无关、只有提问没有回答、问题都对不上、或只能靠危险做法时，choice 才返回 -1，其余字段返回空。
 
 写卡片的规则（choice 不为 -1 时）：
 - 只根据被选帖子的文本写，不能补充帖子里没有的做法、结果或细节。
@@ -473,13 +494,20 @@ _PICK_FORMAT = {
                     "type": "string",
                     "enum": ["parent", "parent_group_answers", "professional", "organization", "unclear", ""],
                 },
+                # Before `fit` on purpose: the model writes what the post is
+                # about before grading it, which keeps the grade honest.
+                "post_topic": {"type": "string"},
+                "fit": {"type": "string", "enum": ["strong", "partial", "weak", ""]},
                 "headline": {"type": "string"},
                 "takeaways": {"type": "array", "items": {"type": "string"}},
                 "excerpt": {"type": "string"},
                 "why_this": {"type": "string"},
                 "caution": {"type": "string"},
             },
-            "required": ["choice", "author_kind", "headline", "takeaways", "excerpt", "why_this", "caution"],
+            "required": [
+                "choice", "author_kind", "post_topic", "fit", "headline", "takeaways", "excerpt",
+                "why_this", "caution",
+            ],
             "additionalProperties": False,
         },
     },
@@ -489,10 +517,19 @@ _PICK_FORMAT = {
 #: Who may stand behind "other parents might handle it like this": a parent
 #: telling their own story, or a parent group answering one of its members.
 PARENT_KINDS = ("parent", "parent_group_answers")
+ACCEPTED_FITS = ("strong", "partial")
 
 
 def _trim(value, limit: int) -> str:
-    return normalize_space(str(value or ""))[:limit]
+    """Whitespace-normalised and at most `limit` characters, cut at a word or
+    punctuation boundary so English never ends mid-word. English runs about
+    three times the characters of the same sentence in Chinese."""
+    text = normalize_space(str(value or ""))
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind(" "), *(cut.rfind(p) for p in "，。；、,.;"))
+    return (cut[:boundary] if boundary > limit // 2 else cut).rstrip(" ,，;；") + "…"
 
 
 #: Where a search snippet stops being the post: its own truncation mark, and
@@ -527,14 +564,18 @@ def validate_pick(data: dict, candidates: list[Candidate]) -> Optional[dict]:
     author_kind = data.get("author_kind")
     if author_kind not in PARENT_KINDS:
         return None
+    # Same age, different problem is not "how other parents handle this".
+    # An empty day reads better than a card about something else.
+    if data.get("fit") not in ACCEPTED_FITS:
+        return None
     candidate = candidates[choice]
     # "Answers in a parent group" is a claim about where the post lives, and
     # only a group URL can back it; a page's post labelled that way is a page
     # talking, which is exactly what this card must not pass off as parents.
     if author_kind == "parent_group_answers" and "/groups/" not in candidate.url:
         return None
-    headline = _trim(data.get("headline"), 40)
-    takeaways = [_trim(t, 80) for t in (data.get("takeaways") or []) if _trim(t, 80)][:3]
+    headline = _trim(data.get("headline"), 60)
+    takeaways = [_trim(t, 120) for t in (data.get("takeaways") or []) if _trim(t, 120)][:3]
     if not headline or not takeaways:
         return None
     excerpt = _trim(data.get("excerpt"), 600)
@@ -549,8 +590,8 @@ def validate_pick(data: dict, candidates: list[Candidate]) -> Optional[dict]:
         "headline": headline,
         "takeaways": takeaways,
         "excerpt": excerpt,
-        "why_this": _trim(data.get("why_this"), 120),
-        "caution": _trim(data.get("caution"), 120),
+        "why_this": _trim(data.get("why_this"), 200),
+        "caution": _trim(data.get("caution"), 200),
     }
 
 
@@ -561,12 +602,15 @@ PICK_ATTEMPTS = 3
 
 def pick_post(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    basis: str = "conversation",
 ) -> Optional[dict]:
     remaining = list(candidates)
     for _ in range(PICK_ATTEMPTS):
         if not remaining:
             return None
-        data = _ask_pick(remaining, concern=concern, child_age_context=child_age_context, locale=locale)
+        data = _ask_pick(
+            remaining, concern=concern, child_age_context=child_age_context, locale=locale, basis=basis,
+        )
         picked = validate_pick(data, remaining)
         if picked:
             return picked
@@ -580,8 +624,17 @@ def pick_post(
     return None
 
 
+#: Said to the pick model when the search came from the profile alone: the
+#: card must not claim to know what the parent is going through.
+_PROFILE_BASIS_NOTE = (
+    "注意：我们不知道这位家长最近具体在担心什么，下面只是孩子的年龄段和家长注册时选的关注方向。"
+    "why_this 只能写成“适合 X 岁/月龄孩子的家长参考”这类话，不能说家长正在做什么、遇到了什么或在找什么。"
+)
+
+
 def _ask_pick(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    basis: str = "conversation",
 ) -> dict:
     blocks = []
     for index, c in enumerate(candidates):
@@ -591,7 +644,7 @@ def _ask_pick(
             + f"\n标题：{c.title}\n文本：{c.text[:900]}"
         )
     prompt = (
-        f"这位家长的问题：{concern}\n"
+        (f"{_PROFILE_BASIS_NOTE}\n关注方向：{concern}\n" if basis == "profile" else f"这位家长的问题：{concern}\n")
         + (f"{child_age_context}\n" if child_age_context else "")
         + "\n候选帖子：\n\n" + "\n\n".join(blocks)
     )
@@ -916,6 +969,7 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_post(
             candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
+            basis=plan.basis,
         ))
         if pick:
             return build_card(pick, plan, locale=locale), plan
