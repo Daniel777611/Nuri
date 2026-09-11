@@ -261,8 +261,21 @@ NURI_RESPONSE_FORMAT = {
 REPLY_REASONING_EFFORT = os.getenv("REPLY_REASONING_EFFORT", "low")
 
 
-def reply_model_kwargs() -> dict:
-    return {"reasoning_effort": REPLY_REASONING_EFFORT} if REPLY_REASONING_EFFORT else {}
+def reply_model_kwargs(cache_key: Optional[str] = None) -> dict:
+    kwargs = {"reasoning_effort": REPLY_REASONING_EFFORT} if REPLY_REASONING_EFFORT else {}
+    if cache_key:
+        # Routes one parent's turns to the same cache: their prompts share
+        # everything up to the latest message, and without a key the provider
+        # spreads requests across machines that each only hold the global part.
+        kwargs["prompt_cache_key"] = cache_key
+    return kwargs
+
+
+def prompt_cache_key(user_id: Optional[str]) -> Optional[str]:
+    """A stable per-account cache key that doesn't hand the provider our ids."""
+    if not user_id:
+        return None
+    return "nuri-" + hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:24]
 
 
 NURI_FALLBACK = {
@@ -326,10 +339,9 @@ def nuri_messages(
     the turn metrics keep `history_chars` meaning what it has always meant.
 
     The system prompt is emitted as up to three messages rather than one
-    concatenated string, ordered global -> per-family -> per-turn. That
-    boundary is the only lever on the provider's prefix cache, and merging them
-    back into one string would put a block that changes every turn in front of
-    2,100 characters that never change. See `context_budget`.
+    concatenated string: global and per-family lead, and the per-turn block
+    goes after the replayed history, directly before the current message (see
+    `_assemble`). That order is the only lever on the provider's prefix cache.
 
     `system_prompt` is the four-model pipeline's seam: when the dialogue model
     has already rendered its directive set into a finished system message, the
@@ -416,23 +428,41 @@ def _assemble(
         # nothing.
         # Newest first: the latest message decides the script when it is long
         # enough to read, and the earlier ones only stand in when it is not.
-        system = f"{system}\n\n{exemplars.guard_for(said)}"
+        register_rule = exemplars.guard_for(said)
     elif exemplars.GLOBAL_CEILING:
         # Also in the parent's language: this is the weaker of the two register
         # instruments, and one written in a language the reply is not being
         # written in is weaker again.
-        system = f"{system}\n\n{exemplars.ceiling_rule_for(said)}"
-    # Three messages, most stable first. Splitting rather than concatenating is
-    # the entire caching change: the first is identical across all traffic, the
-    # second across one family's turns, and only the third moves per question.
+        register_rule = exemplars.ceiling_rule_for(said)
+    else:
+        register_rule = ""
+
+    # Order is the whole caching mechanism: the provider bills the longest
+    # prefix it has seen before at a tenth of the price, and stops at the first
+    # byte that differs. So, most stable first:
+    #
+    #   global system    identical for all traffic
+    #   per-family       holds still while one parent talks
+    #   exemplar pairs   stable across a run of turns on one topic
+    #   replayed history append-only, window start snapped (context_budget)
+    #   per-turn system  rules, retrieval, clock, register rule, gaps
+    #   current message
+    #
+    # Everything this turn pulled in sits after the history, directly before
+    # the question. It used to sit in front of the history, and the clock in it
+    # changes every minute, so no reply ever had its history cached: measured
+    # in production, only the first 2,816-4,864 of ~7,000 tokens were cached
+    # even for the same parent a minute later.
     msgs = [{"role": "system", "content": system}]
-    for block in (per_family, per_turn):
-        if block:
-            msgs.append({"role": "system", "content": block})
+    if per_family:
+        msgs.append({"role": "system", "content": per_family})
     shots = exemplars.as_messages(chosen)
     msgs.extend(shots)
     recent = context_budget.recent_messages(
         history, count=window or context_budget.RECENT_MESSAGES,
+    )
+    current_index = (
+        len(recent) - 1 if recent and recent[-1].get("role") == "user" else None
     )
     # Re-send at most one image to the model: the newest attachment still in
     # the active history window.  This supports follow-up questions about the
@@ -446,26 +476,42 @@ def _assemble(
         ),
         None,
     )
-    if latest_image_index is not None:
-        msgs.append({"role": "system", "content": IMAGE_SAFETY_GUARD})
+    conversation = []
     for index, m in enumerate(recent):
         content = m.get("text") or ""
         if temporal_context is not None:
+            is_current = index == current_index
+            # History carries its send time only; its age moves every turn
+            # and would break the cache (see temporal.history_gap_note).
             content = temporal.annotate_message(
                 content,
                 m.get("created_at"),
                 temporal_context,
-                current=(index == len(recent) - 1 and m.get("role") == "user"),
+                current=is_current,
+                with_age=is_current,
             )
         if index == latest_image_index:
             content = image_input.openai_user_content(
                 content,
                 m.get("image_base64"),
             )
-        msgs.append({
+        conversation.append({
             "role": "user" if m["role"] == "user" else "assistant",
             "content": content,
         })
+
+    replayed = recent[:current_index] if current_index is not None else recent
+    tail = [
+        per_turn,
+        temporal.history_gap_note(replayed, temporal_context) if temporal_context else "",
+        IMAGE_SAFETY_GUARD if latest_image_index is not None else "",
+        register_rule,
+    ]
+    tail_text = "\n\n".join(part for part in tail if part)
+    if tail_text:
+        at = current_index if current_index is not None else len(conversation)
+        conversation.insert(at, {"role": "system", "content": tail_text})
+    msgs.extend(conversation)
     return msgs, len(shots)
 
 
@@ -949,6 +995,7 @@ def nuri_reply_sync(
     history_window: Optional[int] = None,
     state_ctx: str = "",
     temporal_context: Optional[temporal.TemporalContext] = None,
+    cache_key: Optional[str] = None,
 ) -> dict:
     if not oai:
         return {
@@ -968,7 +1015,7 @@ def nuri_reply_sync(
     try:
         resp = oai.chat.completions.create(
             model=REPLY_MODEL, messages=msgs, response_format=NURI_RESPONSE_FORMAT,
-            **reply_model_kwargs(),
+            **reply_model_kwargs(cache_key),
         )
         if metrics:
             metrics.mark("model_ms", started)
@@ -1071,6 +1118,7 @@ async def nuri_reply_stream(
     history_window: Optional[int] = None,
     state_ctx: str = "",
     temporal_context: Optional[temporal.TemporalContext] = None,
+    cache_key: Optional[str] = None,
 ):
     """Yield ("delta", chunk) as the reply text arrives, then ("final", reply)."""
     if not aoai:
@@ -1097,7 +1145,7 @@ async def nuri_reply_stream(
     try:
         stream = await aoai.chat.completions.create(
             model=REPLY_MODEL, messages=msgs, response_format=NURI_RESPONSE_FORMAT, stream=True,
-            **reply_model_kwargs(),
+            **reply_model_kwargs(cache_key),
             # Without this the streamed response reports no token usage at all.
             stream_options={"include_usage": True},
         )

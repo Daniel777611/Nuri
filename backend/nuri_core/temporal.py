@@ -102,8 +102,15 @@ def message_time_annotation(
     context: TemporalContext,
     *,
     current: bool = False,
+    with_age: bool = True,
 ) -> str:
-    """Render a trusted absolute local timestamp and server-computed age."""
+    """Render a trusted absolute local timestamp and server-computed age.
+
+    `with_age=False` drops the "距本轮…" part. The reply prompt uses that for
+    replayed history: an age changes every turn, and a label that changes
+    every turn in front of the history makes the whole history uncacheable.
+    The gaps move to `history_gap_note`, at the end of the prompt.
+    """
 
     parsed = parse_created_at(created_at)
     if parsed is None:
@@ -112,12 +119,39 @@ def message_time_annotation(
     kind = "本轮消息时间" if current else "历史消息时间"
     local_today = local.date()
     local_yesterday = local_today - timedelta(days=1)
-    return (
+    label = (
         f"{kind}：{local.strftime('%Y-%m-%d %H:%M:%S')} "
         f"{context.timezone_name}；该消息中的今天={local_today.isoformat()}，"
-        f"昨天={local_yesterday.isoformat()}；"
-        f"{_duration_label(context.server_utc - parsed)}"
+        f"昨天={local_yesterday.isoformat()}"
     )
+    return f"{label}；{_duration_label(context.server_utc - parsed)}" if with_age else label
+
+
+def history_gap_note(history: Iterable[dict], context: TemporalContext) -> str:
+    """How long ago the replayed history happened, for the end of the prompt.
+
+    The two gaps a reply actually turns on: how long since the parent last
+    wrote (a parent back after three days is not mid-conversation), and how far
+    back the replayed window reaches. `history` is the replay without the
+    current message.
+    """
+
+    messages = [m for m in (history or []) if (m.get("text") or "").strip()]
+    lines = []
+    previous_user = next(
+        (m for m in reversed(messages) if m.get("role") == "user"), None,
+    )
+    if previous_user is not None:
+        parsed = parse_created_at(previous_user.get("created_at"))
+        if parsed is not None:
+            lines.append(f"- 家长上一条消息：{_duration_label(context.server_utc - parsed)}")
+    if messages:
+        parsed = parse_created_at(messages[0].get("created_at"))
+        if parsed is not None:
+            lines.append(f"- 上面回放的最早一条消息：{_duration_label(context.server_utc - parsed)}")
+    if not lines:
+        return ""
+    return "【消息间隔（服务器计算）】\n" + "\n".join(lines)
 
 
 def annotate_message(
@@ -126,6 +160,7 @@ def annotate_message(
     context: TemporalContext,
     *,
     current: bool = False,
+    with_age: bool = True,
 ) -> str:
     """Prefix one conversation message with its non-user-editable time label."""
 
@@ -136,7 +171,9 @@ def annotate_message(
     # one trusted label into two contradictory-looking labels.
     if text.lstrip().startswith(("[历史消息时间：", "[本轮消息时间：")):
         return text
-    annotation = message_time_annotation(created_at, context, current=current)
+    annotation = message_time_annotation(
+        created_at, context, current=current, with_age=with_age,
+    )
     return f"[{annotation}]\n{text}"
 
 
@@ -189,5 +226,6 @@ def prompt_block(context: TemporalContext) -> str:
         "- 每条消息标注已经给出该消息自己的“今天”和“昨天”绝对日期，直接使用，不自行做日期换算。\n"
         "- “昨天”表示用户本地日历的前一日，不等同于不足24小时。\n"
         "- 摘要或记忆里若仍有未附绝对日期的“昨天、刚才、前几天”，不得把它当成本轮时间；应结合有时间标注的原消息，无法确定就明确说明并询问。\n"
-        "- 不要因为两条消息在提示词中相邻，就推断它们在现实中连续发生；时长以标注为准。"
+        "- 不要因为两条消息在提示词中相邻，就推断它们在现实中连续发生；时长以标注为准。\n"
+        "- 回放的历史消息只标注发送时间；距本轮多久，以“消息间隔”为准，或用本轮时间减去发送时间。"
     )

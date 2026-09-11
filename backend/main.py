@@ -953,19 +953,30 @@ class _TurnMetrics:
         self.row.update(fields)
 
     def record_prompt(self, msgs: list[dict], blocks: dict, *, fewshot: int = 0) -> None:
-        system = msgs[0]["content"] if msgs else ""
-        # The few-shot pairs sit between the system message and the real
-        # conversation. Counted apart from it because history_chars is the
-        # number the history window is tuned against, and a block that grows
-        # with the exemplar set would make that reading wrong.
-        shots = msgs[1:1 + fewshot]
-        history = msgs[1 + fewshot:]
+        def chars(message: dict) -> int:
+            content = message.get("content") or ""
+            # An image turn's content is a list of parts; count its text.
+            if isinstance(content, list):
+                return sum(len(p.get("text") or "") for p in content if isinstance(p, dict))
+            return len(content)
+
+        # Layout (dialogue_reply._assemble): leading system messages, then the
+        # few-shot pairs, then the conversation with the per-turn system block
+        # just before the current message. The pairs used to be counted as
+        # msgs[1:1+fewshot], which was the family and per-turn blocks whenever
+        # those existed — so fewshot_chars had been measuring the wrong thing.
+        leading = next(
+            (i for i, m in enumerate(msgs) if m.get("role") != "system"), len(msgs),
+        )
+        shots = msgs[leading:leading + fewshot]
+        history = [m for m in msgs[leading + fewshot:] if m.get("role") != "system"]
         self.row.update({
-            "system_chars": len(system),
+            # Every system message, wherever it sits.
+            "system_chars": sum(chars(m) for m in msgs if m.get("role") == "system"),
             "fewshot_msgs": len(shots),
-            "fewshot_chars": sum(len(m.get("content") or "") for m in shots),
+            "fewshot_chars": sum(chars(m) for m in shots),
             "history_msgs": len(history),
-            "history_chars": sum(len(m.get("content") or "") for m in history),
+            "history_chars": sum(chars(m) for m in history),
             "memory_chars": len(blocks.get("memory") or ""),
             "style_chars": len(blocks.get("style") or ""),
             "internal_chars": len(blocks.get("internal") or ""),
@@ -5432,6 +5443,7 @@ async def post_message(
                     rc.internal, rc.sources, metrics, system_prompt, history_window,
                     rc.state,
                     temporal_context=turn.temporal,
+                    cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
                 )
             )
             quick_replies = reply.get("quick_replies", [])
@@ -5545,6 +5557,7 @@ async def post_message_stream(
                     rc.internal, rc.sources, metrics, system_prompt, history_window,
                     rc.state,
                     temporal_context=turn.temporal,
+                    cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
                 ):
                     if kind == "delta":
                         yield _sse({"type": "delta", "text": value})

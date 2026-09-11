@@ -197,7 +197,12 @@ def test_nuri_messages_keeps_history_times_and_adds_temporal_system_block():
     assert any("【本轮时间语义（服务器生成，必须遵守）】" in item for item in systems)
     assert len(conversation) == 3
     assert "2026-08-21 19:30:00 America/Chicago" in conversation[0]["content"]
-    assert "距本轮1天3小时" in conversation[0]["content"]
+    # Replayed history carries its send time but not its age: the age moves
+    # every turn and would make the history uncacheable. The gap is stated
+    # once, in the per-turn block right before the question.
+    assert "距本轮" not in conversation[0]["content"]
+    assert built[-2]["role"] == "system"
+    assert "家长上一条消息：距本轮1天3小时" in built[-2]["content"]
     assert "2026-08-21 19:31:00 America/Chicago" in conversation[1]["content"]
     assert "本轮消息时间：2026-08-22 22:30:00 America/Chicago" in conversation[2]["content"]
     assert conversation[0]["content"].endswith("这件事发生在昨天。")

@@ -48,6 +48,14 @@ CHARS_PER_TOKEN = float(os.getenv("CONTEXT_CHARS_PER_TOKEN", "2.6"))
 RECENT_MESSAGES = int(os.getenv("CONTEXT_RECENT_MESSAGES", "8"))
 RECENT_TOKEN_LIMIT = int(os.getenv("CONTEXT_RECENT_TOKEN_LIMIT", "3000"))
 
+#: The window's start moves in steps of this many messages, not one message a
+#: turn. A window that slides every turn changes its first message every turn,
+#: and the provider's cache matches prefixes — so the whole replayed history was
+#: paid in full on every reply once a conversation passed eight messages.
+#: Snapping the start keeps it fixed for several turns at a time, at the cost of
+#: replaying up to STEP-1 extra (mostly cached) messages. 1 restores sliding.
+WINDOW_STEP = max(1, int(os.getenv("CONTEXT_WINDOW_STEP", "6")))
+
 #: The rolling summary that carries everything older than the recent window.
 STATE_TOKEN_LIMIT = int(os.getenv("CONTEXT_STATE_TOKEN_LIMIT", "600"))
 
@@ -139,14 +147,23 @@ def recent_messages(
     history: list[dict],
     count: int = RECENT_MESSAGES,
     token_limit: int = RECENT_TOKEN_LIMIT,
+    step: int = WINDOW_STEP,
 ) -> list[dict]:
     """The tail of the conversation, under both ceilings.
+
+    At least `count` messages, and the start snapped to a multiple of `step`
+    counted from the beginning of the conversation, so consecutive turns share
+    the same first message (see WINDOW_STEP).
 
     Walks backwards so the newest survive, and keeps the current user message
     even when it alone exceeds the budget — a turn that drops the question it is
     answering is not a cheaper turn, it is a broken one.
     """
-    tail = [m for m in (history or []) if (m.get("text") or "").strip()][-count:]
+    visible = [m for m in (history or []) if (m.get("text") or "").strip()]
+    start = max(0, len(visible) - count)
+    if step > 1:
+        start = (start // step) * step
+    tail = visible[start:]
     if not tail:
         return []
     kept: list[dict] = []

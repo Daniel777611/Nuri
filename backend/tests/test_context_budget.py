@@ -27,8 +27,20 @@ def msgs(*pairs) -> list[dict]:
 def test_only_the_last_few_messages_survive():
     history = msgs(*[("user", f"m{i}") for i in range(30)])
     kept = cb.recent_messages(history)
-    assert len(kept) == cb.RECENT_MESSAGES
+    assert cb.RECENT_MESSAGES <= len(kept) < cb.RECENT_MESSAGES + cb.WINDOW_STEP
     assert kept[-1]["text"] == "m29"
+
+
+def test_the_window_start_holds_still_for_several_turns():
+    """A window that slides one message a turn changes its first message every
+    turn, and the provider's prefix cache then covers none of the history."""
+    starts = []
+    for n in range(20, 32):
+        history = msgs(*[("user", f"m{i}") for i in range(n)])
+        starts.append(cb.recent_messages(history)[0]["text"])
+    # 12 consecutive turns, but the first replayed message changed only twice.
+    assert len(set(starts)) <= 3
+    assert cb.recent_messages(msgs(*[("user", f"m{i}") for i in range(30)]), step=1)[0]["text"] == "m22"
 
 
 def test_the_token_ceiling_overrides_the_message_count():
@@ -190,13 +202,38 @@ def test_the_seam_never_reaches_the_model():
 
 def test_a_plain_system_prompt_still_works():
     """An older caller passing one string has no seams and should land in one
-    message, exactly as before."""
+    leading message, as before."""
     built, _ = nuri_messages(msgs(("user", "hi")), system_prompt="just one block")
-    systems = [m["content"] for m in built if m["role"] == "system"]
-    # One message, not three. It carries the exemplar guard appended after it,
-    # which is unchanged behaviour and not part of what is being asserted here.
-    assert len(systems) == 1
-    assert systems[0].startswith("just one block")
+    assert built[0] == {"role": "system", "content": "just one block"}
+    # Anything else is the per-turn block (here, the register rule), which now
+    # travels just before the question rather than inside the leading message.
+    assert all(m["content"] != "just one block" for m in built[1:])
+    assert built[-1] == {"role": "user", "content": "hi"}
+
+
+def _turn(history, **kwargs):
+    return nuri_messages(
+        history,
+        system_prompt=CACHE_SEAM.join(("PERSONA", "FAMILY", "RULES FOR THIS TURN")),
+        **kwargs,
+    )[0]
+
+
+def test_the_next_turn_repeats_this_turns_prompt_up_to_the_new_exchange():
+    """The point of the order: everything but the per-turn block and the new
+    exchange is byte-identical to the previous turn, so it bills as cached."""
+    history = msgs(*[(("user" if i % 2 == 0 else "ai"), f"第{i}句话") for i in range(9)])
+    first = _turn(history)
+    second = _turn(history + msgs(("ai", "第9句话"), ("user", "第10句话")))
+    # The previous turn's prompt minus its per-turn block and current message
+    # is a prefix of this turn's prompt.
+    shared = first[:-2]
+    assert second[: len(shared)] == shared
+    # The per-turn block sits directly before the question, not before history.
+    assert second[-2]["role"] == "system"
+    assert second[-2]["content"].startswith("RULES FOR THIS TURN")
+    assert second[-1]["content"] == "第10句话"
+    assert [m["content"] for m in second[:2]] == ["PERSONA", "FAMILY"]
 
 
 def test_empty_sections_do_not_shift_the_boundary():

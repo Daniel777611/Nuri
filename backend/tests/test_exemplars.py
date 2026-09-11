@@ -346,9 +346,13 @@ def test_injected_between_system_and_history():
     msgs, fewshot = nuri_messages(history)
     assert msgs[0]["role"] == "system"
     assert fewshot == 4
-    assert exemplars.GUARD in msgs[0]["content"]
+    # The guard travels in the per-turn block, directly before the question:
+    # it changes with the topic, and in the leading message it would break the
+    # cache for everything after it.
+    assert exemplars.GUARD not in msgs[0]["content"]
+    assert msgs[-2]["role"] == "system" and exemplars.GUARD in msgs[-2]["content"]
     # The real conversation follows the pairs, in order, unchanged.
-    assert [m["content"] for m in msgs[1 + fewshot:]] == \
+    assert [m["content"] for m in msgs[1 + fewshot:] if m["role"] != "system"] == \
            ["你好", "你好，我是 NURI", "孩子講錯字，我要一直糾正他嗎？"]
 
 
@@ -359,8 +363,10 @@ def test_no_exemplars_leaves_the_prompt_untouched():
     history = [{"role": "user", "text": "你們公司在哪裡？"}]
     msgs, fewshot = nuri_messages(history)
     assert fewshot == 0
-    assert exemplars.GUARD not in msgs[0]["content"]
-    assert len(msgs) == 2
+    assert all(exemplars.GUARD not in m["content"] for m in msgs)
+    # The leading system message, at most the per-turn block, and the question.
+    assert [m["role"] for m in msgs][0] == "system" and msgs[-1]["role"] == "user"
+    assert len(msgs) <= 3
 
 
 def test_selection_keys_off_the_latest_parent_message():
