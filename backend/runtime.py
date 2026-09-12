@@ -97,9 +97,11 @@ SMTP_HOST        = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT        = int(os.getenv("SMTP_PORT", "587"))
 # SMTP_USERNAME is accepted too: it's the name most provider docs use, and the
 # one the deployed environment was first configured with.
-SMTP_USER        = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
-SMTP_PASSWORD    = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM        = os.getenv("SMTP_FROM", "")
+SMTP_USER        = (os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")).strip()
+# Google shows an app password as four groups ("abcd efgh ijkl mnop") and a
+# dashboard paste can carry a trailing newline; neither is part of the password.
+SMTP_PASSWORD    = "".join(os.getenv("SMTP_PASSWORD", "").split())
+SMTP_FROM        = os.getenv("SMTP_FROM", "").strip()
 
 # The SDK defaults (timeout=600s, max_retries=2) let a single stalled call hold
 # a worker thread for ~30 minutes, which starves the shared thread pool and

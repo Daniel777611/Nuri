@@ -294,6 +294,19 @@ def test_a_mail_failure_is_reported_and_does_not_start_the_cooldown(env, monkeyp
     assert not env.db.tables.get("email_codes")
 
 
+def test_a_mail_failure_log_names_the_reason_but_not_the_servers_message(env, monkeypatch, capsys):
+    import smtplib
+
+    def rejected(*_a, **_k):
+        raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted for parent@realmail.com")
+
+    monkeypatch.setattr(email_verification, "send_code", rejected)
+    assert _register(env).status_code == 503
+    out = capsys.readouterr().out
+    assert "error=SMTPAuthenticationError smtp_code=535" in out
+    assert "not accepted" not in out
+
+
 def test_a_password_past_bcrypts_limit_is_a_422_not_a_500(env):
     res = _register(env, password="密" * 30)
     assert res.status_code == 422

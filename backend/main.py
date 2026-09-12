@@ -1185,6 +1185,9 @@ async def _send_email_code(
             429, "CODE_RATE_LIMITED", headers={"Retry-After": str(exc.retry_after)},
         ) from exc
     except Exception as exc:
+        # The parent sees the same "couldn't send" message, but this is the
+        # database, not the mail account — say so in the log.
+        print(f"[error] email_code_issue_failed error={type(exc).__name__}")
         logger.error("email_code_issue_failed", extra={
             "event": "email_code_issue_failed", "error_type": type(exc).__name__,
         })
@@ -1198,6 +1201,13 @@ async def _send_email_code(
             await anyio.to_thread.run_sync(lambda: email_verification.discard_code(sb, row_id))
         except Exception:
             pass
+        # Printed as well as logged: no handler formats `extra`, so the Vercel
+        # log showed the event name with no reason. Class and SMTP reply code
+        # only — the server's message can echo the account name.
+        smtp_code = getattr(exc, "smtp_code", None)
+        print(f"[error] email_code_send_failed purpose={purpose} "
+              f"error={type(exc).__name__} smtp_code={smtp_code} "
+              f"smtp_user_set={bool(SMTP_USER)} smtp_password_len={len(SMTP_PASSWORD)}")
         logger.error("email_code_send_failed", extra={
             "event": "email_code_send_failed", "purpose": purpose,
             "error_type": type(exc).__name__,
