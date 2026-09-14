@@ -40,5 +40,15 @@
       "source": "/(.*)",
       "destination": "/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/push/dispatch",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/internal/care/generate",
+      "schedule": "0 15 * * *"
+    }
   ]
 }

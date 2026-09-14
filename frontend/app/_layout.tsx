@@ -14,6 +14,7 @@ import { StatusBar } from "expo-status-bar";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { I18nProvider } from "@/src/i18n";
 import { useActivityHeartbeat } from "@/src/useActivityHeartbeat";
+import { usePushBridge } from "@/src/usePushBridge";
 
 LogBox.ignoreAllLogs(true);
 
@@ -31,6 +32,7 @@ export default function RootLayout() {
     (iconFontsLoaded || Boolean(iconFontsError)) &&
     (textFontsLoaded || Boolean(textFontsError));
   useActivityHeartbeat();
+  usePushBridge();
 
   useEffect(() => {
     if (fontsReady) {

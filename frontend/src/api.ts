@@ -185,6 +185,33 @@ export type RecommendationEventInput = {
   reason?: RecommendationFeedbackReason;
 };
 
+// Sent by the native iOS shell through the `nuri:apns-token` event and
+// forwarded here unchanged in meaning; field names follow the backend.
+export type PushDeviceRegistration = {
+  installation_id: string;
+  platform: "ios";
+  apns_token: string;
+  apns_environment: "sandbox" | "production";
+  bundle_id: string;
+  app_version?: string;
+  build_number?: string;
+  locale?: string;
+  time_zone?: string;
+  permission_status: "not_determined" | "denied" | "authorized" | "provisional";
+};
+
+export type NotificationDetail = {
+  id: string;
+  type: string;
+  title: string;
+  content: string;
+  target:
+    | { kind: "learning_card"; id: string; route: string; title: string; summary: string;
+        topic_label: string; type_label: string; cta: string }
+    | { kind: string };
+  created_at?: string;
+};
+
 export type MainConversationPreview = {
   has_conversation: boolean;
   session_id: string | null;
@@ -279,11 +306,38 @@ async function getToken(): Promise<string | null> {
   return (await storage.secureGet(TOKEN_KEY, "")) || null;
 }
 
+// The iOS install id the current session registered for push, written by
+// src/usePushBridge.ts. Only a page running inside the native shell ever has
+// one, so for every browser visitor the sign-out path below costs nothing.
+export const PUSH_INSTALLATION_KEY = "nuri.push.installation_id";
+
+// Sign-out must retire this phone's push registration while the session that
+// owns it is still valid, or the phone keeps receiving the previous account's
+// notifications. Bounded, and never allowed to block signing out: if it fails,
+// the next login on this phone re-registers the same install id and overwrites
+// the stale owner server-side.
+async function deactivateStoredPushInstallation(): Promise<void> {
+  const installationId = await storage.getItem<string | null>(PUSH_INSTALLATION_KEY, null);
+  if (!installationId) return;
+  try {
+    await req(
+      `/mobile/push-devices/${encodeURIComponent(installationId)}`,
+      { method: "DELETE" },
+      2500,
+    );
+  } catch {
+    // Deliberately ignored; see above.
+  }
+  await storage.removeItem(PUSH_INSTALLATION_KEY);
+}
+
 export const auth = {
   TOKEN_KEY,
   setToken: (t: string) => storage.secureSet(TOKEN_KEY, t),
-  clearToken: () =>
-    Promise.all([storage.secureRemove(TOKEN_KEY), storage.removeItem(ONBOARDED_KEY)]),
+  clearToken: async () => {
+    await deactivateStoredPushInstallation();
+    return Promise.all([storage.secureRemove(TOKEN_KEY), storage.removeItem(ONBOARDED_KEY)]);
+  },
   getToken,
   setOnboarded: (done: boolean) => storage.setItem(ONBOARDED_KEY, done),
   getOnboarded: () => storage.getItem(ONBOARDED_KEY, false),
@@ -346,6 +400,9 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000)
 
   const check = async (res: Response) => {
     if (!res.ok) throw new ApiError(res.status, path, await res.text());
+    // A 204 has no body; parsing one threw, which made a successful DELETE
+    // look like a failure to every caller.
+    if (res.status === 204) return undefined;
     return res.json();
   };
 
@@ -708,6 +765,18 @@ export const api = {
   getOrStartMainSession: () =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
+  // iOS remote push. The native shell never calls these: it hands the APNs
+  // token to this page, and the page registers it with its own session, so the
+  // login token never leaves the web layer.
+  registerPushDevice: (b: PushDeviceRegistration) =>
+    req<{ device_id: string; active: boolean; updated_at: string }>(
+      `/mobile/push-devices`,
+      { method: "POST", body: JSON.stringify(b) },
+    ),
+  deactivatePushDevice: (installationId: string) =>
+    req(`/mobile/push-devices/${encodeURIComponent(installationId)}`, { method: "DELETE" }),
+  getNotification: (id: string) =>
+    req<NotificationDetail>(`/notifications/${encodeURIComponent(id)}`),
   // A model turn can legitimately run past the 12s default. Aborting early
   // doesn't stop the backend, it just makes users resend and stack more work,
   // so this has to stay above the backend's own OpenAI timeout budget.

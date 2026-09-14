@@ -634,4 +634,10 @@ export const en: Record<string, string> = {
   "无法读取图片，请重试": "The photo could not be read. Please try again.",
   "发送": "Send",
   "语音输入": "Voice input",
+  // ── Push notification detail ───────────────────────────────────────────────
+  "来自 NURI": "From NURI",
+  "这条通知不存在或已过期": "This notification no longer exists.",
+  "回到首页": "Go to home",
+  "加载失败，请稍后再试": "Couldn't load. Please try again.",
+  "为你挑的一篇内容": "Picked for you",
 };
