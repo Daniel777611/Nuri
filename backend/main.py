@@ -56,7 +56,8 @@ from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import image_input as core_image_input
 from backend import (
-    email_verification, llm_usage, locales, mailer, memstore, runtime, stores, usage_dashboard,
+    email_verification, llm_usage, locales, mailer, memstore, openai_billing, runtime, stores,
+    usage_dashboard,
 )
 from backend.feed import daily_post as feed_daily_post
 from backend.feed import delivery as feed_delivery
@@ -6838,6 +6839,36 @@ async def admin_usage_quota(days: int = 60, _: None = Depends(_require_admin)):
             turn_logs, call_logs, since=since, now=now, truncated=truncated,
         ),
     }
+
+
+@app.get("/admin/usage/costs")
+async def admin_usage_costs(
+    days: int = 30, refresh: bool = False, _: None = Depends(_require_admin),
+):
+    """What OpenAI billed the whole organization, by UTC day, project and line
+    item — every environment and key, including calls nobody logged — next to
+    this database's turns and logged tokens. Needs OPENAI_ADMIN_KEY."""
+    key = openai_billing.admin_key()
+    if not key:
+        return {"configured": False}
+    days = max(1, min(days, openai_billing.MAX_DAYS))
+    now = datetime.now(timezone.utc)
+    try:
+        raw = await openai_billing.fetch_openai(key, days=days, now=now, refresh=refresh)
+    except openai_billing.BillingError as e:
+        raise HTTPException(502, str(e))
+    turns, logged, truncated = None, None, []
+    sb = _get_supabase()
+    if sb:
+        try:
+            turns, logged, truncated = await anyio.to_thread.run_sync(
+                lambda: openai_billing.fetch_logged(sb, openai_billing.window_start(days, now))
+            )
+        except Exception as e:
+            truncated = [f"本库日志读取失败（{type(e).__name__}）"]
+    return openai_billing.summarize(
+        raw, days=days, now=now, turns=turns, logged_by_day=logged, truncated=truncated,
+    )
 
 
 @app.get("/admin/settings")

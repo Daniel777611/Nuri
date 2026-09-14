@@ -107,6 +107,33 @@ type QuotaReport = {
   truncated: string[];
 };
 
+// Mirrors backend/openai_billing.py summarize.
+type CostDay = {
+  day: string; usd: number; input_tokens: number; output_tokens: number;
+  cached_tokens: number; requests: number; logged_tokens: number | null;
+};
+type CostReport =
+  | { configured: false }
+  | {
+      configured: true;
+      days: number;
+      since: string;
+      until: string;
+      month_start: string;
+      total_usd: number;
+      month_to_date_usd: number;
+      daily: CostDay[];
+      projects: { id: string; name: string; usd: number; share: number }[];
+      line_items: { name: string; usd: number; share: number }[];
+      usage: { input_tokens: number; cached_tokens: number; output_tokens: number; requests: number; cached_share: number };
+      logged: { tokens: number; unlogged_tokens: number; unlogged_share: number } | null;
+      turns: number | null;
+      usd_per_turn: number | null;
+      target_usd_per_turn: number;
+      fetched_at: string;
+      truncated: string[];
+    };
+
 // ── Encoding ─────────────────────────────────────────────────────────────────
 // Every chart here is a single series, so one mark color; identity comes from
 // the title. The heatmap is magnitude: one hue, light -> dark (the validated
@@ -245,6 +272,36 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
     loadQuota();
   }, [loadQuota]);
 
+  // The OpenAI bill comes from OpenAI itself (cached 10 minutes on the
+  // server), so it also loads on its own.
+  const [costDays, setCostDays] = useState<number>(30);
+  const [costs, setCosts] = useState<CostReport | null>(null);
+  const [costError, setCostError] = useState("");
+  const loadCosts = useCallback(async (refresh = false) => {
+    setCostError("");
+    try {
+      const res = await fetch(`${backend}/admin/usage/costs?days=${costDays}&refresh=${refresh}`, {
+        headers: { "x-admin-key": adminKey },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let detail = text;
+        try {
+          detail = JSON.parse(text).detail ?? text;
+        } catch {}
+        throw new Error(`${res.status} ${detail}`);
+      }
+      setCosts(await res.json());
+    } catch (e: any) {
+      setCosts(null);
+      setCostError(`账单加载失败：${String(e?.message || e).slice(0, 200)}`);
+    }
+  }, [adminKey, backend, costDays]);
+
+  useEffect(() => {
+    loadCosts();
+  }, [loadCosts]);
+
   const toggleInternal = async (user: UsageUser) => {
     setTogglingId(user.id);
     try {
@@ -297,6 +354,7 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
           onPress={() => {
             load();
             loadQuota();
+            loadCosts(true);
           }}
           style={styles.refreshBtn}
           testID="usage-refresh"
@@ -467,6 +525,24 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
             </View>
           </View>
 
+          {/* ── OpenAI bill: what the whole organization was charged ── */}
+          <View style={styles.panelBlock} testID="usage-openai-costs">
+            <View style={styles.panelHead}>
+              <Text style={styles.panelTitle}>OpenAI 真实账单（整个组织）</Text>
+              <View style={styles.segment}>
+                {[7, 30, 90].map((d) => (
+                  <Chip key={d} small label={`${d} 天`} active={costDays === d} onPress={() => setCostDays(d)} />
+                ))}
+              </View>
+            </View>
+            {costError ? <Text style={styles.errorText}>{costError}</Text> : null}
+            {costs ? (
+              <CostSection report={costs} />
+            ) : !costError ? (
+              <ActivityIndicator color={MARK} style={{ marginVertical: spacing.sm }} />
+            ) : null}
+          </View>
+
           {/* ── OpenAI quota: how far one top-up goes, and who spends it ── */}
           <View style={styles.panelBlock}>
             <View style={styles.panelHead}>
@@ -515,10 +591,12 @@ function Chip({
   );
 }
 
-function Tile({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Tile({
+  label, value, hint, alert,
+}: { label: string; value: string; hint?: string; alert?: boolean }) {
   return (
     <View style={styles.tile}>
-      <Text style={styles.tileValue}>{value}</Text>
+      <Text style={[styles.tileValue, alert && styles.tileValueAlert]}>{value}</Text>
       <Text style={styles.tileLabel}>{label}</Text>
       {hint ? <Text style={styles.tileHint}>{hint}</Text> : null}
     </View>
@@ -812,6 +890,105 @@ function SpendBar({ split }: { split: SpendSplit[] }) {
   );
 }
 
+function fmtUsd(v: number): string {
+  if (v > 0 && v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+function CostBars({ rows }: { rows: { key: string; name: string; usd: number; share: number }[] }) {
+  if (!rows.length) return <Text style={styles.hint}>这段时间没有花费。</Text>;
+  const max = Math.max(...rows.map((r) => r.usd), 0.0001);
+  return (
+    <View>
+      {rows.map((r) => (
+        <View key={r.key} style={styles.hbarRow}>
+          <Text style={styles.costLabel} numberOfLines={1}>
+            {r.name}
+          </Text>
+          <View style={styles.hbarTrack}>
+            <View style={[styles.hbar, { width: `${Math.max(2, (r.usd / max) * 100)}%` }]} />
+          </View>
+          <Text style={styles.costValue}>
+            {fmtUsd(r.usd)} · {Math.round(r.share * 100)}%
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function CostSection({ report }: { report: CostReport }) {
+  if (!report.configured) {
+    return (
+      <Text style={styles.hint}>
+        还没有配置 OPENAI_ADMIN_KEY：在 Vercel 环境变量里加上（Production 和 Preview），重新部署后这里会显示真实账单。
+      </Text>
+    );
+  }
+  const perTurn = report.usd_per_turn;
+  const overTarget = perTurn !== null && perTurn > report.target_usd_per_turn;
+  const billedTokens = report.usage.input_tokens + report.usage.output_tokens;
+  return (
+    <View>
+      <View style={styles.tileRow}>
+        <Tile
+          label={`近 ${report.days} 天花费`}
+          value={fmtUsd(report.total_usd)}
+          hint={`${fmtDay(report.since)} – ${fmtDay(report.until)}（UTC）`}
+        />
+        <Tile label="本月累计" value={fmtUsd(report.month_to_date_usd)} hint={`${fmtDay(report.month_start)} 起`} />
+        <Tile
+          label="每轮对话折算"
+          value={perTurn === null ? "–" : `$${perTurn.toFixed(4)}`}
+          hint={
+            perTurn === null
+              ? "这段时间本库没有成功的对话"
+              : `${overTarget ? "高于" : "达到"}目标 ≤ $${report.target_usd_per_turn} · ${report.turns} 轮`
+          }
+          alert={overTarget}
+        />
+        {report.logged ? (
+          <Tile
+            label="本库没记录的 token"
+            value={`${Math.round(report.logged.unlogged_share * 100)}%`}
+            hint={`${fmtTokens(report.logged.unlogged_tokens)} / 账单 ${fmtTokens(billedTokens)}`}
+          />
+        ) : null}
+      </View>
+
+      <ColumnChart
+        title="每天花费（UTC）"
+        values={report.daily.map((d) => d.usd)}
+        labels={report.daily.map((d) => d.day)}
+        format={fmtUsd}
+        detail={(i) => {
+          const d = report.daily[i];
+          return `${fmtTokens(d.input_tokens + d.output_tokens)} token · ${d.requests} 次请求`;
+        }}
+      />
+
+      <Text style={styles.sectionTitle}>按项目</Text>
+      <CostBars rows={report.projects.map((p) => ({ key: p.id || "none", ...p }))} />
+      <Text style={styles.sectionTitle}>按费用类型</Text>
+      <CostBars rows={report.line_items.map((l) => ({ key: l.name, ...l }))} />
+
+      <Text style={styles.detailText}>
+        输入 {fmtTokens(report.usage.input_tokens)}（其中命中缓存 {Math.round(report.usage.cached_share * 100)}%）· 输出{" "}
+        {fmtTokens(report.usage.output_tokens)} · {report.usage.requests} 次请求
+      </Text>
+      {report.truncated.length ? (
+        <Text style={styles.warnText}>本库日志读取不完整：{report.truncated.join("、")}。</Text>
+      ) : null}
+      <Text style={styles.hint}>
+        数据来自 OpenAI 组织账单（Costs / Usage API），包含所有环境和所有密钥，按 UTC 自然日统计，最近几个小时的花费会延迟入账。
+        每轮折算 = 账单总额 ÷ 本库成功的对话轮数；开发、评测的花费也算在里面，所以会偏高，把它们拆到独立项目后看线上项目最准。
+        本库没记录的 token = 账单里的对话 token − 本库 llm_call_logs 的记录（不含 embedding），差额来自开发库、评测脚本和关了日志的调用。
+        服务器缓存 10 分钟，点“刷新”会重新读取。
+      </Text>
+    </View>
+  );
+}
+
 function QuotaSection({ report, tz }: { report: QuotaReport; tz: string }) {
   return (
     <View>
@@ -924,6 +1101,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border, padding: spacing.md,
   },
   tileValue: { fontSize: 22, fontWeight: "800", color: INK },
+  tileValueAlert: { color: colors.error },
   tileLabel: { fontSize: 12, color: INK_SECONDARY, marginTop: 2 },
   tileHint: { fontSize: 11, color: INK_MUTED, marginTop: 2 },
 
@@ -1000,6 +1178,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 4, borderBottomRightRadius: 4,
   },
   hbarValue: { width: 72, fontSize: 11, color: INK_SECONDARY, textAlign: "right" },
+  costLabel: { width: 160, fontSize: 12, color: INK },
+  costValue: { width: 96, fontSize: 11, color: INK_SECONDARY, textAlign: "right" },
   topicWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   topicChip: {
     flexDirection: "row", alignItems: "center", gap: 6, maxWidth: 260,
