@@ -91,18 +91,23 @@ def test_a_bare_number_amount_is_read_too():
 
 # ── Fetching ─────────────────────────────────────────────────────────────────
 
-def _transport(seen: list, *, costs_status=200, projects_status=200):
+SCOPE_ERROR = '{"error": {"message": "You have insufficient permissions for this operation. Missing scopes: api.usage.read.", "type": "invalid_request_error"}}'
+
+
+def _transport(seen: list, *, costs_status=200, projects_status=200, usage_status=200):
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         assert request.headers["Authorization"] == "Bearer sk-admin-test"
         path = request.url.path
         if path.endswith("/costs"):
             if costs_status != 200:
-                return httpx.Response(costs_status, text="nope")
+                return httpx.Response(costs_status, text=SCOPE_ERROR)
             if request.url.params.get("page") == "p2":
                 return httpx.Response(200, json={"data": [_cost(14, 2.0)], "has_more": False, "next_page": None})
             return httpx.Response(200, json={"data": [_cost(13, 1.0)], "has_more": True, "next_page": "p2"})
         if path.endswith("/usage/completions"):
+            if usage_status != 200:
+                return httpx.Response(usage_status, text=SCOPE_ERROR)
             return httpx.Response(200, json={"data": [_usage(14, 10, 5)], "has_more": False, "next_page": None})
         if path.endswith("/projects"):
             if projects_status != 200:
@@ -152,6 +157,28 @@ def test_a_rejected_key_is_explained(monkeypatch):
         assert "401" in str(exc) and "sk-admin" not in str(exc)
     else:
         raise AssertionError("expected BillingError")
+
+
+def test_a_refusal_names_the_endpoint_and_quotes_openais_reason(monkeypatch):
+    monkeypatch.setattr(ob, "_CACHE", {})
+    try:
+        _fetch(_transport([], costs_status=403))
+    except ob.BillingError as exc:
+        assert exc.status == 403
+        assert "costs 接口" in str(exc)
+        assert "Missing scopes: api.usage.read." in str(exc)
+    else:
+        raise AssertionError("expected BillingError")
+
+
+def test_usage_refused_still_shows_the_bill(monkeypatch):
+    monkeypatch.setattr(ob, "_CACHE", {})
+    raw = _fetch(_transport([], usage_status=403))
+    assert len(raw.costs) == 2 and raw.usage == []
+    assert "usage/completions 接口" in raw.notes[0]
+    out = ob.summarize(raw, days=7, now=NOW)
+    assert out["total_usd"] == 3.0
+    assert out["warnings"] == raw.notes
 
 
 def test_a_failed_project_lookup_only_costs_the_names(monkeypatch):

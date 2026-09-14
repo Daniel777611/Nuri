@@ -20,7 +20,7 @@ import asyncio
 import hashlib
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -56,14 +56,33 @@ def admin_key() -> str:
     return "".join(os.getenv("OPENAI_ADMIN_KEY", "").split())
 
 
-def _explain(status: int, text: str) -> str:
+def _openai_message(text: str) -> str:
+    """OpenAI's own reason — it names the missing scope or the wrong key type,
+    which the status code alone doesn't. It never echoes the key."""
+    try:
+        import json
+
+        error = json.loads(text or "{}").get("error") or {}
+        message = error.get("message") if isinstance(error, dict) else str(error)
+    except Exception:
+        message = text
+    return " ".join(str(message or "").split())[:300]
+
+
+def _explain(status: int, text: str, path: str) -> str:
+    reason = _openai_message(text)
+    said = f"OpenAI 的原话：{reason}" if reason else "OpenAI 没有给出原因"
+    where = f"{path} 接口"
     if status == 401:
-        return "OpenAI 拒绝了这把 Admin 密钥（401）：密钥无效、已吊销，或环境变量填错了。"
+        return f"{where}拒绝了这把密钥（401）：密钥无效、已吊销，或环境变量填错了。{said}"
     if status == 403:
-        return "这把密钥没有读取账单的权限（403）：需要组织 Owner 创建的 Admin key，普通 API key 不行。"
+        return (
+            f"{where}拒绝了这把密钥（403）：它不是组织 Owner 创建的 Admin key（sk-admin- 开头），"
+            f"或者创建时没给读取用量/账单的权限。{said}"
+        )
     if status == 429:
-        return "OpenAI 账单接口限流（429），过一会儿再刷新。"
-    return f"OpenAI 账单接口返回 {status}：{(text or '')[:200]}"
+        return f"{where}限流（429），过一会儿再刷新。"
+    return f"{where}返回 {status}。{said}"
 
 
 # ── Window ───────────────────────────────────────────────────────────────────
@@ -88,6 +107,8 @@ class Raw:
     costs: list[dict]
     usage: list[dict]
     projects: dict[str, str]
+    #: What could not be read, for the panel to say so.
+    notes: list[str] = field(default_factory=list)
 
 
 _CACHE: dict[tuple, tuple[float, Raw]] = {}
@@ -107,7 +128,7 @@ async def _pages(client: httpx.AsyncClient, path: str, params: dict, key: str) -
             f"{API_BASE}/{path}", params=query, headers={"Authorization": f"Bearer {key}"},
         )
         if resp.status_code >= 400:
-            raise BillingError(_explain(resp.status_code, resp.text), resp.status_code)
+            raise BillingError(_explain(resp.status_code, resp.text, path), resp.status_code)
         body = resp.json()
         buckets.extend(body.get("data") or [])
         cursor = body.get("next_page")
@@ -168,12 +189,24 @@ async def fetch_openai(
                     "bucket_width": "1d",
                 }, key),
                 _project_names(client, key),
+                return_exceptions=True,
             )
-    except BillingError:
-        raise
     except Exception as exc:
         raise BillingError(f"连不上 OpenAI 账单接口：{type(exc).__name__}") from exc
-    raw = Raw(costs=costs, usage=usage, projects=projects)
+    # The bill is the point; without it there is nothing to show. Token usage
+    # only feeds the cache share and the unlogged comparison, so a key that can
+    # read one but not the other still gets the money.
+    if isinstance(costs, BaseException):
+        if isinstance(costs, BillingError):
+            raise costs
+        raise BillingError(f"连不上 OpenAI 账单接口：{type(costs).__name__}") from costs
+    notes: list[str] = []
+    if isinstance(usage, BaseException):
+        notes.append(str(usage) if isinstance(usage, BillingError) else f"用量接口读取失败：{type(usage).__name__}")
+        usage = []
+    if isinstance(projects, BaseException):
+        projects = {}
+    raw = Raw(costs=costs, usage=usage, projects=projects, notes=notes)
     _CACHE[cache_key] = (time.monotonic(), raw)
     return raw
 
@@ -339,4 +372,5 @@ def summarize(
         "target_usd_per_turn": TARGET_USD_PER_TURN,
         "fetched_at": now.isoformat(),
         "truncated": truncated or [],
+        "warnings": list(raw.notes),
     }

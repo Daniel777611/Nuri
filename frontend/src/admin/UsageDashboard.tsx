@@ -132,6 +132,7 @@ type CostReport =
       target_usd_per_turn: number;
       fetched_at: string;
       truncated: string[];
+      warnings?: string[];
     };
 
 // ── Encoding ─────────────────────────────────────────────────────────────────
@@ -976,6 +977,9 @@ function CostSection({ report }: { report: CostReport }) {
         输入 {fmtTokens(report.usage.input_tokens)}（其中命中缓存 {Math.round(report.usage.cached_share * 100)}%）· 输出{" "}
         {fmtTokens(report.usage.output_tokens)} · {report.usage.requests} 次请求
       </Text>
+      {report.warnings?.length ? (
+        <Text style={styles.errorText}>token 用量没读到（金额不受影响）：{report.warnings.join("；")}</Text>
+      ) : null}
       {report.truncated.length ? (
         <Text style={styles.warnText}>本库日志读取不完整：{report.truncated.join("、")}。</Text>
       ) : null}
