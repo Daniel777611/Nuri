@@ -378,6 +378,10 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     profile = { ...profile, email: body.email || profile.email };
     return { access_token: "preview-token", user: profile };
   }
+  // The composer's voice flow can be reviewed without a transcription model.
+  if (path === "/chat/transcribe") {
+    return { text: "小满最近晚上总是醒好几次，我该怎么办？" };
+  }
   // A fixed sample so the daily card can be reviewed without search or a model.
   if (routePath === "/feed/daily-post") {
     return {

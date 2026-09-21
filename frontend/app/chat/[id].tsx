@@ -31,6 +31,13 @@ import {
   prepareChatImage,
   type PreparedChatImage,
 } from "@/src/chatImageInput";
+import {
+  MAX_VOICE_SECONDS,
+  VoiceInputError,
+  isVoiceInputSupported,
+  startVoiceRecording,
+  type VoiceRecording,
+} from "@/src/chatVoiceInput";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 
@@ -195,6 +202,10 @@ export default function ChatDetail() {
   const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
   const [imageMenuVisible, setImageMenuVisible] = useState(false);
   const [processingImage, setProcessingImage] = useState(false);
+  const [voiceState, setVoiceState] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
+  const voiceRecordingRef = useRef<VoiceRecording | null>(null);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingNativePickerRef = useRef<"camera" | "library" | null>(null);
   const nativePickerFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
@@ -344,6 +355,84 @@ export default function ChatDetail() {
       setSending(false);
       sendingRef.current = false;
     }
+  };
+
+  const clearVoiceTimer = () => {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+  };
+
+  // Leaving the screen mid-recording must release the microphone.
+  useEffect(() => () => {
+    clearVoiceTimer();
+    voiceRecordingRef.current?.cancel();
+    voiceRecordingRef.current = null;
+  }, []);
+
+  const explainVoiceError = (error: unknown) => {
+    const code = error instanceof VoiceInputError ? error.code : "failed";
+    if (code === "unsupported") showToast(t("当前浏览器不支持语音输入"));
+    else if (code === "permission_denied") showToast(t("需要麦克风权限才能语音输入，请在系统设置中允许"));
+    else if (code === "no_microphone") showToast(t("没有找到可用的麦克风"));
+    else if (code === "too_short") showToast(t("说话时间太短"));
+    else showToast(t("语音识别失败，请重试"));
+  };
+
+  const stopVoice = async () => {
+    const recording = voiceRecordingRef.current;
+    if (!recording) return;
+    voiceRecordingRef.current = null;
+    clearVoiceTimer();
+    setVoiceState("transcribing");
+    try {
+      const clip = await recording.stop();
+      const { text } = await api.transcribeVoice(clip, locale);
+      const spoken = (text || "").trim();
+      if (!spoken) {
+        showToast(t("没有听清，请再说一次"));
+        return;
+      }
+      setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
+    } catch (error) {
+      explainVoiceError(error);
+    } finally {
+      setVoiceState("idle");
+      setVoiceSeconds(0);
+    }
+  };
+
+  const cancelVoice = () => {
+    clearVoiceTimer();
+    voiceRecordingRef.current?.cancel();
+    voiceRecordingRef.current = null;
+    setVoiceState("idle");
+    setVoiceSeconds(0);
+  };
+
+  const startVoice = async () => {
+    if (voiceState !== "idle") return;
+    if (!isVoiceInputSupported()) {
+      showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
+      return;
+    }
+    setVoiceState("starting");
+    try {
+      voiceRecordingRef.current = await startVoiceRecording();
+    } catch (error) {
+      setVoiceState("idle");
+      explainVoiceError(error);
+      return;
+    }
+    setVoiceSeconds(0);
+    setVoiceState("recording");
+    const startedAt = Date.now();
+    voiceTimerRef.current = setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      setVoiceSeconds(seconds);
+      if (seconds >= MAX_VOICE_SECONDS) void stopVoice();
+    }, 250);
   };
 
   const showToast = (message: string) => {
@@ -573,6 +662,31 @@ export default function ChatDetail() {
                 <Text style={styles.imageProcessingText}>{t("正在准备图片…")}</Text>
               </View>
             ) : null}
+            {voiceState === "recording" ? (
+              <View style={styles.voiceBanner} testID="chat-voice-recording">
+                <View style={styles.voiceDot} />
+                <Text style={styles.voiceBannerText}>
+                  {t("正在录音")} {Math.floor(voiceSeconds / 60)}:{String(voiceSeconds % 60).padStart(2, "0")}
+                  {"  ·  "}
+                  {t("再点一次结束")}
+                </Text>
+                <Pressable
+                  onPress={cancelVoice}
+                  style={styles.imageRemove}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("取消录音")}
+                  testID="chat-voice-cancel"
+                >
+                  <Ionicons name="close" size={20} color="#3A2F5A" />
+                </Pressable>
+              </View>
+            ) : null}
+            {voiceState === "transcribing" ? (
+              <View style={styles.imageProcessing} testID="chat-voice-transcribing">
+                <ActivityIndicator size="small" color={colors.brand} />
+                <Text style={styles.imageProcessingText}>{t("正在识别语音…")}</Text>
+              </View>
+            ) : null}
             {pendingImage ? (
               <View style={styles.imagePreview} testID="chat-image-preview">
                 <Image
@@ -627,23 +741,39 @@ export default function ChatDetail() {
                 }}
                 testID="chat-input"
               />
-              <Pressable
-                onPress={() => {
-                  if (input.trim() || pendingImage) void send();
-                  else showToast(t("语音输入功能即将上线"));
-                }}
-                disabled={sending || processingImage}
-                style={[styles.micBtn, (input.trim() || pendingImage) && styles.sendBtn]}
-                accessibilityRole="button"
-                accessibilityLabel={(input.trim() || pendingImage) ? t("发送") : t("语音输入")}
-                testID={(input.trim() || pendingImage) ? "chat-send-btn" : "chat-voice-btn"}
-              >
-                <Ionicons
-                  name={(input.trim() || pendingImage) ? "send" : "mic-outline"}
-                  size={21}
-                  color={(input.trim() || pendingImage) ? "#fff" : "#3A2F5A"}
-                />
-              </Pressable>
+              {voiceState === "recording" ? (
+                <Pressable
+                  onPress={() => void stopVoice()}
+                  style={[styles.micBtn, styles.recordingBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("结束录音")}
+                  testID="chat-voice-stop"
+                >
+                  <Ionicons name="stop" size={18} color="#fff" />
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    if (input.trim() || pendingImage) void send();
+                    else void startVoice();
+                  }}
+                  disabled={sending || processingImage || voiceState !== "idle"}
+                  style={[styles.micBtn, (input.trim() || pendingImage) && styles.sendBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel={(input.trim() || pendingImage) ? t("发送") : t("语音输入")}
+                  testID={(input.trim() || pendingImage) ? "chat-send-btn" : "chat-voice-btn"}
+                >
+                  {voiceState === "starting" || voiceState === "transcribing" ? (
+                    <ActivityIndicator size="small" color="#3A2F5A" />
+                  ) : (
+                    <Ionicons
+                      name={(input.trim() || pendingImage) ? "send" : "mic-outline"}
+                      size={21}
+                      color={(input.trim() || pendingImage) ? "#fff" : "#3A2F5A"}
+                    />
+                  )}
+                </Pressable>
+              )}
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -1237,6 +1367,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   sendBtn: { backgroundColor: colors.brand },
+  recordingBtn: { backgroundColor: "#E5484D" },
+  voiceBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+    paddingVertical: 8,
+    paddingLeft: 14,
+    paddingRight: 6,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
+  voiceDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#E5484D" },
+  voiceBannerText: { flex: 1, fontSize: type.sm, color: "#3A2F5A" },
   imageMenuOverlay: {
     flex: 1,
     alignItems: "center",

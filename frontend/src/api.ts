@@ -787,6 +787,13 @@ export const api = {
       CHAT_TIMEOUT_MS,
     ),
   streamMessage,
+  // Upload plus transcription of a one-minute clip can pass the 12s default.
+  transcribeVoice: (audioBase64: string, locale?: string) =>
+    req<{ text: string }>(
+      "/chat/transcribe",
+      { method: "POST", body: JSON.stringify({ audio_base64: audioBase64, locale }) },
+      45000,
+    ),
 
   // ── Tasks ─────────────────────────────────────────────────────────────────
   listTasks: (scope?: "today" | "week") =>

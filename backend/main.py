@@ -54,6 +54,7 @@ from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
+from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import (
     email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
@@ -5405,6 +5406,48 @@ async def version_info():
     the rule table rather than each hashing their own view of it.
     """
     return _version_info(await core_dialogue_reply.style_rules_fingerprint())
+
+
+class TranscribeIn(BaseModel):
+    audio_base64: str = Field(..., max_length=core_audio_input.MAX_AUDIO_BASE64_CHARS + 128)
+    locale: Optional[str] = Field(None, max_length=32)
+
+
+@api.post("/chat/transcribe")
+async def transcribe_audio(body: TranscribeIn, uid: str = Depends(_req_uid)):
+    """Turn a recorded voice clip into composer text.
+
+    Nothing is stored: the clip exists only for this request, and the
+    transcript is returned for the parent to edit and send like typed text.
+    """
+    try:
+        raw, ext = core_audio_input.decode_audio_data_uri(body.audio_base64)
+    except core_audio_input.InvalidChatAudio as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if not aoai:
+        raise HTTPException(503, "Transcription is unavailable")
+    started = time.perf_counter()
+    model = core_audio_input.TRANSCRIBE_MODEL
+    try:
+        result = await aoai.audio.transcriptions.create(
+            model=model,
+            file=(f"voice.{ext}", raw),
+            prompt=core_audio_input.transcription_prompt(body.locale),
+            timeout=OPENAI_FAST_TIMEOUT_S * 2,
+        )
+    except Exception as exc:
+        llm_usage.record(
+            "chat.transcribe", model, api="audio", user_id=uid,
+            duration_ms=runtime.elapsed_ms(started), status="error",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        print(f"[error] transcribe failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(502, "Transcription failed") from exc
+    llm_usage.record(
+        "chat.transcribe", model, usage=getattr(result, "usage", None),
+        api="audio", user_id=uid, duration_ms=runtime.elapsed_ms(started),
+    )
+    return {"text": (getattr(result, "text", "") or "").strip()}
 
 
 @api.post("/chat/sessions/{session_id}/messages")
