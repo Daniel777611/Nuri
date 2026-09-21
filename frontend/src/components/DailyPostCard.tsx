@@ -1,9 +1,9 @@
 // Home's daily card: one real post from another parent, fixed for the day.
 //
-// The preview is the greeting the product asked for — "[昵称]你好呀，其他妈妈
-// 可能会这么处理" — with today's headline under it. Tapping opens the full card
-// (app/daily-post.tsx). Same footprint and gradient as the carousel it
-// replaced, so the page keeps its shape.
+// The home card keeps the Figma hierarchy: source tag, today's headline, then
+// one clear action. The personal greeting remains in the accessible label and
+// in the detail screen, so the compact card stays readable without losing its
+// parent-specific context. Tapping opens the full card (app/daily-post.tsx).
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -127,14 +127,17 @@ export default function DailyPostCard({
   }
 
   const greeting = dailyPostGreeting(t, card.nickname || nickname, card.audience);
-  const tag = dailyPostTag(t, card);
+  const sourceTag = dailyPostTag(t, card);
+  // Figma defines this compact home tag by material type. Platform provenance
+  // remains available in the accessible label and the detail screen.
+  const tag = t("精选文章");
   return (
     <View style={styles.wrap}>
       <Pressable
         onPress={() => onPress(card)}
         style={{ width }}
         accessibilityRole="button"
-        accessibilityLabel={`${greeting}。${card.headline}`}
+        accessibilityLabel={`${sourceTag}。${greeting}。${card.headline}`}
         testID="home-daily-post-card"
       >
         <LinearGradient
@@ -147,17 +150,12 @@ export default function DailyPostCard({
           <View style={styles.tagPill}>
             <Text style={styles.tagText} numberOfLines={1}>{tag}</Text>
           </View>
-          <Text style={styles.greeting} numberOfLines={2} testID="home-daily-post-greeting">
-            {greeting}
-          </Text>
-          <Text style={styles.headline} numberOfLines={2}>
+          <Text style={styles.headline} numberOfLines={3}>
             {card.headline}
           </Text>
           <View style={{ flex: 1 }} />
           <View style={styles.footer}>
-            <Text style={styles.cta}>
-              {card.audience === "mom" ? t("看看她们怎么做") : t("看看大家怎么做")}
-            </Text>
+            <Text style={styles.cta}>{t("点击查看更多")}</Text>
             <View style={styles.arrow}>
               <Ionicons name="arrow-forward" size={22} color="#3A2F5A" />
             </View>
@@ -186,10 +184,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   tagPill: {
-    alignSelf: "flex-start",
-    minHeight: 30,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
+    width: 107,
+    height: 32,
+    paddingHorizontal: 4,
     borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
@@ -204,11 +201,11 @@ const styles = StyleSheet.create({
     lineHeight: 26,
   },
   headline: {
-    marginTop: 6,
-    color: "#3A2F5A",
+    marginTop: 12,
+    color: "#261B45",
     fontFamily: "NotoSansSC_400Regular",
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 20,
+    lineHeight: 28,
   },
   footer: { minHeight: 55, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   cta: {

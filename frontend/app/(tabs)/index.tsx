@@ -24,15 +24,15 @@ import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
 import { useT } from "@/src/i18n";
 
-const mascotImage = require("@/assets/images/homepage/mascot.png");
+const mascotImage = require("@/assets/images/homepage/figma-mascot.png");
 const nativeLogoImage = require("@/assets/images/nuri-logo.png");
 
 const C = {
   canvas: "#FFF9F3",
   text: "#261B45",
   purple: "#4C368C",
-  purpleLight: "#7751E4",
-  purpleDark: "#422D7E",
+  purpleLight: "#C0B3E4",
+  purpleDark: "#71629B",
 };
 
 const FIGMA_FRAME_WIDTH = 402;
@@ -416,10 +416,10 @@ export default function Home() {
             <LinearGradient
               colors={[C.purpleLight, C.purpleDark]}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.nuriCard}
             >
-              <Text style={styles.nuriMemo} numberOfLines={4} testID="home-nuri-memo">
+              <Text style={styles.nuriMemo} numberOfLines={3} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
               <View
@@ -431,10 +431,10 @@ export default function Home() {
                   {nuriActionText}
                 </Text>
               </View>
+              <View pointerEvents="none" style={styles.mascotCrop}>
+                <Image source={mascotImage} style={styles.mascot} resizeMode="stretch" />
+              </View>
             </LinearGradient>
-            <View pointerEvents="none" style={styles.mascotCrop}>
-              <Image source={mascotImage} style={styles.mascot} resizeMode="contain" />
-            </View>
           </Pressable>
         </ScrollView>
 
@@ -577,11 +577,10 @@ const styles = StyleSheet.create({
     marginBottom: 15,
   },
   nuriStage: {
-    height: 322,
+    height: 312,
     marginHorizontal: 16,
     marginBottom: 8,
     position: "relative",
-    overflow: "visible",
   },
   nuriStagePressed: { opacity: 0.94 },
   nuriCard: {
@@ -620,18 +619,15 @@ const styles = StyleSheet.create({
   },
   mascotCrop: {
     position: "absolute",
-    right: -2,
-    top: 126,
-    width: 170,
-    height: 201,
-    overflow: "hidden",
+    left: "50%",
+    right: -13,
+    top: 106,
+    bottom: -69,
   },
   mascot: {
-    position: "absolute",
-    right: 0,
-    top: 0,
-    width: 170,
-    height: 255,
+    width: "100%",
+    height: "100%",
+    transform: [{ scaleX: -1 }],
   },
   bottomNavigation: {
     position: "absolute",

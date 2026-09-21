@@ -65,9 +65,8 @@ test("real login keeps its session and shows today's parent post", async ({ page
     return;
   }
 
-  await expect(page.getByTestId("home-daily-post-greeting")).toContainText(
-    /你好呀，其他(?:妈妈|家长)可能会这么处理/,
-  );
+  // The compact home card follows the Figma hierarchy (source, headline,
+  // action); the parent greeting belongs to the detail view.
   await card.click();
   await expect(page).toHaveURL(/\/daily-post/, { timeout: 30_000 });
   await expect(page.getByTestId("daily-post-greeting")).toBeVisible();
