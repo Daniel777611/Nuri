@@ -15,6 +15,7 @@ import {
 } from "react-native";
 
 import { colors, radius, spacing } from "@/src/theme";
+import { Collapsible, Note } from "./AdminParts";
 
 // ── Types (mirror backend/usage_dashboard.py build_overview) ────────────────
 type DayCell = {
@@ -495,7 +496,7 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
                 <>
                   <Text style={[styles.panelTitle, { marginTop: spacing.md }]}>最常见的具体话题</Text>
                   <View style={styles.topicWrap}>
-                    {data.topics.top.map((t) => (
+                    {data.topics.top.slice(0, 8).map((t) => (
                       <View key={t.topic} style={styles.topicChip}>
                         <Text style={styles.topicText} numberOfLines={1}>
                           {t.topic}
@@ -545,28 +546,34 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
           </View>
 
           {/* ── OpenAI quota: how far one top-up goes, and who spends it ── */}
-          <View style={styles.panelBlock}>
-            <View style={styles.panelHead}>
-              <Text style={styles.panelTitle}>OpenAI 额度耗光记录</Text>
-              <View style={styles.segment}>
-                {[30, 60, 180].map((d) => (
-                  <Chip key={d} small label={`${d} 天`} active={quotaDays === d} onPress={() => setQuotaDays(d)} />
-                ))}
-              </View>
-            </View>
+          <Collapsible
+            title="OpenAI 额度耗光记录"
+            summary={
+              quota
+                ? quota.current
+                  ? `近 ${quota.days} 天耗光 ${quota.incidents.length} 次`
+                  : "现在是耗光状态"
+                : quotaError
+                  ? "加载失败"
+                  : "加载中…"
+            }
+            right={[30, 60, 180].map((d) => (
+              <Chip key={d} small label={`${d} 天`} active={quotaDays === d} onPress={() => setQuotaDays(d)} />
+            ))}
+          >
             {quotaError ? <Text style={styles.errorText}>{quotaError}</Text> : null}
             {quota ? (
               <QuotaSection report={quota} tz={data.tz} />
             ) : !quotaError ? (
               <ActivityIndicator color={MARK} style={{ marginVertical: spacing.sm }} />
             ) : null}
-          </View>
+          </Collapsible>
 
-          <Text style={styles.footNote}>
+          <Note>
             时区 {data.tz}。对话轮数 = 家长发出的消息数，历史数据完整；在线时长与访问次数来自 App
             心跳，{data.tracking_since ? `从 ${fmtWhen(data.tracking_since, data.tz)} 开始记录` : "还没有记录"}
             ，之前的日子只有对话。测试人数不含内部账号和未验证邮箱的账号。话题分类是关键词归类，适合看比例，不适合逐条核对。
-          </Text>
+          </Note>
         </>
       ) : !error && loading ? (
         <ActivityIndicator color={MARK} style={{ marginVertical: spacing.lg }} />
@@ -794,6 +801,7 @@ function pct(part: number, whole: number): string {
 }
 
 function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: string }) {
+  const [showAllPosts, setShowAllPosts] = useState(false);
   if (posts === undefined) return null;
   if (posts === null) {
     return (
@@ -804,6 +812,7 @@ function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: s
   }
   const { totals } = posts;
   const attempted = totals.ready + totals.empty + totals.failed;
+  const recent = showAllPosts ? posts.recent : posts.recent.slice(0, 3);
   return (
     <View>
       <View style={styles.tileRow}>
@@ -820,16 +829,10 @@ function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: s
         />
         <Tile label="去聊天" value={String(totals.chats)} hint={`占打开 ${pct(totals.chats, totals.opened)}`} />
       </View>
-      <Text style={styles.hint}>
-        {`按对话找到 ${posts.basis.conversation || 0} 张 · 按孩子月龄找到 ${posts.basis.profile || 0} 张`}
-        {totals.empty ? ` · ${totals.empty} 次当天没找到合适的帖子` : ""}
-        {totals.failed ? ` · ${totals.failed} 次出错` : ""}
-        。按对话找需要家长打开“外部内容检索”开关。
-      </Text>
       {posts.recent.length ? (
         <>
           <Text style={[styles.panelTitle, { marginTop: spacing.sm }]}>最近发出的卡片（点标题看原帖）</Text>
-          {posts.recent.map((row) => (
+          {recent.map((row) => (
             <View key={`${row.day}:${row.email}`} style={styles.postRow}>
               <Text style={styles.postMeta} numberOfLines={1}>
                 {row.day.slice(5).replace("-", "/")} · {row.user}
@@ -853,11 +856,23 @@ function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: s
               </Text>
             </View>
           ))}
+          {posts.recent.length > 3 ? (
+            <Pressable onPress={() => setShowAllPosts((v) => !v)} hitSlop={6}>
+              <Text style={styles.moreLink}>
+                {showAllPosts ? "只看最近 3 张" : `查看全部 ${posts.recent.length} 张`}
+              </Text>
+            </Pressable>
+          ) : null}
         </>
       ) : (
         <Text style={styles.hint}>这个范围内还没有发出的卡片。</Text>
       )}
-      <Text style={styles.hint}>卡片的日期是测试者自己时区的“当天”，不随上面选的时区（{tz}）变。</Text>
+      <Note>
+        {`按对话找到 ${posts.basis.conversation || 0} 张 · 按孩子月龄找到 ${posts.basis.profile || 0} 张`}
+        {totals.empty ? ` · ${totals.empty} 次当天没找到合适的帖子` : ""}
+        {totals.failed ? ` · ${totals.failed} 次出错` : ""}
+        。按对话找需要家长打开“外部内容检索”开关。卡片的日期是测试者自己时区的“当天”，不随上面选的时区（{tz}）变。
+      </Note>
     </View>
   );
 }
@@ -983,12 +998,12 @@ function CostSection({ report }: { report: CostReport }) {
       {report.truncated.length ? (
         <Text style={styles.warnText}>本库日志读取不完整：{report.truncated.join("、")}。</Text>
       ) : null}
-      <Text style={styles.hint}>
+      <Note>
         数据来自 OpenAI 组织账单（Costs / Usage API），包含所有环境和所有密钥，按 UTC 自然日统计，最近几个小时的花费会延迟入账。
         每轮折算 = 账单总额 ÷ 本库成功的对话轮数；开发、评测的花费也算在里面，所以会偏高，把它们拆到独立项目后看线上项目最准。
         本库没记录的 token = 账单里的对话 token − 本库 llm_call_logs 的记录（不含 embedding），差额来自开发库、评测脚本和关了日志的调用。
         服务器缓存 10 分钟，点“刷新”会重新读取。
-      </Text>
+      </Note>
     </View>
   );
 }
@@ -1039,10 +1054,10 @@ function QuotaSection({ report, tz }: { report: QuotaReport; tz: string }) {
       {report.truncated.length ? (
         <Text style={styles.warnText}>读取不完整：{report.truncated.join("、")}。</Text>
       ) : null}
-      <Text style={styles.hint}>
+      <Note>
         耗光 = OpenAI 返回 insufficient_quota（普通的每分钟限流不算）；下一轮成功的对话视为已充值恢复。
         对话 token 含回复、路由、记忆、摘要、任务卡；知识卡片含卡片生成与内容检索。对话轮数含内部账号，因为它们花的是同一份额度。
-      </Text>
+      </Note>
     </View>
   );
 }
@@ -1120,6 +1135,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
     padding: spacing.md, marginBottom: spacing.md,
   },
+  moreLink: { fontSize: 12, color: colors.brand, fontWeight: "600", marginTop: spacing.xs },
   panelHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   panelTitle: { fontSize: 12, fontWeight: "700", color: INK_SECONDARY, marginBottom: 4 },
   segment: { flexDirection: "row", gap: 4 },
@@ -1211,5 +1227,4 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
   },
 
-  footNote: { fontSize: 11, color: INK_MUTED, lineHeight: 17, marginTop: spacing.sm },
 });
