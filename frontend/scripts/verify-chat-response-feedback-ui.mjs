@@ -40,6 +40,26 @@ try {
     }
   }
 
+  const iconBoxes = [];
+  for (const [button] of expectedIconSources) {
+    const buttonBox = await button.boundingBox();
+    const iconBox = await button.locator("img").boundingBox();
+    if (!buttonBox || !iconBox) throw new Error("Feedback button or Figma icon is not visible");
+    if (Math.abs(buttonBox.width - 28) > 0.5 || Math.abs(buttonBox.height - 28) > 0.5) {
+      throw new Error(`Feedback button is too small: ${JSON.stringify(buttonBox)}`);
+    }
+    if (Math.abs(iconBox.width - 20) > 0.5 || Math.abs(iconBox.height - 20) > 0.5) {
+      throw new Error(`Figma icon display scale is wrong: ${JSON.stringify(iconBox)}`);
+    }
+    iconBoxes.push(iconBox);
+  }
+  for (let index = 1; index < iconBoxes.length; index += 1) {
+    const visualGap = iconBoxes[index].x - (iconBoxes[index - 1].x + iconBoxes[index - 1].width);
+    if (Math.abs(visualGap - 8) > 0.5) {
+      throw new Error(`Figma icon gap must scale with the icons: ${visualGap}px`);
+    }
+  }
+
   if (await page.locator('[data-testid="chat-response-actions-__streaming__"]').count()) {
     throw new Error("streaming placeholder exposed feedback actions");
   }

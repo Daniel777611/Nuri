@@ -1258,19 +1258,21 @@ const styles = StyleSheet.create({
   responseActions: {
     flexDirection: "row",
     alignItems: "center",
-    width: 61.6,
-    height: 14,
-    gap: 5.6,
+    // Scale Figma's 14px icons and 5.6px visual gap together for the 16px chat text.
+    // 28px buttons center the 20px SVGs and provide a 44px target with hitSlop.
+    width: 88,
+    height: 28,
+    gap: 0,
     marginTop: 10,
   },
   responseAction: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  responseActionIcon: { width: 14, height: 14 },
+  responseActionIcon: { width: 20, height: 20 },
   responseCopyIcon: { transform: [{ rotate: "180deg" }] },
   responseActionSelected: { backgroundColor: "rgba(108, 79, 214, 0.12)" },
 

@@ -29,8 +29,10 @@ assert.doesNotMatch(chat, /name=\{msg\.feedback_rating.*thumbs-down/, "Dislike m
 assert.equal(sha256(feedbackIcons.copy), "3F41570EF35828DAB4F39D49BFFCED36E6E2B4CB9B21A18E9BDD208A0F29EA2F", "Copy SVG must remain the exact Figma export");
 assert.equal(sha256(feedbackIcons.like), "A7B472CE22188F7A7A1A97D4E7B1D1515DB6E0F0FCC95AB19DA4EDC329C8A1C7", "Like SVG must remain the exact Figma export");
 assert.equal(sha256(feedbackIcons.dislike), "CA3A2FAF904D4B24D1081F7E1B3B1EC0FE336DFD0D6892D1B57480B4635127E5", "Dislike SVG must remain the exact Figma export");
-assert.match(chat, /width: 61\.6/, "feedback icon row must preserve the Figma width");
-assert.match(chat, /gap: 5\.6/, "feedback icon row must preserve the Figma spacing");
+assert.match(chat, /responseActions: \{[\s\S]*?width: 88,[\s\S]*?height: 28,[\s\S]*?gap: 0,/, "feedback row must preserve the uniformly scaled Figma proportions");
+assert.match(chat, /responseAction: \{\s*width: 28,\s*height: 28,/, "feedback buttons must restore a usable touch target");
+assert.match(chat, /responseActionIcon: \{ width: 20, height: 20 \}/, "all three Figma icons must use the same 20px display scale");
+assert.match(chat, /hitSlop=\{8\}/, "feedback buttons must provide at least a 44px touch target");
 assert.match(chat, /rotate: "180deg"/, "Copy must preserve the Figma rotation");
 assert.match(chat, /actionsEnabled=\{false\}/, "streaming placeholders must not accept feedback");
 assert.match(chat, /feedbackSavingRef\.current\.has\(message\.id\)/, "rapid duplicate feedback must be locked");
