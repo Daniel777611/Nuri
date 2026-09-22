@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+.kotlin/
+build/
+local.properties
+*.iml
+captures/
+# Signing material and Firebase config stay on the machine that builds.
+keystore.properties
+*.jks
+*.keystore
+app/google-services.json

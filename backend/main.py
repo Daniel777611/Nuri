@@ -58,7 +58,7 @@ from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import (
     email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
-    push_service, runtime, stores, usage_dashboard,
+    push_fcm, push_service, runtime, stores, usage_dashboard,
 )
 from backend.feed import daily_post as feed_daily_post
 from backend.feed import delivery as feed_delivery
@@ -6194,12 +6194,17 @@ async def wipe_all(uid: str = Depends(_req_uid)):
 # twice: the account comes from the verified token, never from the request body.
 
 _APNS_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32,256}$")
+# FCM registration tokens are opaque; in practice ~160 chars of base64url with
+# a colon, but Google does not promise a length, so only the alphabet is held.
+_FCM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_:\-]{32,4096}$")
 
 
 class PushDeviceUpsert(BaseModel):
     installation_id: str
-    platform: Literal["ios"]
-    apns_token: str = Field(min_length=32, max_length=256)
+    platform: Literal["ios", "android"]
+    # For Android this carries the FCM registration token: the column is the
+    # platform's device token, named for the platform that came first.
+    apns_token: str = Field(min_length=32, max_length=4096)
     apns_environment: Literal["sandbox", "production"]
     bundle_id: str = Field(max_length=128)
     app_version: Optional[str] = Field(default=None, max_length=32)
@@ -6234,17 +6239,25 @@ def _require_push_storage():
 
 @api.post("/mobile/push-devices")
 async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid)):
-    """Register or refresh one installation's APNs token.
+    """Register or refresh one installation's APNs or FCM token.
 
     Idempotent on (bundle_id, apns_environment, installation_id), so a token
     refresh or an account switch overwrites the same row instead of leaving a
     second one that would double-send. The response never echoes the token.
     """
     sb = _require_push_storage()
-    token = body.apns_token.lower()
-    if not _APNS_TOKEN_RE.fullmatch(token):
+    if body.platform == "android":
+        # FCM tokens are case-sensitive, and FCM has no sandbox.
+        token = body.apns_token
+        valid = bool(_FCM_TOKEN_RE.fullmatch(token)) and body.apns_environment == "production"
+        expected_id = push_fcm.package_name()
+    else:
+        token = body.apns_token.lower()
+        valid = bool(_APNS_TOKEN_RE.fullmatch(token))
+        expected_id = push_apns.bundle_id()
+    if not valid:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid token")
-    if body.bundle_id != push_apns.bundle_id():
+    if body.bundle_id != expected_id:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unexpected bundle id")
 
     token_hash = hashlib.sha256(token.encode()).hexdigest()

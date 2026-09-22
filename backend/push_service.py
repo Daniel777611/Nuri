@@ -7,7 +7,7 @@ decision in one place instead of a rule every caller has to remember.
 
 Everything the parent sees is composed in
 ``backend.nuri_core.care_notifications``; this module is the part that touches
-the database, the model and Apple.
+the database, the model, Apple and Google.
 """
 
 from __future__ import annotations
@@ -19,12 +19,16 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 
-from backend import llm_usage, push_apns
+from backend import llm_usage, push_apns, push_fcm
 from backend.nuri_core import care_notifications as care
 
 log = logging.getLogger("nuri.push")
 
 CARE_THREAD_ID = "nuri-care"
+
+#: One sender per platform. Both take the same keywords and return the same
+#: result type, so the dispatch loop below never branches on platform.
+_SENDERS = {"ios": push_apns, "android": push_fcm}
 
 #: How many events one dispatch run will claim. Vercel's cron fires every five
 #: minutes, so this only has to keep up with a backlog, not drain one instantly.
@@ -276,11 +280,12 @@ async def dispatch_due_notifications(
     if not events:
         return counters
 
-    if not push_apns.configured():
+    ready = {platform for platform, sender in _SENDERS.items() if sender.configured()}
+    if not ready:
         # Put them straight back rather than burning attempts against a
-        # deployment that has no APNs key yet.
+        # deployment that has no push credentials yet.
         for event in events:
-            await _requeue(sb, event["id"], 30, "apns_not_configured")
+            await _requeue(sb, event["id"], 30, "push_not_configured")
         counters["failed"] = 0
         return counters
 
@@ -309,23 +314,30 @@ async def dispatch_due_notifications(
         def _devices() -> list[dict]:
             return (
                 sb.table("push_devices")
-                .select("id,apns_token,apns_environment,permission_status")
+                .select("id,platform,apns_token,apns_environment,permission_status")
                 .eq("user_id", uid).eq("is_active", True).execute().data or []
             )
 
-        devices = [
+        reachable = [
             d for d in await anyio.to_thread.run_sync(_devices)
             if d.get("permission_status") in {"authorized", "provisional"}
         ]
-        if not devices:
+        if not reachable:
             await _finish(sb, event_id, "cancelled", "no_active_device")
             counters["no_devices"] += 1
+            continue
+        devices = [d for d in reachable if (d.get("platform") or "ios") in ready]
+        if not devices:
+            # Only phones on a platform whose credentials are not set yet:
+            # hold the event instead of failing it.
+            await _requeue(sb, event_id, 30, "push_not_configured")
             continue
 
         accepted = retryable = 0
         for device in devices:
             try:
-                result = await push_apns.send_alert(
+                sender = _SENDERS[device.get("platform") or "ios"]
+                result = await sender.send_alert(
                     device_token=device["apns_token"],
                     environment=device["apns_environment"],
                     title=event["title"], body=event["body"],
@@ -336,13 +348,13 @@ async def dispatch_due_notifications(
                 )
             except Exception as exc:  # noqa: BLE001 - one device must not stop the rest
                 retryable += 1
-                log.warning("apns transport error: %s", type(exc).__name__)
+                log.warning("push transport error: %s", type(exc).__name__)
                 continue
 
             def _record() -> None:
                 sb.table("notification_deliveries").upsert({
                     "event_id": event_id, "device_id": device["id"],
-                    "apns_id": result.apns_id if result.accepted else None,
+                    "apns_id": (result.apns_id or None) if result.accepted else None,
                     "status": "accepted" if result.accepted else "rejected",
                     "http_status": result.http_status,
                     "error_reason": result.reason,
@@ -352,7 +364,7 @@ async def dispatch_due_notifications(
                 }, on_conflict="event_id,device_id").execute()
             await anyio.to_thread.run_sync(_record)
 
-            _log_safe("apns_result", event_id=event_id, device_id=device["id"],
+            _log_safe("push_result", event_id=event_id, device_id=device["id"],
                       apns_id=result.apns_id, environment=device["apns_environment"],
                       http_status=result.http_status, reason=result.reason,
                       latency_ms=result.latency_ms)

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NURI</string>
+    <string name="care_channel_name">关心提醒</string>
+    <string name="care_channel_description">NURI 根据你最近的对话发来的关心和提醒</string>
+</resources>

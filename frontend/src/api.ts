@@ -185,11 +185,12 @@ export type RecommendationEventInput = {
   reason?: RecommendationFeedbackReason;
 };
 
-// Sent by the native iOS shell through the `nuri:apns-token` event and
-// forwarded here unchanged in meaning; field names follow the backend.
+// Sent by a native shell — iOS through `nuri:apns-token`, Android through
+// `nuri:fcm-token` — and forwarded here unchanged in meaning; field names follow
+// the backend, where `apns_token` holds the FCM token for Android.
 export type PushDeviceRegistration = {
   installation_id: string;
-  platform: "ios";
+  platform: "ios" | "android";
   apns_token: string;
   apns_environment: "sandbox" | "production";
   bundle_id: string;
@@ -306,7 +307,7 @@ async function getToken(): Promise<string | null> {
   return (await storage.secureGet(TOKEN_KEY, "")) || null;
 }
 
-// The iOS install id the current session registered for push, written by
+// The native install id the current session registered for push, written by
 // src/usePushBridge.ts. Only a page running inside the native shell ever has
 // one, so for every browser visitor the sign-out path below costs nothing.
 export const PUSH_INSTALLATION_KEY = "nuri.push.installation_id";
