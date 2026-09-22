@@ -71,6 +71,9 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    // Firebase pulls in Fragment 1.1, whose result handling breaks the
+    // permission and file-picker callbacks registered in MainActivity.
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-messaging")
 }
