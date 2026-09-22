@@ -43,6 +43,12 @@ import { useT } from "@/src/i18n";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
+const responseFeedbackIcons = {
+  copy: { uri: "/chat-feedback/copy.svg" },
+  like: { uri: "/chat-feedback/like.svg" },
+  dislike: { uri: "/chat-feedback/dislike.svg" },
+} as const;
+
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
 
@@ -1063,42 +1069,49 @@ function MessageBubble({
             <Pressable
               onPress={() => onCopy?.(msg)}
               style={styles.responseAction}
+              hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel={t("复制回复")}
               testID={`chat-copy-${msg.id}`}
             >
-              <Ionicons name="copy-outline" size={20} color="#493A78" />
+              <Image
+                source={responseFeedbackIcons.copy}
+                style={[styles.responseActionIcon, styles.responseCopyIcon]}
+                contentFit="contain"
+              />
             </Pressable>
             <Pressable
               onPress={() => onFeedback?.(msg, "like")}
               disabled={feedbackSaving}
               style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
+              hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel={t("喜欢这条回复")}
               accessibilityState={{ selected: msg.feedback_rating === "like", disabled: feedbackSaving }}
               aria-pressed={msg.feedback_rating === "like"}
               testID={`chat-like-${msg.id}`}
             >
-              <Ionicons
-                name={msg.feedback_rating === "like" ? "heart" : "heart-outline"}
-                size={21}
-                color={msg.feedback_rating === "like" ? colors.brand : "#493A78"}
+              <Image
+                source={responseFeedbackIcons.like}
+                style={styles.responseActionIcon}
+                contentFit="contain"
               />
             </Pressable>
             <Pressable
               onPress={() => onFeedback?.(msg, "dislike")}
               disabled={feedbackSaving}
               style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
+              hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel={t("不喜欢这条回复")}
               accessibilityState={{ selected: msg.feedback_rating === "dislike", disabled: feedbackSaving }}
               aria-pressed={msg.feedback_rating === "dislike"}
               testID={`chat-dislike-${msg.id}`}
             >
-              <Ionicons
-                name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"}
-                size={20}
-                color={msg.feedback_rating === "dislike" ? colors.brand : "#493A78"}
+              <Image
+                source={responseFeedbackIcons.dislike}
+                style={styles.responseActionIcon}
+                contentFit="contain"
               />
             </Pressable>
           </View>
@@ -1245,17 +1258,20 @@ const styles = StyleSheet.create({
   responseActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    width: 61.6,
+    height: 14,
+    gap: 5.6,
     marginTop: 10,
-    marginLeft: -2,
   },
   responseAction: {
-    width: 30,
-    height: 28,
-    borderRadius: 14,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
   },
+  responseActionIcon: { width: 14, height: 14 },
+  responseCopyIcon: { transform: [{ rotate: "180deg" }] },
   responseActionSelected: { backgroundColor: "rgba(108, 79, 214, 0.12)" },
 
   bold: { fontWeight: "700" },

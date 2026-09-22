@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 function read(relativePath) {
@@ -11,10 +12,26 @@ const preview = read("../src/preview-api.ts");
 const backend = read("../../backend/main.py");
 const migration = read("../../supabase/migrations/20260922010000_chat_message_feedback.sql");
 const admin = read("../src/admin/UsageDashboard.tsx");
+const feedbackIcons = {
+  copy: readFileSync(new URL("../public/chat-feedback/copy.svg", import.meta.url)),
+  like: readFileSync(new URL("../public/chat-feedback/like.svg", import.meta.url)),
+  dislike: readFileSync(new URL("../public/chat-feedback/dislike.svg", import.meta.url)),
+};
 
-assert.match(chat, /copy-outline/, "AI answers must expose Copy");
-assert.match(chat, /heart-outline/, "AI answers must expose Like");
-assert.match(chat, /thumbs-down-outline/, "AI answers must expose Dislike");
+const sha256 = (value) => createHash("sha256").update(value).digest("hex").toUpperCase();
+
+assert.match(chat, /\/chat-feedback\/copy\.svg/, "AI answers must use the Figma Copy asset");
+assert.match(chat, /\/chat-feedback\/like\.svg/, "AI answers must use the Figma Like asset");
+assert.match(chat, /\/chat-feedback\/dislike\.svg/, "AI answers must use the Figma Dislike asset");
+assert.doesNotMatch(chat, /name="copy-outline"/, "Copy must not fall back to Ionicons");
+assert.doesNotMatch(chat, /name=\{msg\.feedback_rating.*heart/, "Like must not fall back to Ionicons");
+assert.doesNotMatch(chat, /name=\{msg\.feedback_rating.*thumbs-down/, "Dislike must not fall back to Ionicons");
+assert.equal(sha256(feedbackIcons.copy), "3F41570EF35828DAB4F39D49BFFCED36E6E2B4CB9B21A18E9BDD208A0F29EA2F", "Copy SVG must remain the exact Figma export");
+assert.equal(sha256(feedbackIcons.like), "A7B472CE22188F7A7A1A97D4E7B1D1515DB6E0F0FCC95AB19DA4EDC329C8A1C7", "Like SVG must remain the exact Figma export");
+assert.equal(sha256(feedbackIcons.dislike), "CA3A2FAF904D4B24D1081F7E1B3B1EC0FE336DFD0D6892D1B57480B4635127E5", "Dislike SVG must remain the exact Figma export");
+assert.match(chat, /width: 61\.6/, "feedback icon row must preserve the Figma width");
+assert.match(chat, /gap: 5\.6/, "feedback icon row must preserve the Figma spacing");
+assert.match(chat, /rotate: "180deg"/, "Copy must preserve the Figma rotation");
 assert.match(chat, /actionsEnabled=\{false\}/, "streaming placeholders must not accept feedback");
 assert.match(chat, /feedbackSavingRef\.current\.has\(message\.id\)/, "rapid duplicate feedback must be locked");
 assert.match(chat, /message\.feedback_rating === rating/, "selected feedback must be idempotent");

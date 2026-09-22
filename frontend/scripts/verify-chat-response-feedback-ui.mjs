@@ -28,6 +28,18 @@ try {
   const dislike = page.locator('[data-testid^="chat-dislike-"]').last();
   const copy = page.locator('[data-testid^="chat-copy-"]').last();
 
+  const expectedIconSources = [
+    [copy, "/chat-feedback/copy.svg"],
+    [like, "/chat-feedback/like.svg"],
+    [dislike, "/chat-feedback/dislike.svg"],
+  ];
+  for (const [button, expectedPath] of expectedIconSources) {
+    const source = await button.locator("img").getAttribute("src");
+    if (!source?.includes(expectedPath)) {
+      throw new Error(`Expected exact Figma asset ${expectedPath}, received ${source}`);
+    }
+  }
+
   if (await page.locator('[data-testid="chat-response-actions-__streaming__"]').count()) {
     throw new Error("streaming placeholder exposed feedback actions");
   }
