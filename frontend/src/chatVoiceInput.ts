@@ -68,7 +68,59 @@ export type VoiceRecording = {
   stop: () => Promise<string>;
   /** Stops and throws the clip away. */
   cancel: () => void;
+  /**
+   * The microphone's current loudness, 0 (silence) to 1, for the waveform
+   * that tells the parent their voice is actually being picked up. null when
+   * this browser gave us no way to measure it.
+   */
+  level: () => number | null;
 };
+
+type LevelMeter = { read: () => number; close: () => void };
+
+// Loudness is read off the same stream the recorder uses, through an
+// AnalyserNode, so a flat line means the clip really is silent.
+function openLevelMeter(stream: MediaStream): LevelMeter | null {
+  const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+  if (!Ctx) return null;
+  try {
+    const ctx: AudioContext = new Ctx();
+    // The context is created after the permission prompt, outside the tap
+    // that started recording, so Safari may hand it over suspended.
+    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    // Older WebKit only runs nodes that reach the destination; a muted gain
+    // keeps the analyser live without playing the mic back.
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    analyser.connect(mute);
+    mute.connect(ctx.destination);
+    const samples = new Uint8Array(analyser.fftSize);
+    return {
+      read: () => {
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i += 1) {
+          const v = (samples[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / samples.length);
+        // Speech sits around 0.02–0.2 RMS; the square root spreads that
+        // across the bar height so a normal voice fills most of it.
+        return Math.min(1, Math.sqrt(rms * 5));
+      },
+      close: () => {
+        try { source.disconnect(); } catch {}
+        void ctx.close().catch(() => {});
+      },
+    };
+  } catch {
+    return null;
+  }
+}
 
 export async function startVoiceRecording(): Promise<VoiceRecording> {
   if (!isVoiceInputSupported()) throw new VoiceInputError("unsupported");
@@ -89,7 +141,11 @@ export async function startVoiceRecording(): Promise<VoiceRecording> {
     throw new VoiceInputError("failed", String(error?.message || error));
   }
 
-  const release = () => stream.getTracks().forEach((track) => track.stop());
+  const meter = openLevelMeter(stream);
+  const release = () => {
+    meter?.close();
+    stream.getTracks().forEach((track) => track.stop());
+  };
   const mimeType = pickMimeType();
   let recorder: MediaRecorder;
   try {
@@ -143,5 +199,6 @@ export async function startVoiceRecording(): Promise<VoiceRecording> {
       } catch {}
       release();
     },
+    level: () => (meter && !finished ? meter.read() : null),
   };
 }

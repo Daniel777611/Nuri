@@ -23,6 +23,7 @@ import { BlurView } from "expo-blur";
 import * as WebBrowser from "expo-web-browser";
 import * as ImagePicker from "expo-image-picker";
 import Toast from "@/src/components/Toast";
+import VoiceWaveform from "@/src/components/VoiceWaveform";
 import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
@@ -230,7 +231,11 @@ export default function ChatDetail() {
   const [processingImage, setProcessingImage] = useState(false);
   const [voiceState, setVoiceState] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
   const [voiceSeconds, setVoiceSeconds] = useState(0);
+  // Whether this browser lets us read the mic level; without it the banner
+  // falls back to the elapsed-time counter.
+  const [voiceMetered, setVoiceMetered] = useState(false);
   const voiceRecordingRef = useRef<VoiceRecording | null>(null);
+  const readVoiceLevel = useCallback(() => voiceRecordingRef.current?.level() ?? null, []);
   const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingNativePickerRef = useRef<"camera" | "library" | null>(null);
   const nativePickerFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -493,6 +498,7 @@ export default function ChatDetail() {
       return;
     }
     setVoiceSeconds(0);
+    setVoiceMetered(voiceRecordingRef.current.level() !== null);
     setVoiceState("recording");
     const startedAt = Date.now();
     voiceTimerRef.current = setInterval(() => {
@@ -734,12 +740,15 @@ export default function ChatDetail() {
             ) : null}
             {voiceState === "recording" ? (
               <View style={styles.voiceBanner} testID="chat-voice-recording">
-                <View style={styles.voiceDot} />
-                <Text style={styles.voiceBannerText}>
-                  {t("正在录音")} {Math.floor(voiceSeconds / 60)}:{String(voiceSeconds % 60).padStart(2, "0")}
-                  {"  ·  "}
-                  {t("再点一次结束")}
-                </Text>
+                <View style={styles.voiceDot} accessibilityLabel={t("正在录音")} />
+                {voiceMetered ? (
+                  <VoiceWaveform level={readVoiceLevel} testID="chat-voice-waveform" />
+                ) : (
+                  <Text style={styles.voiceBannerText}>
+                    {t("正在录音")} {Math.floor(voiceSeconds / 60)}:{String(voiceSeconds % 60).padStart(2, "0")}
+                  </Text>
+                )}
+                <Text style={styles.voiceBannerHint}>{t("再点一次结束")}</Text>
                 <Pressable
                   onPress={cancelVoice}
                   style={styles.imageRemove}
@@ -1535,6 +1544,7 @@ const styles = StyleSheet.create({
   },
   voiceDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#E5484D" },
   voiceBannerText: { flex: 1, fontSize: type.sm, color: "#3A2F5A" },
+  voiceBannerHint: { fontSize: type.sm, color: colors.muted },
   imageMenuOverlay: {
     flex: 1,
     alignItems: "center",
