@@ -678,6 +678,19 @@ class UserMessageIn(BaseModel):
         except core_image_input.InvalidChatImage as exc:
             raise ValueError(str(exc)) from exc
 
+
+class ChatMessageFeedbackIn(BaseModel):
+    rating: Literal["like", "dislike"]
+
+
+def _chat_feedback_table_missing(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "pgrst205" in message
+        or "42p01" in message
+        or ("chat_message_feedback" in message and "does not exist" in message)
+    )
+
 class TaskCreate(BaseModel):
     title:       str
     description: Optional[str] = ""
@@ -4382,6 +4395,28 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
     except Exception as e:
         _raise_chat_storage_error("message history load", e)
 
+    # Keep the human signal attached to the durable answer without copying the
+    # answer into a second, harder-to-govern corpus.
+    ai_ids = [str(m.get("id")) for m in visible_messages if m.get("role") == "ai" and m.get("id")]
+    if ai_ids:
+        try:
+            feedback_result = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_message_feedback")
+                .select("message_id,rating").eq("user_id", uid)
+                .in_("message_id", ai_ids).execute()
+            )
+            ratings = {str(row.get("message_id")): row.get("rating") for row in (feedback_result.data or [])}
+            visible_messages = [
+                {**m, "feedback_rating": ratings.get(str(m.get("id")))} if m.get("role") == "ai" else m
+                for m in visible_messages
+            ]
+        except Exception as exc:
+            # A rolling API deploy can briefly precede the schema. History must
+            # remain readable; writes still fail closed below.
+            logger.warning("chat_feedback_history_annotation_failed", extra={
+                "event": "chat_feedback_history_annotation_failed", "error_type": type(exc).__name__,
+            })
+
     # Recovery context is derived, optional presentation data. A malformed
     # legacy memory row or a temporary failure of the memories query must never
     # turn successfully loaded, durable chat_messages into an empty screen.
@@ -4410,6 +4445,69 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
         )
         recovery = None
     return ([recovery] if recovery else []) + visible_messages
+
+
+@api.put("/chat/sessions/{session_id}/messages/{message_id}/feedback")
+async def set_chat_message_feedback(
+    session_id: str, message_id: str, body: ChatMessageFeedbackIn,
+    uid: str = Depends(_req_uid),
+):
+    """Upsert one authenticated user's mutually-exclusive signal on one AI reply."""
+    sb = _require_chat_storage()
+    await _load_owned_session(session_id, uid, sb)
+    try:
+        result = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,session_id,role,text,created_at,transition")
+            .eq("id", message_id).eq("session_id", session_id).limit(1).execute()
+        )
+        message = (result.data or [None])[0]
+        if (not message or message.get("role") != "ai"
+                or not str(message.get("text") or "").strip()
+                or _is_pending_generation_claim(message)):
+            raise HTTPException(404, "AI response not found")
+
+        history = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages").select("id,role,created_at")
+            .eq("session_id", session_id).order("created_at", desc=False).execute()
+        )
+        source_user_message_id = None
+        for item in history.data or []:
+            if str(item.get("id")) == message_id:
+                break
+            if item.get("role") == "user":
+                source_user_message_id = item.get("id")
+
+        privacy = await stores.get_privacy(uid, fail_closed=True)
+        training_eligible = bool(
+            not privacy.get(stores.PRIVACY_STORAGE_UNAVAILABLE)
+            and privacy.get("allow_history_training") is True
+        )
+        now = _now()
+        row = {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri:chat-feedback:{uid}:{message_id}")),
+            "user_id": uid, "session_id": session_id, "message_id": message_id,
+            "source_user_message_id": source_user_message_id, "rating": body.rating,
+            "training_eligible": training_eligible, "review_status": "pending", "updated_at": now,
+        }
+        saved = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_message_feedback")
+            .upsert(row, on_conflict="user_id,message_id").execute()
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("chat_feedback_save_failed", extra={
+            "event": "chat_feedback_save_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "Feedback could not be saved")
+    stored = (saved.data or [row])[0]
+    return {
+        "message_id": message_id, "rating": stored.get("rating", body.rating),
+        "training_eligible": bool(stored.get("training_eligible", training_eligible)),
+        "review_status": stored.get("review_status", "pending"),
+        "updated_at": stored.get("updated_at", now),
+    }
 
 class _Turn(NamedTuple):
     """Everything established about a chat turn before the AI reply is produced.
@@ -5980,6 +6078,23 @@ async def update_privacy(body: PrivacySettings, uid: str = Depends(_req_uid)):
     if settings.get("allow_history_training") is False:
         await stores.delete_snapshots(uid)
         await core_outcome_store.delete_events(uid)
+        sb = _get_supabase()
+        if sb:
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: sb.table("chat_message_feedback")
+                    .update({"training_eligible": False, "updated_at": _now()})
+                    .eq("user_id", uid).execute()
+                )
+            except Exception as exc:
+                if not _chat_feedback_table_missing(exc):
+                    logger.error("chat_feedback_training_revoke_failed", extra={
+                        "event": "chat_feedback_training_revoke_failed", "error_type": type(exc).__name__,
+                    })
+                    raise HTTPException(
+                        status.HTTP_503_SERVICE_UNAVAILABLE,
+                        "Privacy was saved, but feedback training access could not be revoked",
+                    )
     return settings
 
 _PRIVACY_WIPE_USER_TABLES = (
@@ -5995,6 +6110,7 @@ _PRIVACY_WIPE_USER_TABLES = (
     "favorites",
     "collections",
     "chat_turn_logs",
+    "chat_message_feedback",
     "llm_call_logs",
     "nuri_turn_outcomes",
     "nuri_turn_traces",
@@ -7140,6 +7256,66 @@ async def admin_usage_overview(
     return usage_dashboard.build_overview(
         sources, days=days, tz=zone, now=now, include_internal=include_internal,
     )
+
+
+@app.get("/admin/chat-feedback")
+async def admin_chat_feedback(
+    days: int = 30,
+    rating: Optional[Literal["like", "dislike"]] = None,
+    limit: int = 100,
+    _: None = Depends(_require_admin),
+):
+    """Human-review queue for answer feedback; not a direct training export."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days, limit = max(1, min(days, 90)), max(1, min(limit, 200))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        def load_feedback():
+            query = (sb.table("chat_message_feedback").select("*")
+                     .gte("updated_at", since.isoformat()).order("updated_at", desc=True).limit(1000))
+            return query.eq("rating", rating).execute() if rating else query.execute()
+
+        feedback_rows = list((await anyio.to_thread.run_sync(load_feedback)).data or [])
+        user_ids = sorted({str(r.get("user_id")) for r in feedback_rows if r.get("user_id")})
+        message_ids = sorted({str(v) for r in feedback_rows
+                              for v in (r.get("message_id"), r.get("source_user_message_id")) if v})
+        users, messages = {}, {}
+        if user_ids:
+            result = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select("id,email,nickname").in_("id", user_ids).execute())
+            users = {str(r.get("id")): r for r in (result.data or [])}
+        if message_ids:
+            result = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages").select("id,text,role").in_("id", message_ids).execute())
+            messages = {str(r.get("id")): r for r in (result.data or [])}
+    except Exception as exc:
+        raise HTTPException(503, f"chat feedback unavailable: {type(exc).__name__}")
+
+    totals = {
+        "all": len(feedback_rows),
+        "like": sum(r.get("rating") == "like" for r in feedback_rows),
+        "dislike": sum(r.get("rating") == "dislike" for r in feedback_rows),
+        "training_eligible": sum(r.get("training_eligible") is True for r in feedback_rows),
+    }
+    rows = []
+    for row in feedback_rows[:limit]:
+        user = users.get(str(row.get("user_id")), {})
+        response = messages.get(str(row.get("message_id")), {})
+        prompt = messages.get(str(row.get("source_user_message_id")), {})
+        rows.append({
+            "id": row.get("id"), "rating": row.get("rating"),
+            "created_at": row.get("created_at"), "updated_at": row.get("updated_at"),
+            "training_eligible": bool(row.get("training_eligible")),
+            "review_status": row.get("review_status", "pending"),
+            "user": user.get("nickname") or user.get("email") or "Unknown user",
+            "email": user.get("email") or "", "session_id": row.get("session_id"),
+            "message_id": row.get("message_id"),
+            "prompt": prompt.get("text") if row.get("training_eligible") else None,
+            "response": response.get("text") or "",
+        })
+    return {"days": days, "filter": rating, "totals": totals, "rows": rows}
 
 
 @app.get("/admin/usage/quota")

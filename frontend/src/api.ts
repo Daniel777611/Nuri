@@ -765,6 +765,17 @@ export const api = {
   getOrStartMainSession: () =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
+  setChatMessageFeedback: (sid: string, messageId: string, rating: "like" | "dislike") =>
+    req<{
+      message_id: string;
+      rating: "like" | "dislike";
+      training_eligible: boolean;
+      review_status: "pending" | "approved" | "rejected";
+      updated_at: string;
+    }>(`/chat/sessions/${encodeURIComponent(sid)}/messages/${encodeURIComponent(messageId)}/feedback`, {
+      method: "PUT",
+      body: JSON.stringify({ rating }),
+    }),
   // iOS remote push. The native shell never calls these: it hands the APNs
   // token to this page, and the page registers it with its own session, so the
   // login token never leaves the web layer.

@@ -730,6 +730,21 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   }
   if (/^\/chat\/sessions\/[^/]+$/.test(path) && method === "DELETE") { const sessionId = path.split("/").pop()!; sessions = sessions.filter((s) => s.id !== sessionId); delete messages[sessionId]; return {}; }
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "GET") return messages[path.split("/")[3]] || [];
+  if (/^\/chat\/sessions\/[^/]+\/messages\/[^/]+\/feedback$/.test(path) && method === "PUT") {
+    const parts = path.split("/");
+    const sessionId = parts[3];
+    const messageId = parts[5];
+    const message = (messages[sessionId] || []).find((item) => item.id === messageId && item.role === "ai");
+    if (!message) throw new Error("AI response not found");
+    (message as any).feedback_rating = body.rating;
+    return {
+      message_id: messageId,
+      rating: body.rating,
+      training_eligible: true,
+      review_status: "pending",
+      updated_at: new Date().toISOString(),
+    };
+  }
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "POST") {
     const sessionId = path.split("/")[3]; const user_message = { id: id("msg"), session_id: sessionId, role: "user", text: body.text || "[图片]", created_at: new Date().toISOString() };
     const ai = {

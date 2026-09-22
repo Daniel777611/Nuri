@@ -136,6 +136,17 @@ type CostReport =
       warnings?: string[];
     };
 
+type FeedbackReport = {
+  days: number;
+  filter: "like" | "dislike" | null;
+  totals: { all: number; like: number; dislike: number; training_eligible: number };
+  rows: {
+    id: string; rating: "like" | "dislike"; updated_at: string;
+    training_eligible: boolean; review_status: string; user: string; email: string;
+    prompt: string | null; response: string; message_id: string;
+  }[];
+};
+
 // ── Encoding ─────────────────────────────────────────────────────────────────
 // Every chart here is a single series, so one mark color; identity comes from
 // the title. The heatmap is magnitude: one hue, light -> dark (the validated
@@ -304,6 +315,26 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
     loadCosts();
   }, [loadCosts]);
 
+  const [feedbackFilter, setFeedbackFilter] = useState<"all" | "like" | "dislike">("all");
+  const [feedback, setFeedback] = useState<FeedbackReport | null>(null);
+  const [feedbackError, setFeedbackError] = useState("");
+  const loadFeedback = useCallback(async () => {
+    setFeedbackError("");
+    try {
+      const filter = feedbackFilter === "all" ? "" : `&rating=${feedbackFilter}`;
+      const res = await fetch(`${backend}/admin/chat-feedback?days=${days}&limit=100${filter}`, {
+        headers: { "x-admin-key": adminKey },
+      });
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      setFeedback(await res.json());
+    } catch (e: any) {
+      setFeedback(null);
+      setFeedbackError(`回答反馈加载失败：${String(e?.message || e).slice(0, 200)}`);
+    }
+  }, [adminKey, backend, days, feedbackFilter]);
+
+  useEffect(() => { loadFeedback(); }, [loadFeedback]);
+
   const toggleInternal = async (user: UsageUser) => {
     setTogglingId(user.id);
     try {
@@ -357,6 +388,7 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
             load();
             loadQuota();
             loadCosts(true);
+            loadFeedback();
           }}
           style={styles.refreshBtn}
           testID="usage-refresh"
@@ -527,6 +559,21 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
             </View>
           </View>
 
+          <View style={styles.panelBlock} testID="usage-chat-feedback">
+            <View style={styles.panelHead}>
+              <Text style={styles.panelTitle}>NURI 回答反馈（近 {days} 天）</Text>
+              <View style={styles.segment}>
+                <Chip small label="全部" active={feedbackFilter === "all"} onPress={() => setFeedbackFilter("all")} />
+                <Chip small label="Like" active={feedbackFilter === "like"} onPress={() => setFeedbackFilter("like")} />
+                <Chip small label="Dislike" active={feedbackFilter === "dislike"} onPress={() => setFeedbackFilter("dislike")} />
+              </View>
+            </View>
+            {feedbackError ? <Text style={styles.errorText}>{feedbackError}</Text> : null}
+            {feedback ? <FeedbackSection report={feedback} tz={data.tz} /> : !feedbackError ? (
+              <ActivityIndicator color={MARK} style={{ marginVertical: spacing.sm }} />
+            ) : null}
+          </View>
+
           {/* ── OpenAI bill: what the whole organization was charged ── */}
           <View style={styles.panelBlock} testID="usage-openai-costs">
             <View style={styles.panelHead}>
@@ -607,6 +654,38 @@ function Tile({
       <Text style={[styles.tileValue, alert && styles.tileValueAlert]}>{value}</Text>
       <Text style={styles.tileLabel}>{label}</Text>
       {hint ? <Text style={styles.tileHint}>{hint}</Text> : null}
+    </View>
+  );
+}
+
+function FeedbackSection({ report, tz }: { report: FeedbackReport; tz: string }) {
+  return (
+    <View>
+      <View style={styles.tileRow}>
+        <Tile label="反馈总数" value={String(report.totals.all)} />
+        <Tile label="喜欢" value={String(report.totals.like)} />
+        <Tile label="不喜欢" value={String(report.totals.dislike)} />
+        <Tile label="可进入人工训练审核" value={String(report.totals.training_eligible)} />
+      </View>
+      {!report.rows.length ? <Text style={styles.hint}>当前筛选下还没有反馈。</Text> : null}
+      {report.rows.map((row) => (
+        <View key={row.id} style={styles.feedbackRow}>
+          <View style={styles.feedbackMetaRow}>
+            <Text style={[styles.feedbackBadge, row.rating === "dislike" && styles.feedbackBadgeNegative]}>
+              {row.rating === "like" ? "♥ Like" : "☟ Dislike"}
+            </Text>
+            <Text style={styles.postMeta}>{row.user} · {fmtWhen(row.updated_at, tz)}</Text>
+            <Text style={styles.postMeta}>
+              {row.training_eligible ? "可训练候选 · 待人工审核" : "仅产品反馈 · 未授权训练"}
+            </Text>
+          </View>
+          {row.prompt ? <Text style={styles.feedbackPrompt}>用户：{row.prompt}</Text> : null}
+          <Text style={styles.feedbackResponse}>NURI：{row.response}</Text>
+        </View>
+      ))}
+      <Note>
+        Like / Dislike 是回答质量标签，不会自动进入模型训练。只有开启历史训练授权的记录才进入候选池，并保持“待人工审核”，防止错误反馈直接污染训练标准。
+      </Note>
     </View>
   );
 }
@@ -1222,6 +1301,18 @@ const styles = StyleSheet.create({
   },
   postMeta: { fontSize: 11, color: INK_MUTED },
   postTitle: { fontSize: 13, fontWeight: "600", color: colors.brandPrimary, marginVertical: 2 },
+  feedbackRow: {
+    paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border, gap: 5,
+  },
+  feedbackMetaRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
+  feedbackBadge: {
+    fontSize: 11, fontWeight: "700", color: colors.brandPrimary,
+    backgroundColor: "#EEE9FF", paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill,
+  },
+  feedbackBadgeNegative: { color: colors.error, backgroundColor: "#FFF0F0" },
+  feedbackPrompt: { fontSize: 12, color: INK_SECONDARY, lineHeight: 18 },
+  feedbackResponse: { fontSize: 13, color: INK, lineHeight: 19 },
   quotaRow: {
     paddingVertical: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,

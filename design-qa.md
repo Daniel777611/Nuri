@@ -42,3 +42,43 @@ screen; the compact card uses the Figma material-type tag.
 - `node frontend/scripts/test-nuri-home-preview-contract.mjs` — passed.
 - `frontend/node_modules/.bin/tsc.cmd --noEmit` — passed.
 - In-app browser visual comparison of the signed-in local preview — passed.
+
+---
+
+# Chat response feedback visual QA
+
+**Final result: passed** — reviewed 2026-09-22 against the supplied Murray
+answer-bubble reference at a 402 x 874 browser viewport. No P0, P1, or P2
+visual or interaction defect remains in the response action row.
+
+## Evidence
+
+- Source reference:
+  `C:\Users\wangd\AppData\Local\Temp\codex-clipboard-b0b562ee-09e6-4a2e-8830-7c3ea3cc0199.png`.
+- Clean implementation capture:
+  `frontend/test-results/chat-feedback-402.png`.
+- Selected-state capture:
+  `frontend/test-results/chat-feedback-selected-402.png`.
+- Side-by-side review artifact:
+  `frontend/test-results/chat-feedback-comparison.png`.
+
+## Comparison and interaction checks
+
+| Check | Result |
+| --- | --- |
+| Copy, heart, and thumbs-down order | Matches the supplied reference. |
+| Compact purple outline icons under the answer text | Matches; touch targets are enlarged invisibly to 30 x 28px. |
+| Like / Dislike selection | Mutually exclusive filled state with a subtle purple selection surface. |
+| Streaming response | No actions are exposed until the answer has a durable message ID. |
+| Copy | Browser clipboard contains the exact AI response text. |
+| Feedback persistence behavior | Preview API receives the real session/message/rating contract; failed writes roll back the optimistic state. |
+| Accessibility | Each control has a translated label; Like/Dislike expose `aria-pressed`. |
+| Console/runtime errors | None during the automated interaction run. |
+
+## Verification
+
+- `frontend/node_modules/.bin/tsc.cmd --noEmit` — passed.
+- `node frontend/scripts/test-chat-response-feedback-contract.mjs` — passed.
+- `node frontend/scripts/verify-chat-response-feedback-ui.mjs` — passed: two
+  AI answers rendered action rows at 402 x 874; Copy and Like-to-Dislike
+  switching both succeeded.

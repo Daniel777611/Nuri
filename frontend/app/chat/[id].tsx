@@ -55,7 +55,27 @@ type Msg = {
   image_base64?: string | null;
   quick_replies?: string[];
   transition?: any;
+  feedback_rating?: "like" | "dislike" | null;
 };
+
+async function copyChatText(text: string): Promise<void> {
+  if (Platform.OS !== "web") throw new Error("clipboard unavailable");
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(text);
+    return;
+  }
+  const doc = globalThis.document;
+  if (!doc) throw new Error("clipboard unavailable");
+  const input = doc.createElement("textarea");
+  input.value = text;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  doc.body.appendChild(input);
+  input.select();
+  const copied = doc.execCommand("copy");
+  doc.body.removeChild(input);
+  if (!copied) throw new Error("copy failed");
+}
 
 type MemoryContextItem = {
   category?: string;
@@ -229,7 +249,48 @@ export default function ChatDetail() {
   // the persisted message arrives and replaces it.
   const [streamingText, setStreamingText] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [feedbackSavingIds, setFeedbackSavingIds] = useState<Set<string>>(new Set());
+  const feedbackSavingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<ScrollView>(null);
+  const showToast = useCallback((message: string) => {
+    setToastMsg(message);
+    setTimeout(() => setToastMsg(null), 1800);
+  }, []);
+
+  const copyResponse = useCallback(async (message: Msg) => {
+    try {
+      await copyChatText(message.text);
+      showToast(t("已复制回复"));
+    } catch {
+      showToast(t("复制失败，请重试"));
+    }
+  }, [showToast, t]);
+
+  const rateResponse = useCallback(async (message: Msg, rating: "like" | "dislike") => {
+    if (!id || feedbackSavingRef.current.has(message.id) || message.feedback_rating === rating) return;
+    const previous = message.feedback_rating ?? null;
+    feedbackSavingRef.current.add(message.id);
+    setFeedbackSavingIds((current) => new Set(current).add(message.id));
+    setMessages((current) => current.map((item) =>
+      item.id === message.id ? { ...item, feedback_rating: rating } : item));
+    try {
+      const saved = await api.setChatMessageFeedback(id, message.id, rating);
+      setMessages((current) => current.map((item) =>
+        item.id === message.id ? { ...item, feedback_rating: saved.rating } : item));
+      showToast(t("已记录你的反馈"));
+    } catch {
+      setMessages((current) => current.map((item) =>
+        item.id === message.id ? { ...item, feedback_rating: previous } : item));
+      showToast(t("反馈保存失败，请重试"));
+    } finally {
+      setFeedbackSavingIds((current) => {
+        const next = new Set(current);
+        next.delete(message.id);
+        return next;
+      });
+      feedbackSavingRef.current.delete(message.id);
+    }
+  }, [id, showToast, t]);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -433,11 +494,6 @@ export default function ChatDetail() {
       setVoiceSeconds(seconds);
       if (seconds >= MAX_VOICE_SECONDS) void stopVoice();
     }, 250);
-  };
-
-  const showToast = (message: string) => {
-    setToastMsg(message);
-    setTimeout(() => setToastMsg(null), 1800);
   };
 
   const explainImageError = (error: unknown) => {
@@ -645,11 +701,19 @@ export default function ChatDetail() {
               </Pressable>
             ) : null}
             {messages.map((m) => (
-              <MessageBubble key={m.id} msg={m} />
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                actionsEnabled={!m.id.startsWith("tmp-")}
+                feedbackSaving={feedbackSavingIds.has(m.id)}
+                onCopy={copyResponse}
+                onFeedback={rateResponse}
+              />
             ))}
             {streamingText ? (
               <MessageBubble
                 msg={{ id: "__streaming__", role: "ai", text: streamingText }}
+                actionsEnabled={false}
               />
             ) : null}
             {typing ? <TypingDots /> : null}
@@ -846,7 +910,19 @@ export default function ChatDetail() {
 }
 
 // ── Sub-component: message bubble (text, image, transitions) ────────────────
-function MessageBubble({ msg }: { msg: Msg }) {
+function MessageBubble({
+  msg,
+  actionsEnabled = true,
+  feedbackSaving = false,
+  onCopy,
+  onFeedback,
+}: {
+  msg: Msg;
+  actionsEnabled?: boolean;
+  feedbackSaving?: boolean;
+  onCopy?: (message: Msg) => void;
+  onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
+}) {
   const { t } = useT();
   const isAI = msg.role === "ai";
 
@@ -981,6 +1057,51 @@ function MessageBubble({ msg }: { msg: Msg }) {
               msg.text
             )}
           </Text>
+        ) : null}
+        {isAI && actionsEnabled && msg.text ? (
+          <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
+            <Pressable
+              onPress={() => onCopy?.(msg)}
+              style={styles.responseAction}
+              accessibilityRole="button"
+              accessibilityLabel={t("复制回复")}
+              testID={`chat-copy-${msg.id}`}
+            >
+              <Ionicons name="copy-outline" size={20} color="#493A78" />
+            </Pressable>
+            <Pressable
+              onPress={() => onFeedback?.(msg, "like")}
+              disabled={feedbackSaving}
+              style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={t("喜欢这条回复")}
+              accessibilityState={{ selected: msg.feedback_rating === "like", disabled: feedbackSaving }}
+              aria-pressed={msg.feedback_rating === "like"}
+              testID={`chat-like-${msg.id}`}
+            >
+              <Ionicons
+                name={msg.feedback_rating === "like" ? "heart" : "heart-outline"}
+                size={21}
+                color={msg.feedback_rating === "like" ? colors.brand : "#493A78"}
+              />
+            </Pressable>
+            <Pressable
+              onPress={() => onFeedback?.(msg, "dislike")}
+              disabled={feedbackSaving}
+              style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={t("不喜欢这条回复")}
+              accessibilityState={{ selected: msg.feedback_rating === "dislike", disabled: feedbackSaving }}
+              aria-pressed={msg.feedback_rating === "dislike"}
+              testID={`chat-dislike-${msg.id}`}
+            >
+              <Ionicons
+                name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"}
+                size={20}
+                color={msg.feedback_rating === "dislike" ? colors.brand : "#493A78"}
+              />
+            </Pressable>
+          </View>
         ) : null}
       </View>
     </View>
@@ -1121,6 +1242,21 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
     backgroundColor: colors.surfaceTertiary,
   },
+  responseActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 10,
+    marginLeft: -2,
+  },
+  responseAction: {
+    width: 30,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  responseActionSelected: { backgroundColor: "rgba(108, 79, 214, 0.12)" },
 
   bold: { fontWeight: "700" },
   typingBubble: { paddingVertical: spacing.md },
