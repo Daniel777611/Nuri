@@ -6,10 +6,19 @@ whether sending is possible, and a rejection comes back as a result rather than
 an exception. Firebase is used for delivery only; accounts and data stay in
 Supabase.
 
-Credentials are one service-account key, the JSON file Firebase gives you under
-Project settings → Service accounts, stored whole in ``FCM_SERVICE_ACCOUNT_JSON``.
-Its ``private_key`` already escapes newlines as ``\\n`` inside the JSON string,
-so the file pastes into a Vercel variable unchanged.
+Two ways to get Google's permission to send, tried in this order:
+
+1. **Workload Identity Federation from Vercel** (production). No key exists.
+   Vercel attaches a short-lived OIDC token to every function request as the
+   ``x-vercel-oidc-token`` header; the dispatch route hands it over through
+   :func:`use_vercel_oidc_token`. Google STS swaps it for a federated token,
+   which in turn gets an access token for a service account that may only send
+   FCM messages. Needs the five ``GCP_*`` variables; set up in
+   android/README.md. It exists because the ordashteches.com organization
+   forbids service-account keys (``iam.disableServiceAccountKeyCreation``).
+2. **A service-account key** in ``FCM_SERVICE_ACCOUNT_JSON``: the whole JSON
+   file from Firebase → Project settings → Service accounts. For a project
+   whose organization allows keys, or for sending from a laptop.
 
 As with APNs, an accepted request means Google took the message, not that a
 phone showed it.
@@ -18,6 +27,7 @@ phone showed it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import time
@@ -29,6 +39,11 @@ import jwt
 from backend.push_apns import APNsResult
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+STS_URL = "https://sts.googleapis.com/v1/token"
+IMPERSONATE_URL = (
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
+    "{email}:generateAccessToken"
+)
 SEND_URL = "https://fcm.googleapis.com/v1/projects/{project}/messages:send"
 SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 
@@ -45,14 +60,45 @@ _TOKEN_TTL_SECONDS = 50 * 60
 DEACTIVATING = frozenset({"UNREGISTERED", "SENDER_ID_MISMATCH"})
 RETRYABLE = frozenset({"UNAVAILABLE", "INTERNAL", "QUOTA_EXCEEDED"})
 
+_FEDERATION_VARS = (
+    "GCP_PROJECT_ID", "GCP_PROJECT_NUMBER", "GCP_SERVICE_ACCOUNT_EMAIL",
+    "GCP_WORKLOAD_IDENTITY_POOL_ID", "GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID",
+)
+
 _access_token: Optional[str] = None
 _access_created_at = 0.0
 _token_lock = asyncio.Lock()
 _client: Optional[httpx.AsyncClient] = None
 
+#: The Vercel OIDC token of the request being served. A contextvar rather than
+#: a global, because one warm instance can serve requests concurrently.
+_vercel_oidc_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "vercel_oidc_token", default=None,
+)
+
 
 def package_name() -> str:
     return os.getenv("ANDROID_PACKAGE_NAME", "com.ordashtech.nuri")
+
+
+def use_vercel_oidc_token(token: Optional[str]) -> None:
+    """Make this request's Vercel OIDC token available to the sender."""
+    _vercel_oidc_token.set((token or "").strip() or None)
+
+
+def _federation() -> Optional[dict[str, str]]:
+    values = {name: os.getenv(name, "").strip() for name in _FEDERATION_VARS}
+    return values if all(values.values()) else None
+
+
+def _subject_token() -> Optional[str]:
+    # Inside a deployed function the header is the only source; the variable
+    # exists in builds and after `vercel env pull` on a laptop.
+    return _vercel_oidc_token.get() or os.getenv("VERCEL_OIDC_TOKEN") or None
+
+
+def _use_federation() -> bool:
+    return _federation() is not None and _subject_token() is not None
 
 
 def _service_account() -> Optional[dict]:
@@ -69,7 +115,18 @@ def _service_account() -> Optional[dict]:
 
 
 def configured() -> bool:
-    return _service_account() is not None
+    return _use_federation() or _service_account() is not None
+
+
+def project_id() -> str:
+    if _use_federation():
+        return _federation()["GCP_PROJECT_ID"]
+    info = _service_account()
+    if info is None:
+        raise RuntimeError(
+            "no FCM credentials: set the GCP_* variables or FCM_SERVICE_ACCOUNT_JSON",
+        )
+    return info["project_id"]
 
 
 def _http() -> httpx.AsyncClient:
@@ -93,7 +150,7 @@ def reset_access_token() -> None:
 
 
 async def access_token() -> str:
-    """An OAuth access token for FCM, from the service account's own JWT."""
+    """An OAuth access token for FCM, cached for most of its hour."""
     global _access_token, _access_created_at
     now = time.time()
     if _access_token and now - _access_created_at < _TOKEN_TTL_SECONDS:
@@ -102,31 +159,70 @@ async def access_token() -> str:
         now = time.time()
         if _access_token and now - _access_created_at < _TOKEN_TTL_SECONDS:
             return _access_token
-        info = _service_account()
-        if info is None:
-            raise RuntimeError("FCM_SERVICE_ACCOUNT_JSON is missing or malformed")
-        assertion = jwt.encode(
-            {
-                "iss": info["client_email"],
-                "scope": SCOPE,
-                "aud": info.get("token_uri") or TOKEN_URL,
-                "iat": int(now),
-                "exp": int(now) + 3600,
-            },
-            info["private_key"],
-            algorithm="RS256",
-        )
-        response = await _http().post(
-            info.get("token_uri") or TOKEN_URL,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": assertion,
-            },
-        )
-        response.raise_for_status()
-        _access_token = response.json()["access_token"]
+        if _use_federation():
+            _access_token = await _federated_access_token()
+        else:
+            _access_token = await _key_access_token(now)
         _access_created_at = now
         return _access_token
+
+
+async def _federated_access_token() -> str:
+    """Vercel OIDC token → Google federated token → service account token."""
+    fed = _federation()
+    audience = (
+        f"//iam.googleapis.com/projects/{fed['GCP_PROJECT_NUMBER']}/locations/global/"
+        f"workloadIdentityPools/{fed['GCP_WORKLOAD_IDENTITY_POOL_ID']}/"
+        f"providers/{fed['GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID']}"
+    )
+    exchanged = await _http().post(STS_URL, json={
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "audience": audience,
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "subject_token": _subject_token(),
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+    })
+    exchanged.raise_for_status()
+    # The federated token cannot call FCM itself; it may only act as the one
+    # service account it was granted Workload Identity User on.
+    impersonated = await _http().post(
+        IMPERSONATE_URL.format(email=fed["GCP_SERVICE_ACCOUNT_EMAIL"]),
+        headers={"authorization": f"Bearer {exchanged.json()['access_token']}"},
+        json={"scope": [SCOPE], "lifetime": "3600s"},
+    )
+    impersonated.raise_for_status()
+    return impersonated.json()["accessToken"]
+
+
+async def _key_access_token(now: float) -> str:
+    """An access token from the service-account key's own signed JWT."""
+    info = _service_account()
+    if info is None:
+        raise RuntimeError(
+            "no FCM credentials: set the GCP_* variables or FCM_SERVICE_ACCOUNT_JSON",
+        )
+    token_uri = info.get("token_uri") or TOKEN_URL
+    assertion = jwt.encode(
+        {
+            "iss": info["client_email"],
+            "scope": SCOPE,
+            "aud": token_uri,
+            "iat": int(now),
+            "exp": int(now) + 3600,
+        },
+        info["private_key"],
+        algorithm="RS256",
+    )
+    response = await _http().post(
+        token_uri,
+        data={
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        },
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
 
 
 def _error_code(response: httpx.Response) -> Optional[str]:
@@ -159,9 +255,7 @@ async def send_alert(
     APNs-only ones are ignored) and returns the same result type, so the
     dispatcher does not care which platform a device is on.
     """
-    info = _service_account()
-    if info is None:
-        raise RuntimeError("FCM_SERVICE_ACCOUNT_JSON is missing or malformed")
+    project = project_id()
 
     # FCM data values must be strings. `route` and friends sit at the top
     # level, mirroring the APNs payload, so the shell reads them the same way.
@@ -196,7 +290,7 @@ async def send_alert(
 
     started = time.monotonic()
     response = await _http().post(
-        SEND_URL.format(project=info["project_id"]),
+        SEND_URL.format(project=project),
         headers={"authorization": f"Bearer {await access_token()}"},
         json=payload,
     )

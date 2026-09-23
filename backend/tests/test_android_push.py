@@ -356,3 +356,90 @@ async def test_the_access_token_is_obtained_with_a_signed_service_account_jwt(mo
     assert claims["scope"] == push_fcm.SCOPE
     assert claims["iss"] == "push@nuri-test.iam.gserviceaccount.com"
     push_fcm.reset_access_token()
+
+
+# ── Keyless credentials: Vercel OIDC → Google Workload Identity Federation ───
+
+FEDERATION_ENV = {
+    "GCP_PROJECT_ID": "nuri-933b9",
+    "GCP_PROJECT_NUMBER": "123456789012",
+    "GCP_SERVICE_ACCOUNT_EMAIL": "fcm-sender@nuri-933b9.iam.gserviceaccount.com",
+    "GCP_WORKLOAD_IDENTITY_POOL_ID": "vercel",
+    "GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID": "vercel",
+}
+
+
+@pytest.fixture
+def federation(monkeypatch):
+    for name, value in FEDERATION_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("FCM_SERVICE_ACCOUNT_JSON", raising=False)
+    monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
+    push_fcm.reset_access_token()
+    push_fcm.use_vercel_oidc_token(None)
+    yield
+    push_fcm.use_vercel_oidc_token(None)
+    push_fcm.reset_access_token()
+
+
+def test_federation_needs_the_request_token(federation):
+    """The GCP_* variables alone are not enough: without the OIDC header the
+    dispatcher must hold events rather than fail every one of them."""
+    assert push_fcm.configured() is False
+    push_fcm.use_vercel_oidc_token("vercel.jwt")
+    assert push_fcm.configured() is True
+    assert push_fcm.project_id() == "nuri-933b9"
+
+
+@pytest.mark.anyio
+async def test_the_oidc_token_is_exchanged_then_impersonates_the_sender(federation, monkeypatch):
+    push_fcm.use_vercel_oidc_token("vercel.jwt")
+    calls: list[tuple[str, dict]] = []
+
+    class _Client:
+        async def post(self, url, json=None, headers=None, **_k):
+            calls.append((url, {"json": json, "headers": headers or {}}))
+            body = ({"access_token": "federated"} if "sts.googleapis.com" in url
+                    else {"accessToken": "sa-token", "expireTime": "x"})
+            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+    monkeypatch.setattr(push_fcm, "_http", lambda: _Client())
+    assert await push_fcm.access_token() == "sa-token"
+
+    (sts_url, sts), (sa_url, sa) = calls
+    assert sts_url == push_fcm.STS_URL
+    assert sts["json"]["subject_token"] == "vercel.jwt"
+    assert sts["json"]["audience"] == (
+        "//iam.googleapis.com/projects/123456789012/locations/global/"
+        "workloadIdentityPools/vercel/providers/vercel"
+    )
+    assert sa_url.endswith(
+        "/serviceAccounts/fcm-sender@nuri-933b9.iam.gserviceaccount.com:generateAccessToken",
+    )
+    assert sa["headers"]["authorization"] == "Bearer federated"
+    assert sa["json"]["scope"] == [push_fcm.SCOPE]
+
+
+def test_federation_is_preferred_over_a_key(federation, monkeypatch):
+    monkeypatch.setenv("FCM_SERVICE_ACCOUNT_JSON", SERVICE_ACCOUNT)
+    push_fcm.use_vercel_oidc_token("vercel.jwt")
+    assert push_fcm.project_id() == "nuri-933b9"
+
+
+def test_the_dispatch_route_hands_over_the_vercel_header(client, monkeypatch):
+    seen: dict = {}
+    monkeypatch.setenv("CRON_SECRET", "right")
+    monkeypatch.setattr(main, "_get_supabase", lambda: object())
+    monkeypatch.setattr(push_fcm, "use_vercel_oidc_token",
+                        lambda token: seen.setdefault("token", token))
+
+    async def _dispatch(_sb):
+        return {}
+    monkeypatch.setattr(push_service, "dispatch_due_notifications", _dispatch)
+
+    response = client.get(
+        "/api/internal/push/dispatch",
+        headers={"Authorization": "Bearer right", "x-vercel-oidc-token": "vercel.jwt"},
+    )
+    assert response.status_code == 200
+    assert seen["token"] == "vercel.jwt"

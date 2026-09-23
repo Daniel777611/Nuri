@@ -6433,8 +6433,14 @@ def _require_cron_secret(authorization: Optional[str]) -> None:
 
 
 @api.get("/internal/push/dispatch")
-async def internal_push_dispatch(authorization: Optional[str] = Header(default=None)):
+async def internal_push_dispatch(
+    authorization: Optional[str] = Header(default=None),
+    x_vercel_oidc_token: Optional[str] = Header(default=None),
+):
     _require_cron_secret(authorization)
+    # Vercel puts its OIDC token only on the request, never in the process
+    # environment; FCM trades it for a Google token (see push_fcm).
+    push_fcm.use_vercel_oidc_token(x_vercel_oidc_token)
     sb = _require_push_storage()
     result = await push_service.dispatch_due_notifications(sb)
     return {"ok": True, **result}
