@@ -16,20 +16,41 @@
 |---|---|
 | 外壳 | `android/`（本文件夹） |
 | 网页桥接 | `frontend/src/usePushBridge.ts`：`parseFcmToken` 负责处理 `nuri:fcm-token` 事件 |
-| 后端发送 | `backend/push_fcm.py`（FCM HTTP v1 接口）；`backend/push_service.py` 按设备平台选择用 APNs 还是 FCM 发送 |
+| 后端发送 | `backend/push_fcm.py`（FCM HTTP v1 接口，凭据来自 Vercel OIDC）；`backend/push_service.py` 按设备平台选择用 APNs 还是 FCM 发送 |
 | 数据库 | `supabase/migrations/20260922020000_push_devices_android.sql`：让 `push_devices.platform` 可以存 `android` |
 
 ## 一次性准备
 
-### 1. Firebase（只用来发推送，数据库不迁移）
+### 1. Firebase 与后端发送凭据（只用来发推送，数据库不迁移）
 
-1. 打开 <https://console.firebase.google.com> 新建一个项目，名字随意，例如 `nuri`。Google Analytics 可以关掉。
-2. 在项目里「添加应用」，选 Android，包名填 **`com.ordashtech.nuri`**。
-3. 下载 `google-services.json`，放到 **`android/app/google-services.json`**。这个文件已经被 `.gitignore` 排除，不会提交到 git。
-4. 进入「项目设置 → 服务账号」，点「生成新的私钥」，会下载一个 JSON 文件。**这个文件是密钥，不要提交到 git，也不要贴进聊天里。**
-5. 把这个 JSON 文件的**全部内容**原样粘贴进 Vercel 的环境变量 `FCM_SERVICE_ACCOUNT_JSON`（Production 和 Preview 都要勾选），然后重新部署。
+**App 这边：** 在 Firebase 项目 `nuri-933b9` 里添加 Android 应用，包名填 `com.ordashtech.nuri`，下载 `google-services.json` 放到 `android/app/`。这个文件已经被 `.gitignore` 排除。
 
-没有 `google-services.json` 也能打包运行：网页、语音、图片都能正常用，只是不会注册推送。
+**后端这边不使用密钥。** 组织 ordashteches.com 开启了 `iam.disableServiceAccountKeyCreation`，不允许下载服务账号密钥。所以后端用 Vercel 的 OIDC 身份证明换取 Google 令牌（Workload Identity Federation）：
+
+1. **Vercel：** 项目设置 → Security → Secure Backend Access with OIDC Federation，Issuer Mode 选 **Team**，保存。
+2. **Google Cloud（项目 nuri-933b9）：** IAM 和管理 → 工作负载身份联合 → 创建池。
+   - 池：名称 `Vercel`，ID `vercel`。
+   - 提供方：类型 OpenID Connect (OIDC)，ID `vercel`，签发者网址填 `https://oidc.vercel.com/ordashtech`。受众选「允许的受众」，填 `https://vercel.com/ordashtech`。
+   - 属性映射：`google.subject` = `assertion.sub`。
+   - 属性条件：`assertion.sub == 'owner:ordashtech:project:nuri:environment:production'`。这样只有生产环境能发推送，预览环境发不了（预览环境连的也是生产库）。
+3. **专用服务账号：** IAM 和管理 → 服务账号 → 创建，ID 填 `fcm-sender`，项目角色**只给** `Firebase Cloud Messaging API Admin`。
+4. **授权 Vercel 使用这个服务账号：** 打开 `fcm-sender` → 权限 → 授予访问权限。主账号填
+   `principal://iam.googleapis.com/projects/<项目编号>/locations/global/workloadIdentityPools/vercel/subject/owner:ordashtech:project:nuri:environment:production`，
+   角色选 `Workload Identity User`。
+5. **启用 API：** IAM Service Account Credentials API、Security Token Service API、Firebase Cloud Messaging API。
+6. **Vercel 环境变量（只勾 Production）。** 这些都不是密钥：
+
+   | 变量 | 值 |
+   |---|---|
+   | `GCP_PROJECT_ID` | `nuri-933b9` |
+   | `GCP_PROJECT_NUMBER` | 项目编号（Cloud 控制台首页「项目信息」里能看到） |
+   | `GCP_SERVICE_ACCOUNT_EMAIL` | `fcm-sender@nuri-933b9.iam.gserviceaccount.com` |
+   | `GCP_WORKLOAD_IDENTITY_POOL_ID` | `vercel` |
+   | `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID` | `vercel` |
+
+注意：如果 Vercel 的团队或项目改了名，身份证明里的 `sub` 也会跟着变，推送会停掉。改名后要同步修改第 2 步的属性条件和第 4 步的主账号。
+
+没有 `google-services.json` 也能打包运行：网页、语音、图片都正常，只是不会注册推送。
 
 ### 2. 数据库
 
