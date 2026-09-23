@@ -56,12 +56,17 @@ export default function NotificationScreen() {
       ? (state.data.target as Extract<NotificationDetail["target"], { kind: "learning_card" }>)
       : null;
 
+  const post =
+    state.kind === "ready" && state.data.target.kind === "daily_post"
+      ? (state.data.target as Extract<NotificationDetail["target"], { kind: "daily_post" }>)
+      : null;
+
   // The server's `content` repeats the card's title and summary after a blank
   // line, for clients that cannot render the card. This screen renders the
   // card itself, so it shows only the note.
   const note =
     state.kind === "ready"
-      ? card
+      ? card || post
         ? state.data.content.split(/\n\s*\n/)[0]
         : state.data.content
       : "";
@@ -118,6 +123,26 @@ export default function NotificationScreen() {
                 {!!card.summary && <Text style={styles.cardSummary}>{card.summary}</Text>}
                 <View style={styles.cardCta}>
                   <Text style={styles.cardCtaText}>{card.cta || t("浏览详情")}</Text>
+                  <Ionicons name="arrow-forward" size={16} color={colors.brandPrimary} />
+                </View>
+              </Pressable>
+            </View>
+          )}
+
+          {post && (
+            <View style={styles.cardSection}>
+              <Text style={styles.cardEyebrow}>{t("为你挑的一篇内容")}</Text>
+              <Pressable
+                style={styles.card}
+                onPress={() => router.push(post.route as never)}
+                accessibilityRole="button"
+                testID="notification-daily-post"
+              >
+                <Text style={styles.cardTopic}>{t("每日精选")}</Text>
+                <Text style={styles.cardTitle}>{post.title}</Text>
+                {!!post.summary && <Text style={styles.cardSummary}>{post.summary}</Text>}
+                <View style={styles.cardCta}>
+                  <Text style={styles.cardCtaText}>{t("点击查看更多")}</Text>
                   <Ionicons name="arrow-forward" size={16} color={colors.brandPrimary} />
                 </View>
               </Pressable>

@@ -1559,6 +1559,16 @@ async def get_daily_post(tz: Optional[str] = None, uid: str = Depends(_req_uid))
     return await feed_daily_post.get_daily_post(uid, tz)
 
 
+@api.get("/feed/daily-post/{row_id}")
+async def get_daily_post_by_id(row_id: str, uid: str = Depends(_req_uid)):
+    """One earlier card of this parent's, for a notification that named it.
+    Someone else's card answers 404, like one that does not exist."""
+    card = await feed_daily_post.get_card(uid, row_id)
+    if not card:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "daily post not found")
+    return {"state": "ready", "day": card.get("day"), "card": card}
+
+
 class DailyPostEventIn(BaseModel):
     event: Literal["open", "source_click", "chat"]
 
@@ -6393,7 +6403,20 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
     row = rows[0]
     data = row.get("data") or {}
     target: dict = {"kind": row["type"]}
-    card_id = data.get("card_id")
+    post_id = data.get("daily_post_id")
+    post = await feed_daily_post.get_card(uid, str(post_id)) if post_id else None
+    if post:
+        # Opened by id, not as "today's": the parent's day may have turned
+        # over since the notification was sent.
+        target = {
+            "kind": "daily_post",
+            "id": post["id"],
+            "route": f"/daily-post?id={post['id']}",
+            "title": post.get("headline", ""),
+            "summary": "；".join((post.get("takeaways") or [])[:2]),
+            "source_label": post.get("source_label", ""),
+        }
+    card_id = None if post else data.get("card_id")
     if card_id:
         card = LEARNING_CONTENT_BY_ID.get(card_id)
         if card:

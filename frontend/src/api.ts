@@ -209,6 +209,10 @@ export type NotificationDetail = {
   target:
     | { kind: "learning_card"; id: string; route: string; title: string; summary: string;
         topic_label: string; type_label: string; cta: string }
+    // The daily featured post the notification was sent with; `route` opens
+    // that post by id, since "today's" may be another one by the time of the tap.
+    | { kind: "daily_post"; id: string; route: string; title: string; summary: string;
+        source_label: string }
     | { kind: string };
   created_at?: string;
 };
@@ -829,6 +833,9 @@ export const api = {
     const tz = deviceTimeZone();
     return req(`/feed/daily-post${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
   },
+  // An earlier card by id, for a care notification that named it.
+  getDailyPostById: (id: string): Promise<DailyPostResponse> =>
+    req(`/feed/daily-post/${encodeURIComponent(id)}`),
   dailyPostEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req(`/feed/daily-post/${encodeURIComponent(id)}/events`, {
       method: "POST",

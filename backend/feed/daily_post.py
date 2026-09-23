@@ -942,6 +942,31 @@ async def get_daily_post(user_id: str, tz_name: Optional[str], *, now: Optional[
     return {**base, "state": "ready", "card": public_card(row, audience=audience, nickname=nickname)}
 
 
+async def get_card(user_id: str, row_id: str) -> Optional[dict]:
+    """One of this parent's cards by id, whatever day it was made for.
+
+    A care notification names the card it was sent with; by the time the
+    parent taps it their local day may have turned over and "today's" card is
+    a different one, so the notification opens this one instead.
+    """
+    sb = runtime.get_supabase()
+    if not sb:
+        return None
+    try:
+        row = await anyio.to_thread.run_sync(lambda: DailyPostStore(sb).load_by_id(user_id, row_id))
+    except Exception:
+        return None
+    if not row or row.get("status") != "ready" or not row.get("card"):
+        return None
+    try:
+        profile, _children = await family_store.load_profile(user_id)
+    except Exception:
+        profile = {}
+    audience = "mom" if profile.get("parent_role") == "mom" else "parent"
+    nickname = str(profile.get("nickname") or "").strip()
+    return public_card(row, audience=audience, nickname=nickname)
+
+
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[Plan]]:
     from backend.feed import signals as feed_signals
 

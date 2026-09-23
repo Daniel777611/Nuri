@@ -224,32 +224,66 @@ class CareMessage:
     full_content: str
     card: Optional[dict]
     keywords: list[str]
+    #: The parent's daily featured post (backend/feed/daily_post.py) when one
+    #: could be made. It leads the notification and `card` is then None.
+    post: Optional[dict] = None
 
     def payload_data(self) -> dict[str, Any]:
         """The `data` block. §4.1: small, non-sensitive identifiers only."""
         data: dict[str, Any] = {"kind": "care"}
+        if self.post:
+            data["daily_post_id"] = self.post["id"]
         if self.card:
             data["card_id"] = self.card["id"]
         return data
 
 
-def build_prompt(signals: CareSignals, card: Optional[dict], nickname: str = "") -> str:
-    """The instruction that produces a lock-screen-safe caring line."""
-    subjects = "、".join(signals.keywords()[:6]) or "最近的育儿日常"
+def post_title(post: dict) -> str:
+    """The notification title when a featured post leads it: its headline."""
+    return _clip(str(post.get("headline") or ""), TITLE_MAX_CHARS)
+
+
+def build_prompt(
+    signals: CareSignals, card: Optional[dict], nickname: str = "",
+    post: Optional[dict] = None,
+) -> str:
+    """The instruction that produces a lock-screen-safe caring line.
+
+    With a featured post the title is already the post's headline, so the
+    model writes only the body: care tied to what the parent has been talking
+    about, leading into the post. With no recent chat it is a plain hello.
+    """
+    subjects = "、".join(signals.keywords()[:6])
     notes = "；".join(signals.private_notes[:3])
-    card_line = (
-        f"随后会附上一张 NURI 的内容卡片：《{card['title']}》（主题：{card.get('topic_label', '')}）。"
-        if card else "这次不附内容卡片。"
+    if post:
+        attach = (
+            f"通知的标题已经定好，是今天为这位家长挑的一篇其他家长的经验分享：《{post.get('headline', '')}》。"
+            "你只写正文：一两句关心或小建议，自然地引向这篇分享，让家长愿意点开看看。"
+        )
+    elif card:
+        attach = f"随后会附上一张 NURI 的内容卡片：《{card['title']}》（主题：{card.get('topic_label', '')}）。"
+    else:
+        attach = "这次不附内容卡片。"
+    about = (
+        f"这位家长最近和 NURI 聊到的主题：{subjects}。\n"
+        if subjects else
+        "这位家长最近没有和 NURI 聊天。写一句不针对具体话题的问候，不要假装知道 TA 在忙什么。\n"
+    )
+    shape = (
+        "1. 只输出一行正文。不要写标题，不要写任何其他内容，不要加引号或标签。\n"
+        f"2. 正文不超过 {BODY_MAX_CHARS} 个字。\n"
+        if post else
+        "1. 输出两行。第一行是标题，第二行是正文。不要写任何其他内容，不要加引号或标签。\n"
+        f"2. 标题不超过 {TITLE_MAX_CHARS} 个字，正文不超过 {BODY_MAX_CHARS} 个字。\n"
     )
     return (
         "你要写一条推送通知，向一位家长表达简短的关心。\n"
-        f"这位家长最近关注的主题：{subjects}。\n"
+        + about
         + (f"补充背景（仅供你理解，禁止复述）：{notes}\n" if notes else "")
-        + card_line
+        + attach
         + "\n\n严格要求：\n"
-        "1. 输出两行。第一行是标题，第二行是正文。不要写任何其他内容，不要加引号或标签。\n"
-        f"2. 标题不超过 {TITLE_MAX_CHARS} 个字，正文不超过 {BODY_MAX_CHARS} 个字。\n"
-        "3. 这条通知会显示在锁屏上，旁边可能有别人。因此绝对不能出现：孩子的名字、"
+        + shape
+        + "3. 这条通知会显示在锁屏上，旁边可能有别人。因此绝对不能出现：孩子的名字、"
         "年龄、生日、任何具体的家庭情况、诊断或健康细节、家长说过的原话。\n"
         "4. 用温暖、平稳的口吻，像一个记得你在忙什么的顾问，而不是客服或广告。\n"
         "5. 不要提问，不要用感叹号堆砌情绪，不要承诺疗效。\n"
@@ -270,18 +304,28 @@ def parse_completion(text: str) -> tuple[str, str]:
     return _clip(lines[0], TITLE_MAX_CHARS), _clip(" ".join(lines[1:]), BODY_MAX_CHARS)
 
 
-def fallback_message(card: Optional[dict]) -> tuple[str, str]:
+def parse_body(text: str) -> str:
+    """The single body line asked for when a featured post supplies the title."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    lines = [re.sub(r"^(标题|正文|title|body)\s*[:：]\s*", "", ln, flags=re.I) for ln in lines]
+    lines = [ln.strip("「」“”\"'") for ln in lines if ln.strip("「」“”\"'")]
+    return _clip(" ".join(lines), BODY_MAX_CHARS) if lines else ""
+
+
+def fallback_message(card: Optional[dict], post: Optional[dict] = None) -> tuple[str, str]:
     """What to send when the model is unavailable.
 
     Deliberately generic. Without a model there is no safe way to allude to a
     parent's situation, and a wrong guess is worse than a plain hello.
     """
+    if post:
+        return post_title(post), "最近辛苦了。今天找到一位家长的经验分享，也许用得上。"
     if card:
         return "NURI 想和你说句话", "最近辛苦了。这里有一篇也许用得上的内容。"
     return "NURI 想和你说句话", "最近辛苦了，记得也照顾一下自己。"
 
 
-def compose_full_content(body: str, card: Optional[dict]) -> str:
+def compose_full_content(body: str, card: Optional[dict], post: Optional[dict] = None) -> str:
     """The text the app shows after the notification is opened.
 
     Read through an authorised endpoint, so this may be specific in ways the
@@ -289,7 +333,13 @@ def compose_full_content(body: str, card: Optional[dict]) -> str:
     because nothing upstream put one here.
     """
     parts = [body]
-    if card:
+    if post:
+        parts.append("")
+        parts.append(f"《{post.get('headline', '')}》")
+        takeaways = [str(t).strip() for t in (post.get("takeaways") or []) if str(t).strip()]
+        if takeaways:
+            parts.append("；".join(takeaways[:2]))
+    elif card:
         parts.append("")
         parts.append(f"《{card['title']}》")
         summary = (card.get("summary") or "").strip()

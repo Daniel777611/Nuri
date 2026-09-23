@@ -16,7 +16,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
@@ -43,11 +43,12 @@ export default function DailyPostScreen() {
   const [card, setCard] = useState<DailyPostCard | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [openingChat, setOpeningChat] = useState(false);
+  // Set when a care notification opens a specific card; otherwise today's.
+  const { id } = useLocalSearchParams<{ id?: string }>();
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getDailyPost()
+    (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
       .then((res) => {
         if (cancelled) return;
         if (res.state === "ready" && res.card) {
@@ -61,7 +62,7 @@ export default function DailyPostScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [id]);
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
 

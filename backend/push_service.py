@@ -57,6 +57,25 @@ def _log_safe(message: str, **fields: Any) -> None:
 
 # ── Creating a care event ─────────────────────────────────────────────────────
 
+async def _featured_post(sb: Any, uid: str) -> Optional[dict]:
+    """The parent's featured post for their local day, making it if needed.
+
+    The same card Home shows (backend/feed/daily_post.py), so the notification
+    and the app agree. Making one searches and calls a model, which takes a few
+    seconds; a failure only means the notification falls back to a card.
+    """
+    from backend.feed import daily_post as feed_daily_post
+
+    zone = (await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))).get("time_zone")
+    try:
+        result = await feed_daily_post.get_daily_post(uid, zone)
+    except Exception as exc:  # noqa: BLE001 - the notification can go without it
+        log.warning("featured post failed: %s", type(exc).__name__)
+        return None
+    card = result.get("card") if result.get("state") == "ready" else None
+    return card if card and card.get("id") and card.get("headline") else None
+
+
 async def generate_care_event(
     sb: Any,
     uid: str,
@@ -66,19 +85,19 @@ async def generate_care_event(
 ) -> Optional[dict]:
     """Compose one caring notification for an account and queue it.
 
-    Returns the queued row, or ``None`` when there is nothing worth saying —
-    an account with no recent history gets silence rather than a generic
-    greeting it never asked for.
+    Led by the parent's daily featured post when one can be made: its
+    headline is the title, and the model writes a line of care from recent
+    chat that leads into it. An account with no recent chat still gets a plain
+    hello. Returns the queued row, or ``None`` if one is already queued today.
     """
     from backend.nuri_core import dialogue_reply as core_dialogue_reply
     from backend.nuri_core import family_store as core_family_store
 
     now = now or _now()
     signals = await anyio.to_thread.run_sync(lambda: care.gather_signals(sb, uid, now=now))
-    if signals.is_empty():
-        return None
-
-    card = care.match_card(signals)
+    post = await _featured_post(sb, uid)
+    # The learning card is the fallback for a day with no featured post.
+    card = None if post else care.match_card(signals)
 
     nickname = ""
     try:
@@ -88,7 +107,7 @@ async def generate_care_event(
     except Exception:
         profile_ctx = ""
 
-    prompt = care.build_prompt(signals, card, nickname)
+    prompt = care.build_prompt(signals, card, nickname, post=post)
     title = body = ""
     try:
         style_ctx = await core_dialogue_reply.get_style_rules_ctx()
@@ -97,17 +116,21 @@ async def generate_care_event(
                 [{"role": "user", "text": prompt}], "", "", profile_ctx, style_ctx,
             )
         )
-        title, body = care.parse_completion(reply.get("text", ""))
+        text = reply.get("text", "")
+        if post:
+            title, body = care.post_title(post), care.parse_body(text)
+        else:
+            title, body = care.parse_completion(text)
     except Exception as exc:  # noqa: BLE001 - a failed line must not fail the run
         log.warning("care composition failed: %s", type(exc).__name__)
 
     if not title or not body:
-        title, body = care.fallback_message(card)
+        title, body = care.fallback_message(card, post)
 
     message = care.CareMessage(
         title=title, body=body,
-        full_content=care.compose_full_content(body, card),
-        card=card, keywords=signals.keywords(),
+        full_content=care.compose_full_content(body, card, post),
+        card=card, keywords=signals.keywords(), post=post,
     )
 
     day = (scheduled_at or now).astimezone(timezone.utc).date().isoformat()
@@ -120,7 +143,9 @@ async def generate_care_event(
         "data": message.payload_data(),
         "thread_id": CARE_THREAD_ID,
         "collapse_id": f"care-{day}"[:64],
-        "dedupe_key": care.dedupe_key(uid, day, (card or {}).get("id", "")),
+        # One per account per day, whatever it carries: a retry that finds a
+        # different post must not queue a second notification.
+        "dedupe_key": care.dedupe_key(uid, day),
         "scheduled_at": _iso(scheduled_at or now),
         "full_content": message.full_content,
         "status": "queued",
