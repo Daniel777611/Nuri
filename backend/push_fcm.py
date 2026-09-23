@@ -52,6 +52,11 @@ SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 #: icon in the status bar. The id must match ``NuriApp.CARE_CHANNEL_ID``.
 CARE_CHANNEL_ID = "nuri_care"
 
+#: What a tap on the notification opens. A distinct action, because a tap that
+#: reuses the launcher intent only brings a running app to the front and the
+#: route never reaches it. Must match MainActivity.ACTION_OPEN_NOTIFICATION.
+CLICK_ACTION = "com.ordashtech.nuri.OPEN_NOTIFICATION"
+
 #: Google access tokens last an hour; refresh early so one never expires
 #: between being read and being used.
 _TOKEN_TTL_SECONDS = 50 * 60
@@ -270,6 +275,7 @@ async def send_alert(
         "priority": "HIGH",
         "notification": {
             "channel_id": CARE_CHANNEL_ID,
+            "click_action": CLICK_ACTION,
             "default_sound": True,
             "notification_priority": "PRIORITY_HIGH",
             "visibility": "PRIVATE",

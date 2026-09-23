@@ -102,6 +102,8 @@ async def test_the_payload_asks_for_a_heads_up_popup(monkeypatch):
     assert message["token"] == FCM_TOKEN
     assert message["android"]["priority"] == "HIGH"
     assert message["android"]["notification"]["channel_id"] == push_fcm.CARE_CHANNEL_ID
+    # Without its own action a tap only brings the running app forward.
+    assert message["android"]["notification"]["click_action"] == push_fcm.CLICK_ACTION
     assert message["data"]["route"] == "/notifications/n1"
     # FCM rejects non-string data values.
     assert all(isinstance(v, str) for v in message["data"].values())

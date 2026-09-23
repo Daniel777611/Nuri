@@ -26,6 +26,7 @@ class NuriMessagingService : FirebaseMessagingService() {
         val route = message.data["route"]
 
         val open = Intent(this, MainActivity::class.java)
+            .setAction(MainActivity.ACTION_OPEN_NOTIFICATION)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(MainActivity.EXTRA_ROUTE, route)
         val tap = PendingIntent.getActivity(

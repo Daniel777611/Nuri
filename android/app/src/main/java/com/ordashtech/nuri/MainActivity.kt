@@ -14,6 +14,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -74,10 +75,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         webView = WebView(this)
-        setContentView(webView)
         // Android 15 draws apps edge to edge; keep the page clear of the bars
-        // and above the keyboard.
-        ViewCompat.setOnApplyWindowInsetsListener(webView) { view, insets ->
+        // and above the keyboard. The padding goes on a container because a
+        // WebView ignores its own padding and would still draw under the
+        // status bar.
+        val root = FrameLayout(this).apply { addView(webView) }
+        setContentView(root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime(),
             )
@@ -252,5 +256,13 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** FCM puts payload data in the launch intent's extras under its own key. */
         const val EXTRA_ROUTE = "route"
+
+        /**
+         * The action a tapped notification opens with; the backend names it as
+         * FCM `click_action`. It has to differ from the launcher's MAIN action:
+         * an intent equal to the task's root intent only brings the running
+         * app to the front, and onNewIntent — with the route — never arrives.
+         */
+        const val ACTION_OPEN_NOTIFICATION = "com.ordashtech.nuri.OPEN_NOTIFICATION"
     }
 }
