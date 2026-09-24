@@ -43,6 +43,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 	</dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>NURI 需要使用相机，让你在对话中拍摄图片并交由 AI 分析。</string>
 	<key>NSMicrophoneUsageDescription</key>
