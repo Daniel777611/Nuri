@@ -65,6 +65,14 @@ type Msg = {
   feedback_rating?: "like" | "dislike" | null;
 };
 
+/** `transition.post` on a card marker written when a post notification is opened. */
+type DailyPostOnMessage = {
+  id: string;
+  headline: string;
+  takeaways?: string[];
+  source_label?: string;
+};
+
 async function copyChatText(text: string): Promise<void> {
   if (Platform.OS !== "web") throw new Error("clipboard unavailable");
   if (globalThis.navigator?.clipboard?.writeText) {
@@ -939,7 +947,12 @@ function MessageBubble({
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
 }) {
   const { t } = useT();
+  const router = useRouter();
   const isAI = msg.role === "ai";
+  // A featured post NURI brought in from a tapped notification: the marker is
+  // also NURI's message, and the post rides on it as a card.
+  const post: DailyPostOnMessage | null =
+    msg.transition?.kind === "card_opened" && msg.transition.post?.id ? msg.transition.post : null;
 
   if (msg.transition?.kind === "memory_context") {
     return <MemoryContextCard transition={msg.transition as MemoryContextTransition} />;
@@ -949,7 +962,7 @@ function MessageBubble({
   // marks where the subject changed instead of the card getting a chat of its
   // own. It carries no text — it is a separator, not something anyone said —
   // and without this branch it would render as an empty bubble.
-  if (msg.transition?.kind === "card_opened") {
+  if (msg.transition?.kind === "card_opened" && !post) {
     return (
       <View style={styles.cardDivider} testID="chat-card-divider">
         <View style={styles.cardDividerLine} />
@@ -1072,6 +1085,26 @@ function MessageBubble({
               msg.text
             )}
           </Text>
+        ) : null}
+        {post ? (
+          <Pressable
+            style={styles.postCard}
+            onPress={() => router.push(`/daily-post?id=${encodeURIComponent(post.id)}` as never)}
+            accessibilityRole="button"
+            testID="chat-daily-post-card"
+          >
+            <Text style={styles.postCardEyebrow}>{t("每日精选")}</Text>
+            <Text style={styles.postCardTitle}>{post.headline}</Text>
+            {(post.takeaways || []).slice(0, 2).map((line, i) => (
+              <Text key={i} style={styles.postCardLine} numberOfLines={2}>
+                · {line}
+              </Text>
+            ))}
+            <View style={styles.postCardCta}>
+              <Text style={styles.postCardCtaText}>{t("点击查看更多")}</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.brand} />
+            </View>
+          </Pressable>
         ) : null}
         {isAI && actionsEnabled && msg.text ? (
           <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
@@ -1304,6 +1337,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   cardDividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  postCard: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100, 76, 195, 0.24)",
+    backgroundColor: "rgba(250, 248, 255, 0.94)",
+    gap: 6,
+  },
+  postCardEyebrow: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
+  postCardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#241C3F" },
+  postCardLine: { fontSize: type.sm, lineHeight: 19, color: colors.onSurfaceTertiary },
+  postCardCta: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
+  postCardCtaText: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
   cardDividerLabel: {
     flexDirection: "row",
     alignItems: "center",

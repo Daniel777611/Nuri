@@ -383,7 +383,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     return { text: "小满最近晚上总是醒好几次，我该怎么办？" };
   }
   // A fixed sample so the daily card can be reviewed without search or a model.
-  if (routePath === "/feed/daily-post") {
+  // By id (a tapped notification or chat card) it is the same sample.
+  if (routePath === "/feed/daily-post" || (routePath.startsWith("/feed/daily-post/") && method === "GET")) {
     return {
       state: "ready",
       day: new Date().toISOString().slice(0, 10),
@@ -413,6 +414,37 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     };
   }
   if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
+  // A tapped notification, as the server writes it into the conversation.
+  // Open /notifications/preview-post or /notifications/preview-care to review
+  // either kind; a second open adds nothing, as on the server.
+  if (/^\/notifications\/[^/]+\/open$/.test(routePath) && method === "POST") {
+    const notificationId = routePath.split("/")[2];
+    const session = await previewRequest("/chat/sessions", { method: "POST", body: "{}" });
+    const messageId = `notification-${notificationId}`;
+    const list = messages[session.id] || [];
+    const isPost = notificationId.includes("post");
+    if (!list.some((message: any) => message.id === messageId)) {
+      const daily = (await previewRequest("/feed/daily-post")).card;
+      messages[session.id] = [...list, {
+        id: messageId,
+        session_id: session.id,
+        role: "ai",
+        created_at: new Date().toISOString(),
+        text: isPost
+          ? `今天给你挑了一篇其他家长的经验分享：《${daily.headline}》，点下面的卡片可以看全文。\n看完想聊聊其中哪一点，或者说说你家的情况，我们一起看看怎么用得上。`
+          : "最近的夜醒辛苦了，慢慢来就好。想聊聊的时候，我一直在。",
+        transition: isPost
+          ? {
+              kind: "card_opened",
+              card_id: daily.card_id,
+              title: daily.headline,
+              post: { id: daily.id, headline: daily.headline, takeaways: daily.takeaways, source_label: daily.source_label },
+            }
+          : null,
+      }];
+    }
+    return { session_id: session.id, kind: isPost ? "daily_post" : "care" };
+  }
 
   if (path === "/auth/me" && method === "PUT") return (profile = { ...profile, ...body });
   if (path === "/auth/me") return profile;

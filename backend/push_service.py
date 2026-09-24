@@ -55,14 +55,36 @@ def _log_safe(message: str, **fields: Any) -> None:
     log.info("%s %s", message, payload)
 
 
-# ── Creating a care event ─────────────────────────────────────────────────────
+# ── Creating the daily events ─────────────────────────────────────────────────
+
+#: Local hour the care line goes out. The featured post goes out when the day's
+#: run makes it (the morning, for most parents); care waits for the evening, so
+#: the two never land on the lock screen together.
+CARE_LOCAL_HOUR = 18
+
+
+def _zone(prefs: dict) -> Any:
+    try:
+        return ZoneInfo(prefs.get("time_zone") or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
+
+
+def next_local_hour(prefs: dict, hour: int, now: datetime) -> datetime:
+    """The next time the parent's own clock reads ``hour``:00, in UTC."""
+    local = now.astimezone(_zone(prefs))
+    target = local.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return target.astimezone(timezone.utc)
+
 
 async def _featured_post(sb: Any, uid: str) -> Optional[dict]:
     """The parent's featured post for their local day, making it if needed.
 
     The same card Home shows (backend/feed/daily_post.py), so the notification
     and the app agree. Making one searches and calls a model, which takes a few
-    seconds; a failure only means the notification falls back to a card.
+    seconds; a failure only means there is no post notification today.
     """
     from backend.feed import daily_post as feed_daily_post
 
@@ -76,80 +98,8 @@ async def _featured_post(sb: Any, uid: str) -> Optional[dict]:
     return card if card and card.get("id") and card.get("headline") else None
 
 
-async def generate_care_event(
-    sb: Any,
-    uid: str,
-    *,
-    scheduled_at: Optional[datetime] = None,
-    now: Optional[datetime] = None,
-) -> Optional[dict]:
-    """Compose one caring notification for an account and queue it.
-
-    Led by the parent's daily featured post when one can be made: its
-    headline is the title, and the model writes a line of care from recent
-    chat that leads into it. An account with no recent chat still gets a plain
-    hello. Returns the queued row, or ``None`` if one is already queued today.
-    """
-    from backend.nuri_core import dialogue_reply as core_dialogue_reply
-    from backend.nuri_core import family_store as core_family_store
-
-    now = now or _now()
-    signals = await anyio.to_thread.run_sync(lambda: care.gather_signals(sb, uid, now=now))
-    post = await _featured_post(sb, uid)
-    # The learning card is the fallback for a day with no featured post.
-    card = None if post else care.match_card(signals)
-
-    nickname = ""
-    try:
-        profile, children = await core_family_store.load_profile(uid)
-        nickname = (profile or {}).get("nickname", "") or ""
-        profile_ctx = core_family_store.profile_ctx(profile, children)
-    except Exception:
-        profile_ctx = ""
-
-    prompt = care.build_prompt(signals, card, nickname, post=post)
-    title = body = ""
-    try:
-        style_ctx = await core_dialogue_reply.get_style_rules_ctx()
-        reply = await anyio.to_thread.run_sync(
-            lambda: core_dialogue_reply.nuri_reply_sync(
-                [{"role": "user", "text": prompt}], "", "", profile_ctx, style_ctx,
-            )
-        )
-        text = reply.get("text", "")
-        if post:
-            title, body = care.post_title(post), care.parse_body(text)
-        else:
-            title, body = care.parse_completion(text)
-    except Exception as exc:  # noqa: BLE001 - a failed line must not fail the run
-        log.warning("care composition failed: %s", type(exc).__name__)
-
-    if not title or not body:
-        title, body = care.fallback_message(card, post)
-
-    message = care.CareMessage(
-        title=title, body=body,
-        full_content=care.compose_full_content(body, card, post),
-        card=card, keywords=signals.keywords(), post=post,
-    )
-
-    day = (scheduled_at or now).astimezone(timezone.utc).date().isoformat()
-    row = {
-        "user_id": uid,
-        "type": "follow_up",
-        "title": message.title,
-        "body": message.body,
-        "route": "/notifications/pending",
-        "data": message.payload_data(),
-        "thread_id": CARE_THREAD_ID,
-        "collapse_id": f"care-{day}"[:64],
-        # One per account per day, whatever it carries: a retry that finds a
-        # different post must not queue a second notification.
-        "dedupe_key": care.dedupe_key(uid, day),
-        "scheduled_at": _iso(scheduled_at or now),
-        "full_content": message.full_content,
-        "status": "queued",
-    }
+async def _queue(sb: Any, row: dict) -> Optional[dict]:
+    """Insert one event unless its dedupe key already exists; give it its route."""
 
     def _insert() -> list[dict]:
         return (
@@ -175,6 +125,105 @@ async def generate_care_event(
     )
     event["route"] = route
     return event
+
+
+def _event_row(uid: str, kind: str, title: str, body: str, day: str,
+               scheduled_at: datetime, full_content: str, data: dict) -> dict:
+    return {
+        "user_id": uid,
+        "type": "follow_up",
+        "title": title,
+        "body": body,
+        "route": "/notifications/pending",
+        "data": {"kind": kind, **data},
+        "thread_id": CARE_THREAD_ID,
+        # Distinct per kind: a shared collapse id would let the evening's care
+        # line replace the morning's post on the lock screen.
+        "collapse_id": f"{kind}-{day}"[:64],
+        "dedupe_key": care.dedupe_key(uid, day, kind),
+        "scheduled_at": _iso(scheduled_at),
+        "full_content": full_content,
+        "status": "queued",
+    }
+
+
+async def generate_care_event(
+    sb: Any,
+    uid: str,
+    *,
+    scheduled_at: Optional[datetime] = None,
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Compose one caring line for an account and queue it for the evening.
+
+    Written from what the parent last talked to NURI about — lately if there
+    is anything, else their last conversation. The same words become NURI's
+    message in the conversation when the notification is tapped. Returns
+    ``None`` for an account that has never talked to NURI, or one already
+    queued today.
+    """
+    from backend.nuri_core import dialogue_reply as core_dialogue_reply
+    from backend.nuri_core import family_store as core_family_store
+
+    now = now or _now()
+    signals = await anyio.to_thread.run_sync(lambda: care.latest_signals(sb, uid, now=now))
+    if signals.is_empty():
+        return None
+
+    nickname = ""
+    try:
+        profile, children = await core_family_store.load_profile(uid)
+        nickname = (profile or {}).get("nickname", "") or ""
+        profile_ctx = core_family_store.profile_ctx(profile, children)
+    except Exception:
+        profile_ctx = ""
+
+    prompt = care.build_prompt(signals, nickname)
+    title = body = ""
+    try:
+        style_ctx = await core_dialogue_reply.get_style_rules_ctx()
+        reply = await anyio.to_thread.run_sync(
+            lambda: core_dialogue_reply.nuri_reply_sync(
+                [{"role": "user", "text": prompt}], "", "", profile_ctx, style_ctx,
+            )
+        )
+        title, body = care.parse_completion(reply.get("text", ""))
+    except Exception as exc:  # noqa: BLE001 - a failed line must not fail the run
+        log.warning("care composition failed: %s", type(exc).__name__)
+
+    if not title or not body:
+        title, body = care.fallback_message()
+
+    if scheduled_at is None:
+        prefs = await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))
+        scheduled_at = next_local_hour(prefs, CARE_LOCAL_HOUR, now)
+    day = now.astimezone(timezone.utc).date().isoformat()
+    return await _queue(sb, _event_row(
+        uid, care.KIND_CARE, title, body, day, scheduled_at,
+        full_content=body, data={},
+    ))
+
+
+async def generate_post_event(
+    sb: Any,
+    uid: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Queue the parent's featured post as its own notification, to go now.
+
+    Returns ``None`` when no post could be made today, or one is already queued.
+    """
+    now = now or _now()
+    post = await _featured_post(sb, uid)
+    if not post:
+        return None
+    title, body = care.post_message(post)
+    day = now.astimezone(timezone.utc).date().isoformat()
+    return await _queue(sb, _event_row(
+        uid, care.KIND_DAILY_POST, title, body, day, now,
+        full_content=care.post_intro(post), data={"daily_post_id": post["id"]},
+    ))
 
 
 # ── Preferences ───────────────────────────────────────────────────────────────
@@ -234,22 +283,14 @@ def in_quiet_hours(prefs: dict, moment: datetime) -> bool:
     start, end = _parse_time(prefs.get("quiet_hours_start")), _parse_time(prefs.get("quiet_hours_end"))
     if not start or not end or start == end:
         return False
-    try:
-        zone = ZoneInfo(prefs.get("time_zone") or "UTC")
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = timezone.utc
-    local = moment.astimezone(zone).time()
+    local = moment.astimezone(_zone(prefs)).time()
     if start < end:
         return start <= local < end
     return local >= start or local < end  # wraps past midnight
 
 
 def _sent_today(sb: Any, uid: str, prefs: dict, moment: datetime) -> int:
-    try:
-        zone = ZoneInfo(prefs.get("time_zone") or "UTC")
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = timezone.utc
-    local_midnight = moment.astimezone(zone).replace(hour=0, minute=0, second=0, microsecond=0)
+    local_midnight = moment.astimezone(_zone(prefs)).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         return (
             sb.table("notification_events")
@@ -264,9 +305,10 @@ def _sent_today(sb: Any, uid: str, prefs: dict, moment: datetime) -> int:
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 async def _finish(sb: Any, event_id: str, status: str, error: str = "") -> None:
-    patch: dict[str, Any] = {"status": status, "updated_at": _iso(_now())}
-    if error:
-        patch["last_error"] = error[:300]
+    # A delivered event keeps no error: the "push_not_configured" from the
+    # attempts before credentials existed would otherwise read as a failure.
+    patch: dict[str, Any] = {"status": status, "updated_at": _iso(_now()),
+                             "last_error": error[:300] or None}
     await anyio.to_thread.run_sync(
         lambda: sb.table("notification_events").update(patch).eq("id", event_id).execute()
     )

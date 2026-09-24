@@ -1,24 +1,23 @@
-"""Compose the proactive "checking in on you" notification and its card.
+"""Compose the two daily notifications: a line of care, and the featured post.
 
-Two things the product wants from one notification: a short, warm line that
-comes from what the parent has actually been dealing with, and a link to one
-piece of NURI's own content that fits the same subject.
+They used to be one notification — the post's headline as the title and a
+line of care as the body — and it read as neither. Each is now its own
+notification with its own job, and each opens into the NURI conversation:
 
-The shape is set by §4.1 of the iOS dynamic-notification handoff, and it is
-tighter than it first looks: *"完整 AI 回答、聊天正文、图片、JWT、Supabase key、
-儿童姓名、生日、诊断信息或家庭隐私不得放进通知"*. A lock screen is not a private
-surface — it renders on a locked phone, in front of whoever is nearby. So the
-warmth in ``title``/``body`` has to be carried without naming the child or
-repeating anything the parent told us, and the specific version waits behind
-``GET /api/notifications/{id}``, which runs after the app is open and the user
-is authenticated. That split is why :func:`compose_care_message` returns both a
-payload-safe pair and a ``full_content`` that never leaves an authorised
-response.
+* **care** — a short, warm line from what the parent has been talking about.
+  Tapped, it appears in the conversation as NURI's own message, word for word,
+  so it reads as NURI checking in rather than as a notification being shown.
+* **daily post** — the parent's featured post (``backend/feed/daily_post.py``).
+  Tapped, NURI brings the post into the conversation as a card the parent can
+  open, and the replies that follow are about it.
 
-Card selection is deliberately not an embedding lookup. ``match_terms`` already
-exists on every card in ``content_library`` for exactly this purpose, a term hit
-is explainable when a parent asks why they were shown something, and the whole
-thing stays testable without a network call.
+The shape of the care line is set by §4.1 of the iOS dynamic-notification
+handoff, and it is tighter than it first looks: *"完整 AI 回答、聊天正文、图片、
+JWT、Supabase key、儿童姓名、生日、诊断信息或家庭隐私不得放进通知"*. A lock
+screen is not a private surface — it renders on a locked phone, in front of
+whoever is nearby. So the warmth has to be carried without naming the child or
+repeating anything the parent told us. The post needs no such care: it is a
+stranger's public post, with nothing of this family in it.
 """
 
 from __future__ import annotations
@@ -27,23 +26,18 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
-from backend.content_library import LEARNING_CONTENT_CARDS
-
-#: How far back a signal still says something about now. A concern from two
-#: months ago is not what the parent is living through today, and opening with
-#: it reads as not having listened since.
+#: How far back a signal counts as "lately". A concern from two months ago is
+#: not what the parent is living through today, so the recent window is read
+#: first; only a parent with nothing in it is cared for from their last
+#: conversation instead (see :func:`latest_signals`).
 SIGNAL_WINDOW_DAYS = 21
 
 #: Memory categories worth caring about, in preference order. `concern` and
 #: `child_state` describe what the parent is dealing with; `fact` is mostly
 #: static profile data (age, city) and makes for a hollow greeting.
 CARE_CATEGORIES = ("concern", "child_state", "preference")
-
-#: Minimum score before a card may ride along. One incidental term hit is not
-#: relevance, and an unrelated card under a caring line reads as advertising.
-MIN_CARD_SCORE = 2
 
 TITLE_MAX_CHARS = 35
 BODY_MAX_CHARS = 90
@@ -79,12 +73,15 @@ class CareSignals:
         return out
 
 
-def _cutoff_iso(now: Optional[datetime] = None) -> str:
+def _cutoff_iso(now: Optional[datetime], days: int) -> str:
     now = now or datetime.now(timezone.utc)
-    return (now - timedelta(days=SIGNAL_WINDOW_DAYS)).isoformat()
+    return (now - timedelta(days=days)).isoformat()
 
 
-def gather_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> CareSignals:
+def gather_signals(
+    sb: Any, uid: str, *, now: Optional[datetime] = None,
+    window_days: Optional[int] = SIGNAL_WINDOW_DAYS,
+) -> CareSignals:
     """Read the account's recent history and reduce it to matching vocabulary.
 
     Reads two tables that already hold distilled subjects, rather than raw
@@ -93,23 +90,22 @@ def gather_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> Care
     label for a turn, e.g. "日常照顾分工"). Both are short, both are already
     the product's own summary of a conversation, and neither requires reading
     a parent's sentences back out of the database to build a greeting.
+
+    ``window_days=None`` reads the most recent records however old they are.
     """
     signals = CareSignals()
-    cutoff = _cutoff_iso(now)
+    cutoff = _cutoff_iso(now, window_days) if window_days is not None else None
 
     try:
-        memories = (
+        query = (
             sb.table("user_memories")
             .select("category,key,value,updated_at,status")
             .eq("user_id", uid)
             .eq("status", "active")
-            .gte("updated_at", cutoff)
-            .order("updated_at", desc=True)
-            .limit(40)
-            .execute()
-            .data
-            or []
         )
+        if cutoff:
+            query = query.gte("updated_at", cutoff)
+        memories = query.order("updated_at", desc=True).limit(40).execute().data or []
     except Exception:
         memories = []
 
@@ -127,17 +123,10 @@ def gather_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> Care
             signals.private_notes.append(value)
 
     try:
-        turns = (
-            sb.table("chat_turn_logs")
-            .select("route_topic,created_at")
-            .eq("user_id", uid)
-            .gte("created_at", cutoff)
-            .order("created_at", desc=True)
-            .limit(20)
-            .execute()
-            .data
-            or []
-        )
+        query = sb.table("chat_turn_logs").select("route_topic,created_at").eq("user_id", uid)
+        if cutoff:
+            query = query.gte("created_at", cutoff)
+        turns = query.order("created_at", desc=True).limit(20).execute().data or []
     except Exception:
         turns = []
 
@@ -151,58 +140,17 @@ def gather_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> Care
     return signals
 
 
-def score_card(card: dict, signals: CareSignals) -> int:
-    """How well one card answers what this account has been dealing with.
+def latest_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> CareSignals:
+    """What to care about: the recent window, else the last conversation.
 
-    A term counts once no matter how often it recurs, so a parent who said
-    "睡" twenty times does not drown out every other subject they raised.
+    A parent who has not talked to NURI lately is still asked after what they
+    last brought up, rather than sent a greeting that could go to anyone.
+    Empty only for an account that has never talked to NURI at all.
     """
-    haystack = " ".join((
-        *(card.get("match_terms") or []),
-        *(card.get("tags") or []),
-        card.get("topic") or "",
-        card.get("topic_label") or "",
-    )).lower()
-    if not haystack:
-        return 0
-
-    score = 0
-    matched: set[str] = set()
-    # Topics are the router's judgement about a whole turn, so they weigh more
-    # than a single word lifted out of a memory key.
-    for topic in signals.topics:
-        for term in (card.get("match_terms") or []):
-            t = term.lower()
-            if t and (t in topic.lower() or topic.lower() in t) and t not in matched:
-                matched.add(t)
-                score += 2
-    for word in signals.terms:
-        w = word.lower()
-        if len(w) < 2 or w in matched:
-            continue
-        if w in haystack:
-            matched.add(w)
-            score += 1
-    return score
-
-
-def match_card(signals: CareSignals) -> Optional[dict]:
-    """Pick the one card worth attaching, or nothing.
-
-    Returning ``None`` is a real outcome: §12 caps how often we may interrupt a
-    parent, and spending one of those on an unrelated card is worse than
-    sending the caring line alone.
-    """
+    signals = gather_signals(sb, uid, now=now)
     if signals.is_empty():
-        return None
-    ranked = sorted(
-        ((score_card(card, signals), card) for card in LEARNING_CONTENT_CARDS),
-        key=lambda pair: (-pair[0], pair[1]["id"]),
-    )
-    if not ranked:
-        return None
-    best_score, best_card = ranked[0]
-    return best_card if best_score >= MIN_CARD_SCORE else None
+        signals = gather_signals(sb, uid, now=now, window_days=None)
+    return signals
 
 
 def _scrub(text: str) -> str:
@@ -217,76 +165,34 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip("，。、,. ") + "…"
 
 
-@dataclass
-class CareMessage:
-    title: str
-    body: str
-    full_content: str
-    card: Optional[dict]
-    keywords: list[str]
-    #: The parent's daily featured post (backend/feed/daily_post.py) when one
-    #: could be made. It leads the notification and `card` is then None.
-    post: Optional[dict] = None
-
-    def payload_data(self) -> dict[str, Any]:
-        """The `data` block. §4.1: small, non-sensitive identifiers only."""
-        data: dict[str, Any] = {"kind": "care"}
-        if self.post:
-            data["daily_post_id"] = self.post["id"]
-        if self.card:
-            data["card_id"] = self.card["id"]
-        return data
+#: `data.kind` of each notification. The dispatcher does not read it; opening
+#: a notification does, to decide what NURI says in the conversation.
+KIND_CARE = "care"
+KIND_DAILY_POST = "daily_post"
 
 
-def post_title(post: dict) -> str:
-    """The notification title when a featured post leads it: its headline."""
-    return _clip(str(post.get("headline") or ""), TITLE_MAX_CHARS)
-
-
-def build_prompt(
-    signals: CareSignals, card: Optional[dict], nickname: str = "",
-    post: Optional[dict] = None,
-) -> str:
+def build_prompt(signals: CareSignals, nickname: str = "") -> str:
     """The instruction that produces a lock-screen-safe caring line.
 
-    With a featured post the title is already the post's headline, so the
-    model writes only the body: care tied to what the parent has been talking
-    about, leading into the post. With no recent chat it is a plain hello.
+    The line does two jobs with the same words: it is the notification, and,
+    once tapped, it is what NURI says in the conversation. So it is written as
+    something NURI would say, not as a headline about NURI.
     """
     subjects = "、".join(signals.keywords()[:6])
     notes = "；".join(signals.private_notes[:3])
-    if post:
-        attach = (
-            f"通知的标题已经定好，是今天为这位家长挑的一篇其他家长的经验分享：《{post.get('headline', '')}》。"
-            "你只写正文：一两句关心或小建议，自然地引向这篇分享，让家长愿意点开看看。"
-        )
-    elif card:
-        attach = f"随后会附上一张 NURI 的内容卡片：《{card['title']}》（主题：{card.get('topic_label', '')}）。"
-    else:
-        attach = "这次不附内容卡片。"
-    about = (
-        f"这位家长最近和 NURI 聊到的主题：{subjects}。\n"
-        if subjects else
-        "这位家长最近没有和 NURI 聊天。写一句不针对具体话题的问候，不要假装知道 TA 在忙什么。\n"
-    )
-    shape = (
-        "1. 只输出一行正文。不要写标题，不要写任何其他内容，不要加引号或标签。\n"
-        f"2. 正文不超过 {BODY_MAX_CHARS} 个字。\n"
-        if post else
+    return (
+        "你是 NURI，要主动给一位家长发一条推送通知，表达简短的关心。\n"
+        f"这位家长上次和你聊到的主题：{subjects}。\n"
+        + (f"补充背景（仅供你理解，禁止复述）：{notes}\n" if notes else "")
+        + "家长点开通知后，正文会原样出现在你们的对话里，作为你主动说的一句话，"
+        "所以正文要像你当面对家长说的话。\n\n"
+        "严格要求：\n"
         "1. 输出两行。第一行是标题，第二行是正文。不要写任何其他内容，不要加引号或标签。\n"
         f"2. 标题不超过 {TITLE_MAX_CHARS} 个字，正文不超过 {BODY_MAX_CHARS} 个字。\n"
-    )
-    return (
-        "你要写一条推送通知，向一位家长表达简短的关心。\n"
-        + about
-        + (f"补充背景（仅供你理解，禁止复述）：{notes}\n" if notes else "")
-        + attach
-        + "\n\n严格要求：\n"
-        + shape
-        + "3. 这条通知会显示在锁屏上，旁边可能有别人。因此绝对不能出现：孩子的名字、"
+        "3. 这条通知会显示在锁屏上，旁边可能有别人。因此绝对不能出现：孩子的名字、"
         "年龄、生日、任何具体的家庭情况、诊断或健康细节、家长说过的原话。\n"
         "4. 用温暖、平稳的口吻，像一个记得你在忙什么的顾问，而不是客服或广告。\n"
-        "5. 不要提问，不要用感叹号堆砌情绪，不要承诺疗效。\n"
+        "5. 不要连续提问，不要用感叹号堆砌情绪，不要承诺疗效。可以在结尾温和地表示随时可以聊聊。\n"
         "6. 只能含蓄地指向主题（例如\"最近的作息\"），不要复述细节。\n"
     )
 
@@ -304,61 +210,57 @@ def parse_completion(text: str) -> tuple[str, str]:
     return _clip(lines[0], TITLE_MAX_CHARS), _clip(" ".join(lines[1:]), BODY_MAX_CHARS)
 
 
-def parse_body(text: str) -> str:
-    """The single body line asked for when a featured post supplies the title."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    lines = [re.sub(r"^(标题|正文|title|body)\s*[:：]\s*", "", ln, flags=re.I) for ln in lines]
-    lines = [ln.strip("「」“”\"'") for ln in lines if ln.strip("「」“”\"'")]
-    return _clip(" ".join(lines), BODY_MAX_CHARS) if lines else ""
-
-
-def fallback_message(card: Optional[dict], post: Optional[dict] = None) -> tuple[str, str]:
+def fallback_message() -> tuple[str, str]:
     """What to send when the model is unavailable.
 
     Deliberately generic. Without a model there is no safe way to allude to a
     parent's situation, and a wrong guess is worse than a plain hello.
     """
-    if post:
-        return post_title(post), "最近辛苦了。今天找到一位家长的经验分享，也许用得上。"
-    if card:
-        return "NURI 想和你说句话", "最近辛苦了。这里有一篇也许用得上的内容。"
-    return "NURI 想和你说句话", "最近辛苦了，记得也照顾一下自己。"
+    return "NURI 想和你说句话", "最近辛苦了，记得也照顾一下自己。想聊聊的时候，我一直在。"
 
 
-def compose_full_content(body: str, card: Optional[dict], post: Optional[dict] = None) -> str:
-    """The text the app shows after the notification is opened.
+def post_message(post: dict) -> tuple[str, str]:
+    """The featured post's notification: its headline, and one of its takeaways.
 
-    Read through an authorised endpoint, so this may be specific in ways the
-    payload may not — but it still holds no child name or health detail,
-    because nothing upstream put one here.
+    No model: the post already says what it is about, and it is a stranger's
+    public post, so nothing in it needs keeping off a lock screen.
     """
-    parts = [body]
-    if post:
-        parts.append("")
-        parts.append(f"《{post.get('headline', '')}》")
-        takeaways = [str(t).strip() for t in (post.get("takeaways") or []) if str(t).strip()]
-        if takeaways:
-            parts.append("；".join(takeaways[:2]))
-    elif card:
-        parts.append("")
-        parts.append(f"《{card['title']}》")
-        summary = (card.get("summary") or "").strip()
-        if summary:
-            parts.append(summary)
-    return "\n".join(parts).strip()
+    title = _clip(str(post.get("headline") or ""), TITLE_MAX_CHARS) or "今天的精选"
+    takeaways = [str(t).strip() for t in (post.get("takeaways") or []) if str(t).strip()]
+    body = (
+        _clip(f"其他家长的做法：{takeaways[0]}。点开和 NURI 一起聊聊。", BODY_MAX_CHARS)
+        if takeaways else "今天为你找到一位家长的经验分享，点开和 NURI 一起聊聊。"
+    )
+    return title, body
 
 
-def dedupe_key(uid: str, day: str, card_id: str = "") -> str:
-    """One care notification per account per day, card included in the identity.
+def post_intro(post: dict) -> str:
+    """What NURI says above the post's card when the parent opens it in chat."""
+    return (
+        f"今天给你挑了一篇其他家长的经验分享：《{post.get('headline') or ''}》，"
+        "点下面的卡片可以看全文。\n"
+        "看完想聊聊其中哪一点，或者说说你家的情况，我们一起看看怎么用得上。"
+    )
+
+
+def dedupe_key(uid: str, day: str, kind: str = KIND_CARE) -> str:
+    """One notification of each kind per account per day.
 
     §12 asks for a stable key per business event. The day bucket is what makes
     a retried generation idempotent; hashing keeps an account id out of a
-    column that shows up in logs and error messages.
+    column that shows up in logs and error messages. The care key keeps the
+    shape it had when care was the only kind, so a day already sent under the
+    old format is not sent again.
     """
-    digest = hashlib.sha256(f"care:{uid}:{day}:{card_id}".encode()).hexdigest()[:32]
-    return f"care:{day}:{digest}"
+    seed = f"care:{uid}:{day}:" if kind == KIND_CARE else f"{kind}:{uid}:{day}"
+    digest = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    return f"{kind}:{day}:{digest}"
 
 
 def route_for(notification_id: str) -> str:
-    """§4.1: a controlled in-app route, never an external URL."""
+    """§4.1: a controlled in-app route, never an external URL.
+
+    Both native shells accept only this prefix, so where a tap finally lands
+    (the conversation) is decided by the page behind it, not by the payload.
+    """
     return f"/notifications/{notification_id}"

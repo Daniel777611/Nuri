@@ -8,11 +8,9 @@ a notification renders on a locked phone in front of whoever is standing there.
 That is a promise about privacy, so it is asserted rather than trusted to a
 prompt.
 
-The second is restraint. §12 caps proactive notifications, and a card attached
-to a caring line has to be about the same subject or it reads as an ad wearing
-sympathy. `MIN_CARD_SCORE` is what stops one incidental term hit from counting
-as relevance, and the test for it is the test for the feature being worth
-shipping at all.
+The second is restraint. §12 caps proactive notifications and holds them out
+of quiet hours in the parent's own zone, and the care line waits for the
+parent's evening so it never lands on top of the morning's featured post.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from types import SimpleNamespace
 import pytest
 
 from backend import main, push_apns, push_service
-from backend.content_library import LEARNING_CONTENT_BY_ID
 from backend.nuri_core import care_notifications as care
 
 
@@ -121,53 +118,46 @@ def test_router_topics_split_on_their_separator():
     assert "寒暄" in topics and "继续追问" in topics
 
 
-# ── Card matching ─────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("topic, expected", [
-    ("宝宝上午小睡变短", "learn_sleep_routine"),
-    ("孩子挑食不吃蔬菜", "learn_picky_eating"),
-    ("孩子情绪崩溃大哭", "learn_big_feelings"),
-])
-def test_card_matches_the_subject(topic, expected):
-    signals = care.CareSignals(topics=[topic])
-    card = care.match_card(signals)
-    assert card is not None and card["id"] == expected
+def test_a_quiet_spell_falls_back_to_the_last_conversation():
+    """Nothing in the recent window: care is written from what they last said."""
+    sb = _FakeSupabase(
+        user_memories=[_memory("sleep_onset", "…", when="2026-01-01")],
+        chat_turn_logs=[_turn("辅食添加", when="2026-01-01")],
+    )
+    signals = care.latest_signals(sb, "u1", now=NOW)
+    assert "辅食添加" in signals.topics
+    assert "sleep" in signals.terms
 
 
-def test_an_unrelated_history_gets_no_card():
-    """Better to send the caring line alone than to staple an ad to it."""
-    assert care.match_card(care.CareSignals(topics=["报税截止日期"])) is None
+def test_recent_history_wins_over_older():
+    sb = _FakeSupabase(
+        user_memories=[],
+        chat_turn_logs=[_turn("辅食添加", when="2026-01-01"), _turn("睡眠")],
+    )
+    assert care.latest_signals(sb, "u1", now=NOW).topics == ["睡眠"]
 
 
-def test_empty_history_gets_no_card():
-    assert care.match_card(care.CareSignals()) is None
-
-
-def test_a_single_incidental_hit_is_below_the_bar():
-    """One term is coincidence; `MIN_CARD_SCORE` is what makes it not enough."""
-    signals = care.CareSignals(terms=["食物"])
-    assert care.score_card(LEARNING_CONTENT_BY_ID["learn_picky_eating"], signals) < care.MIN_CARD_SCORE
-    assert care.match_card(signals) is None
-
-
-def test_repetition_does_not_outweigh_variety():
-    repeated = care.CareSignals(terms=["睡眠"] * 20)
-    once = care.CareSignals(terms=["睡眠"])
-    card = LEARNING_CONTENT_BY_ID["learn_sleep_routine"]
-    assert care.score_card(card, repeated) == care.score_card(card, once)
+def test_an_account_that_never_talked_has_nothing_to_care_about():
+    assert care.latest_signals(_FakeSupabase(), "u1", now=NOW).is_empty()
 
 
 # ── What may reach a lock screen ──────────────────────────────────────────────
 
 def test_prompt_forbids_the_details_the_payload_may_not_carry():
-    prompt = care.build_prompt(care.CareSignals(topics=["睡眠"]), None)
+    prompt = care.build_prompt(care.CareSignals(topics=["睡眠"]))
     for banned in ("名字", "生日", "诊断", "原话"):
         assert banned in prompt
 
 
 def test_prompt_passes_notes_as_background_only():
     signals = care.CareSignals(topics=["睡眠"], private_notes=["孩子夜里醒三次"])
-    assert "禁止复述" in care.build_prompt(signals, None)
+    assert "禁止复述" in care.build_prompt(signals)
+
+
+def test_prompt_says_the_line_becomes_nuris_own_message():
+    """The body is shown in the conversation as NURI speaking, so it is asked for as that."""
+    prompt = care.build_prompt(care.CareSignals(topics=["睡眠"]))
+    assert "原样出现在你们的对话里" in prompt
 
 
 def test_dates_and_long_numbers_are_stripped_even_if_the_model_emits_them():
@@ -201,25 +191,11 @@ def test_a_single_line_completion_still_yields_both_fields():
 
 def test_empty_completion_falls_back_rather_than_sending_blank():
     assert care.parse_completion("") == ("", "")
-    title, body = care.fallback_message(None)
+    title, body = care.fallback_message()
     assert title and body
 
 
-# ── Payload data ──────────────────────────────────────────────────────────────
-
-def test_payload_data_carries_an_identifier_not_content():
-    card = LEARNING_CONTENT_BY_ID["learn_sleep_routine"]
-    message = care.CareMessage("t", "b", "full", card, ["睡眠"])
-    data = message.payload_data()
-    assert data == {"kind": "care", "card_id": "learn_sleep_routine"}
-    assert card["title"] not in str(data)
-
-
-def test_full_content_is_where_the_card_is_described():
-    card = LEARNING_CONTENT_BY_ID["learn_sleep_routine"]
-    full = care.compose_full_content("最近辛苦了", card)
-    assert card["title"] in full and "最近辛苦了" in full
-
+# ── Identity ──────────────────────────────────────────────────────────────────
 
 def test_route_is_an_internal_path():
     route = care.route_for("abc-123")
@@ -227,11 +203,23 @@ def test_route_is_an_internal_path():
 
 
 def test_dedupe_key_is_stable_per_day_and_hides_the_account():
-    a = care.dedupe_key("user-42", "2026-09-06", "learn_sleep_routine")
-    b = care.dedupe_key("user-42", "2026-09-06", "learn_sleep_routine")
-    assert a == b
+    a = care.dedupe_key("user-42", "2026-09-06")
+    assert a == care.dedupe_key("user-42", "2026-09-06")
     assert "user-42" not in a
-    assert a != care.dedupe_key("user-42", "2026-09-07", "learn_sleep_routine")
+    assert a != care.dedupe_key("user-42", "2026-09-07")
+
+
+def test_each_kind_has_its_own_daily_key():
+    care_key = care.dedupe_key("user-42", "2026-09-06", care.KIND_CARE)
+    post_key = care.dedupe_key("user-42", "2026-09-06", care.KIND_DAILY_POST)
+    assert care_key != post_key
+
+
+def test_the_care_key_matches_the_one_notification_it_replaces():
+    """A day already sent as the old combined notification is not sent again as care."""
+    import hashlib
+    old = "care:2026-09-06:" + hashlib.sha256(b"care:user-42:2026-09-06:").hexdigest()[:32]
+    assert care.dedupe_key("user-42", "2026-09-06") == old
 
 
 # ── Quiet hours and preferences ───────────────────────────────────────────────
@@ -266,6 +254,22 @@ def test_quiet_hours_off_when_unset():
     moment = datetime(2026, 9, 6, 3, 0, tzinfo=timezone.utc)
     assert not push_service.in_quiet_hours(
         _prefs(quiet_hours_start=None, quiet_hours_end=None), moment)
+
+
+@pytest.mark.parametrize("now, expected", [
+    # 10:00 Chicago (the daily run): the same evening, 18:00 CDT.
+    (datetime(2026, 9, 24, 15, 0, tzinfo=timezone.utc), datetime(2026, 9, 24, 23, 0, tzinfo=timezone.utc)),
+    # 19:00 Chicago: already past it, so tomorrow evening.
+    (datetime(2026, 9, 25, 0, 0, tzinfo=timezone.utc), datetime(2026, 9, 25, 23, 0, tzinfo=timezone.utc)),
+])
+def test_care_waits_for_the_parents_own_evening(now, expected):
+    assert push_service.next_local_hour(_prefs(), push_service.CARE_LOCAL_HOUR, now) == expected
+
+
+def test_the_evening_follows_the_clock_across_a_dst_change():
+    # 1 Nov 2026 ends CDT; 18:00 on the 1st is 00:00 UTC on the 2nd, not 23:00.
+    now = datetime(2026, 11, 1, 15, 0, tzinfo=timezone.utc)
+    assert push_service.next_local_hour(_prefs(), 18, now) == datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc)
 
 
 def test_care_has_its_own_switch():
