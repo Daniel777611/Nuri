@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+build/
+dist/
+android/
+ios/Pods/
+ios/build/
+ios/**/*.xcarchive/
+ios/**/*.ipa
+ios/.xcode.env.local
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
