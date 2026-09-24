@@ -6,12 +6,15 @@ import {
   AppState,
   BackHandler,
   Linking,
+  Modal,
   NativeEventEmitter,
   NativeModules,
   Platform,
   Pressable,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   View,
   useColorScheme,
 } from 'react-native';
@@ -34,9 +37,11 @@ import {
   notificationRouteUrl,
   type NuriPushNativeModule,
   type NuriPushState,
+  type NuriReminderSettings,
 } from './src/push';
 
 type ShellError = 'offline' | 'timeout' | 'web';
+type ReminderFields = { hours: string; minutes: string; seconds: string };
 
 const nativePushModule =
   Platform.OS === 'ios'
@@ -45,12 +50,50 @@ const nativePushModule =
 const nativePushEmitter = nativePushModule
   ? new NativeEventEmitter(nativePushModule)
   : null;
+const MAX_REMINDER_SECONDS = 31_536_000;
+
+function normalizeNumberInput(value: string): string {
+  return value.replace(/[^\d]/g, '').slice(0, 7);
+}
+
+function secondsToFields(totalSeconds: number): ReminderFields {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  return {
+    hours: hours ? String(hours) : '',
+    minutes: minutes ? String(minutes) : '',
+    seconds: seconds ? String(seconds) : '',
+  };
+}
+
+function fieldsToSeconds(fields: ReminderFields): number {
+  const hours = Number(fields.hours || 0);
+  const minutes = Number(fields.minutes || 0);
+  const seconds = Number(fields.seconds || 0);
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+function formatInterval(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  const parts = [
+    hours ? `${hours} 小时` : '',
+    minutes ? `${minutes} 分钟` : '',
+    seconds ? `${seconds} 秒` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : '未设置';
+}
 
 export default function App() {
   const webViewRef = useRef<WebView>(null);
   const webViewLoadedRef = useRef(false);
   const currentPageUrlRef = useRef<string>(INITIAL_URL);
   const pushStateRef = useRef<NuriPushState | null>(null);
+  const reminderSettingsRef = useRef<NuriReminderSettings | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const webContentTerminationDatesRef = useRef<number[]>([]);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -59,6 +102,15 @@ export default function App() {
   const [currentUrl, setCurrentUrl] = useState<string>(INITIAL_URL);
   const [webViewRevision, setWebViewRevision] = useState(0);
   const [nativeReady, setNativeReady] = useState(!nativePushModule);
+  const [reminderSettings, setReminderSettings] =
+    useState<NuriReminderSettings | null>(null);
+  const [reminderModalVisible, setReminderModalVisible] = useState(false);
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [reminderFields, setReminderFields] = useState<ReminderFields>(() =>
+    secondsToFields(3600),
+  );
+  const [reminderSaving, setReminderSaving] = useState(false);
+  const [reminderError, setReminderError] = useState<string | null>(null);
   const colorScheme = useColorScheme();
   const dark = colorScheme === 'dark';
 
@@ -96,8 +148,11 @@ export default function App() {
 
   const injectTrustedEvent = useCallback(
     (
-      eventName: 'nuri:apns-token' | 'nuri:open-route',
-      detail: NuriPushState | { route: string },
+      eventName:
+        | 'nuri:apns-token'
+        | 'nuri:open-route'
+        | 'nuri:reminder-settings',
+      detail: NuriPushState | { route: string } | NuriReminderSettings,
     ) => {
       if (
         !webViewLoadedRef.current ||
@@ -114,6 +169,15 @@ export default function App() {
     [],
   );
 
+  const acceptReminderSettings = useCallback(
+    (settings: NuriReminderSettings) => {
+      reminderSettingsRef.current = settings;
+      setReminderSettings(settings);
+      injectTrustedEvent('nuri:reminder-settings', settings);
+    },
+    [injectTrustedEvent],
+  );
+
   const acceptPushState = useCallback(
     (state: unknown) => {
       if (!isNuriPushState(state)) {
@@ -124,6 +188,86 @@ export default function App() {
     },
     [injectTrustedEvent],
   );
+
+  const refreshReminderSettings = useCallback(async () => {
+    if (!nativePushModule) {
+      return;
+    }
+    try {
+      const settings = await nativePushModule.getReminderSettings();
+      acceptReminderSettings(settings);
+      setReminderEnabled(settings.enabled);
+      setReminderFields(secondsToFields(settings.intervalSeconds || 3600));
+    } catch {
+      // The test reminder panel is optional; the web shell stays usable.
+    }
+  }, [acceptReminderSettings]);
+
+  const openReminderModal = useCallback(() => {
+    const settings = reminderSettingsRef.current;
+    if (settings) {
+      setReminderEnabled(settings.enabled);
+      setReminderFields(secondsToFields(settings.intervalSeconds || 3600));
+    }
+    setReminderError(null);
+    setReminderModalVisible(true);
+    void refreshReminderSettings();
+  }, [refreshReminderSettings]);
+
+  const updateReminderField = useCallback(
+    (field: keyof ReminderFields, value: string) => {
+      setReminderFields((current) => ({
+        ...current,
+        [field]: normalizeNumberInput(value),
+      }));
+    },
+    [],
+  );
+
+  const quickSetReminder = useCallback((seconds: number) => {
+    setReminderFields(secondsToFields(seconds));
+    setReminderEnabled(true);
+    setReminderError(null);
+  }, []);
+
+  const saveReminderSettings = useCallback(async () => {
+    if (!nativePushModule || reminderSaving) {
+      return;
+    }
+    const intervalSeconds = fieldsToSeconds(reminderFields);
+    if (
+      reminderEnabled &&
+      (intervalSeconds < 1 || intervalSeconds > MAX_REMINDER_SECONDS)
+    ) {
+      setReminderError('请输入 1 秒到 365 天之间的提醒间隔。');
+      return;
+    }
+
+    setReminderSaving(true);
+    setReminderError(null);
+    try {
+      const settings = await nativePushModule.updateReminderSettings(
+        reminderEnabled,
+        Math.max(1, intervalSeconds || reminderSettings?.intervalSeconds || 3600),
+      );
+      acceptReminderSettings(settings);
+      setReminderEnabled(settings.enabled);
+      setReminderFields(secondsToFields(settings.intervalSeconds || 3600));
+      setReminderModalVisible(false);
+    } catch (err) {
+      setReminderError(
+        err instanceof Error ? err.message : '保存失败，请稍后重试。',
+      );
+    } finally {
+      setReminderSaving(false);
+    }
+  }, [
+    acceptReminderSettings,
+    reminderEnabled,
+    reminderFields,
+    reminderSaving,
+    reminderSettings?.intervalSeconds,
+  ]);
 
   const openNotificationRoute = useCallback(
     (route: unknown) => {
@@ -225,6 +369,13 @@ export default function App() {
   }, [acceptPushState, openNotificationRoute]);
 
   useEffect(() => {
+    if (!nativeReady || !nativePushModule) {
+      return;
+    }
+    void refreshReminderSettings();
+  }, [nativeReady, refreshReminderSettings]);
+
+  useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (canGoBack) {
         webViewRef.current?.goBack();
@@ -279,6 +430,9 @@ export default function App() {
     if (pushStateRef.current) {
       injectTrustedEvent('nuri:apns-token', pushStateRef.current);
     }
+    if (reminderSettingsRef.current) {
+      injectTrustedEvent('nuri:reminder-settings', reminderSettingsRef.current);
+    }
   }, [clearLoadTimeout, injectTrustedEvent]);
 
   const handleWebMessage = useCallback(
@@ -323,6 +477,12 @@ export default function App() {
   }, [clearLoadTimeout, startLoadTimeout]);
 
   const palette = dark ? darkPalette : lightPalette;
+  const reminderDraftSeconds = fieldsToSeconds(reminderFields);
+  const reminderSummary = reminderSettings
+    ? reminderSettings.enabled
+      ? `${formatInterval(reminderSettings.intervalSeconds)}`
+      : '已关闭'
+    : '设置';
 
   return (
     <View style={[styles.safeArea, { backgroundColor: palette.background }]}>
@@ -377,8 +537,35 @@ export default function App() {
           allowFileAccess={false}
           cacheEnabled
           pullToRefreshEnabled
-          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.7"
+          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.8"
         /> : null}
+
+        {nativePushModule && nativeReady ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="打开测试提醒频率设置"
+            onPress={openReminderModal}
+            style={({ pressed }) => [
+              styles.reminderFab,
+              {
+                backgroundColor: palette.panel,
+                borderColor: palette.border,
+                opacity: pressed ? 0.82 : 0.96,
+                shadowColor: dark ? '#000000' : '#1D2A25',
+              },
+            ]}
+          >
+            <Text style={[styles.reminderFabTitle, { color: palette.text }]}>
+              测试提醒
+            </Text>
+            <Text
+              style={[styles.reminderFabSubtitle, { color: palette.secondaryText }]}
+              numberOfLines={1}
+            >
+              {reminderSummary}
+            </Text>
+          </Pressable>
+        ) : null}
 
         {loading && !error ? (
           <View style={[styles.overlay, { backgroundColor: palette.background }]}>
@@ -412,23 +599,211 @@ export default function App() {
             </Pressable>
           </View>
         ) : null}
+
+        <Modal
+          animationType="fade"
+          transparent
+          visible={reminderModalVisible}
+          onRequestClose={() => setReminderModalVisible(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.reminderPanel,
+                {
+                  backgroundColor: palette.panel,
+                  borderColor: palette.border,
+                  shadowColor: dark ? '#000000' : '#1D2A25',
+                },
+              ]}
+            >
+              <View style={styles.reminderPanelHeader}>
+                <View style={styles.reminderPanelTitleBlock}>
+                  <Text style={[styles.reminderPanelTitle, { color: palette.text }]}>
+                    测试提醒频率
+                  </Text>
+                  <Text
+                    style={[
+                      styles.reminderPanelDescription,
+                      { color: palette.secondaryText },
+                    ]}
+                  >
+                    用于测试阶段快速触发通知；后端 APNs 真实内容照常接收。
+                  </Text>
+                </View>
+                <Switch
+                  value={reminderEnabled}
+                  onValueChange={(value) => {
+                    setReminderEnabled(value);
+                    setReminderError(null);
+                  }}
+                  trackColor={{
+                    false: palette.switchTrack,
+                    true: palette.accent,
+                  }}
+                  thumbColor="#FFFFFF"
+                />
+              </View>
+
+              <View style={styles.reminderInputRow}>
+                <ReminderInput
+                  label="小时"
+                  value={reminderFields.hours}
+                  onChangeText={(value) => updateReminderField('hours', value)}
+                  palette={palette}
+                />
+                <ReminderInput
+                  label="分钟"
+                  value={reminderFields.minutes}
+                  onChangeText={(value) => updateReminderField('minutes', value)}
+                  palette={palette}
+                />
+                <ReminderInput
+                  label="秒"
+                  value={reminderFields.seconds}
+                  onChangeText={(value) => updateReminderField('seconds', value)}
+                  palette={palette}
+                />
+              </View>
+
+              <View style={styles.quickRow}>
+                {[30, 60, 120].map((seconds) => (
+                  <Pressable
+                    key={seconds}
+                    accessibilityRole="button"
+                    onPress={() => quickSetReminder(seconds)}
+                    style={({ pressed }) => [
+                      styles.quickButton,
+                      {
+                        borderColor: palette.border,
+                        backgroundColor: pressed ? palette.quickPressed : 'transparent',
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.quickButtonText, { color: palette.text }]}>
+                      {formatInterval(seconds)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              <Text style={[styles.reminderStatus, { color: palette.secondaryText }]}>
+                当前输入：{formatInterval(reminderDraftSeconds)}
+                {reminderDraftSeconds < 60 && reminderDraftSeconds > 0
+                  ? ' · iOS 会预排一批短间隔测试提醒'
+                  : ''}
+              </Text>
+
+              {reminderError ? (
+                <Text style={[styles.reminderError, { color: palette.danger }]}>
+                  {reminderError}
+                </Text>
+              ) : null}
+
+              <View style={styles.reminderActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setReminderModalVisible(false)}
+                  style={({ pressed }) => [
+                    styles.secondaryButton,
+                    {
+                      borderColor: palette.border,
+                      opacity: pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: palette.text }]}>
+                    取消
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void saveReminderSettings()}
+                  disabled={reminderSaving}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    {
+                      backgroundColor: palette.accent,
+                      opacity: reminderSaving || pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <Text style={styles.primaryButtonText}>
+                    {reminderSaving ? '保存中…' : '保存'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
+    </View>
+  );
+}
+
+function ReminderInput({
+  label,
+  value,
+  onChangeText,
+  palette,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  palette: typeof lightPalette;
+}) {
+  return (
+    <View style={styles.reminderInputBlock}>
+      <Text style={[styles.reminderInputLabel, { color: palette.secondaryText }]}>
+        {label}
+      </Text>
+      <TextInput
+        accessibilityLabel={`测试提醒间隔${label}`}
+        keyboardType="number-pad"
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="0"
+        placeholderTextColor={palette.placeholder}
+        selectionColor={palette.accent}
+        style={[
+          styles.reminderInput,
+          {
+            color: palette.text,
+            borderColor: palette.border,
+            backgroundColor: palette.input,
+          },
+        ]}
+      />
     </View>
   );
 }
 
 const lightPalette = {
   background: '#FFFDF8',
+  panel: '#FFFFFF',
+  input: '#F6F3E8',
   text: '#1D2A25',
   secondaryText: '#5E6964',
   accent: '#347A67',
+  border: 'rgba(29, 42, 37, 0.14)',
+  placeholder: '#9AA39D',
+  danger: '#B42318',
+  quickPressed: 'rgba(52, 122, 103, 0.12)',
+  switchTrack: '#D8DED9',
 };
 
 const darkPalette = {
   background: '#14201C',
+  panel: '#1B2A25',
+  input: '#22332E',
   text: '#F6F3E8',
   secondaryText: '#B8C2BC',
   accent: '#65B49D',
+  border: 'rgba(246, 243, 232, 0.16)',
+  placeholder: '#7F8C85',
+  danger: '#FFB4AB',
+  quickPressed: 'rgba(101, 180, 157, 0.16)',
+  switchTrack: '#42514B',
 };
 
 const styles = StyleSheet.create({
@@ -477,5 +852,144 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
+  },
+  reminderFab: {
+    position: 'absolute',
+    right: 14,
+    bottom: 28,
+    minWidth: 108,
+    maxWidth: 148,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    elevation: 6,
+  },
+  reminderFabTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  reminderFabSubtitle: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  modalBackdrop: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.42)',
+  },
+  reminderPanel: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 20,
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.24,
+    shadowRadius: 32,
+    elevation: 10,
+  },
+  reminderPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 18,
+  },
+  reminderPanelTitleBlock: {
+    flex: 1,
+  },
+  reminderPanelTitle: {
+    fontSize: 21,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  reminderPanelDescription: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  reminderInputRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  reminderInputBlock: {
+    flex: 1,
+  },
+  reminderInputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  reminderInput: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  quickRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+  },
+  quickButton: {
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  quickButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reminderStatus: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 14,
+  },
+  reminderError: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 10,
+  },
+  reminderActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 18,
+  },
+  secondaryButton: {
+    minWidth: 86,
+    minHeight: 44,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  primaryButton: {
+    minWidth: 96,
+    minHeight: 44,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

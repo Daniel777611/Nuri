@@ -2,7 +2,7 @@
   "expo": {
     "name": "NURI",
     "slug": "nuri-mobile-shell",
-    "version": "0.2.7",
+    "version": "0.2.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "nuri",

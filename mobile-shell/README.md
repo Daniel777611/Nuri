@@ -48,8 +48,9 @@ iOS shell registers the device token, forwards the token to the production web
 app, stores notification route metadata, and opens matching routes when the user
 taps a notification.
 
-The previous local reminder UI/content path has been retired. On launch and when
-the app returns to the foreground, the native bridge removes legacy local reminder
-requests owned by this app and keeps the stored local-reminder preference disabled.
-Foreground local reminders with the legacy `local_reminder` marker are suppressed
-so testers only see backend-delivered APNs content.
+The tester reminder UI is available in the native shell so QA can adjust the
+on-device notification cadence down to seconds while validating APNs delivery.
+These local reminders are explicitly labelled as test reminders; production
+notification title/body content is still expected to come from backend APNs
+payloads. Legacy local reminder identifiers are removed on launch/foreground so
+older placeholder content cannot surface while APNs is enabled.

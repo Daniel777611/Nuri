@@ -25,10 +25,25 @@ export type NuriPushInitialState = {
   route: string | null;
 };
 
+export type NuriReminderSettings = {
+  enabled: boolean;
+  intervalSeconds: number;
+  permissionStatus: PushPermissionStatus;
+  scheduled: boolean;
+  mode: 'limited' | 'repeating';
+  pendingCount: number;
+  coverageSeconds: number;
+};
+
 export type NuriPushNativeModule = {
   getInitialState(): Promise<NuriPushInitialState>;
   refreshPushState(): Promise<NuriPushState | null>;
   requestPushRegistration(): Promise<NuriPushState | null>;
+  getReminderSettings(): Promise<NuriReminderSettings>;
+  updateReminderSettings(
+    enabled: boolean,
+    intervalSeconds: number,
+  ): Promise<NuriReminderSettings>;
   addListener(eventName: string): void;
   removeListeners(count: number): void;
 };
@@ -98,8 +113,11 @@ export function notificationRouteUrl(route: string): string {
 }
 
 export function buildCustomEventScript(
-  eventName: 'nuri:apns-token' | 'nuri:open-route',
-  detail: NuriPushState | { route: string },
+  eventName:
+    | 'nuri:apns-token'
+    | 'nuri:open-route'
+    | 'nuri:reminder-settings',
+  detail: NuriPushState | { route: string } | NuriReminderSettings,
 ): string {
   const serializedDetail = JSON.stringify(detail)
     .replace(/</g, '\\u003c')

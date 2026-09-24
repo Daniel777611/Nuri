@@ -166,8 +166,9 @@ final class NuriPushStore {
   }
 }
 
-/// Retires the old on-device reminder path. Remote APNs notifications are now
-/// the only source of notification title/body content.
+/// Manages the tester-only on-device reminder cadence. These reminders are
+/// deliberately labelled as test reminders; production notification title/body
+/// content is still owned by backend APNs payloads.
 final class NuriReminderScheduler {
   static let shared = NuriReminderScheduler()
 
@@ -210,7 +211,7 @@ final class NuriReminderScheduler {
       object: nil,
       queue: nil
     ) { [weak self] _ in
-      self?.retireLocalReminders()
+      self?.restoreSavedSettings()
     }
   }
 
@@ -247,13 +248,13 @@ final class NuriReminderScheduler {
         ? oldMinutes * 60 : 3600
     }
     return Preferences(
-      enabled: false,
+      enabled: defaults.bool(forKey: enabledKey),
       intervalSeconds: (1...maximumIntervalSeconds).contains(interval) ? interval : 3600
     )
   }
 
   private func save(_ preferences: Preferences) {
-    defaults.set(false, forKey: enabledKey)
+    defaults.set(preferences.enabled, forKey: enabledKey)
     defaults.set(preferences.intervalSeconds, forKey: intervalKey)
   }
 
@@ -263,15 +264,11 @@ final class NuriReminderScheduler {
   }
 
   func restoreSavedSettings() {
-    retireLocalReminders()
-  }
-
-  func retireLocalReminders() {
     enqueue {
       self.removeLegacyTests()
       self.apply(self.savedPreferences(), requestPermission: false) { result in
         if case .failure = result {
-          NSLog("NURI local reminder: retirement cleanup failed")
+          NSLog("NURI local reminder: restore failed")
         }
         self.finishOperation()
       }
@@ -297,7 +294,6 @@ final class NuriReminderScheduler {
     intervalSeconds: NSNumber,
     completion: @escaping Completion
   ) {
-    _ = enabled
     enqueue {
       // Validate before converting to Int, including non-finite/oversized input.
       let seconds = intervalSeconds.doubleValue
@@ -316,10 +312,10 @@ final class NuriReminderScheduler {
 
       self.removeLegacyTests()
       let preferences = Preferences(
-        enabled: false,
+        enabled: enabled,
         intervalSeconds: intervalSeconds.intValue
       )
-      self.apply(preferences, requestPermission: false) { result in
+      self.apply(preferences, requestPermission: true) { result in
         completion(result)
         self.finishOperation()
       }
@@ -333,11 +329,6 @@ final class NuriReminderScheduler {
   ) {
     center.getNotificationSettings { settings in
       self.queue.async {
-        let preferences = Preferences(
-          enabled: false,
-          intervalSeconds: preferences.intervalSeconds
-        )
-
         if preferences.enabled,
           requestPermission,
           settings.authorizationStatus == .notDetermined
@@ -463,7 +454,52 @@ final class NuriReminderScheduler {
   }
 
   private func newPlans(_ preferences: Preferences, count: Int) -> [SchedulePlan] {
-    []
+    guard preferences.enabled else { return [] }
+
+    if preferences.intervalSeconds >= 60 {
+      let content = notificationContent(preferences: preferences, dueDate: nil)
+      return [
+        SchedulePlan(
+          identifier: reminderIdentifier,
+          content: content,
+          repeatInterval: TimeInterval(preferences.intervalSeconds),
+          dueDate: nil
+        ),
+      ]
+    }
+
+    return (1...count).map { index in
+      let dueDate = Date().addingTimeInterval(
+        TimeInterval(preferences.intervalSeconds * index)
+      )
+      return SchedulePlan(
+        identifier: "\(batchIdentifierPrefix)\(index)",
+        content: notificationContent(preferences: preferences, dueDate: dueDate),
+        repeatInterval: nil,
+        dueDate: dueDate
+      )
+    }
+  }
+
+  private func notificationContent(
+    preferences: Preferences,
+    dueDate: Date?
+  ) -> UNMutableNotificationContent {
+    let content = UNMutableNotificationContent()
+    content.title = "NURI 测试提醒"
+    content.body = "这条用于验证提醒频率；真实通知内容由后端 APNs 发送。"
+    content.sound = .default
+
+    var userInfo: [String: Any] = [
+      "type": "local_reminder",
+      "reminderSchema": 2,
+      "intervalSeconds": preferences.intervalSeconds,
+    ]
+    if let dueDate {
+      userInfo["reminderDueAt"] = dueDate.timeIntervalSince1970
+    }
+    content.userInfo = userInfo
+    return content
   }
 
   private func planToRestore(_ request: UNNotificationRequest) -> SchedulePlan? {
