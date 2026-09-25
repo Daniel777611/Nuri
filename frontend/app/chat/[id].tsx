@@ -76,17 +76,31 @@ type DailyPostOnMessage = {
 async function copyChatText(text: string): Promise<void> {
   if (Platform.OS !== "web") throw new Error("clipboard unavailable");
   if (globalThis.navigator?.clipboard?.writeText) {
-    await globalThis.navigator.clipboard.writeText(text);
-    return;
+    try {
+      await globalThis.navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // The iOS shell's WKWebView exposes the API but can refuse the write;
+      // the selection copy below still works there.
+    }
   }
   const doc = globalThis.document;
   if (!doc) throw new Error("clipboard unavailable");
   const input = doc.createElement("textarea");
   input.value = text;
+  // iOS only copies a selection it considers editable and on screen, and
+  // zooms the page when a field under 16px takes focus.
+  input.setAttribute("readonly", "");
+  input.contentEditable = "true";
   input.style.position = "fixed";
+  input.style.top = "0";
+  input.style.left = "0";
+  input.style.fontSize = "16px";
   input.style.opacity = "0";
   doc.body.appendChild(input);
+  input.focus();
   input.select();
+  input.setSelectionRange(0, text.length);
   const copied = doc.execCommand("copy");
   doc.body.removeChild(input);
   if (!copied) throw new Error("copy failed");

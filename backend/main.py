@@ -35,7 +35,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 import asyncio, hmac, io, json, logging, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
-from typing import List, Literal, NamedTuple, Optional, Sequence
+from typing import List, Literal, NamedTuple, Optional, Sequence, get_args
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -561,6 +561,17 @@ class UserUpdate(BaseModel):
     info_source:        Optional[str]  = None
     content_frequency:  Optional[str]  = None
     onboarding_completed: Optional[bool] = None
+
+    @field_validator("top_concerns", mode="before")
+    @classmethod
+    def drop_retired_concerns(cls, value):
+        # An account can still hold a choice onboarding no longer offers
+        # ("education"), and a client that sends it back must not have the
+        # whole profile save refused for it: that locked one migrated account
+        # out of finishing onboarding. Unknown values are dropped, not stored.
+        if isinstance(value, list):
+            return [c for c in value if c in get_args(Concern)]
+        return value
 
 class ChildCreate(BaseModel):
     nickname:   str
