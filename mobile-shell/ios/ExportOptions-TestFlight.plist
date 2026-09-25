@@ -10,8 +10,13 @@
 	<false/>
 	<key>method</key>
 	<string>app-store-connect</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.ordashtech.nuri</key>
+		<string>NURI App Store Connect</string>
+	</dict>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
 	<key>teamID</key>
 	<string>6PL6HQYU7P</string>
 	<key>uploadSymbols</key>

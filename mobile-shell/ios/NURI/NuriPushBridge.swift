@@ -206,13 +206,8 @@ final class NuriReminderScheduler {
   private var foregroundObserver: NSObjectProtocol?
 
   private init() {
-    foregroundObserver = NotificationCenter.default.addObserver(
-      forName: UIApplication.didBecomeActiveNotification,
-      object: nil,
-      queue: nil
-    ) { [weak self] _ in
-      self?.restoreSavedSettings()
-    }
+    // Kept only to remove schedules created by earlier TestFlight builds.
+    // Real notification content is supplied by remote APNs payloads.
   }
 
   // Serialize the whole asynchronous operation, not just its initial dispatch.
@@ -271,6 +266,25 @@ final class NuriReminderScheduler {
           NSLog("NURI local reminder: restore failed")
         }
         self.finishOperation()
+      }
+    }
+  }
+
+  /// Removes every legacy local reminder before this build registers for APNs.
+  /// This prevents a previous tester setting from producing a placeholder that
+  /// could be mistaken for a backend notification after an app update.
+  func disableAndClear() {
+    enqueue {
+      self.defaults.set(false, forKey: self.enabledKey)
+      self.defaults.removeObject(forKey: self.intervalKey)
+      self.defaults.removeObject(forKey: self.legacyIntervalKey)
+      self.center.getPendingNotificationRequests { requests in
+        self.queue.async {
+          self.cancelOwnedRequests(requests) {
+            self.removeLegacyTests()
+            self.finishOperation()
+          }
+        }
       }
     }
   }
@@ -761,13 +775,27 @@ final class NuriPushBridge: RCTEventEmitter {
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
     let center = UNUserNotificationCenter.current()
-    center.requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
-      DispatchQueue.main.async {
-        UIApplication.shared.registerForRemoteNotifications()
+    center.getNotificationSettings { settings in
+      let finishRegistration = {
+        DispatchQueue.main.async {
+          UIApplication.shared.registerForRemoteNotifications()
+        }
+        NuriPushStore.shared.notifyPushStateChanged()
+        NuriPushStore.shared.currentPushState { state in
+          resolve(state ?? NSNull())
+        }
       }
-      NuriPushStore.shared.notifyPushStateChanged()
-      NuriPushStore.shared.currentPushState { state in
-        resolve(state ?? NSNull())
+
+      guard settings.authorizationStatus == .notDetermined else {
+        // `registerForRemoteNotifications` is safe to repeat. It is the
+        // reliable way to obtain a replacement APNs token after a TestFlight
+        // update or after notification permission was changed in Settings.
+        finishRegistration()
+        return
+      }
+
+      center.requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
+        finishRegistration()
       }
     }
   }

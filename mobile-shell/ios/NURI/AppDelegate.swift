@@ -50,15 +50,29 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
       NuriPushStore.shared.storeNotificationRoute(from: userInfo)
     }
 
-    NuriReminderScheduler.shared.restoreSavedSettings()
+    // Earlier TestFlight builds scheduled on-device placeholder reminders.
+    // Clear them once on upgrade so only backend APNs payloads are presented.
+    NuriReminderScheduler.shared.disableAndClear()
 
-    notificationCenter.requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
-      DispatchQueue.main.async {
-        UIApplication.shared.registerForRemoteNotifications()
+    notificationCenter.getNotificationSettings { settings in
+      if settings.authorizationStatus == .notDetermined {
+        notificationCenter.requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
+          self.registerForRemoteNotifications()
+        }
+      } else {
+        // Do not present an unnecessary system prompt on every launch. Calling
+        // registration again is intentional: it lets iOS refresh an APNs token
+        // after an app update or after permission changed in Settings.
+        self.registerForRemoteNotifications()
       }
-      NuriPushStore.shared.notifyPushStateChanged()
-      NuriReminderScheduler.shared.restoreSavedSettings()
     }
+  }
+
+  private func registerForRemoteNotifications() {
+    DispatchQueue.main.async {
+      UIApplication.shared.registerForRemoteNotifications()
+    }
+    NuriPushStore.shared.notifyPushStateChanged()
   }
 
   public override func application(
@@ -88,11 +102,6 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    if notification.request.content.userInfo["type"] as? String == "local_reminder" {
-      NSLog("NURI local reminder suppressed")
-      completionHandler([])
-      return
-    }
     completionHandler([.banner, .list, .sound])
   }
 
