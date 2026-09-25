@@ -207,9 +207,67 @@ def test_the_profile_label_reads_in_the_parents_language():
     assert dp.profile_plan(children, ["emotion"], date(2026, 9, 11), "en").concern.endswith("tantrums")
 
 
-def test_the_profile_plan_without_anything_still_searches():
+def test_the_profile_plan_without_anything_still_searches_something_concrete():
     plan = dp.profile_plan([], [], date(2026, 9, 11))
-    assert plan.query_zh and plan.query_en and plan.concern == "新手家长"
+    assert plan.query_zh and plan.query_en
+    # "带娃 / parenting tips" found no post every time it was measured.
+    assert "带娃" not in plan.query_zh and "parenting tips" not in plan.query_en
+
+
+def _months_old(months):
+    return [{"birth_date": (date.today() - timedelta(days=int(months * 30.44) + 3)).isoformat()}]
+
+
+@pytest.mark.parametrize("concerns", [[], ["unknown"], ["unknown", "other"]])
+def test_no_usable_concern_searches_the_childs_stage(concerns):
+    """The new-account case: nothing chosen, or only "我不知道从哪开始"."""
+    plans = dp.profile_plans(_months_old(8), concerns, date(2026, 9, 11))
+    assert plans[0].query_zh == "8个月 宝宝 辅食 添加 宝妈"
+    # The age band first, then what parents of any young child ask.
+    assert [p.query_en for p in plans] == [
+        "8 month old starting solids moms", "8 month old sleep moms", "8 month old tantrums moms",
+    ]
+
+
+def test_with_no_child_on_file_it_still_searches_for_a_baby():
+    plans = dp.profile_plans([], [], date(2026, 9, 11))
+    assert [p.query_en for p in plans] == ["baby sleep moms", "toddler tantrums moms"]
+    assert all("宝宝" in p.query_zh for p in plans)
+
+
+def test_a_failed_concern_falls_back_to_the_others_and_then_the_stage():
+    plans = dp.profile_plans(_months_old(18), ["sleep", "food"], date(2026, 9, 11))
+    topics = [p.query_en for p in plans]
+    assert len(plans) == 3
+    assert {topics[0], topics[1]} == {"18 month old sleep moms", "18 month old picky eating moms"}
+    assert topics[2] == "18 month old tantrums moms"
+
+
+def test_the_stage_is_not_repeated_when_a_concern_already_covers_it():
+    plans = dp.profile_plans(_months_old(18), ["emotion"], date(2026, 9, 11))
+    assert [p.query_en for p in plans] == ["18 month old tantrums moms", "18 month old sleep moms"]
+
+
+def test_plans_are_capped():
+    every = ["sleep", "food", "emotion", "development", "parenting", "health"]
+    assert len(dp.profile_plans(_months_old(18), every, date(2026, 9, 11))) == dp.PROFILE_PLANS
+
+
+def test_a_newborn_is_not_zero_months():
+    plan = dp.profile_plan(_months_old(0), ["sleep"], date(2026, 9, 11))
+    assert "0个月" not in plan.query_zh and plan.query_zh.startswith("1个月")
+
+
+def test_eating_under_one_is_starting_solids():
+    plan = dp.profile_plan(_months_old(6), ["food"], date(2026, 9, 11))
+    assert "辅食" in plan.query_zh and "starting solids" in plan.query_en
+    assert "饮食" in plan.concern
+
+
+def test_family_searches_what_onboarding_asked_about():
+    """Onboarding shows "family" as 家人教养观念不同, not as siblings."""
+    plan = dp.profile_plan(_months_old(18), ["family"], date(2026, 9, 11))
+    assert "吃醋" not in plan.query_zh and "sibling" not in plan.query_en
 
 
 def test_search_words_leave_without_the_childs_name(monkeypatch):
@@ -351,6 +409,35 @@ def test_without_the_research_switch_the_conversation_never_leaves(world):
     assert out["state"] == "ready"
     assert world.conversation_calls == 0
     assert out["card"]["basis"] == "profile"
+
+
+def test_a_plan_that_finds_nothing_hands_over_to_the_next(world, monkeypatch):
+    world.external = False
+    tried = []
+
+    async def only_the_stage(plan, _locale, _exclude):
+        tried.append(plan.query_en)
+        return [_cand(url=world.card_url)] if "month old" in plan.query_en and "picky" not in plan.query_en else []
+
+    monkeypatch.setattr(dp, "find_candidates", only_the_stage)
+    out = _get()
+    assert out["state"] == "ready"
+    # The day's concern (food, at 18 months: picky eating) first, then the stage.
+    assert "picky eating" in tried[0] and len(tried) == 2
+
+
+def test_fallback_plans_stop_once_the_wait_is_long(world, monkeypatch):
+    world.external = False
+    tried = []
+
+    async def nothing(plan, _locale, _exclude):
+        tried.append(plan)
+        return []
+
+    monkeypatch.setattr(dp, "find_candidates", nothing)
+    monkeypatch.setattr(dp, "GENERATION_BUDGET_S", -1)
+    assert _get()["state"] == "empty"
+    assert len(tried) == 1
 
 
 def test_an_empty_day_is_retried_hours_later_not_every_visit(world, monkeypatch):
