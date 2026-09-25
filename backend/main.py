@@ -6307,6 +6307,11 @@ async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid
         "last_seen_at": now_iso,
         "updated_at": now_iso,
     }
+    if is_active:
+        # A sign-out or a dead token stamped this row when it was retired; a
+        # phone registering again brings it back, and a live row that still
+        # says when it died reads as a contradiction to whoever debugs it.
+        record["invalidated_at"] = None
 
     def _upsert() -> list[dict]:
         return sb.table("push_devices").upsert(

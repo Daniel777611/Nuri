@@ -430,7 +430,7 @@ class _Recorder:
         return _T()
 
 
-def _register(client, monkeypatch, time_zone):
+def _register(client, monkeypatch, time_zone, permission="authorized"):
     rec = _Recorder()
     monkeypatch.setattr(main, "_get_supabase", lambda: rec)
     response = client.post(
@@ -440,10 +440,29 @@ def _register(client, monkeypatch, time_zone):
             "installation_id": "5c8044c6-85f1-45f4-b9ac-75a49a50d42f",
             "platform": "ios", "apns_token": "ab" * 32,
             "apns_environment": "sandbox", "bundle_id": push_apns.bundle_id(),
-            "permission_status": "authorized", "time_zone": time_zone,
+            "permission_status": permission, "time_zone": time_zone,
         },
     )
     return response, rec
+
+
+def _device_write(rec):
+    return next(w[2] for w in rec.writes if w[0] == "push_devices" and w[1] == "upsert")
+
+
+def test_a_device_registering_again_is_no_longer_marked_retired(client, monkeypatch):
+    """A live row kept the time it was retired: active, and "invalidated" too."""
+    _, rec = _register(client, monkeypatch, "America/Chicago")
+    written = _device_write(rec)
+    assert written["is_active"] is True
+    assert written["invalidated_at"] is None
+
+
+def test_an_inactive_registration_leaves_the_retirement_time_alone(client, monkeypatch):
+    _, rec = _register(client, monkeypatch, "America/Chicago", permission="denied")
+    written = _device_write(rec)
+    assert written["is_active"] is False
+    assert "invalidated_at" not in written
 
 
 def test_registration_carries_the_phone_zone_into_quiet_hours(client, monkeypatch):
