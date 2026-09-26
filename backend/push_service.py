@@ -13,6 +13,7 @@ the database, the model, Apple and Google.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -153,8 +154,12 @@ async def generate_care_event(
     *,
     scheduled_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
+    slot: Optional[str] = None,
 ) -> Optional[dict]:
     """Compose one caring line for an account and queue it for the evening.
+
+    With ``slot`` (a test account's half-hour run, see ``tester_slot``) it goes
+    out now instead, deduplicated per slot rather than per day.
 
     Written from what the parent last talked to NURI about — lately if there
     is anything, else their last conversation. The same words become NURI's
@@ -194,13 +199,15 @@ async def generate_care_event(
     if not title or not body:
         title, body = care.fallback_message()
 
+    if scheduled_at is None and slot:
+        scheduled_at = now
     if scheduled_at is None:
         prefs = await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))
         scheduled_at = next_local_hour(prefs, CARE_LOCAL_HOUR, now)
-    day = now.astimezone(timezone.utc).date().isoformat()
+    day = slot or now.astimezone(timezone.utc).date().isoformat()
     return await _queue(sb, _event_row(
         uid, care.KIND_CARE, title, body, day, scheduled_at,
-        full_content=body, data={},
+        full_content=body, data=_tester_data(slot),
     ))
 
 
@@ -209,6 +216,7 @@ async def generate_post_event(
     uid: str,
     *,
     now: Optional[datetime] = None,
+    slot: Optional[str] = None,
 ) -> Optional[dict]:
     """Queue the parent's featured post as its own notification, to go now.
 
@@ -219,11 +227,36 @@ async def generate_post_event(
     if not post:
         return None
     title, body = care.post_message(post)
-    day = now.astimezone(timezone.utc).date().isoformat()
+    day = slot or now.astimezone(timezone.utc).date().isoformat()
     return await _queue(sb, _event_row(
         uid, care.KIND_DAILY_POST, title, body, day, now,
-        full_content=care.post_intro(post), data={"daily_post_id": post["id"]},
+        full_content=care.post_intro(post),
+        data={"daily_post_id": post["id"], **_tester_data(slot)},
     ))
+
+
+# ── Test accounts ─────────────────────────────────────────────────────────────
+# Accounts listed in PUSH_TEST_EMAILS get both notifications every half hour
+# (the /internal/push/test-accounts cron) so the team can watch the content
+# without waiting a day. Quiet hours still apply; the daily cap does not, or the
+# fifth run of the day would be cancelled.
+
+DEFAULT_TEST_EMAILS = "daniel@ordashlab.com"
+
+
+def tester_emails() -> list[str]:
+    raw = os.getenv("PUSH_TEST_EMAILS", DEFAULT_TEST_EMAILS)
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+
+
+def tester_slot(now: datetime) -> str:
+    """The half hour ``now`` falls in, e.g. ``2026-09-26T14:30``."""
+    moment = now.astimezone(timezone.utc)
+    return moment.replace(minute=30 if moment.minute >= 30 else 0).strftime("%Y-%m-%dT%H:%M")
+
+
+def _tester_data(slot: Optional[str]) -> dict:
+    return {"test_burst": True} if slot else {}
 
 
 # ── Preferences ───────────────────────────────────────────────────────────────
@@ -372,6 +405,8 @@ async def dispatch_due_notifications(
             continue
 
         cap = int(prefs.get("max_per_day", 4) or 0)
+        if (event.get("data") or {}).get("test_burst"):
+            cap = 0  # Test accounts run every half hour, uncapped.
         if event["type"] != "system" and cap > 0:
             if await anyio.to_thread.run_sync(lambda: _sent_today(sb, uid, prefs, now)) >= cap:
                 await _finish(sb, event_id, "cancelled", "daily_cap")
