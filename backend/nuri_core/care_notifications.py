@@ -57,9 +57,13 @@ class CareSignals:
     topics: list[str] = field(default_factory=list)
     #: Free-text values, used only for prompting — never for the payload.
     private_notes: list[str] = field(default_factory=list)
+    #: The last conversation itself, oldest first: ``{"role", "text"}``. What
+    #: the follow-up is written from; keywords alone produced lines like "最近
+    #: 的探索欲" when the parent had actually talked about a missing stair gate.
+    exchange: list[dict] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (self.terms or self.topics)
+        return not (self.terms or self.topics or self.exchange)
 
     def keywords(self) -> list[str]:
         """Deduplicated matching vocabulary, most recent first."""
@@ -150,7 +154,55 @@ def latest_signals(sb: Any, uid: str, *, now: Optional[datetime] = None) -> Care
     signals = gather_signals(sb, uid, now=now)
     if signals.is_empty():
         signals = gather_signals(sb, uid, now=now, window_days=None)
+    signals.exchange = recent_exchange(sb, uid)
     return signals
+
+
+#: How much of the last conversation the follow-up is written from.
+EXCHANGE_MESSAGES = 8
+EXCHANGE_CHARS_PER_MESSAGE = 300
+
+
+def recent_exchange(sb: Any, uid: str) -> list[dict]:
+    """The last stretch of the parent's own conversation with NURI, oldest first.
+
+    Ends at NURI's answer to the parent's most recent message. Messages NURI
+    posted on its own — a tapped notification, a featured-post card — are left
+    out: following up on NURI's own words is not following up on the parent.
+    """
+    try:
+        sessions = [
+            r["id"] for r in (
+                sb.table("chat_sessions").select("id").eq("user_id", uid)
+                .execute().data or []
+            )
+        ]
+        if not sessions:
+            return []
+        rows = (
+            sb.table("chat_messages").select("role,text,transition,created_at")
+            .in_("session_id", sessions).order("created_at", desc=True)
+            .limit(40).execute().data or []
+        )
+    except Exception:
+        return []
+
+    newest_first = [
+        r for r in rows
+        if r.get("role") in ("user", "ai") and (r.get("text") or "").strip()
+        and not ((r.get("transition") or {}).get("kind") == "card_opened")
+    ]
+    last_user = next((i for i, r in enumerate(newest_first) if r["role"] == "user"), None)
+    if last_user is None:
+        return []
+    # Keep NURI's reply to that last message (the one just newer than it), but
+    # nothing NURI said afterwards unprompted.
+    start = last_user - 1 if last_user > 0 and newest_first[last_user - 1]["role"] == "ai" else last_user
+    window = newest_first[start:start + EXCHANGE_MESSAGES]
+    return [
+        {"role": r["role"], "text": r["text"].strip()[:EXCHANGE_CHARS_PER_MESSAGE]}
+        for r in reversed(window)
+    ]
 
 
 def _scrub(text: str) -> str:
@@ -172,29 +224,53 @@ KIND_DAILY_POST = "daily_post"
 
 
 def build_prompt(signals: CareSignals, nickname: str = "") -> str:
-    """The instruction that produces a lock-screen-safe caring line.
+    """The instruction for a follow-up on what the parent last talked about.
 
     The line does two jobs with the same words: it is the notification, and,
     once tapped, it is what NURI says in the conversation. So it is written as
     something NURI would say, not as a headline about NURI.
+
+    It used to allude only ("最近的作息"), per §4.1 of the handoff. The team
+    found that read as a greeting that could go to anyone, and asked for a
+    real follow-up on the last conversation instead. What still stays off the
+    lock screen: the child's name, age, birthday, diagnoses, and the parent's
+    words quoted back. The name is also removed in code (``scrub_names``).
     """
+    lines = []
+    for m in signals.exchange:
+        who = "家长" if m.get("role") == "user" else "NURI"
+        lines.append(f"{who}：{m.get('text', '')}")
+    convo = "\n".join(lines)
     subjects = "、".join(signals.keywords()[:6])
-    notes = "；".join(signals.private_notes[:3])
+    notes = "；".join(signals.private_notes[:4])
     return (
-        "你是 NURI，要主动给一位家长发一条推送通知，表达简短的关心。\n"
-        f"这位家长上次和你聊到的主题：{subjects}。\n"
-        + (f"补充背景（仅供你理解，禁止复述）：{notes}\n" if notes else "")
-        + "家长点开通知后，正文会原样出现在你们的对话里，作为你主动说的一句话，"
+        "你是 NURI，一位记得家长家里在发生什么的育儿顾问。现在要主动给这位家长发一条推送，"
+        "接着你们上次的聊天追问一句。\n\n"
+        + (f"【你们最近一次的对话（旧→新）】\n{convo}\n\n" if convo else "")
+        + (f"【你记下的近况】{notes}\n" if notes else "")
+        + (f"【最近聊过的主题】{subjects}\n" if subjects else "")
+        + "\n家长点开通知后，正文会原样出现在你们的对话里，作为你主动说的一句话，"
         "所以正文要像你当面对家长说的话。\n\n"
         "严格要求：\n"
         "1. 输出两行。第一行是标题，第二行是正文。不要写任何其他内容，不要加引号或标签。\n"
         f"2. 标题不超过 {TITLE_MAX_CHARS} 个字，正文不超过 {BODY_MAX_CHARS} 个字。\n"
-        "3. 这条通知会显示在锁屏上，旁边可能有别人。因此绝对不能出现：孩子的名字、"
-        "年龄、生日、任何具体的家庭情况、诊断或健康细节、家长说过的原话。\n"
-        "4. 用温暖、平稳的口吻，像一个记得你在忙什么的顾问，而不是客服或广告。\n"
-        "5. 不要连续提问，不要用感叹号堆砌情绪，不要承诺疗效。可以在结尾温和地表示随时可以聊聊。\n"
-        "6. 只能含蓄地指向主题（例如\"最近的作息\"），不要复述细节。\n"
+        "3. 必须追问上次聊天里最具体、最值得跟进的那件事：你给过的建议做了没有、"
+        "情况有没有变化、结果怎么样。要让家长一眼看出你记得上次聊的是什么"
+        "（例如上次聊到家里楼梯没装安全门，就问装上了没有、宝宝这几天还爬不爬）。"
+        "标题直接点出这件事，不要写成\"最近还好吗\"这类泛泛的问候。\n"
+        "4. 正文先用半句话接上上次的事，再问一个具体的问题。只问一个问题。\n"
+        "5. 这条通知会显示在锁屏上：不要写孩子的名字（用\"宝宝\"或\"孩子\"代替）、年龄、生日、"
+        "诊断或健康细节，也不要大段引用家长说过的原话。\n"
+        "6. 口吻温和自然，像记得你家事的朋友，不像客服或广告；不要堆感叹号，不要承诺效果。\n"
+        "7. 如果最近的对话只是在聊你推荐的外部帖子，优先追问家长自己家里的事。\n"
     )
+
+
+def scrub_names(text: str, names: list[str]) -> str:
+    """Replace the children's names with 宝宝 — the prompt asks, this ensures."""
+    for name in sorted({n.strip() for n in names if n and len(n.strip()) > 1}, key=len, reverse=True):
+        text = text.replace(name, "宝宝")
+    return text
 
 
 def parse_completion(text: str) -> tuple[str, str]:

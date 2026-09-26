@@ -126,8 +126,7 @@ def generation(monkeypatch):
     monkeypatch.setattr(family_store, "load_profile", _profile)
     monkeypatch.setattr(family_store, "profile_ctx", lambda *_a: "")
     monkeypatch.setattr(dialogue_reply, "get_style_rules_ctx", _style)
-    monkeypatch.setattr(dialogue_reply, "nuri_reply_sync",
-                        lambda *_a, **_k: {"text": state["reply"]})
+    monkeypatch.setattr(push_service, "compose_care_text", lambda _p: state["reply"])
     return state
 
 

@@ -43,6 +43,10 @@ class _Query:
         self._rows = [r for r in self._rows if str(r.get(col, "")) >= str(val)]
         return self
 
+    def in_(self, col, vals):
+        self._rows = [r for r in self._rows if r.get(col) in set(vals)]
+        return self
+
     def order(self, col, desc=False, **_k):
         self._rows.sort(key=lambda r: str(r.get(col, "")), reverse=desc)
         return self
@@ -149,9 +153,40 @@ def test_prompt_forbids_the_details_the_payload_may_not_carry():
         assert banned in prompt
 
 
-def test_prompt_passes_notes_as_background_only():
-    signals = care.CareSignals(topics=["睡眠"], private_notes=["孩子夜里醒三次"])
-    assert "禁止复述" in care.build_prompt(signals)
+def _msg(role, text, minute, transition=None):
+    return {"session_id": "s1", "role": role, "text": text, "transition": transition,
+            "created_at": f"2026-09-22T22:{minute:02d}:00+00:00"}
+
+
+def test_the_follow_up_is_written_from_the_last_conversation():
+    sb = _FakeSupabase(
+        chat_sessions=[{"id": "s1", "user_id": "u1"}],
+        chat_messages=[
+            _msg("user", "他天天爬楼梯", 27),
+            _msg("ai", "楼梯要当陪练项目", 28),
+            _msg("user", "我们家楼梯没有安全门", 29),
+            _msg("ai", "先做一个临时挡板", 30),
+            # NURI's own later messages are not the parent's conversation.
+            _msg("ai", "群里讨论怎么管宝宝打人", 40, transition={"kind": "card_opened"}),
+            _msg("ai", "最近的探索欲，可以慢慢接住", 50),
+        ],
+    )
+    exchange = care.recent_exchange(sb, "u1")
+    assert [m["text"] for m in exchange] == [
+        "他天天爬楼梯", "楼梯要当陪练项目", "我们家楼梯没有安全门", "先做一个临时挡板",
+    ]
+    prompt = care.build_prompt(care.CareSignals(exchange=exchange))
+    assert "家长：我们家楼梯没有安全门" in prompt
+    assert "只问一个问题" in prompt
+
+
+def test_a_conversation_alone_is_enough_to_follow_up_on():
+    assert not care.CareSignals(exchange=[{"role": "user", "text": "hi"}]).is_empty()
+
+
+def test_childrens_names_never_reach_the_lock_screen():
+    text = care.scrub_names("小阿古的楼梯安全门装上了吗", ["小阿古", ""])
+    assert text == "宝宝的楼梯安全门装上了吗"
 
 
 def test_prompt_says_the_line_becomes_nuris_own_message():

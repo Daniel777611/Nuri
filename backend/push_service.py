@@ -148,6 +148,25 @@ def _event_row(uid: str, kind: str, title: str, body: str, day: str,
     }
 
 
+#: A plain completion, not the chat pipeline: the NURI persona and its style
+#: rules are shaped for a full reply (bullets, several questions) and pulled the
+#: two-line notification towards a generic greeting.
+CARE_MODEL = os.getenv("CARE_NOTIFICATION_MODEL", "gpt-5.5")
+
+
+def compose_care_text(prompt: str) -> str:
+    """Ask OpenAI for the follow-up's two lines (title, body)."""
+    from backend import runtime
+
+    if runtime.oai is None:
+        return ""
+    resp = runtime.oai.chat.completions.create(
+        model=CARE_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
 async def generate_care_event(
     sb: Any,
     uid: str,
@@ -167,7 +186,6 @@ async def generate_care_event(
     ``None`` for an account that has never talked to NURI, or one already
     queued today.
     """
-    from backend.nuri_core import dialogue_reply as core_dialogue_reply
     from backend.nuri_core import family_store as core_family_store
 
     now = now or _now()
@@ -176,23 +194,19 @@ async def generate_care_event(
         return None
 
     nickname = ""
+    child_names: list[str] = []
     try:
         profile, children = await core_family_store.load_profile(uid)
         nickname = (profile or {}).get("nickname", "") or ""
-        profile_ctx = core_family_store.profile_ctx(profile, children)
+        child_names = [c.get("nickname") or "" for c in children or []]
     except Exception:
-        profile_ctx = ""
+        pass
 
     prompt = care.build_prompt(signals, nickname)
     title = body = ""
     try:
-        style_ctx = await core_dialogue_reply.get_style_rules_ctx()
-        reply = await anyio.to_thread.run_sync(
-            lambda: core_dialogue_reply.nuri_reply_sync(
-                [{"role": "user", "text": prompt}], "", "", profile_ctx, style_ctx,
-            )
-        )
-        title, body = care.parse_completion(reply.get("text", ""))
+        text = await anyio.to_thread.run_sync(lambda: compose_care_text(prompt))
+        title, body = care.parse_completion(care.scrub_names(text, child_names))
     except Exception as exc:  # noqa: BLE001 - a failed line must not fail the run
         log.warning("care composition failed: %s", type(exc).__name__)
 
