@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -53,6 +54,9 @@ REPEAT_WINDOW_DAYS = 60
 #: A generation that has not finished in this long crashed; the next request
 #: may take the day over.
 PENDING_STALE_S = 120
+#: After this long, generation tries no further plan. Home waits 60 s for the
+#: request that generates, so the last plan has to start well before that.
+GENERATION_BUDGET_S = 40
 #: No usable post today: look again after this long — the parent may have
 #: said more by then.
 EMPTY_RETRY_S = 3 * 3600
@@ -283,12 +287,28 @@ def to_candidates(results, *, exclude_urls: set[str]) -> list[Candidate]:
 CONCERN_EN = {
     "sleep": "sleep", "food": "picky eating", "emotion": "tantrums", "development": "milestones",
     "parenting": "discipline", "health": "teething", "childcare": "daycare drop off crying",
-    "family": "sibling jealousy",
+    # Onboarding shows this one as "家人教养观念不同", not as siblings.
+    "family": "grandparents parenting differently",
 }
 CONCERN_ZH_QUERY = {
     "sleep": "睡眠 夜醒", "food": "挑食", "emotion": "发脾气", "development": "发育",
-    "parenting": "管教", "health": "长牙", "childcare": "入托 分离焦虑", "family": "二胎 吃醋",
+    "parenting": "管教", "health": "长牙", "childcare": "入托 分离焦虑", "family": "老人带娃 观念不同",
 }
+
+#: What to search for when the concerns give nothing usable (none chosen, or
+#: only "不确定"/"其他"), by the youngest child's age: (upper bound in months,
+#: zh label, en label, zh words, en words). "带娃 / parenting tips" was the
+#: old fallback, and the pick model found no post in it every time it was
+#: measured: too vague to be anyone's problem.
+_STAGE_TOPICS = (
+    (4, "睡眠", "sleep", "睡眠 夜醒", "sleep"),
+    (12, "辅食", "starting solids", "辅食 添加", "starting solids"),
+    (None, "情绪", "tantrums", "发脾气", "tantrums"),
+)
+
+#: How many plans one generation may try before the day is empty. Each one a
+#: post was not found in costs two searches and up to PICK_ATTEMPTS model calls.
+PROFILE_PLANS = 3
 
 
 @dataclass
@@ -303,7 +323,8 @@ def _age_words(months: Optional[int]) -> tuple[str, str]:
     if months is None:
         return "", ""
     if months < 24:
-        return f"{months}个月", f"{max(months, 1)} month old"
+        # A newborn is "0 months" by the calendar, which no parent writes.
+        return f"{max(months, 1)}个月", f"{max(months, 1)} month old"
     return f"{months // 12}岁", f"{months // 12} year old"
 
 
@@ -319,31 +340,77 @@ def youngest_age_months(children: list[dict]) -> Optional[int]:
 #: search strings themselves stay Simplified, which is what matched best.
 _TO_TRADITIONAL = str.maketrans({
     "个": "個", "岁": "歲", "饮": "飲", "绪": "緒", "发": "發", "养": "養",
-    "长": "長", "关": "關", "系": "係",
+    "长": "長", "关": "關", "系": "係", "辅": "輔",
 })
 
 
-def profile_plan(children: list[dict], concerns: list[str], day: date, locale: str = "zh-CN") -> Plan:
-    """Search words from the coarsest facts NURI holds: an age band and one
-    onboarding concern, rotated by day so the card changes."""
-    months = youngest_age_months(children)
-    age_zh, age_en = _age_words(months)
-    usable = [c for c in concerns if c in CONCERN_EN]
-    concern = usable[day.toordinal() % len(usable)] if usable else ""
-    concern_zh = family_store.CONCERN_LABELS.get(concern, "")
-    topic_zh, topic_en = CONCERN_ZH_QUERY.get(concern, "带娃"), CONCERN_EN.get(concern, "parenting tips")
+def _concern_topic(concern: str, months: Optional[int]) -> tuple[str, str, str, str]:
+    """(zh label, en label, zh words, en words) for one onboarding concern."""
+    label_zh = family_store.CONCERN_LABELS.get(concern, "")
+    topic_zh, topic_en = CONCERN_ZH_QUERY[concern], CONCERN_EN[concern]
     if concern == "health" and months is not None and months >= 24:
         # Teething is a baby's health question; a preschooler's is the next cold.
         topic_zh, topic_en = "生病 发烧", "sick toddler"
-    zh = " ".join(p for p in (age_zh, "宝宝" if age_zh else "", topic_zh, "宝妈") if p)
-    en = " ".join(p for p in (age_en or "toddler", topic_en, "moms") if p)
-    if locale == "en":
-        shown = " · ".join(p for p in (age_en, CONCERN_EN.get(concern, "")) if p) or "new parents"
-    else:
-        shown = " · ".join(p for p in (age_zh, concern_zh) if p) or "新手家长"
-        if locale == "zh-TW":
-            shown = shown.translate(_TO_TRADITIONAL)
-    return Plan(basis="profile", concern=shown, query_zh=zh, query_en=en)
+    if concern == "food" and months is not None and months < 12:
+        # Under one, eating is about starting solids, not picky eating.
+        topic_zh, topic_en = "辅食 添加", "starting solids"
+    return label_zh, topic_en, topic_zh, topic_en
+
+
+def _stage_topics(months: Optional[int]) -> list[tuple[str, str, str, str]]:
+    """(zh label, en label, zh words, en words), best first: the child's age
+    band, then the two questions parents of any young child ask most. One
+    topic alone still came back empty about one day in three."""
+    universal = [tuple(_STAGE_TOPICS[0][1:]), tuple(_STAGE_TOPICS[-1][1:])]
+    if months is None:
+        return universal
+    band = next(tuple(t) for upper, *t in _STAGE_TOPICS if upper is None or months < upper)
+    return [band] + [t for t in universal if t != band]
+
+
+#: With no age on file, who the search is about. "toddler sleep" found no
+#: post the pick model would take; "baby sleep" did.
+_BABY_TOPICS = {"sleep", "starting solids", "teething"}
+
+
+def profile_plans(
+    children: list[dict], concerns: list[str], day: date, locale: str = "zh-CN",
+    limit: int = PROFILE_PLANS,
+) -> list[Plan]:
+    """Search words from the coarsest facts NURI holds, best first.
+
+    The day's concern (rotated by day, so the card changes), then the
+    parent's other concerns, then a concrete subject for the child's age. One
+    plan was tried before, so an account whose one plan found nothing — or
+    that had no usable concern at all — had no card that day.
+    """
+    months = youngest_age_months(children)
+    age_zh, age_en = _age_words(months)
+    usable = list(dict.fromkeys(c for c in concerns if c in CONCERN_EN))
+    start = day.toordinal() % len(usable) if usable else 0
+    topics = [_concern_topic(c, months) for c in usable[start:] + usable[:start]]
+    for stage in _stage_topics(months):
+        if all(topic[2] != stage[2] for topic in topics):
+            topics.append(stage)
+
+    plans = []
+    for label_zh, label_en, topic_zh, topic_en in topics[:limit]:
+        zh = " ".join(p for p in (age_zh, "宝宝", topic_zh, "宝妈") if p)
+        who = age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
+        en = " ".join((who, topic_en, "moms"))
+        if locale == "en":
+            shown = " · ".join(p for p in (age_en, label_en) if p)
+        else:
+            shown = " · ".join(p for p in (age_zh, label_zh) if p)
+            if locale == "zh-TW":
+                shown = shown.translate(_TO_TRADITIONAL)
+        plans.append(Plan(basis="profile", concern=shown, query_zh=zh, query_en=en))
+    return plans
+
+
+def profile_plan(children: list[dict], concerns: list[str], day: date, locale: str = "zh-CN") -> Plan:
+    """The day's first profile plan; see :func:`profile_plans`."""
+    return profile_plans(children, concerns, day, locale, limit=1)[0]
 
 
 _QUERY_SYSTEM = """你帮 NURI 为一位家长找今天值得看的"其他家长的经验"帖子。
@@ -988,11 +1055,16 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
         )
         if plan:
             plans.append(plan)
-    # Always keep the coarse plan behind it: a conversation too specific to
+    # Always keep the coarse plans behind it: a conversation too specific to
     # have a matching post still deserves a card about the child's stage.
-    plans.append(profile_plan(children, list(profile.get("top_concerns") or []), day, locale))
+    plans.extend(profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
 
-    for plan in plans:
+    started = time.monotonic()
+    for index, plan in enumerate(plans):
+        # The first visitor's request is the one waiting on this: a fallback
+        # plan is only worth starting while that wait is still reasonable.
+        if index and time.monotonic() - started > GENERATION_BUDGET_S:
+            break
         candidates = await find_candidates(plan, locale, exclude)
         if not candidates:
             continue

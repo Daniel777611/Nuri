@@ -201,20 +201,10 @@ export type PushDeviceRegistration = {
   permission_status: "not_determined" | "denied" | "authorized" | "provisional";
 };
 
-export type NotificationDetail = {
-  id: string;
-  type: string;
-  title: string;
-  content: string;
-  target:
-    | { kind: "learning_card"; id: string; route: string; title: string; summary: string;
-        topic_label: string; type_label: string; cta: string }
-    // The daily featured post the notification was sent with; `route` opens
-    // that post by id, since "today's" may be another one by the time of the tap.
-    | { kind: "daily_post"; id: string; route: string; title: string; summary: string;
-        source_label: string }
-    | { kind: string };
-  created_at?: string;
+/** A tapped notification, now written into the conversation as NURI's message. */
+export type OpenedNotification = {
+  session_id: string;
+  kind: "care" | "daily_post";
 };
 
 export type MainConversationPreview = {
@@ -791,8 +781,8 @@ export const api = {
     ),
   deactivatePushDevice: (installationId: string) =>
     req(`/mobile/push-devices/${encodeURIComponent(installationId)}`, { method: "DELETE" }),
-  getNotification: (id: string) =>
-    req<NotificationDetail>(`/notifications/${encodeURIComponent(id)}`),
+  openNotification: (id: string) =>
+    req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   // A model turn can legitimately run past the 12s default. Aborting early
   // doesn't stop the backend, it just makes users resend and stack more work,
   // so this has to stay above the backend's own OpenAI timeout budget.

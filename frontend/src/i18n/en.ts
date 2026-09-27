@@ -653,9 +653,7 @@ export const en: Record<string, string> = {
   "已记录你的反馈": "Your feedback was saved",
   "反馈保存失败，请重试": "Couldn't save feedback. Please try again.",
   // ── Push notification detail ───────────────────────────────────────────────
-  "来自 NURI": "From NURI",
   "这条通知不存在或已过期": "This notification no longer exists.",
   "回到首页": "Go to home",
   "加载失败，请稍后再试": "Couldn't load. Please try again.",
-  "为你挑的一篇内容": "Picked for you",
 };

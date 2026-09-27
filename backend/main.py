@@ -35,7 +35,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 import asyncio, hmac, io, json, logging, os, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
-from typing import List, Literal, NamedTuple, Optional, Sequence
+from typing import List, Literal, NamedTuple, Optional, Sequence, get_args
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -561,6 +561,17 @@ class UserUpdate(BaseModel):
     info_source:        Optional[str]  = None
     content_frequency:  Optional[str]  = None
     onboarding_completed: Optional[bool] = None
+
+    @field_validator("top_concerns", mode="before")
+    @classmethod
+    def drop_retired_concerns(cls, value):
+        # An account can still hold a choice onboarding no longer offers
+        # ("education"), and a client that sends it back must not have the
+        # whole profile save refused for it: that locked one migrated account
+        # out of finishing onboarding. Unknown values are dropped, not stored.
+        if isinstance(value, list):
+            return [c for c in value if c in get_args(Concern)]
+        return value
 
 class ChildCreate(BaseModel):
     nickname:   str
@@ -6296,6 +6307,11 @@ async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid
         "last_seen_at": now_iso,
         "updated_at": now_iso,
     }
+    if is_active:
+        # A sign-out or a dead token stamped this row when it was retired; a
+        # phone registering again brings it back, and a live row that still
+        # says when it died reads as a contradiction to whoever debugs it.
+        record["invalidated_at"] = None
 
     def _upsert() -> list[dict]:
         return sb.table("push_devices").upsert(
@@ -6444,6 +6460,87 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
     }
 
 
+@api.post("/notifications/{notification_id}/open")
+async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
+    """Carry a tapped notification into the conversation, and say where it is.
+
+    A tap lands in the one NURI conversation, with NURI having spoken:
+
+    * a care line appears as NURI's own message, word for word as the lock
+      screen showed it, so it reads as NURI checking in;
+    * a featured post appears as NURI's message with the post as a card on it.
+      The message is a card marker carrying the post's context, which is what
+      the reply path reads (_active_card_id), so the replies after it are
+      about the post.
+
+    The message id is derived from the notification, so a second tap — or the
+    page reloading — adds nothing. Ownership is checked exactly as in
+    read_notification: someone else's notification is a 404.
+    """
+    sb = _require_push_storage()
+
+    def _load() -> list[dict]:
+        return sb.table("notification_events").select(
+            "id,user_id,type,title,body,data,full_content"
+        ).eq("id", notification_id).limit(1).execute().data or []
+
+    try:
+        rows = await anyio.to_thread.run_sync(_load)
+    except Exception:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    if not rows or rows[0].get("user_id") != uid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    row = rows[0]
+    data = row.get("data") or {}
+
+    session = await start_session(StartChatRequest(), uid)
+
+    text = row.get("body") or ""
+    transition: Optional[dict] = None
+    post_id = data.get("daily_post_id")
+    post = await feed_daily_post.get_card(uid, str(post_id)) if post_id else None
+    if post:
+        # A post notification stores what NURI says over the card. One from
+        # before the two were split carries a care line as its body instead.
+        if data.get("kind") == push_service.care.KIND_DAILY_POST:
+            text = row.get("full_content") or text
+        transition = {
+            "kind": CARD_OPENED,
+            "card_id": post["card_id"],
+            "title": post.get("headline") or "",
+            "context": feed_daily_post.chat_context(post),
+            # What the conversation draws the card from; the marker's other
+            # fields are for the reply path.
+            "post": {
+                "id": post["id"],
+                "headline": post.get("headline") or "",
+                "takeaways": list(post.get("takeaways") or [])[:3],
+                "source_label": post.get("source_label") or "",
+            },
+        }
+        await feed_daily_post.record_event(uid, post["id"], "chat")
+
+    message = {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri:notification-open:{notification_id}")),
+        "session_id": session["id"],
+        "role": "ai", "text": text, "quick_replies": [],
+        "transition": transition,
+        "created_at": _now(),
+    }
+    chat_sb = _require_chat_storage()
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: chat_sb.table("chat_messages")
+            .upsert(message, on_conflict="id", ignore_duplicates=True).execute()
+        )
+    except Exception as e:
+        if not await _chat_row_by_id(chat_sb, "chat_messages", message["id"],
+                                     session_id=session["id"]):
+            _raise_chat_storage_error("notification message insert", e)
+
+    return {"session_id": session["id"], "kind": "daily_post" if post else "care"}
+
+
 # ── Internal cron entry points ────────────────────────────────────────────────
 # §9.3. Guarded by CRON_SECRET rather than a user token: no account is acting.
 
@@ -6474,9 +6571,10 @@ async def internal_care_generate(
     authorization: Optional[str] = Header(default=None),
     limit: int = 50,
 ):
-    """Queue one caring notification per eligible account.
+    """Queue each eligible account's two notifications for the day.
 
-    Runs well before the send: an event created here still passes through the
+    The featured post is due now and the care line in the parent's evening
+    (push_service.CARE_LOCAL_HOUR). Either still passes through the
     dispatcher's quiet hours and daily cap, so producing one is never the same
     as interrupting someone.
     """
@@ -6495,20 +6593,25 @@ async def internal_care_generate(
     rows = await anyio.to_thread.run_sync(_candidates)
     uids = list(dict.fromkeys(r["user_id"] for r in rows if r.get("user_id")))
 
-    queued = skipped = 0
+    generators = {
+        "daily_post": push_service.generate_post_event,
+        "care": push_service.generate_care_event,
+    }
+    queued = {kind: 0 for kind in generators}
+    skipped = {kind: 0 for kind in generators}
     for uid in uids:
-        try:
-            event = await push_service.generate_care_event(sb, uid)
-        except Exception as exc:  # noqa: BLE001 - one account must not stop the run
-            logging.getLogger("nuri.push").warning(
-                "care generation failed: %s", type(exc).__name__,
-            )
-            skipped += 1
-            continue
-        if event:
-            queued += 1
-        else:
-            skipped += 1
+        for kind, generate in generators.items():
+            try:
+                event = await generate(sb, uid)
+            except Exception as exc:  # noqa: BLE001 - one account must not stop the run
+                logging.getLogger("nuri.push").warning(
+                    "%s generation failed: %s", kind, type(exc).__name__,
+                )
+                event = None
+            if event:
+                queued[kind] += 1
+            else:
+                skipped[kind] += 1
     return {"ok": True, "candidates": len(uids), "queued": queued, "skipped": skipped}
 
 

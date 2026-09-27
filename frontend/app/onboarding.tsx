@@ -79,7 +79,11 @@ export default function Onboarding() {
       try {
         const [me, kids] = await Promise.all([api.me(), api.listChildren()]);
         setNickname(me?.nickname || ""); setCity(me?.city || ""); setParentRole(me?.parent_role || "");
-        setConcerns(me?.top_concerns || []); setConcernOther(me?.concern_other || "");
+        // Only the choices this page offers: an older account can hold one that
+        // was retired (e.g. "education"), which has no chip to untick and made
+        // every save fail validation.
+        setConcerns((me?.top_concerns || []).filter((key: string) => CONCERNS.some(([k]) => k === key)));
+        setConcernOther(me?.concern_other || "");
         setHobbies(me?.hobbies || ""); setHelpPref(me?.help_preference || "");
         setInfoSource(me?.info_source || ""); setFrequency(me?.content_frequency || "");
         if (kids?.[0]) {
