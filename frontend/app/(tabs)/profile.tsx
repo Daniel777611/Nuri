@@ -16,6 +16,7 @@ import { api, auth } from "@/src/api";
 import { completedAgeMonths } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
+import { isNativeShell } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const FIGMA_FRAME_WIDTH = 402;
@@ -252,6 +253,23 @@ export default function Profile() {
             <Text style={styles.dangerText}>{t("删除我的所有数据")}</Text>
           </Pressable>
         </Section>
+
+        {/* Web only: the shells can't sell yet (see app/billing.tsx). */}
+        {!isNativeShell() ? (
+          <Section title={t("会员")}>
+            <Pressable
+              onPress={() => router.push("/billing")}
+              style={[styles.child, { borderBottomWidth: 0 }]}
+              testID="profile-billing"
+            >
+              <View style={styles.childAvatar}>
+                <Ionicons name="sparkles-outline" size={16} color={colors.brand} />
+              </View>
+              <Text style={[styles.childName, { flex: 1 }]}>{t("NURI 会员")}</Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+          </Section>
+        ) : null}
 
         <Section title={t("账户")}>
           <View style={styles.langRow}>

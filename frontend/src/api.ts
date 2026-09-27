@@ -859,4 +859,33 @@ export const api = {
   // likely to hit a serverless cold start.
   me: () => req(`/auth/me`, undefined, 30000),
   updateMe: (b: any) => req(`/auth/me`, { method: "PUT", body: JSON.stringify(b) }),
+
+  // Billing (backend/billing.py). Checkout and the Portal are Stripe-hosted:
+  // these only return the URL to send the browser to.
+  billingStatus: () => req<BillingStatus>(`/billing/status`, undefined, 20000),
+  billingCheckout: (interval: BillingInterval) =>
+    req<{ url: string }>(`/billing/checkout`, { method: "POST", body: JSON.stringify({ interval }) }, 20000),
+  billingPortal: () => req<{ url: string }>(`/billing/portal`, { method: "POST" }, 20000),
+};
+
+export type BillingInterval = "month" | "year";
+
+export type BillingPlan = {
+  interval: BillingInterval;
+  price_id: string;
+  unit_amount: number | null;
+  currency: string | null;
+};
+
+export type BillingStatus = {
+  enabled: boolean;
+  entitled: boolean;
+  has_customer: boolean;
+  plans: BillingPlan[];
+  subscription: null | {
+    status: string;
+    interval: BillingInterval | null;
+    current_period_end: string | null;
+    cancel_at_period_end: boolean;
+  };
 };

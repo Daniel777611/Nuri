@@ -57,7 +57,7 @@ from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import (
-    email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
+    billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, runtime, stores, usage_dashboard,
 )
 from backend.feed import daily_post as feed_daily_post
@@ -6539,6 +6539,105 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
             _raise_chat_storage_error("notification message insert", e)
 
     return {"session_id": session["id"], "kind": "daily_post" if post else "care"}
+
+
+# ── Billing (Stripe) ──────────────────────────────────────────────────────────
+# See backend/billing.py. Checkout and the Portal are Stripe-hosted pages; these
+# routes only mint their URLs, and the webhook keeps the local copy in sync.
+
+class CheckoutIn(BaseModel):
+    interval: Literal["month", "year"]
+
+
+def _require_billing_storage():
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Billing storage unavailable")
+    return sb
+
+
+def _billing_return_base(request: Request) -> str:
+    """Where Stripe sends the parent back to. The page's own origin, so a
+    preview deployment or a local dev server returns to itself rather than to
+    production; APP_URL only when the browser didn't say."""
+    override = os.getenv("BILLING_RETURN_URL", "").strip()
+    if override:
+        return override
+    origin = (request.headers.get("origin") or "").strip()
+    parsed = urlparse(origin)
+    if parsed.scheme == "https" or (
+        parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+    ):
+        return origin
+    return APP_URL
+
+
+@api.get("/billing/status")
+async def billing_status(uid: str = Depends(_req_uid)):
+    sb = _require_billing_storage()
+    result = await anyio.to_thread.run_sync(lambda: billing.status_for(sb, uid))
+    try:
+        result["plans"] = await anyio.to_thread.run_sync(billing.plans)
+    except Exception as exc:  # noqa: BLE001 - a Stripe outage must not hide the status
+        logging.getLogger("nuri.billing").warning("plans unavailable: %s", type(exc).__name__)
+        result["plans"] = []
+    return result
+
+
+@api.post("/billing/checkout")
+async def billing_checkout(body: CheckoutIn, request: Request, uid: str = Depends(_req_uid)):
+    if not billing.configured():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED")
+    sb = _require_billing_storage()
+    current = await anyio.to_thread.run_sync(lambda: billing.status_for(sb, uid))
+    if current["entitled"]:
+        # A second Checkout would start a second, independently billed
+        # subscription. Changing plans goes through the Portal instead.
+        raise HTTPException(status.HTTP_409_CONFLICT, "ALREADY_SUBSCRIBED")
+    users = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("email").eq("id", uid).limit(1).execute().data or []
+    )
+    email = users[0].get("email") if users else None
+    base = _billing_return_base(request)
+    try:
+        url = await anyio.to_thread.run_sync(
+            lambda: billing.create_checkout(sb, uid, email, body.interval, base)
+        )
+    except billing.BillingNotConfigured as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED") from exc
+    return {"url": url}
+
+
+@api.post("/billing/portal")
+async def billing_portal(request: Request, uid: str = Depends(_req_uid)):
+    if not billing.configured():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED")
+    sb = _require_billing_storage()
+    base = _billing_return_base(request)
+    url = await anyio.to_thread.run_sync(lambda: billing.create_portal(sb, uid, base))
+    if not url:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_CUSTOMER")
+    return {"url": url}
+
+
+@api.post("/billing/webhook")
+async def billing_webhook(request: Request, stripe_signature: Optional[str] = Header(default=None)):
+    """Stripe → us. Authenticated by the signature, not a user token.
+
+    A 4xx tells Stripe the payload is bad and not worth retrying; a 5xx (for
+    instance the database being down) makes Stripe retry for up to three days,
+    which is exactly what a missed subscription update needs.
+    """
+    payload = await request.body()
+    try:
+        event = billing.construct_event(payload, stripe_signature)
+    except billing.BillingNotConfigured as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "webhook not configured") from exc
+    except Exception as exc:  # noqa: BLE001 - bad JSON or bad signature alike
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid signature") from exc
+    sb = _require_billing_storage()
+    result = await anyio.to_thread.run_sync(lambda: billing.handle_event(sb, event))
+    return {"received": True, **result}
 
 
 # ── Internal cron entry points ────────────────────────────────────────────────

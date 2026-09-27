@@ -3,6 +3,26 @@
 
 export const isPreviewMode = process.env.EXPO_PUBLIC_PREVIEW_MODE === "1";
 
+// Kept in sessionStorage: the fake checkout "returns" with a full page load,
+// which would otherwise forget the purchase it just made.
+const BILLING_PREVIEW_KEY = "nuri.preview.billing";
+let billingPreview: any = (() => {
+  try {
+    const saved = globalThis.sessionStorage?.getItem(BILLING_PREVIEW_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch { /* no storage: start fresh */ }
+  return {
+    enabled: true,
+    entitled: false,
+    has_customer: false,
+    subscription: null,
+    plans: [
+      { interval: "month", price_id: "price_preview_m", unit_amount: 999, currency: "usd" },
+      { interval: "year", price_id: "price_preview_y", unit_amount: 9900, currency: "usd" },
+    ],
+  };
+})();
+
 let profile = {
   id: "preview-parent",
   email: "preview@nuri.app",
@@ -694,6 +714,25 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/privacy" && method === "GET") return privacy;
   if (path === "/privacy" && method === "PUT") return (privacy = { ...privacy, ...body });
   if (path === "/privacy/wipe") return {};
+
+  // Billing: sample prices; subscribing flips the preview account to a member
+  // instead of leaving for Stripe.
+  if (path === "/billing/status") return billingPreview;
+  if (path === "/billing/checkout") {
+    const interval = body?.interval === "year" ? "year" : "month";
+    const end = new Date(Date.now() + (interval === "year" ? 365 : 30) * 86400000).toISOString();
+    billingPreview = {
+      ...billingPreview,
+      entitled: true,
+      has_customer: true,
+      subscription: { status: "active", interval, current_period_end: end, cancel_at_period_end: false },
+    };
+    try {
+      globalThis.sessionStorage?.setItem(BILLING_PREVIEW_KEY, JSON.stringify(billingPreview));
+    } catch { /* preview only */ }
+    return { url: "/billing?checkout=success" };
+  }
+  if (path === "/billing/portal") return { url: "/billing" };
 
   if (path === "/chat/main/preview" && method === "GET") {
     // `source_card_id` is legacy provenance, not conversation identity. The

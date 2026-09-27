@@ -15,3 +15,5 @@ tzdata
 # APNs provider client: HTTP/2 is required by Apple's push endpoint,
 # and PyJWT needs cryptography (already listed) for the ES256 provider token.
 httpx[http2]>=0.28,<1
+# Stripe subscriptions (backend/billing.py); Checkout/Portal are Stripe-hosted.
+stripe>=15,<16

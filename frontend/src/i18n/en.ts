@@ -656,4 +656,34 @@ export const en: Record<string, string> = {
   "这条通知不存在或已过期": "This notification no longer exists.",
   "回到首页": "Go to home",
   "加载失败，请稍后再试": "Couldn't load. Please try again.",
+  // ── Billing ────────────────────────────────────────────────────────────────
+  "会员": "Membership",
+  "NURI 会员": "NURI Membership",
+  "解锁完整的 NURI 育儿陪伴。": "Get the full NURI parenting companion.",
+  "月付": "Monthly",
+  "年付": "Yearly",
+  "每月": "month",
+  "每年": "year",
+  "订阅": "Subscribe",
+  "管理订阅": "Manage subscription",
+  "查看付款记录": "View payment history",
+  "你已是 NURI 会员": "You're a NURI member",
+  "下次续费日期：{date}": "Renews on {date}",
+  "会员将于 {date} 到期，不再续费": "Ends on {date} and won't renew",
+  "上次扣款没有成功，请更新付款方式以免会员中断。":
+    "Your last payment didn't go through. Update your payment method to keep your membership.",
+  "支付成功，欢迎成为 NURI 会员！": "Payment complete. Welcome to NURI Membership!",
+  "支付成功，会员状态正在同步，请稍候…": "Payment complete. Updating your membership…",
+  "会员状态还在同步中，请稍后刷新本页。如已扣款，无需重复支付。":
+    "Your membership is still updating. Refresh this page in a moment — if you were charged, don't pay again.",
+  "已取消支付，没有产生扣款。": "Checkout canceled. You haven't been charged.",
+  "App 内暂不支持开通会员。": "Membership isn't available in the app yet.",
+  "会员信息暂时无法读取，请稍后再试。": "Couldn't load your membership. Please try again later.",
+  "会员订阅暂未开放，敬请期待。": "Membership isn't open yet. Stay tuned.",
+  "付款由 Stripe 安全处理，NURI 不会保存你的银行卡信息。订阅会自动续费，可随时取消。":
+    "Payments are handled securely by Stripe; NURI never stores your card. Subscriptions renew automatically and can be canceled anytime.",
+  "你已经是会员了，如需更换方案请点“管理订阅”。":
+    "You're already a member. To switch plans, use “Manage subscription”.",
+  "暂时无法打开支付页面，请稍后再试。": "Couldn't open checkout. Please try again later.",
+  "暂时无法打开订阅管理，请稍后再试。": "Couldn't open subscription management. Please try again later.",
 };
