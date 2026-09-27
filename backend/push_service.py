@@ -255,7 +255,7 @@ async def generate_post_event(
 # without waiting a day. Quiet hours still apply; the daily cap does not, or the
 # fifth run of the day would be cancelled.
 
-DEFAULT_TEST_EMAILS = "daniel@ordashlab.com,123@123.com"
+DEFAULT_TEST_EMAILS = "daniel@ordashlab.com,123@123.com,contact@ordashteches.com"
 
 
 def tester_emails() -> list[str]:
