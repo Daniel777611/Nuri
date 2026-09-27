@@ -126,8 +126,7 @@ def generation(monkeypatch):
     monkeypatch.setattr(family_store, "load_profile", _profile)
     monkeypatch.setattr(family_store, "profile_ctx", lambda *_a: "")
     monkeypatch.setattr(dialogue_reply, "get_style_rules_ctx", _style)
-    monkeypatch.setattr(dialogue_reply, "nuri_reply_sync",
-                        lambda *_a, **_k: {"text": state["reply"]})
+    monkeypatch.setattr(push_service, "compose_care_text", lambda _p: state["reply"])
     return state
 
 
@@ -189,6 +188,28 @@ async def test_each_kind_is_sent_once_a_day(generation):
     assert await push_service.generate_care_event(db, "u1", now=NOW)
     assert await push_service.generate_post_event(db, "u1", now=NOW) is None
     assert await push_service.generate_care_event(db, "u1", now=NOW) is None
+
+
+def test_tester_slot_is_the_half_hour():
+    assert push_service.tester_slot(datetime(2026, 9, 26, 14, 7, tzinfo=timezone.utc)) == "2026-09-26T14:00"
+    assert push_service.tester_slot(datetime(2026, 9, 26, 14, 45, tzinfo=timezone.utc)) == "2026-09-26T14:30"
+
+
+@pytest.mark.anyio
+async def test_test_accounts_get_both_every_half_hour_right_away(generation):
+    db = _EventsDb()
+    # The regular daily pair has already gone out today.
+    assert await push_service.generate_post_event(db, "u1", now=NOW)
+    assert await push_service.generate_care_event(db, "u1", now=NOW)
+    for slot in ("2026-09-22T14:00", "2026-09-22T14:30"):
+        post = await push_service.generate_post_event(db, "u1", now=NOW, slot=slot)
+        care_event = await push_service.generate_care_event(db, "u1", now=NOW, slot=slot)
+        assert post and care_event
+        assert care_event["scheduled_at"] == NOW.isoformat()  # now, not 18:00
+        assert post["data"]["test_burst"] is True and care_event["data"]["test_burst"] is True
+    # A retried cron call inside the same slot adds nothing.
+    assert await push_service.generate_care_event(db, "u1", now=NOW, slot="2026-09-22T14:30") is None
+    assert len({r["collapse_id"] for r in db.rows}) == len(db.rows)
 
 
 # ── Opening one ───────────────────────────────────────────────────────────────

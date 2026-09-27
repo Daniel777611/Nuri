@@ -6714,6 +6714,37 @@ async def internal_care_generate(
     return {"ok": True, "candidates": len(uids), "queued": queued, "skipped": skipped}
 
 
+@api.get("/internal/push/test-accounts")
+async def internal_push_test_accounts(authorization: Optional[str] = Header(default=None)):
+    """Every half hour: both notifications, now, for PUSH_TEST_EMAILS only.
+
+    Each run gets its own dedupe key (the half-hour slot), so a retried cron
+    call inside the same slot still sends once. Delivery is the regular
+    dispatcher's, which keeps quiet hours and skips the daily cap for these.
+    """
+    _require_cron_secret(authorization)
+    sb = _require_push_storage()
+    emails = push_service.tester_emails()
+    if not emails:
+        return {"ok": True, "accounts": 0}
+    rows = await anyio.to_thread.run_sync(
+        lambda: sb.table("users").select("id,email").in_("email", emails).execute().data or []
+    )
+    slot = push_service.tester_slot(datetime.now(timezone.utc))
+    queued = {"daily_post": 0, "care": 0}
+    for row in rows:
+        for kind, generate in (("daily_post", push_service.generate_post_event),
+                               ("care", push_service.generate_care_event)):
+            try:
+                if await generate(sb, row["id"], slot=slot):
+                    queued[kind] += 1
+            except Exception as exc:  # noqa: BLE001 - one kind must not stop the other
+                logging.getLogger("nuri.push").warning(
+                    "test %s generation failed: %s", kind, type(exc).__name__,
+                )
+    return {"ok": True, "slot": slot, "accounts": len(rows), "queued": queued}
+
+
 # ── Mount /api router ─────────────────────────────────────────────────────────
 app.include_router(api)
 
