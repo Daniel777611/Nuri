@@ -360,7 +360,7 @@
 				APS_ENVIRONMENT = development;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NURI/NURI.entitlements;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 6PL6HQYU7P;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -374,7 +374,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.4;
-				MARKETING_VERSION = 0.2.8;
+				MARKETING_VERSION = 0.2.9;
 				NURI_APNS_ENVIRONMENT = sandbox;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -402,7 +402,7 @@
 				CODE_SIGN_ENTITLEMENTS = NURI/NURI.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 14;
 					DEVELOPMENT_TEAM = 6PL6HQYU7P;
 				INFOPLIST_FILE = NURI/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
@@ -411,7 +411,7 @@
 					"@executable_path/Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.4;
-				MARKETING_VERSION = 0.2.8;
+				MARKETING_VERSION = 0.2.9;
 				NURI_APNS_ENVIRONMENT = production;
 				OTHER_LDFLAGS = (
 					"$(inherited)",

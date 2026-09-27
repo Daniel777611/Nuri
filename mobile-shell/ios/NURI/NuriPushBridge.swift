@@ -1,6 +1,7 @@
 import Foundation
 import React
 import Security
+import StoreKit
 import UIKit
 import UserNotifications
 
@@ -725,6 +726,20 @@ final class NuriPushBridge: RCTEventEmitter {
         "route": route ?? NSNull(),
       ]
       resolve(result)
+    }
+  }
+
+  /// The App Store storefront's country (ISO 3166-1 alpha-3, e.g. "USA"), or
+  /// null when StoreKit can't say. The web page shows its Stripe purchase link
+  /// only on the United States storefront (App Review Guidelines 3.1.1(a)).
+  @objc(getStorefront:rejecter:)
+  func getStorefront(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    Task {
+      let country = await Storefront.current?.countryCode
+      resolve(country ?? NSNull())
     }
   }
 

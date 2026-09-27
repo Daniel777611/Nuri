@@ -188,7 +188,15 @@ def ensure_customer(sb, uid: str, email: Optional[str]) -> str:
     return customer_id_for(sb, uid) or customer["id"]
 
 
-def create_checkout(sb, uid: str, email: Optional[str], interval: str, return_base: str) -> str:
+def _return_query(from_app: bool) -> str:
+    # Checkout started inside the iOS/Android shell finishes in the phone's
+    # browser, where the parent isn't signed in. `from=app` tells the page to
+    # say "go back to the app" instead of trying to load a membership.
+    return "&from=app" if from_app else ""
+
+
+def create_checkout(sb, uid: str, email: Optional[str], interval: str, return_base: str,
+                    from_app: bool = False) -> str:
     if interval not in INTERVALS:
         raise ValueError(f"unknown interval {interval!r}")
     price_id = _price_ids()[interval]
@@ -206,19 +214,20 @@ def create_checkout(sb, uid: str, email: Optional[str], interval: str, return_ba
         "subscription_data": {"metadata": {"user_id": uid}},
         "metadata": {"user_id": uid},
         "allow_promotion_codes": True,
-        "success_url": f"{base}/billing?checkout=success",
-        "cancel_url": f"{base}/billing?checkout=cancel",
+        "success_url": f"{base}/billing?checkout=success{_return_query(from_app)}",
+        "cancel_url": f"{base}/billing?checkout=cancel{_return_query(from_app)}",
     }))
     return session["url"]
 
 
-def create_portal(sb, uid: str, return_base: str) -> Optional[str]:
+def create_portal(sb, uid: str, return_base: str, from_app: bool = False) -> Optional[str]:
     customer_id = customer_id_for(sb, uid)
     if not customer_id:
         return None
+    query = "?from=app" if from_app else ""
     session = _plain(_client().v1.billing_portal.sessions.create(params={
         "customer": customer_id,
-        "return_url": f"{return_base.rstrip('/')}/billing",
+        "return_url": f"{return_base.rstrip('/')}/billing{query}",
     }))
     return session["url"]
 

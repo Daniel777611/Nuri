@@ -1,11 +1,13 @@
 // Membership page: pick a plan → Stripe Checkout; already a member → Stripe
 // Customer Portal. Both are Stripe-hosted, so no card field ever renders here.
 //
-// Web only for now. Inside the iOS/Android shells the page shows nothing to
-// buy: Apple allows an external purchase link only on the US storefront, and
-// the shells can't yet tell which storefront they're on or bring Safari back
-// into the app afterwards (see the payments groundwork notes). Google Play has
-// its own billing rules that haven't been checked.
+// Inside the iOS/Android shells it shows the same buttons only where a link
+// out to another payment method is allowed (see usePurchaseAllowed): the
+// United States App Store storefront on iOS, and the Android APK. Stripe then
+// opens in the phone's browser — the shells send every non-NURI https link
+// there — and comes back to /billing?from=app in that browser, which is not
+// signed in, so that visit only says "go back to the app". Back in the app,
+// the page re-reads the membership when it returns to the foreground.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -25,8 +27,11 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { api, apiErrorDetail, type BillingInterval, type BillingPlan, type BillingStatus } from "@/src/api";
 import { useT } from "@/src/i18n";
-import { isNativeShell } from "@/src/nativeShell";
+import { isNativeShell, useOnReturnToApp, usePurchaseAllowed } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
+
+/** The iOS shell registers this scheme; opening it brings the app forward. */
+const IOS_APP_URL = "nuri://";
 
 const FIGMA_FRAME_WIDTH = 402;
 
@@ -57,20 +62,29 @@ function formatDate(iso: string | null | undefined, locale: string): string {
 }
 
 export default function Billing() {
+  const params = useLocalSearchParams<{ checkout?: string; from?: string }>();
+  // Stripe sent a parent who started in the app back to this page in their
+  // phone's browser. They aren't signed in here; point them back to the app.
+  if (params.from === "app" && !isNativeShell()) {
+    return <BackToApp checkout={params.checkout} />;
+  }
+  return <BillingPage checkout={params.checkout} />;
+}
+
+function BillingPage({ checkout }: { checkout?: string }) {
   const router = useRouter();
   const { t, locale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const params = useLocalSearchParams<{ checkout?: string }>();
-  const checkoutResult = params.checkout === "success" || params.checkout === "cancel"
-    ? params.checkout
-    : null;
+  const checkoutResult = checkout === "success" || checkout === "cancel" ? checkout : null;
 
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState<BillingInterval | "portal" | null>(null);
   const [actionError, setActionError] = useState("");
   const inShell = isNativeShell();
+  const purchaseAllowed = usePurchaseAllowed();
+  const returnTo = inShell ? "app" : "web";
 
   const load = useCallback(async () => {
     try {
@@ -97,29 +111,50 @@ export default function Billing() {
   // just paid is how a second subscription gets bought.
   const polled = useRef(false);
   const [syncing, setSyncing] = useState(checkoutResult === "success");
+  const pollUntilMember = useCallback(async (isCancelled: () => boolean) => {
+    setSyncing(true);
+    for (let i = 0; i < 8 && !isCancelled(); i++) {
+      const next = await load();
+      if (next?.entitled) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!isCancelled()) setSyncing(false);
+  }, [load]);
+
   useEffect(() => {
     if (checkoutResult !== "success" || polled.current) return;
     polled.current = true;
     let cancelled = false;
-    (async () => {
-      for (let i = 0; i < 8 && !cancelled; i++) {
-        const next = await load();
-        if (next?.entitled) break;
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-      if (!cancelled) setSyncing(false);
-    })();
+    pollUntilMember(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [checkoutResult, load]);
+  }, [checkoutResult, pollUntilMember]);
+
+  // In the app, Stripe runs in the phone's browser and this page never sees
+  // it finish. Coming back to the app is the signal: re-read, and if the
+  // parent had gone to pay, wait briefly for the webhook.
+  const leftToPay = useRef(false);
+  useOnReturnToApp(useCallback(() => {
+    setBusy(null);
+    if (leftToPay.current) {
+      leftToPay.current = false;
+      pollUntilMember(() => false);
+    } else {
+      load();
+    }
+  }, [load, pollUntilMember]));
 
   const subscribe = async (interval: BillingInterval) => {
     setBusy(interval);
     setActionError("");
     try {
-      const { url } = await api.billingCheckout(interval);
+      const { url } = await api.billingCheckout(interval, returnTo);
+      leftToPay.current = inShell;
       openExternal(url);
+      // In the app this page stays put while the browser opens; don't leave
+      // the button spinning if the parent comes straight back.
+      if (inShell) setTimeout(() => setBusy(null), 3000);
     } catch (err) {
       setActionError(
         apiErrorDetail(err) === "ALREADY_SUBSCRIBED"
@@ -135,8 +170,9 @@ export default function Billing() {
     setBusy("portal");
     setActionError("");
     try {
-      const { url } = await api.billingPortal();
+      const { url } = await api.billingPortal(returnTo);
       openExternal(url);
+      if (inShell) setTimeout(() => setBusy(null), 3000);
     } catch {
       setActionError(t("暂时无法打开订阅管理，请稍后再试。"));
       setBusy(null);
@@ -181,7 +217,7 @@ export default function Billing() {
             <Banner tone="muted" testID="billing-banner-cancel">{t("已取消支付，没有产生扣款。")}</Banner>
           ) : null}
 
-          {inShell ? (
+          {inShell && !purchaseAllowed ? (
             <Banner tone="muted" testID="billing-shell-notice">{t("App 内暂不支持开通会员。")}</Banner>
           ) : (!status && !loadFailed) || (syncing && !status?.entitled) ? (
             <ActivityIndicator style={{ marginTop: spacing.xxl }} color={colors.brand} />
@@ -245,11 +281,54 @@ export default function Billing() {
               <Text style={styles.fineprint}>
                 {t("付款由 Stripe 安全处理，NURI 不会保存你的银行卡信息。订阅会自动续费，可随时取消。")}
               </Text>
+              {inShell ? (
+                // Said before the parent leaves the app, not after.
+                <Text style={styles.fineprint} testID="billing-external-notice">
+                  {t("点击订阅后，会在手机浏览器中打开 Stripe 付款页面；付款完成后回到 NURI App 即可。")}
+                </Text>
+              ) : null}
             </View>
           )}
 
           {actionError ? <Banner tone="error" testID="billing-action-error">{actionError}</Banner> : null}
         </ScrollView>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+/** What the phone's browser shows after a checkout or Portal visit that
+ *  started in the app. No API calls: this browser isn't signed in. */
+function BackToApp({ checkout }: { checkout?: string }) {
+  const { t } = useT();
+  const isIos = typeof navigator !== "undefined" && /iPhone|iPad|iPod/.test(navigator.userAgent || "");
+  const title =
+    checkout === "success"
+      ? t("付款成功")
+      : checkout === "cancel"
+        ? t("已取消支付，没有产生扣款。")
+        : t("订阅设置已更新");
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.backToApp} testID="billing-back-to-app">
+        <View style={styles.heroIcon}>
+          <Ionicons
+            name={checkout === "success" ? "checkmark-circle-outline" : "phone-portrait-outline"}
+            size={26}
+            color={colors.brand}
+          />
+        </View>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.subtitle}>{t("请回到 NURI App，会员状态会自动更新。")}</Text>
+        {isIos ? (
+          <Pressable
+            style={[styles.primaryBtn, { marginTop: spacing.lg }]}
+            onPress={() => Linking.openURL(IOS_APP_URL)}
+            testID="billing-open-app-btn"
+          >
+            <Text style={styles.primaryBtnText}>{t("打开 NURI App")}</Text>
+          </Pressable>
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -386,6 +465,13 @@ const styles = StyleSheet.create({
   meta: { fontSize: type.sm, color: colors.muted },
   link: { color: colors.brand, fontWeight: "600", fontSize: type.base, textAlign: "center" },
   fineprint: { fontSize: type.sm, color: colors.muted, lineHeight: 18, textAlign: "center" },
+  backToApp: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xl,
+    gap: spacing.sm,
+  },
   banner: {
     marginHorizontal: spacing.lg,
     marginBottom: spacing.md,

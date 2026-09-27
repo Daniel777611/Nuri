@@ -215,10 +215,27 @@ def test_checkout_refuses_a_second_subscription(env):
 
 def test_portal_needs_a_customer(env):
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(main.billing_portal(_request(), "u1"))
+        asyncio.run(main.billing_portal(_request(), uid="u1"))
     assert exc.value.status_code == 404
     env.db.tables["billing_customers"].append({"user_id": "u1", "stripe_customer_id": "cus_1"})
-    assert asyncio.run(main.billing_portal(_request(), "u1"))["url"].startswith("https://billing.")
+    assert asyncio.run(main.billing_portal(_request(), uid="u1"))["url"].startswith("https://billing.")
+
+
+def test_checkout_from_the_app_returns_to_a_back_to_app_page(env):
+    req = _request(headers={"origin": "https://nurifam.app"})
+    asyncio.run(main.billing_checkout(
+        main.CheckoutIn(interval="month", return_to="app"), req, "u1"))
+    params = [p for c, p in env.stripe.calls if c == "checkout.create"][0]
+    assert params["success_url"] == "https://nurifam.app/billing?checkout=success&from=app"
+    assert params["cancel_url"] == "https://nurifam.app/billing?checkout=cancel&from=app"
+
+
+def test_portal_from_the_app_returns_to_a_back_to_app_page(env):
+    env.db.tables["billing_customers"].append({"user_id": "u1", "stripe_customer_id": "cus_1"})
+    req = _request(headers={"origin": "https://nurifam.app"})
+    asyncio.run(main.billing_portal(req, main.PortalIn(return_to="app"), uid="u1"))
+    params = [p for c, p in env.stripe.calls if c == "portal.create"][0]
+    assert params["return_url"] == "https://nurifam.app/billing?from=app"
 
 
 # ── Webhook ───────────────────────────────────────────────────────────────────

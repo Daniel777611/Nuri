@@ -686,4 +686,10 @@ export const en: Record<string, string> = {
     "You're already a member. To switch plans, use “Manage subscription”.",
   "暂时无法打开支付页面，请稍后再试。": "Couldn't open checkout. Please try again later.",
   "暂时无法打开订阅管理，请稍后再试。": "Couldn't open subscription management. Please try again later.",
+  "点击订阅后，会在手机浏览器中打开 Stripe 付款页面；付款完成后回到 NURI App 即可。":
+    "Subscribing opens Stripe's payment page in your phone's browser. When you're done, just come back to the NURI app.",
+  "付款成功": "Payment complete",
+  "订阅设置已更新": "Subscription updated",
+  "请回到 NURI App，会员状态会自动更新。": "Head back to the NURI app — your membership will update there.",
+  "打开 NURI App": "Open the NURI app",
 };

@@ -37,6 +37,8 @@ export type NuriReminderSettings = {
 
 export type NuriPushNativeModule = {
   getInitialState(): Promise<NuriPushInitialState>;
+  /** App Store storefront country, ISO 3166-1 alpha-3 ("USA"), or null. */
+  getStorefront(): Promise<string | null>;
   refreshPushState(): Promise<NuriPushState | null>;
   requestPushRegistration(): Promise<NuriPushState | null>;
   getReminderSettings(): Promise<NuriReminderSettings>;
@@ -116,8 +118,15 @@ export function buildCustomEventScript(
   eventName:
     | 'nuri:apns-token'
     | 'nuri:open-route'
-    | 'nuri:reminder-settings',
-  detail: NuriPushState | { route: string } | NuriReminderSettings,
+    | 'nuri:reminder-settings'
+    | 'nuri:storefront'
+    | 'nuri:app-active',
+  detail:
+    | NuriPushState
+    | { route: string }
+    | NuriReminderSettings
+    | { countryCode: string | null }
+    | Record<string, never>,
 ): string {
   const serializedDetail = JSON.stringify(detail)
     .replace(/</g, '\\u003c')
@@ -133,11 +142,19 @@ export function buildCustomEventScript(
   })(); true;`;
 }
 
-export function isPushTokenRequest(message: string): boolean {
+function messageType(message: string): unknown {
   try {
-    const parsed = JSON.parse(message) as { type?: unknown };
-    return parsed?.type === 'nuri:request-apns-token';
+    return (JSON.parse(message) as { type?: unknown })?.type;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+export function isPushTokenRequest(message: string): boolean {
+  return messageType(message) === 'nuri:request-apns-token';
+}
+
+/** The membership page asking whether it may show a purchase link. */
+export function isStorefrontRequest(message: string): boolean {
+  return messageType(message) === 'nuri:request-storefront';
 }

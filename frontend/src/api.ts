@@ -863,9 +863,18 @@ export const api = {
   // Billing (backend/billing.py). Checkout and the Portal are Stripe-hosted:
   // these only return the URL to send the browser to.
   billingStatus: () => req<BillingStatus>(`/billing/status`, undefined, 20000),
-  billingCheckout: (interval: BillingInterval) =>
-    req<{ url: string }>(`/billing/checkout`, { method: "POST", body: JSON.stringify({ interval }) }, 20000),
-  billingPortal: () => req<{ url: string }>(`/billing/portal`, { method: "POST" }, 20000),
+  billingCheckout: (interval: BillingInterval, returnTo: "web" | "app" = "web") =>
+    req<{ url: string }>(
+      `/billing/checkout`,
+      { method: "POST", body: JSON.stringify({ interval, return_to: returnTo }) },
+      20000,
+    ),
+  billingPortal: (returnTo: "web" | "app" = "web") =>
+    req<{ url: string }>(
+      `/billing/portal`,
+      { method: "POST", body: JSON.stringify({ return_to: returnTo }) },
+      20000,
+    ),
 };
 
 export type BillingInterval = "month" | "year";

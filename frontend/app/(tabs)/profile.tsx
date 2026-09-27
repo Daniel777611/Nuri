@@ -16,7 +16,7 @@ import { api, auth } from "@/src/api";
 import { completedAgeMonths } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
-import { isNativeShell } from "@/src/nativeShell";
+import { usePurchaseAllowed } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 const FIGMA_FRAME_WIDTH = 402;
@@ -37,6 +37,7 @@ export default function Profile() {
   });
   const [privacyUnavailable, setPrivacyUnavailable] = useState(true);
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const purchaseAllowed = usePurchaseAllowed();
 
   const load = useCallback(async () => {
     const [childrenResult, privacyResult, favoritesResult] = await Promise.allSettled([
@@ -254,8 +255,8 @@ export default function Profile() {
           </Pressable>
         </Section>
 
-        {/* Web only: the shells can't sell yet (see app/billing.tsx). */}
-        {!isNativeShell() ? (
+        {/* In the apps only where linking out to pay is allowed (see app/billing.tsx). */}
+        {purchaseAllowed ? (
           <Section title={t("会员")}>
             <Pressable
               onPress={() => router.push("/billing")}

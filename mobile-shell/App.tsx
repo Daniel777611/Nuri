@@ -31,6 +31,7 @@ import {
   isAllowedNotificationRoute,
   isNuriPushState,
   isPushTokenRequest,
+  isStorefrontRequest,
   isTrustedWebUrl,
   notificationRouteUrl,
   type NuriPushNativeModule,
@@ -99,8 +100,14 @@ export default function App() {
     (
       eventName:
         | 'nuri:apns-token'
-        | 'nuri:open-route',
-      detail: NuriPushState | { route: string },
+        | 'nuri:open-route'
+        | 'nuri:storefront'
+        | 'nuri:app-active',
+      detail:
+        | NuriPushState
+        | { route: string }
+        | { countryCode: string | null }
+        | Record<string, never>,
     ) => {
       if (
         !webViewLoadedRef.current ||
@@ -143,6 +150,24 @@ export default function App() {
       setTimeout(syncPushStateToWeb, delay),
     );
   }, [clearPushInjectionTimers, syncPushStateToWeb]);
+
+  // The membership page shows its Stripe link only on the US App Store
+  // storefront. Read fresh each time: the parent can switch stores.
+  const sendStorefrontToWeb = useCallback(() => {
+    if (!nativePushModule?.getStorefront) {
+      return;
+    }
+    void nativePushModule
+      .getStorefront()
+      .then((countryCode) => {
+        injectTrustedEvent('nuri:storefront', {
+          countryCode: typeof countryCode === 'string' ? countryCode : null,
+        });
+      })
+      .catch(() => {
+        injectTrustedEvent('nuri:storefront', { countryCode: null });
+      });
+  }, [injectTrustedEvent]);
 
   const acceptPushState = useCallback(
     (state: unknown) => {
@@ -214,6 +239,9 @@ export default function App() {
         if (nextState !== 'active') {
           return;
         }
+        // Coming back from Safari after a Stripe checkout: the page re-reads
+        // the membership. WKWebView doesn't reliably fire visibilitychange.
+        injectTrustedEvent('nuri:app-active', {});
         // Re-register on foreground so a token acquired after the first page
         // load, or permission enabled in Settings, reaches the signed-in web
         // session without asking the parent to reinstall the app.
@@ -257,7 +285,7 @@ export default function App() {
       routeSubscription.remove();
       appStateSubscription.remove();
     };
-  }, [acceptPushState, clearPushInjectionTimers, openNotificationRoute]);
+  }, [acceptPushState, clearPushInjectionTimers, injectTrustedEvent, openNotificationRoute]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -313,14 +341,21 @@ export default function App() {
     setError(null);
     setLoading(false);
     replayPushStateToWeb();
-  }, [clearLoadTimeout, replayPushStateToWeb]);
+    // Unasked: the page caches it, so the profile's membership entry can
+    // appear without waiting for a round trip.
+    sendStorefrontToWeb();
+  }, [clearLoadTimeout, replayPushStateToWeb, sendStorefrontToWeb]);
 
   const handleWebMessage = useCallback(
     (event: WebViewMessageEvent) => {
-      if (
-        !isTrustedWebUrl(currentPageUrlRef.current) ||
-        !isPushTokenRequest(event.nativeEvent.data)
-      ) {
+      if (!isTrustedWebUrl(currentPageUrlRef.current)) {
+        return;
+      }
+      if (isStorefrontRequest(event.nativeEvent.data)) {
+        sendStorefrontToWeb();
+        return;
+      }
+      if (!isPushTokenRequest(event.nativeEvent.data)) {
         return;
       }
       if (pushStateRef.current) {
@@ -333,7 +368,7 @@ export default function App() {
         // A denied or unavailable system permission is represented by no token.
       });
     },
-    [acceptPushState, replayPushStateToWeb],
+    [acceptPushState, replayPushStateToWeb, sendStorefrontToWeb],
   );
 
   const handleWebError = useCallback(() => {
@@ -475,7 +510,7 @@ export default function App() {
           allowFileAccess={false}
           cacheEnabled
           pullToRefreshEnabled
-          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.8"
+          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.9"
         /> : null}
 
         {loading && !error ? (

@@ -6547,6 +6547,13 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
 
 class CheckoutIn(BaseModel):
     interval: Literal["month", "year"]
+    # "app" when the page runs inside the iOS/Android shell: Stripe then opens
+    # in the phone's browser and should send the parent back to the app.
+    return_to: Literal["web", "app"] = "web"
+
+
+class PortalIn(BaseModel):
+    return_to: Literal["web", "app"] = "web"
 
 
 def _require_billing_storage():
@@ -6601,7 +6608,9 @@ async def billing_checkout(body: CheckoutIn, request: Request, uid: str = Depend
     base = _billing_return_base(request)
     try:
         url = await anyio.to_thread.run_sync(
-            lambda: billing.create_checkout(sb, uid, email, body.interval, base)
+            lambda: billing.create_checkout(
+                sb, uid, email, body.interval, base, from_app=body.return_to == "app",
+            )
         )
     except billing.BillingNotConfigured as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED") from exc
@@ -6609,12 +6618,17 @@ async def billing_checkout(body: CheckoutIn, request: Request, uid: str = Depend
 
 
 @api.post("/billing/portal")
-async def billing_portal(request: Request, uid: str = Depends(_req_uid)):
+async def billing_portal(
+    request: Request, body: Optional[PortalIn] = None, uid: str = Depends(_req_uid),
+):
     if not billing.configured():
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED")
     sb = _require_billing_storage()
     base = _billing_return_base(request)
-    url = await anyio.to_thread.run_sync(lambda: billing.create_portal(sb, uid, base))
+    from_app = bool(body and body.return_to == "app")
+    url = await anyio.to_thread.run_sync(
+        lambda: billing.create_portal(sb, uid, base, from_app=from_app)
+    )
     if not url:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "NO_CUSTOMER")
     return {"url": url}
