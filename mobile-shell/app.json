@@ -9,7 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri",
-      "buildNumber": "13",
+      "buildNumber": "14",
       "supportsTablet": false,
       "entitlements": {
         "aps-environment": "$(APS_ENVIRONMENT)"
