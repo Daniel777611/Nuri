@@ -134,6 +134,10 @@ export const en: Record<string, string> = {
   "欢迎！{nickname}": "Welcome! {nickname}",
   "每日精选": "Daily Selection",
   "NURI之家": "NURI's Home",
+  "刚才的话还没聊完，要接着聊吗？": "We were in the middle of something. Pick it back up?",
+  "欢迎回来。宝宝这几天怎么样？想聊的时候我都在。": "Welcome back. How has your little one been? I'm here whenever you want to talk.",
+  "回复NURI": "Reply to NURI",
+  "上次聊到 · {topic}": "Last time · {topic}",
 
   // ── Daily post card ────────────────────────────────────────────────────────
   "{nickname}你好呀，其他妈妈可能会这么处理": "Hi {nickname}! Here's how other moms might handle it",
@@ -151,6 +155,11 @@ export const en: Record<string, string> = {
   "重试": "Try again",
   "看看她们怎么做": "See what they did",
   "看看大家怎么做": "See what they did",
+  "关于「{topic}」，其他妈妈是怎么做的？": "{topic}: how did other moms handle it?",
+  "关于「{topic}」，其他家长是怎么做的？": "{topic}: how did other parents handle it?",
+  "家长群里有人问": "Asked in a parent group",
+  "一位家长的经历": "One parent's story",
+  "看看这位家长怎么做": "See what this parent did",
   "今天的家长经验暂时打不开，回首页再试试。": "Today's parent story can't be opened right now. Try again from Home.",
   "原帖摘录（英文原文）": "From the post (original in English)",
   "原帖摘录（中文原文）": "From the post (original in Chinese)",

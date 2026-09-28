@@ -1,9 +1,10 @@
 // Home's daily card: one real post from another parent, fixed for the day.
 //
-// The home card keeps the Figma hierarchy: source tag, today's headline, then
-// one clear action. The personal greeting remains in the accessible label and
-// in the detail screen, so the compact card stays readable without losing its
-// parent-specific context. Tapping opens the full card (app/daily-post.tsx).
+// The home card leads with the problem the post is about, phrased as the
+// question another parent asked, and keeps the advice for the detail screen:
+// a parent recognises their own situation first, then taps to see what others
+// did. The personal greeting remains in the accessible label and in the detail
+// screen. Tapping opens the full card (app/daily-post.tsx).
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -34,6 +35,29 @@ export function dailyPostGreeting(
   return name
     ? t("{nickname}你好呀，其他家长可能会这么处理", { nickname: name })
     : t("你好呀，其他家长可能会这么处理");
+}
+
+/** The question the post is about. Older cards were written before the model
+ *  wrote one, so they fall back to the post's topic, then to the concern. */
+export function dailyPostQuestion(
+  t: (s: string, v?: Record<string, string | number>) => string,
+  card: Card,
+): string {
+  const question = (card.question || "").trim();
+  if (question) return question;
+  const topic = (card.post_topic || card.concern || "").trim();
+  if (!topic) return card.headline;
+  return card.audience === "mom"
+    ? t("关于「{topic}」，其他妈妈是怎么做的？", { topic })
+    : t("关于「{topic}」，其他家长是怎么做的？", { topic });
+}
+
+/** Who is asking: a question in a parent group, or one parent's own story. */
+export function dailyPostAsker(
+  t: (s: string, v?: Record<string, string | number>) => string,
+  card: Card,
+): string {
+  return card.author_kind === "parent_group_answers" ? t("家长群里有人问") : t("一位家长的经历");
 }
 
 /** "Facebook 家长群讨论" / "Instagram 家长分享" */
@@ -128,16 +152,18 @@ export default function DailyPostCard({
 
   const greeting = dailyPostGreeting(t, card.nickname || nickname, card.audience);
   const sourceTag = dailyPostTag(t, card);
-  // Figma defines this compact home tag by material type. Platform provenance
-  // remains available in the accessible label and the detail screen.
-  const tag = t("精选文章");
+  const question = dailyPostQuestion(t, card);
+  // Not "精选文章": this is a parent's question, and saying so up front is
+  // what makes the title read as a question worth opening.
+  const tag = dailyPostAsker(t, card);
+  const cta = card.author_kind === "parent_group_answers" ? t("看看大家怎么做") : t("看看这位家长怎么做");
   return (
     <View style={styles.wrap}>
       <Pressable
         onPress={() => onPress(card)}
         style={{ width }}
         accessibilityRole="button"
-        accessibilityLabel={`${sourceTag}。${greeting}。${card.headline}`}
+        accessibilityLabel={`${sourceTag}。${greeting}。${question}`}
         testID="home-daily-post-card"
       >
         <LinearGradient
@@ -150,12 +176,12 @@ export default function DailyPostCard({
           <View style={styles.tagPill}>
             <Text style={styles.tagText} numberOfLines={1}>{tag}</Text>
           </View>
-          <Text style={styles.headline} numberOfLines={3}>
-            {card.headline}
+          <Text style={styles.question} numberOfLines={3} testID="home-daily-post-question">
+            {question}
           </Text>
           <View style={{ flex: 1 }} />
           <View style={styles.footer}>
-            <Text style={styles.cta}>{t("点击查看更多")}</Text>
+            <Text style={styles.cta}>{cta}</Text>
             <View style={styles.arrow}>
               <Ionicons name="arrow-forward" size={22} color="#3A2F5A" />
             </View>
@@ -184,9 +210,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   tagPill: {
-    width: 107,
+    alignSelf: "flex-start",
     height: 32,
-    paddingHorizontal: 4,
+    paddingHorizontal: 14,
     borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
@@ -206,6 +232,13 @@ const styles = StyleSheet.create({
     fontFamily: "NotoSansSC_400Regular",
     fontSize: 20,
     lineHeight: 28,
+  },
+  question: {
+    marginTop: 14,
+    color: "#261B45",
+    fontFamily: "NotoSansSC_700Bold",
+    fontSize: 20,
+    lineHeight: 29,
   },
   footer: { minHeight: 55, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   cta: {

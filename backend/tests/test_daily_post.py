@@ -137,6 +137,24 @@ def test_a_parents_post_with_a_verbatim_quote_is_kept():
     assert picked and picked["excerpt"] == "What I did was blend spinach into pancakes"
 
 
+def test_the_question_and_background_reach_the_card_and_the_chat():
+    picked = dp.validate_pick(
+        _pick(post_topic="挑食", question="2岁孩子不吃蔬菜，怎么办？", situation="孩子2岁，一看到青菜就推开。"),
+        [_cand()],
+    )
+    plan = dp.Plan(basis="profile", concern="挑食")
+    card = dp.build_card(picked, plan, locale="zh-CN")
+    assert card["question"] == "2岁孩子不吃蔬菜，怎么办？"
+    assert card["situation"] == "孩子2岁，一看到青菜就推开。"
+    context = dp.chat_context(card)
+    assert "帖子里的问题：2岁孩子不吃蔬菜" in context and "帖子里的背景：" in context
+
+
+def test_a_pick_without_a_question_is_still_kept():
+    picked = dp.validate_pick(_pick(), [_cand()])
+    assert picked and picked["question"] == "" and picked["situation"] == ""
+
+
 def test_a_quote_that_is_not_in_the_post_is_dropped_not_trusted():
     picked = dp.validate_pick(_pick(excerpt="I blended spinach and broccoli into pancakes"), [_cand()])
     assert picked and picked["excerpt"] == ""
@@ -540,3 +558,20 @@ def test_the_reply_path_reads_the_card_context_from_the_marker():
     )
     assert main._active_card_id(turn) == "dailypost:abc"
     assert main._card_ctx("dailypost:abc", []) == "帖子上下文"
+
+
+def test_a_pulled_post_is_never_a_candidate(monkeypatch):
+    url = "https://www.facebook.com/groups/momsgroup123/posts/1"
+    monkeypatch.setenv("DAILY_POST_BLOCKED_URLS", url + "?ref=share")
+    result = SimpleNamespace(url=url, title="t", snippet="My son refused veggies. " * 4, lang="en")
+    assert dp.to_candidates([result], exclude_urls=set()) == []
+
+
+def test_a_card_showing_a_pulled_post_is_rebuilt_on_the_next_visit(world, monkeypatch):
+    first = _get()
+    assert first["card"]["source_url"] == world.card_url
+    monkeypatch.setattr(dp, "BLOCKED_POST_URLS", (world.card_url,))
+    again = _get(now=NOW + timedelta(hours=1))
+    # The only post the fake search knows is the pulled one, so nothing replaces it.
+    assert again["state"] == "empty" and world.generated == 1
+    assert asyncio.run(dp.get_card("mom-1", first["card"]["id"])) is None

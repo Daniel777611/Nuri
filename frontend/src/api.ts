@@ -207,6 +207,19 @@ export type OpenedNotification = {
   kind: "care" | "daily_post";
 };
 
+/** NURI之家: what NURI asks about the last conversation (backend/feed/checkin.py). */
+export type MainCheckin = {
+  state: "ready" | "active" | "none" | "unavailable";
+  session_id?: string;
+  id?: string;
+  /** A few words naming the subject, e.g. "午睡哭闹". */
+  topic?: string;
+  /** What NURI says on the card, and in the chat once tapped. */
+  line?: string;
+  /** Already tapped: the line is in the conversation. */
+  opened?: boolean;
+};
+
 export type MainConversationPreview = {
   has_conversation: boolean;
   session_id: string | null;
@@ -247,6 +260,12 @@ export type DailyPostCard = {
   source_url: string;
   source_label: string;
   published_at: string | null;
+  /** The problem the post is about, as a question. Missing on older cards. */
+  question?: string;
+  /** Background from the post: the child's age, what happened. May be "". */
+  situation?: string;
+  /** A few words naming the post's topic. Missing on older cards. */
+  post_topic?: string;
   headline: string;
   takeaways: string[];
   /** Verbatim from the post, or "" when no clean quote could be verified. */
@@ -753,6 +772,10 @@ export const api = {
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
   getMainConversationPreview: () => req<MainConversationPreview>(`/chat/main/preview`),
+  // Can run a model call the first time after a conversation ends.
+  getMainCheckin: () => req<MainCheckin>(`/chat/main/checkin`, undefined, 30000),
+  openMainCheckin: (id: string) =>
+    req<{ session_id: string }>(`/chat/main/checkin/${encodeURIComponent(id)}/open`, { method: "POST" }),
   // The server owns canonical-session selection. This endpoint is idempotent:
   // it returns the account's existing conversation and creates the first one
   // only when the account truly has none. The client must not infer identity

@@ -60,6 +60,7 @@ from backend import (
     billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, runtime, stores, usage_dashboard,
 )
+from backend.feed import checkin as feed_checkin
 from backend.feed import daily_post as feed_daily_post
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
@@ -3407,6 +3408,131 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
         ) from exc
 
 
+@api.get("/chat/main/checkin")
+async def get_main_checkin(uid: str = Depends(_req_uid)):
+    """What NURI asks on Home about the last conversation (backend/feed/checkin.py).
+
+    ``ready`` carries the line; ``active`` means the parent is still in the
+    middle of it (Home offers to carry on instead); ``none`` means there is no
+    real subject to follow up on; ``unavailable`` means try the plain card.
+    Written once per last parent message and reused, so Home stays cheap.
+    """
+    sb = _get_supabase()
+    if not sb:
+        return {"state": "unavailable"}
+    try:
+        session = await _canonical_session_for(uid, sb=sb, translate_storage_errors=False)
+        if not session:
+            return {"state": "none"}
+        rows = await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .select("id,role,text,transition,created_at")
+            .eq("session_id", session["id"])
+            .order("created_at", desc=True)
+            .limit(feed_checkin.WINDOW_MESSAGES)
+            .execute().data or []
+        )
+    except Exception as exc:
+        _log_chat_preview_db_error(uid, exc)
+        return {"state": "unavailable"}
+
+    messages = feed_checkin.conversation_messages(_visible_chat_messages(rows))
+    last = feed_checkin.last_user_message(messages)
+    if not last:
+        return {"state": "none", "session_id": session["id"]}
+    now = datetime.now(timezone.utc)
+    row_id = feed_checkin.checkin_id(uid, str(last["id"]))
+    try:
+        cached = await anyio.to_thread.run_sync(
+            lambda: sb.table(feed_checkin.TABLE).select("*").eq("id", row_id)
+            .eq("user_id", uid).limit(1).execute().data or []
+        )
+    except Exception as exc:
+        if not feed_checkin.table_missing(exc):
+            _log_chat_preview_db_error(uid, exc)
+        return {"state": "unavailable", "session_id": session["id"]}
+    if cached:
+        row = cached[0]
+        if row.get("status") == "ready":
+            return {"state": "ready", "session_id": session["id"], **feed_checkin.public(row)}
+        return {"state": "none", "session_id": session["id"]}
+    if not feed_checkin.is_over(messages, now):
+        return {"state": "active", "session_id": session["id"]}
+
+    privacy = await stores.get_privacy(uid, fail_closed=True)
+    locale = locales.normalize_preferred_locale(privacy.get("language"))
+    try:
+        written = await anyio.to_thread.run_sync(
+            lambda: feed_checkin.write_checkin(messages, now=now, locale=locale)
+        )
+    except Exception as exc:
+        print(f"[warn] home check-in failed: {type(exc).__name__}: {exc}")
+        return {"state": "unavailable", "session_id": session["id"]}
+    row = {
+        "id": row_id, "user_id": uid, "session_id": session["id"],
+        "source_message_id": str(last["id"]), "locale": locale,
+        "status": "ready" if written else "none",
+        **(written or {"topic": "", "summary": "", "line": ""}),
+        "created_at": now.isoformat(),
+    }
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table(feed_checkin.TABLE)
+            .upsert(row, on_conflict="id", ignore_duplicates=True).execute()
+        )
+    except Exception as exc:
+        # Still shown; the next visit writes it again.
+        print(f"[warn] home check-in save failed: {type(exc).__name__}")
+    if not written:
+        return {"state": "none", "session_id": session["id"]}
+    return {"state": "ready", "session_id": session["id"], **feed_checkin.public(row)}
+
+
+@api.post("/chat/main/checkin/{checkin_id}/open")
+async def open_main_checkin(checkin_id: str, uid: str = Depends(_req_uid)):
+    """Put the check-in into the conversation as NURI's own message.
+
+    The parent tapped a question NURI asked on Home; in the conversation it
+    has to read as NURI having asked it, so the parent can simply answer.
+    The message id is derived from the check-in, so a second tap adds nothing.
+    """
+    sb = _require_chat_storage()
+    try:
+        rows = await anyio.to_thread.run_sync(
+            lambda: sb.table(feed_checkin.TABLE).select("*").eq("id", checkin_id)
+            .eq("user_id", uid).limit(1).execute().data or []
+        )
+    except Exception:
+        rows = []
+    if not rows or rows[0].get("status") != "ready":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "check-in not found")
+    row = rows[0]
+    session = await start_session(StartChatRequest(), uid)
+    message = {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri:checkin-open:{checkin_id}")),
+        "session_id": session["id"],
+        "role": "ai", "text": row.get("line") or "", "quick_replies": [],
+        "transition": None,
+        "created_at": _now(),
+    }
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_messages")
+            .upsert(message, on_conflict="id", ignore_duplicates=True).execute()
+        )
+    except Exception as e:
+        if not await _chat_row_by_id(sb, "chat_messages", message["id"], session_id=session["id"]):
+            _raise_chat_storage_error("check-in message insert", e)
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table(feed_checkin.TABLE).update({"opened_at": _now()})
+            .eq("id", checkin_id).is_("opened_at", "null").execute()
+        )
+    except Exception:
+        pass
+    return {"session_id": session["id"]}
+
+
 #: Marks the point in the one conversation where a parent opened a feed card.
 #: Carries no text, so it renders as a divider and is skipped by every prompt
 #: builder (they all drop empty-text messages), while still being the record of
@@ -6138,6 +6264,7 @@ _PRIVACY_WIPE_USER_TABLES = (
     "email_logs",
     "user_visits",
     "daily_post_cards",
+    "conversation_checkins",
 )
 
 

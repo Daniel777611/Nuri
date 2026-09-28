@@ -417,6 +417,9 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         source_url: "https://www.facebook.com/groups/babysleeptrainingtipshelp/posts/1012295830523712",
         source_label: "Facebook 群组「Baby Sleep Training Tips & Help」",
         published_at: null,
+        post_topic: "夜醒频繁",
+        question: "8个月宝宝一晚醒四五次，怎么才能睡整觉？",
+        situation: "宝宝8个月，最近每晚醒四五次，每次都要抱着哄很久才肯再睡。",
         headline: "夜醒多的时候，先把入睡环境稳定下来",
         takeaways: ["睡前多喂一点奶", "整晚开白噪音，音量低于 50 分贝", "房间温度保持在 23–25 度"],
         excerpt: "What I did was give a little more bottle before bed, white noises do magic",
@@ -434,6 +437,29 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     };
   }
   if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
+  // NURI之家: a fixed check-in so the card can be reviewed without a model.
+  if (routePath === "/chat/main/checkin" && method === "GET") {
+    return {
+      state: "ready",
+      id: "preview-checkin",
+      topic: "躺地哭闹",
+      line: "你那几天真的很累，提前预告后来试了吗，宝宝反应怎么样？",
+      opened: false,
+    };
+  }
+  if (/^\/chat\/main\/checkin\/[^/]+\/open$/.test(routePath) && method === "POST") {
+    const session = await previewRequest("/chat/sessions", { method: "POST", body: "{}" });
+    const list = messages[session.id] || [];
+    if (!list.some((message: any) => message.id === "checkin-preview")) {
+      messages[session.id] = [...list, {
+        id: "checkin-preview", session_id: session.id, role: "ai",
+        created_at: new Date().toISOString(),
+        text: "你那几天真的很累，提前预告后来试了吗，宝宝反应怎么样？",
+        transition: null,
+      }];
+    }
+    return { session_id: session.id };
+  }
   // A tapped notification, as the server writes it into the conversation.
   // Open /notifications/preview-post or /notifications/preview-care to review
   // either kind; a second open adds nothing, as on the server.
