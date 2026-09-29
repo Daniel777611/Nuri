@@ -49,10 +49,6 @@
     {
       "path": "/api/internal/care/generate",
       "schedule": "0 15 * * *"
-    },
-    {
-      "path": "/api/internal/push/test-accounts",
-      "schedule": "*/30 * * * *"
     }
   ]
 }
