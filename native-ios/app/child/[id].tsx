@@ -14,7 +14,8 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api, auth, isAuthError } from "@/src/api";
+import { api, isAuthError } from "@/src/api";
+import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import {
   compareDateOnly,
   completedAgeMonths,
@@ -33,6 +34,8 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 export default function ChildEdit() {
   const { t } = useT();
   const router = useRouter();
+  const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
+  const recoverExpiredCredentials = recovery.recover;
   const headerHeight = useHeaderHeight();
   const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(tabs)/profile");
@@ -65,14 +68,13 @@ export default function ChildEdit() {
         setNotes(c.notes || "");
       } catch (error) {
         if (isAuthError(error)) {
-          await auth.clearToken();
-          router.replace("/login");
+          await recoverExpiredCredentials(error);
           return;
         }
         setLoadError(t("孩子资料加载失败，请检查网络后重试。"));
       }
     })();
-  }, [id, isNew, router, t]);
+  }, [id, isNew, router, t, recoverExpiredCredentials]);
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
@@ -109,8 +111,7 @@ export default function ChildEdit() {
       goBack();
     } catch (error) {
       if (isAuthError(error)) {
-        await auth.clearToken();
-        router.replace("/login");
+        await recoverExpiredCredentials(error);
         return;
       }
       setSaveError(t("保存失败，这次修改尚未写入。请检查网络后重试。"));
@@ -128,8 +129,7 @@ export default function ChildEdit() {
       goBack();
     } catch (error) {
       if (isAuthError(error)) {
-        await auth.clearToken();
-        router.replace("/login");
+        await recoverExpiredCredentials(error);
         return;
       }
       setSaveError(t("删除失败，孩子资料仍然保留。请稍后重试。"));
@@ -137,6 +137,8 @@ export default function ChildEdit() {
       setSaving(false);
     }
   };
+
+  if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>

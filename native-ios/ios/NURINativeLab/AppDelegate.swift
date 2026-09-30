@@ -20,6 +20,9 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
 
     reactNativeDelegate = delegate
     reactNativeFactory = factory
+    // SDK 54's ExpoAppDelegate also needs the factory for root-view recreation.
+    // Keeping only our strong reference compiles, but crashes on cold launch.
+    bindReactNativeFactory(factory)
 
 #if os(iOS) || os(tvOS)
     window = UIWindow(frame: UIScreen.main.bounds)

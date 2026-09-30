@@ -1,5 +1,6 @@
 import * as ImageManipulator from "expo-image-manipulator";
 import type { ImagePickerAsset } from "expo-image-picker";
+import { File as NativeFile, Paths } from "expo-file-system";
 import { Platform } from "react-native";
 
 // Keep uploads small enough for a JSON request while preserving details that
@@ -10,6 +11,13 @@ export const CHAT_IMAGE_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 // requiring hundreds of megabytes once WebKit decodes it. Reject that source
 // before any canvas work so iOS cannot terminate the page for memory pressure.
 export const CHAT_IMAGE_MAX_SOURCE_PIXELS = 16_000_000;
+// Native image processing does not allocate WebKit canvases. Permit ordinary
+// 24/48 MP iPhone photos, but not unbounded panoramas or invalid picker metadata.
+// Expo still decodes the source UIImage before resizing, so serialize work and
+// cap it at 50 MP (about 200 MB of RGBA pixels), not an unlimited source size.
+export const CHAT_IMAGE_MAX_NATIVE_SOURCE_PIXELS = 50_000_000;
+export const CHAT_IMAGE_MAX_NATIVE_SOURCE_DIMENSION = 10_000;
+export const CHAT_IMAGE_MAX_NATIVE_DATA_URI_CHARS = 3 * 1024 * 1024;
 // Mirrors the backend's decoded 2.5 MB ceiling, leaving room for the text,
 // client context and JSON envelope under the 3.7 MB request guard.
 export const CHAT_IMAGE_MAX_DATA_URI_CHARS = 3_250_000;
@@ -207,13 +215,6 @@ export function pickWebChatImageFile(): Promise<ImagePickerAsset | null> {
   });
 }
 
-function resizeAction(width: number, height: number): ImageManipulator.Action[] {
-  if (!width || !height || Math.max(width, height) <= CHAT_IMAGE_MAX_DIMENSION) return [];
-  return width >= height
-    ? [{ resize: { width: CHAT_IMAGE_MAX_DIMENSION } }]
-    : [{ resize: { height: CHAT_IMAGE_MAX_DIMENSION } }];
-}
-
 function boundedDimensions(width: number, height: number, maxDimension: number) {
   if (!width || !height) throw new ChatImageInputError("processing_failed");
   const scale = Math.min(1, maxDimension / Math.max(width, height));
@@ -360,23 +361,91 @@ async function prepareWebChatImage(asset: ImagePickerAsset): Promise<PreparedCha
   }
 }
 
-async function compress(
-  asset: ImagePickerAsset,
-  maxDimension = CHAT_IMAGE_MAX_DIMENSION,
-  quality = 0.72,
-) {
-  const dimension = Math.max(asset.width || 0, asset.height || 0);
-  const actions: ImageManipulator.Action[] = dimension > maxDimension
-    ? asset.width >= asset.height
-      ? [{ resize: { width: maxDimension } }]
-      : [{ resize: { height: maxDimension } }]
-    : resizeAction(asset.width, asset.height);
-  return ImageManipulator.manipulateAsync(asset.uri, actions, {
-    base64: true,
-    compress: quality,
-    format: ImageManipulator.SaveFormat.JPEG,
-  });
+function validateNativeDimensions(width: number, height: number, maxDimension: number, maxPixels: number) {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new ChatImageInputError("processing_failed");
+  }
+  if (Math.max(width, height) > maxDimension || width * height > maxPixels) {
+    throw new ChatImageInputError("too_large");
+  }
 }
+
+async function resizeNativeImage(source: string | ImageManipulator.ImageRef, width: number, height: number, maxDimension: number) {
+  const context = ImageManipulator.ImageManipulator.manipulate(source);
+  let rendered: ImageManipulator.ImageRef | null = null;
+  try {
+    // Both dimensions bound the actual output even if orientation changed while
+    // the source was loaded. Never create a full-size JPEG or JS bitmap first.
+    context.resize(boundedDimensions(width, height, maxDimension));
+    rendered = await context.renderAsync();
+    validateNativeDimensions(rendered.width, rendered.height, maxDimension, maxDimension * maxDimension);
+    return rendered;
+  } catch (error) {
+    rendered?.release();
+    throw error;
+  } finally {
+    context.release();
+  }
+}
+
+function deleteGeneratedImage(uri: string, sourceUri: string) {
+  // Only remove the exact file returned by our saveAsync in Expo's cache folder;
+  // never delete the picker original, a photo-library asset, or a broad folder.
+  if (uri === sourceUri || !uri.startsWith("file://")) return;
+  try {
+    const file = new NativeFile(uri);
+    const generatedFolder = `${Paths.cache.uri.replace(/\/?$/, "/")}ImageManipulator/`;
+    if (file.uri.startsWith(generatedFolder) && file.exists) file.delete();
+  } catch {
+    // The OS can evict cache files; failed cleanup must not mask the real error.
+  }
+}
+
+async function prepareNativeChatImage(asset: ImagePickerAsset): Promise<PreparedChatImage> {
+  validateNativeDimensions(asset.width, asset.height, CHAT_IMAGE_MAX_NATIVE_SOURCE_DIMENSION, CHAT_IMAGE_MAX_NATIVE_SOURCE_PIXELS);
+  if (asset.fileSize != null && (!Number.isFinite(asset.fileSize) || asset.fileSize < 0)) {
+    throw new ChatImageInputError("processing_failed");
+  }
+  let image: ImageManipulator.ImageRef | null = null;
+  const generatedFiles = new Set<string>();
+  const saveJpeg = async (rendered: ImageManipulator.ImageRef, quality: number) => {
+    const result = await rendered.saveAsync({ base64: true, compress: quality, format: ImageManipulator.SaveFormat.JPEG });
+    if (typeof result.uri === "string") generatedFiles.add(result.uri);
+    validateNativeDimensions(result.width, result.height, CHAT_IMAGE_MAX_DIMENSION, CHAT_IMAGE_MAX_DIMENSION ** 2);
+    if (result.width !== rendered.width || result.height !== rendered.height || typeof result.base64 !== "string" || !result.base64.startsWith("/9j/")) {
+      throw new ChatImageInputError("processing_failed");
+    }
+    return result;
+  };
+  try {
+    image = await resizeNativeImage(asset.uri, asset.width, asset.height, CHAT_IMAGE_MAX_DIMENSION);
+    let result = await saveJpeg(image, 0.72);
+    const prefix = "data:image/jpeg;base64,";
+    const maxChars = Math.min(CHAT_IMAGE_MAX_DATA_URI_CHARS, CHAT_IMAGE_MAX_NATIVE_DATA_URI_CHARS);
+    if (result.base64!.length + prefix.length > maxChars) {
+      // Retry from the already bounded native reference, never decode the 48 MP
+      // original a second time or keep two full-resolution contexts alive.
+      const smaller = await resizeNativeImage(image, image.width, image.height, 1200);
+      image.release();
+      image = smaller;
+      result = await saveJpeg(image, 0.55);
+    }
+    const base64 = result.base64!;
+    if (base64.length + prefix.length > maxChars) throw new ChatImageInputError("too_large");
+    if (base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw new ChatImageInputError("processing_failed");
+    const decodedBytes = base64.length / 4 * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+    if (decodedBytes > 3 * 1024 * 1024) throw new ChatImageInputError("too_large");
+    const dataUri = prefix + base64;
+    // A data URI remains valid after deleting both temporary JPEG outputs and
+    // after navigating away. It contains only the user-selected resized photo.
+    return { previewUri: dataUri, dataUri, width: result.width, height: result.height };
+  } finally {
+    image?.release();
+    for (const uri of generatedFiles) deleteGeneratedImage(uri, asset.uri);
+  }
+}
+
+let nativeImageWork: Promise<void> = Promise.resolve();
 
 export async function prepareChatImage(asset: ImagePickerAsset): Promise<PreparedChatImage> {
   if (asset.type && asset.type !== "image") throw new ChatImageInputError("unsupported");
@@ -384,6 +453,7 @@ export async function prepareChatImage(asset: ImagePickerAsset): Promise<Prepare
     throw new ChatImageInputError("too_large");
   }
   if (
+    Platform.OS === "web" &&
     asset.width &&
     asset.height &&
     asset.width * asset.height > CHAT_IMAGE_MAX_SOURCE_PIXELS
@@ -393,25 +463,9 @@ export async function prepareChatImage(asset: ImagePickerAsset): Promise<Prepare
 
   try {
     if (Platform.OS === "web") return await prepareWebChatImage(asset);
-    let result = await compress(asset);
-    let dataUri = result.base64 ? `data:image/jpeg;base64,${result.base64}` : "";
-
-    // A very detailed source can still be too large after the first pass. One
-    // bounded retry avoids sending a request that the host must reject.
-    if (dataUri.length > CHAT_IMAGE_MAX_DATA_URI_CHARS) {
-      result = await compress(asset, 1200, 0.55);
-      dataUri = result.base64 ? `data:image/jpeg;base64,${result.base64}` : "";
-    }
-    if (!dataUri || dataUri.length > CHAT_IMAGE_MAX_DATA_URI_CHARS) {
-      throw new ChatImageInputError("too_large");
-    }
-
-    return {
-      previewUri: result.uri,
-      dataUri,
-      width: result.width,
-      height: result.height,
-    };
+    const work = nativeImageWork.then(() => prepareNativeChatImage(asset));
+    nativeImageWork = work.then(() => undefined, () => undefined);
+    return await work;
   } catch (error) {
     if (error instanceof ChatImageInputError) throw error;
     throw new ChatImageInputError("processing_failed");

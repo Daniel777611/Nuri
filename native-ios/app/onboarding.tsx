@@ -22,6 +22,7 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { useT } from "@/src/i18n";
 import {
   daysInMonth,
@@ -52,6 +53,8 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 export default function Onboarding() {
   const { t } = useT();
   const router = useRouter();
+  const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
+  const recoverExpiredCredentials = recovery.recover;
   const headerHeight = useHeaderHeight();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -95,8 +98,7 @@ export default function Onboarding() {
         }
       } catch (error) {
         if (isAuthError(error)) {
-          await auth.clearToken();
-          router.replace("/login");
+          await recoverExpiredCredentials(error);
           return;
         }
         // A first-time account returns an empty children array, not an error.
@@ -105,7 +107,7 @@ export default function Onboarding() {
         setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
       }
     })();
-  }, [router, t]);
+  }, [router, t, recoverExpiredCredentials]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
   const birthDate = birthYear && birthMonth && birthDay
@@ -150,8 +152,7 @@ export default function Onboarding() {
       router.replace("/(tabs)");
     } catch (error) {
       if (isAuthError(error)) {
-        await auth.clearToken();
-        router.replace("/login");
+        await recoverExpiredCredentials(error);
         return;
       }
       setSyncError(t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));
@@ -163,6 +164,7 @@ export default function Onboarding() {
   const goBack = () => page > 0 && setPage((p) => p - 1);
   const toggleConcern = (key: string) => setConcerns((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
 
+  if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
   if (!fontsLoaded) return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
 
   return (

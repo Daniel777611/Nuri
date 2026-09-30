@@ -22,6 +22,7 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
 import { useT } from "@/src/i18n";
@@ -31,6 +32,8 @@ const wordmark = require("@/assets/images/nuri-wordmark.png");
 export default function Register() {
   const { t, locale } = useT();
   const router = useRouter();
+  const recovery = useExpiredSessionRecovery();
+  const recoverExpiredCredentials = recovery.recover;
   const headerHeight = useHeaderHeight();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
@@ -66,7 +69,7 @@ export default function Register() {
           // credentials, so route on the last known state rather than handing
           // back a form that can strand the account.
           if (isAuthError(err)) {
-            await auth.clearToken();
+            await recoverExpiredCredentials(err);
             return;
           }
           if (cancelled) return;
@@ -78,7 +81,7 @@ export default function Register() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router]);
+  }, [router, recoverExpiredCredentials]);
 
   const canNext = /\S+@\S+\.\S+/.test(email) && password.length >= 6;
 
@@ -107,6 +110,7 @@ export default function Register() {
     }
   };
 
+  if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
   if (!fontsLoaded || checkingSession) {
     return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
   }

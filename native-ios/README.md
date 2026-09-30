@@ -18,6 +18,8 @@ Notification settings separate real backend `daily_push` preferences from option
 
 Web admin screens are not part of the consumer native migration. Existing server feature gates are preserved: no new StoreKit subscriptions, server scheduler controls, public community service or account-deletion API is invented by this client. Voice, camera, APNs delivery and authenticated production flows require device acceptance tests; passing compilation/unit tests alone is not proof of complete end-to-end feature parity.
 
+Native chat attachments accept ordinary 24/48 MP photos within a 50 MP / 10000 px / 25 MiB source limit and resize to at most 1600 px before JPEG upload. The native decoder still loads the source image; peak memory on low-memory devices requires acceptance testing.
+
 ## Development
 
 Use Node 20+ and pnpm 11.25.0. No server secrets or APNs private key belong in this project.
@@ -28,6 +30,8 @@ pnpm typecheck
 pnpm test:native-ui
 pnpm test:native-voice
 pnpm test:native-push
+pnpm test:native-bootstrap
+pnpm test:native-auth
 pnpm exec expo prebuild --platform ios --no-install
 cd ios
 pod install
