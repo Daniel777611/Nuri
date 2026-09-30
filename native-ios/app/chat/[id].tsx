@@ -1,0 +1,1729 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Animated,
+  AppState,
+  Easing,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
+import { useHeaderHeight } from "@react-navigation/elements";
+import { Image } from "expo-image";
+import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
+import * as ImagePicker from "expo-image-picker";
+import * as Clipboard from "expo-clipboard";
+import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
+import Toast from "@/src/components/Toast";
+import VoiceWaveform from "@/src/components/VoiceWaveform";
+import { ApiError, api, isStreamUnsupported } from "@/src/api";
+import { buildChatMessagePayload } from "@/src/chatClientContext";
+import {
+  ChatImageInputError,
+  pickWebChatImageFile,
+  prepareChatImage,
+  type PreparedChatImage,
+} from "@/src/chatImageInput";
+import {
+  MAX_VOICE_SECONDS,
+  VoiceInputError,
+  isVoiceInputSupported,
+  startVoiceRecording,
+  type VoiceRecording,
+} from "@/src/chatVoiceInput";
+import { colors, radius, spacing, type } from "@/src/theme";
+import { useT } from "@/src/i18n";
+
+const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
+
+// 对话背景渐变（复刻高保真设计稿的粉紫渐变）
+const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
+
+// ── Types & mock data ────────────────────────────────────────────────────────
+type Msg = {
+  id: string;
+  role: "ai" | "user";
+  text: string;
+  created_at?: string;
+  image_base64?: string | null;
+  quick_replies?: string[];
+  transition?: any;
+  feedback_rating?: "like" | "dislike" | null;
+};
+
+/** `transition.post` on a card marker written when a post notification is opened. */
+type DailyPostOnMessage = {
+  id: string;
+  headline: string;
+  takeaways?: string[];
+  source_label?: string;
+};
+
+async function copyChatText(text: string): Promise<void> {
+  if (Platform.OS !== "web") {
+    await Clipboard.setStringAsync(text);
+    return;
+  }
+  if (globalThis.navigator?.clipboard?.writeText) {
+    try {
+      await globalThis.navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // The iOS shell's WKWebView exposes the API but can refuse the write;
+      // the selection copy below still works there.
+    }
+  }
+  const doc = globalThis.document;
+  if (!doc) throw new Error("clipboard unavailable");
+  const input = doc.createElement("textarea");
+  input.value = text;
+  // iOS only copies a selection it considers editable and on screen, and
+  // zooms the page when a field under 16px takes focus.
+  input.setAttribute("readonly", "");
+  input.contentEditable = "true";
+  input.style.position = "fixed";
+  input.style.top = "0";
+  input.style.left = "0";
+  input.style.fontSize = "16px";
+  input.style.opacity = "0";
+  doc.body.appendChild(input);
+  input.focus();
+  input.select();
+  input.setSelectionRange(0, text.length);
+  const copied = doc.execCommand("copy");
+  doc.body.removeChild(input);
+  if (!copied) throw new Error("copy failed");
+}
+
+type MemoryContextItem = {
+  category?: string;
+  key?: string;
+  text: string;
+  updated_at?: string;
+};
+
+type MemoryContextTransition = {
+  kind: "memory_context";
+  items?: MemoryContextItem[];
+  notice?: string;
+};
+
+// ── Sub-component: inline markup ────────────────────────────────────────────
+// The model writes **bold** headings, which a plain <Text> renders as literal
+// asterisks. Citation markers used to be handled here too; nothing emits them
+// any more, and the backend strips any that survive.
+//
+// Segments are nested <Text>, not <Pressable> or <View>: anything else breaks
+// wrapping mid-paragraph.
+const MARKUP_RE = /(\*\*[^*\n]+\*\*)/g;
+
+function RichText({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  MARKUP_RE.lastIndex = 0;
+  while ((match = MARKUP_RE.exec(text)) !== null) {
+    const token = match[0];
+    if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+    parts.push(
+      <Text key={`b${match.index}`} style={styles.bold}>
+        {token.slice(2, -2)}
+      </Text>,
+    );
+    cursor = match.index + token.length;
+  }
+  if (!parts.length) return <>{text}</>;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
+// ── Sub-component: avatar ────────────────────────────────────────────────────
+function NuriAvatar({ size = 34 }: { size?: number }) {
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: colors.brand,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        shadowColor: colors.brand,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 3,
+      }}
+    >
+      <Text
+        style={{
+          color: "#fff",
+          fontSize: size * 0.42,
+          fontWeight: "800",
+          letterSpacing: -0.5,
+        }}
+      >
+        N
+      </Text>
+    </View>
+  );
+}
+
+// Restored memories are context supplied to a new conversation, not messages
+// that either the parent or NURI previously sent. Keep them visually separate
+// from the chat transcript and show only the backend-authored display text;
+// category/key are internal provenance used solely for stable React keys.
+function MemoryContextCard({ transition }: { transition: MemoryContextTransition }) {
+  const { t } = useT();
+  const items: MemoryContextItem[] = Array.isArray(transition?.items)
+    ? transition.items.flatMap((item: unknown) => {
+        if (!item || typeof item !== "object") return [];
+        const candidate = item as Partial<MemoryContextItem>;
+        const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+        return text
+          ? [{
+              text,
+              category: typeof candidate.category === "string" ? candidate.category : undefined,
+              key: typeof candidate.key === "string" ? candidate.key : undefined,
+              updated_at:
+                typeof candidate.updated_at === "string" ? candidate.updated_at : undefined,
+            }]
+          : [];
+      })
+    : [];
+  const notice =
+    typeof transition?.notice === "string" && transition.notice.trim()
+      ? transition.notice.trim()
+      : t("这些内容来自已恢复的家庭记忆，不是聊天记录。");
+
+  return (
+    <View style={styles.memoryContextCard} testID="chat-memory-context">
+      <View style={styles.memoryContextHeader}>
+        <View style={styles.memoryContextIcon}>
+          <Ionicons name="albums-outline" size={18} color={colors.brand} />
+        </View>
+        <Text style={styles.memoryContextTitle}>{t("已恢复的家庭记忆")}</Text>
+      </View>
+      <Text style={styles.memoryContextNotice}>{notice}</Text>
+      {items.length ? (
+        <View style={styles.memoryContextItems}>
+          {items.map((item, index) => (
+            <View
+              key={`${item.category || "memory"}:${item.key || index}`}
+              style={styles.memoryContextItem}
+              testID={`chat-memory-context-item-${index}`}
+            >
+              <View style={styles.memoryContextBullet} />
+              <Text style={styles.memoryContextText}>{item.text}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// ── Main screen ────────────────────────────────────────────────────────────────
+export default function ChatDetail() {
+  const { t, locale } = useT();
+  const router = useRouter();
+  const headerHeight = useHeaderHeight();
+  const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
+  const { width: viewportWidth } = useWindowDimensions();
+  const phoneWidth = Math.min(viewportWidth, 402);
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const [messages, setMessages] = useState<Msg[]>([]);
+  const [historyLoadState, setHistoryLoadState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [input, setInput] = useState("");
+  const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
+  const [imageMenuVisible, setImageMenuVisible] = useState(false);
+  const [processingImage, setProcessingImage] = useState(false);
+  const [voiceState, setVoiceState] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
+  // Whether this browser lets us read the mic level; without it the banner
+  // falls back to the elapsed-time counter.
+  const [voiceMetered, setVoiceMetered] = useState(false);
+  const voiceRecordingRef = useRef<VoiceRecording | null>(null);
+  const voiceActiveRef = useRef(true);
+  const voiceStartVersionRef = useRef(0);
+  const voiceStartInFlightRef = useRef(false);
+  const readVoiceLevel = useCallback(() => voiceRecordingRef.current?.level() ?? null, []);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingNativePickerRef = useRef<"camera" | "library" | null>(null);
+  const nativePickerFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sending, setSending] = useState(false);
+  // Mirrors `sending` for the re-entrancy check: state updates are async, so
+  // rapid taps would otherwise all read the stale `false`.
+  const sendingRef = useRef(false);
+  // A timeout can hide a request that is still finishing on the server. Keep
+  // the exact idempotency key with the failed draft so pressing Send again on
+  // unchanged content replays that turn instead of starting a second one.
+  const failedSendRef = useRef<{
+    text: string;
+    imageBase64: string | null;
+    payload: ReturnType<typeof buildChatMessagePayload>;
+  } | null>(null);
+  // A parent may tap Back while the SSE turn is still being persisted.  Keep
+  // that intent and navigate only after the server returns the durable turn;
+  // otherwise Home's NURI preview can read the conversation before it lands.
+  const pendingHomeReturnRef = useRef(false);
+  const pendingHeaderNavigationRef = useRef<"notifications" | null>(null);
+  const [typing, setTyping] = useState(false);
+  // Reply text accumulated from the SSE stream, rendered as a live bubble until
+  // the persisted message arrives and replaces it.
+  const [streamingText, setStreamingText] = useState("");
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [feedbackSavingIds, setFeedbackSavingIds] = useState<Set<string>>(new Set());
+  const feedbackSavingRef = useRef<Set<string>>(new Set());
+  const scrollRef = useRef<ScrollView>(null);
+  const showToast = useCallback((message: string) => {
+    setToastMsg(message);
+    setTimeout(() => setToastMsg(null), 1800);
+  }, []);
+
+  const copyResponse = useCallback(async (message: Msg) => {
+    try {
+      await copyChatText(message.text);
+      showToast(t("已复制回复"));
+    } catch {
+      showToast(t("复制失败，请重试"));
+    }
+  }, [showToast, t]);
+
+  const rateResponse = useCallback(async (message: Msg, rating: "like" | "dislike") => {
+    if (!id || feedbackSavingRef.current.has(message.id) || message.feedback_rating === rating) return;
+    const previous = message.feedback_rating ?? null;
+    feedbackSavingRef.current.add(message.id);
+    setFeedbackSavingIds((current) => new Set(current).add(message.id));
+    setMessages((current) => current.map((item) =>
+      item.id === message.id ? { ...item, feedback_rating: rating } : item));
+    try {
+      const saved = await api.setChatMessageFeedback(id, message.id, rating);
+      setMessages((current) => current.map((item) =>
+        item.id === message.id ? { ...item, feedback_rating: saved.rating } : item));
+      showToast(t("已记录你的反馈"));
+    } catch {
+      setMessages((current) => current.map((item) =>
+        item.id === message.id ? { ...item, feedback_rating: previous } : item));
+      showToast(t("反馈保存失败，请重试"));
+    } finally {
+      setFeedbackSavingIds((current) => {
+        const next = new Set(current);
+        next.delete(message.id);
+        return next;
+      });
+      feedbackSavingRef.current.delete(message.id);
+    }
+  }, [id, showToast, t]);
+
+  const load = useCallback(async () => {
+    if (!id) return;
+    setHistoryLoadState("loading");
+    try {
+      const msgs = await api.getMessages(id);
+      setMessages(msgs);
+      setHistoryLoadState("ready");
+    } catch (error) {
+      // Old clients could keep a deleted session URL in navigation history.
+      // A 404 is safe to heal because the authenticated, idempotent endpoint
+      // returns only this account's current canonical conversation.
+      if (error instanceof ApiError && error.status === 404) {
+        try {
+          const session = await api.getOrStartMainSession();
+          if (session?.id && session.id !== id) {
+            router.replace(`/chat/${session.id}`);
+            return;
+          }
+        } catch {
+          // Fall through to an explicit retry state; never render fake history.
+        }
+      }
+      setHistoryLoadState("error");
+    }
+  }, [id, router]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
+  }, [messages, typing, streamingText]);
+
+  // Home's daily card is fixed for the day, so a finished turn no longer
+  // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
+  const returnHome = useCallback(() => {
+    router.dismissTo("/(tabs)");
+  }, [router]);
+
+  const requestHomeReturn = useCallback(() => {
+    pendingHeaderNavigationRef.current = null;
+    if (sendingRef.current) {
+      if (!pendingHomeReturnRef.current) {
+        pendingHomeReturnRef.current = true;
+        showToast(t("正在保存这轮对话，完成后会自动返回首页"));
+      }
+      return;
+    }
+    returnHome();
+  }, [returnHome, showToast, t]);
+
+  useFocusEffect(useCallback(() => registerNativeNavigationGuard(`/chat/${id}`, (action) => {
+    if (action !== "notifications") { requestHomeReturn(); return; }
+    if (sendingRef.current) {
+      pendingHomeReturnRef.current = false;
+      pendingHeaderNavigationRef.current = "notifications";
+      showToast(locale === "en" ? "Saving this reply before opening notification settings…" : locale === "zh-TW" ? "正在儲存這輪對話，完成後會開啟通知設定…" : "正在保存这轮对话，完成后会打开通知设置…");
+    } else {
+      router.push("/notification-settings" as never);
+    }
+  }), [id, locale, requestHomeReturn, router, showToast]));
+
+  const send = async (textOverride?: string, imageBase64?: string | null) => {
+    if (!id || sendingRef.current) return;
+    const text = (textOverride ?? input).trim();
+    const selectedImage = imageBase64
+      ? { previewUri: imageBase64, dataUri: imageBase64, width: 0, height: 0 }
+      : pendingImage;
+    const normalizedImage = selectedImage?.dataUri || null;
+    if (!text && !normalizedImage) return;
+    setInput("");
+    setPendingImage(null);
+    sendingRef.current = true;
+    setSending(true);
+
+    const optimistic: Msg = {
+      id: `tmp-${Date.now()}`,
+      role: "user",
+      text: text || "[图片]",
+      created_at: new Date().toISOString(),
+      image_base64: normalizedImage,
+    };
+    setMessages((p) => [...p, optimistic]);
+
+    setTyping(true);
+    const failedSend = failedSendRef.current;
+    const payload = failedSend
+      && failedSend.text === text
+      && failedSend.imageBase64 === normalizedImage
+      ? failedSend.payload
+      : buildChatMessagePayload(text, normalizedImage, locale);
+    if (payload !== failedSend?.payload) failedSendRef.current = null;
+    try {
+      let res;
+      try {
+        res = await api.streamMessage(id, payload, (chunk) => {
+          // First token replaces the typing dots with the live bubble.
+          setTyping(false);
+          setStreamingText((prev) => prev + chunk);
+        });
+      } catch (err) {
+        if (!isStreamUnsupported(err)) throw err;
+        // The stream never started, so nothing was persisted — the plain
+        // endpoint can serve this turn instead.
+        setTyping(true);
+        res = await api.sendMessage(id, payload);
+      }
+      setMessages((p) => [
+        ...p.filter((m) => m.id !== optimistic.id),
+        res.user_message,
+        ...res.ai_messages,
+      ]);
+      failedSendRef.current = null;
+      if (pendingHeaderNavigationRef.current === "notifications") {
+        pendingHeaderNavigationRef.current = null;
+        router.push("/notification-settings" as never);
+      } else if (pendingHomeReturnRef.current) {
+        pendingHomeReturnRef.current = false;
+        returnHome();
+      }
+    } catch {
+      // Mid-stream failures may have already persisted the user message, so
+      // preserve both the draft and its stable key. An unchanged retry then
+      // asks the backend to replay the same durable turn rather than generating
+      // a second response while the first request may still be running.
+      failedSendRef.current = { text, imageBase64: normalizedImage, payload };
+      if (text) setInput(text);
+      if (selectedImage) setPendingImage(selectedImage);
+      setMessages((p) => p.filter((m) => m.id !== optimistic.id));
+      pendingHomeReturnRef.current = false;
+      pendingHeaderNavigationRef.current = null;
+      showToast(t("发送失败，请重试"));
+      await load().catch(() => {});
+    } finally {
+      setStreamingText("");
+      setTyping(false);
+      setSending(false);
+      sendingRef.current = false;
+    }
+  };
+
+  const clearVoiceTimer = useCallback(() => {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+  }, []);
+
+  // Stack keeps covered screens mounted. Blur, background, and a late
+  // permission result must all release the microphone and reset the controls.
+  useFocusEffect(useCallback(() => {
+    voiceActiveRef.current = true;
+    return () => {
+      voiceActiveRef.current = false;
+      voiceStartVersionRef.current += 1;
+      clearVoiceTimer();
+      voiceRecordingRef.current?.cancel();
+      voiceRecordingRef.current = null;
+      setVoiceState("idle");
+      setVoiceSeconds(0);
+    };
+  }, [clearVoiceTimer]));
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") return;
+      // iOS briefly becomes inactive while asking for microphone permission.
+      // There is no recorder yet; the adapter checks foreground state before
+      // recording. A real background transition or screen blur still cancels.
+      if (state === "inactive" && voiceStartInFlightRef.current && !voiceRecordingRef.current) return;
+      voiceStartVersionRef.current += 1;
+      clearVoiceTimer();
+      voiceRecordingRef.current?.cancel();
+      voiceRecordingRef.current = null;
+      setVoiceState("idle");
+      setVoiceSeconds(0);
+    });
+    return () => subscription.remove();
+  }, [clearVoiceTimer]);
+
+  const explainVoiceError = (error: unknown) => {
+    const code = error instanceof VoiceInputError ? error.code : "failed";
+    if (code === "unsupported") showToast(t("当前浏览器不支持语音输入"));
+    else if (code === "permission_denied") showToast(t("需要麦克风权限才能语音输入，请在系统设置中允许"));
+    else if (code === "no_microphone") showToast(t("没有找到可用的麦克风"));
+    else if (code === "too_short") showToast(t("说话时间太短"));
+    else showToast(t("语音识别失败，请重试"));
+  };
+
+  const stopVoice = async () => {
+    const recording = voiceRecordingRef.current;
+    if (!recording) return;
+    const version = voiceStartVersionRef.current;
+    voiceRecordingRef.current = null;
+    clearVoiceTimer();
+    setVoiceState("transcribing");
+    try {
+      const clip = await recording.stop();
+      const { text } = await api.transcribeVoice(clip, locale);
+      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
+      const spoken = (text || "").trim();
+      if (!spoken) {
+        showToast(t("没有听清，请再说一次"));
+        return;
+      }
+      setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
+    } catch (error) {
+      if (voiceActiveRef.current && version === voiceStartVersionRef.current) explainVoiceError(error);
+    } finally {
+      if (voiceActiveRef.current && version === voiceStartVersionRef.current) {
+        setVoiceState("idle");
+        setVoiceSeconds(0);
+      }
+    }
+  };
+
+  const cancelVoice = () => {
+    voiceStartVersionRef.current += 1;
+    clearVoiceTimer();
+    voiceRecordingRef.current?.cancel();
+    voiceRecordingRef.current = null;
+    setVoiceState("idle");
+    setVoiceSeconds(0);
+  };
+
+  const startVoice = async () => {
+    if (voiceState !== "idle" || voiceStartInFlightRef.current) return;
+    if (!isVoiceInputSupported()) {
+      showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
+      return;
+    }
+    setVoiceState("starting");
+    voiceStartInFlightRef.current = true;
+    const version = ++voiceStartVersionRef.current;
+    try {
+      const recording = await startVoiceRecording();
+      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) {
+        recording.cancel();
+        return;
+      }
+      voiceRecordingRef.current = recording;
+    } catch (error) {
+      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
+      setVoiceState("idle");
+      explainVoiceError(error);
+      return;
+    } finally {
+      voiceStartInFlightRef.current = false;
+    }
+    setVoiceSeconds(0);
+    setVoiceMetered(voiceRecordingRef.current.level() !== null);
+    setVoiceState("recording");
+    const startedAt = Date.now();
+    voiceTimerRef.current = setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      setVoiceSeconds(seconds);
+      if (seconds >= MAX_VOICE_SECONDS) void stopVoice();
+    }, 250);
+  };
+
+  const explainImageError = (error: unknown) => {
+    if (error instanceof ChatImageInputError && error.code === "too_large") {
+      showToast(t("图片太大，请选择另一张图片"));
+      return;
+    }
+    if (error instanceof ChatImageInputError && error.code === "unsupported") {
+      showToast(t("暂时只支持图片格式"));
+      return;
+    }
+    showToast(t("图片处理失败，请重试"));
+  };
+
+  const acceptPickerResult = async (result: ImagePicker.ImagePickerResult) => {
+    if (result.canceled || !result.assets?.length) return;
+    setProcessingImage(true);
+    try {
+      const asset = result.assets[0];
+      const prepared = await prepareChatImage(asset);
+      setPendingImage(prepared);
+    } catch (error) {
+      explainImageError(error);
+    } finally {
+      setProcessingImage(false);
+    }
+  };
+
+  const openNativePicker = async (source: "camera" | "library") => {
+    try {
+      if (source === "camera") {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          showToast(t("需要相机权限才能拍照，请在系统设置中允许"));
+          return;
+        }
+        await acceptPickerResult(await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          cameraType: ImagePicker.CameraType.back,
+          allowsEditing: false,
+          base64: false,
+          exif: false,
+          quality: 0.68,
+        }));
+        return;
+      }
+
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
+        return;
+      }
+      await acceptPickerResult(await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: false,
+        allowsMultipleSelection: false,
+        base64: false,
+        exif: false,
+        quality: 0.78,
+      }));
+    } catch {
+      showToast(t(source === "camera" ? "无法打开相机，请重试" : "无法读取图片，请重试"));
+    }
+  };
+
+  const flushNativePicker = () => {
+    const source = pendingNativePickerRef.current;
+    if (!source) return;
+    pendingNativePickerRef.current = null;
+    if (nativePickerFallbackTimerRef.current) {
+      clearTimeout(nativePickerFallbackTimerRef.current);
+      nativePickerFallbackTimerRef.current = null;
+    }
+    void openNativePicker(source);
+  };
+
+  const deferNativePickerUntilModalCloses = (source: "camera" | "library") => {
+    pendingNativePickerRef.current = source;
+    setImageMenuVisible(false);
+    // onDismiss is reliable on iOS. Android does not consistently emit it for
+    // every RN Modal implementation, so use a guarded fallback after the fade.
+    if (Platform.OS === "android") {
+      nativePickerFallbackTimerRef.current = setTimeout(flushNativePicker, 350);
+    }
+  };
+
+  const openSafeWebPicker = async () => {
+    try {
+      // Do not force capture=environment or use Expo's eager Web metadata
+      // decode. Safari owns the chooser transition and NURI validates the raw
+      // file header before allocating any full-resolution image surface.
+      const pendingAsset = pickWebChatImageFile();
+      setImageMenuVisible(false);
+      const asset = await pendingAsset;
+      if (asset) await acceptPickerResult({ canceled: false, assets: [asset] });
+    } catch (error) {
+      explainImageError(error);
+    }
+  };
+
+  const takePhoto = () => {
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    deferNativePickerUntilModalCloses("camera");
+  };
+
+  const choosePhoto = () => {
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    deferNativePickerUntilModalCloses("library");
+  };
+
+  const openImageInput = () => {
+    // The iOS app is a WKWebView shell. Its browser-owned file chooser already
+    // offers Camera and Photo Library, so opening a NURI menu first only adds a
+    // redundant extra step and can break Safari's required user gesture.
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    setImageMenuVisible(true);
+  };
+
+  useEffect(() => () => {
+    if (nativePickerFallbackTimerRef.current) {
+      clearTimeout(nativePickerFallbackTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    let active = true;
+    void ImagePicker.getPendingResultAsync()
+      .then((result) => {
+        if (active && result && "canceled" in result) {
+          void acceptPickerResult(result);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+    // Recovery is intentionally a one-time mount operation. The latest
+    // acceptPickerResult implementation is sufficient for the recovered file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <LinearGradient
+      colors={GRADIENT}
+      start={{ x: 1, y: 0 }}
+      end={{ x: 0, y: 1 }}
+      style={{ flex: 1 }}
+    >
+      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
+        <Image source={blurredTaskBackground} style={styles.backgroundImage} contentFit="cover" />
+        <View pointerEvents="none" style={styles.haloBlue} />
+        <View pointerEvents="none" style={styles.haloRed} />
+        <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
+        <Stack.Screen options={{ gestureEnabled: !sending }} />
+        <View style={styles.header} onLayout={(event) => setPageHeaderHeight(event.nativeEvent.layout.height)}>
+          <Pressable
+            onPress={requestHomeReturn}
+            style={[styles.backBtn, Platform.OS !== "web" && { display: "none" }]}
+            accessibilityRole="button"
+            accessibilityLabel={t("返回首页并更新推荐")}
+            accessibilityState={{ busy: sending }}
+            testID="chat-back-btn"
+          >
+            <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
+          </Pressable>
+          <Text style={styles.headerName}>{t("我的对话")}</Text>
+        </View>
+
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={headerHeight + pageHeaderHeight}
+          style={{ flex: 1 }}
+        >
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={styles.scroll}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            testID="chat-scroll"
+          >
+            {historyLoadState === "loading" ? (
+              <View style={styles.historyStatus} testID="chat-history-loading">
+                <ActivityIndicator color={colors.brand} />
+                <Text style={styles.historyStatusText}>{t("正在加载对话…")}</Text>
+              </View>
+            ) : null}
+            {historyLoadState === "error" ? (
+              <Pressable
+                onPress={() => void load()}
+                style={styles.historyStatus}
+                testID="chat-history-retry"
+              >
+                <Ionicons name="refresh" size={20} color={colors.brand} />
+                <Text style={styles.historyStatusText}>
+                  {t("对话未能打开，点此重试")}
+                </Text>
+              </Pressable>
+            ) : null}
+            {messages.map((m) => (
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                actionsEnabled={!m.id.startsWith("tmp-")}
+                feedbackSaving={feedbackSavingIds.has(m.id)}
+                onCopy={copyResponse}
+                onFeedback={rateResponse}
+              />
+            ))}
+            {streamingText ? (
+              <MessageBubble
+                msg={{ id: "__streaming__", role: "ai", text: streamingText }}
+                actionsEnabled={false}
+              />
+            ) : null}
+            {typing ? <TypingDots /> : null}
+          </ScrollView>
+
+          <View style={styles.composer} testID="chat-composer">
+            {processingImage ? (
+              <View style={styles.imageProcessing} testID="chat-image-processing">
+                <ActivityIndicator size="small" color={colors.brand} />
+                <Text style={styles.imageProcessingText}>{t("正在准备图片…")}</Text>
+              </View>
+            ) : null}
+            {voiceState === "recording" ? (
+              <View style={styles.voiceBanner} testID="chat-voice-recording">
+                <View style={styles.voiceDot} accessibilityLabel={t("正在录音")} />
+                {voiceMetered ? (
+                  <VoiceWaveform level={readVoiceLevel} testID="chat-voice-waveform" />
+                ) : (
+                  <Text style={styles.voiceBannerText}>
+                    {t("正在录音")} {Math.floor(voiceSeconds / 60)}:{String(voiceSeconds % 60).padStart(2, "0")}
+                  </Text>
+                )}
+                <Text style={styles.voiceBannerHint}>{t("再点一次结束")}</Text>
+                <Pressable
+                  onPress={cancelVoice}
+                  style={styles.imageRemove}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("取消录音")}
+                  testID="chat-voice-cancel"
+                >
+                  <Ionicons name="close" size={20} color="#3A2F5A" />
+                </Pressable>
+              </View>
+            ) : null}
+            {voiceState === "transcribing" ? (
+              <View style={styles.imageProcessing} testID="chat-voice-transcribing">
+                <ActivityIndicator size="small" color={colors.brand} />
+                <Text style={styles.imageProcessingText}>{t("正在识别语音…")}</Text>
+              </View>
+            ) : null}
+            {pendingImage ? (
+              <View style={styles.imagePreview} testID="chat-image-preview">
+                <Image
+                  source={{ uri: pendingImage.previewUri }}
+                  style={styles.imagePreviewThumb}
+                  contentFit="cover"
+                />
+                <View style={styles.imagePreviewCopy}>
+                  <Text style={styles.imagePreviewTitle}>{t("已添加图片")}</Text>
+                  <Text style={styles.imagePreviewHint}>{t("可以补充文字，让 NURI 更准确地理解")}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setPendingImage(null)}
+                  style={styles.imageRemove}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("移除图片")}
+                  testID="chat-image-remove"
+                >
+                  <Ionicons name="close" size={20} color="#3A2F5A" />
+                </Pressable>
+              </View>
+            ) : null}
+            <View style={styles.inputPill}>
+              <Pressable
+                onPress={openImageInput}
+                style={styles.iconBtn}
+                disabled={sending || processingImage}
+                accessibilityRole="button"
+                accessibilityLabel={t("添加图片")}
+                testID="chat-image-btn"
+              >
+                <Ionicons name="add" size={26} color="#3A2F5A" />
+              </Pressable>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                placeholder={t("说点什么...")}
+                placeholderTextColor={colors.muted}
+                style={styles.input}
+                editable={historyLoadState === "ready" && !sending}
+                multiline
+                returnKeyType="send"
+                blurOnSubmit={false}
+                onSubmitEditing={() => {
+                  if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
+                }}
+                onKeyPress={(e: any) => {
+                  if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
+                    e.preventDefault?.();
+                    if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
+                  }
+                }}
+                testID="chat-input"
+              />
+              {voiceState === "recording" ? (
+                <Pressable
+                  onPress={() => void stopVoice()}
+                  style={[styles.micBtn, styles.recordingBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("结束录音")}
+                  testID="chat-voice-stop"
+                >
+                  <Ionicons name="stop" size={18} color="#fff" />
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    if (input.trim() || pendingImage) void send();
+                    else void startVoice();
+                  }}
+                  disabled={sending || processingImage || voiceState !== "idle"}
+                  style={[styles.micBtn, (input.trim() || pendingImage) && styles.sendBtn]}
+                  accessibilityRole="button"
+                  accessibilityLabel={(input.trim() || pendingImage) ? t("发送") : t("语音输入")}
+                  testID={(input.trim() || pendingImage) ? "chat-send-btn" : "chat-voice-btn"}
+                >
+                  {voiceState === "starting" || voiceState === "transcribing" ? (
+                    <ActivityIndicator size="small" color="#3A2F5A" />
+                  ) : (
+                    <Ionicons
+                      name={(input.trim() || pendingImage) ? "send" : "mic-outline"}
+                      size={21}
+                      color={(input.trim() || pendingImage) ? "#fff" : "#3A2F5A"}
+                    />
+                  )}
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+
+        <Modal
+          visible={imageMenuVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setImageMenuVisible(false)}
+          onDismiss={flushNativePicker}
+        >
+          <View style={styles.imageMenuOverlay}>
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setImageMenuVisible(false)}
+              accessibilityLabel={t("关闭图片菜单")}
+            />
+            <View style={[styles.imageMenu, { width: Math.min(phoneWidth - 32, 370) }]} accessibilityViewIsModal>
+              <View style={styles.imageMenuHandle} />
+              <Text style={styles.imageMenuTitle}>{t("添加图片")}</Text>
+              <Text style={styles.imageMenuHint}>
+                {Platform.OS === "web"
+                  ? t("浏览器会打开设备支持的相机或图片文件选择器")
+                  : t("选择一种添加方式")}
+              </Text>
+              <Text style={styles.imagePrivacyHint}>
+                {t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}
+              </Text>
+              <Pressable
+                onPress={() => void takePhoto()}
+                style={styles.imageMenuAction}
+                testID="chat-image-camera"
+              >
+                <View style={styles.imageMenuIcon}>
+                  <Ionicons name="camera-outline" size={22} color={colors.brand} />
+                </View>
+                <Text style={styles.imageMenuActionText}>
+                  {Platform.OS === "web" ? t("拍照或选择图片") : t("拍照")}
+                </Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable>
+              {Platform.OS !== "web" ? <Pressable
+                onPress={() => void choosePhoto()}
+                style={styles.imageMenuAction}
+                testID="chat-image-library"
+              >
+                <View style={styles.imageMenuIcon}>
+                  <Ionicons name="images-outline" size={22} color={colors.brand} />
+                </View>
+                <Text style={styles.imageMenuActionText}>
+                  {t("从相册选择")}
+                </Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable> : null}
+              <Pressable
+                onPress={() => setImageMenuVisible(false)}
+                style={styles.imageMenuCancel}
+                testID="chat-image-cancel"
+              >
+                <Text style={styles.imageMenuCancelText}>{t("取消")}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+        <Toast message={toastMsg} />
+        </View>
+      </SafeAreaView>
+    </LinearGradient>
+  );
+}
+
+// ── Sub-component: message bubble (text, image, transitions) ────────────────
+function MessageBubble({
+  msg,
+  actionsEnabled = true,
+  feedbackSaving = false,
+  onCopy,
+  onFeedback,
+}: {
+  msg: Msg;
+  actionsEnabled?: boolean;
+  feedbackSaving?: boolean;
+  onCopy?: (message: Msg) => void;
+  onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
+}) {
+  const { t } = useT();
+  const router = useRouter();
+  const isAI = msg.role === "ai";
+  // A featured post NURI brought in from a tapped notification: the marker is
+  // also NURI's message, and the post rides on it as a card.
+  const post: DailyPostOnMessage | null =
+    msg.transition?.kind === "card_opened" && msg.transition.post?.id ? msg.transition.post : null;
+
+  if (msg.transition?.kind === "memory_context") {
+    return <MemoryContextCard transition={msg.transition as MemoryContextTransition} />;
+  }
+
+  // A parent opened a feed card. There is only ever one conversation, so this
+  // marks where the subject changed instead of the card getting a chat of its
+  // own. It carries no text — it is a separator, not something anyone said —
+  // and without this branch it would render as an empty bubble.
+  if (msg.transition?.kind === "card_opened" && !post) {
+    return (
+      <View style={styles.cardDivider} testID="chat-card-divider">
+        <View style={styles.cardDividerLine} />
+        <View style={styles.cardDividerLabel}>
+          <Ionicons name="bookmark-outline" size={13} color={colors.brand} />
+          <Text style={styles.cardDividerText} numberOfLines={1}>
+            {msg.transition.title || t("学习胶囊")}
+          </Text>
+        </View>
+        <View style={styles.cardDividerLine} />
+      </View>
+    );
+  }
+
+  // A plan the parent agreed to, already saved. There is no "add" button on
+  // purpose: the card exists because they said yes in the conversation, and a
+  // second confirmation here would make the one in the conversation meaningless.
+  // What the reply says out loud is how to change or cancel it (spec §11.2).
+  if (msg.transition?.kind === "task_card") {
+    const card = msg.transition;
+    const tasks: any[] = Array.isArray(card.tasks) ? card.tasks : [];
+    const criteria: string[] = Array.isArray(card.completion_criteria)
+      ? card.completion_criteria
+      : [];
+    return (
+      <View style={[styles.row, { justifyContent: "flex-start" }]}>
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
+        <View style={styles.planCard} testID="chat-task-card">
+          <View style={styles.planHead}>
+            <Ionicons name="bookmark" size={14} color={colors.brand} />
+            <Text style={styles.planBadge}>
+              {card.action === "create" ? t("已存成计划") : t("已更新计划")}
+            </Text>
+          </View>
+          <Text style={styles.planTitle}>{card.title || card.core_goal}</Text>
+          {card.core_goal && card.title !== card.core_goal ? (
+            <Text style={styles.planGoal}>{card.core_goal}</Text>
+          ) : null}
+          {tasks.map((task, index) => (
+            <View key={`${msg.id}-task-${index}`} style={styles.planTask}>
+              <Text style={styles.planAction}>{index + 1}. {task.action}</Text>
+              {task.timing || task.trigger ? (
+                <Text style={styles.planMeta}>{task.timing || task.trigger}</Text>
+              ) : null}
+              {task.completion_criterion ? (
+                <Text style={styles.planMeta}>
+                  {t("做到这样就算成功：")}{task.completion_criterion}
+                </Text>
+              ) : null}
+              {task.fallback ? (
+                <Text style={styles.planMeta}>{t("卡住时：")}{task.fallback}</Text>
+              ) : null}
+            </View>
+          ))}
+          {criteria.length ? (
+            <Text style={styles.planMeta}>
+              {t("整体完成标准：")}{criteria.join("；")}
+            </Text>
+          ) : null}
+          <Text style={styles.planFoot}>{t("已同步到「我的任务」")}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (msg.transition?.kind === "hospital_card") {
+    return (
+      <View style={[styles.row, { justifyContent: "flex-start" }]}>
+        <View style={styles.avatarSlot}>
+          <NuriAvatar size={30} />
+        </View>
+        <View style={styles.hospitalCard} testID="chat-hospital-card">
+          <Text style={styles.hospitalText}>{msg.text}</Text>
+          <View style={styles.hospitalDivider} />
+          <View style={styles.hospitalRow}>
+            <Ionicons name="medkit-outline" size={16} color={colors.error} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.hospitalName}>{"Stanford Children's ER"}</Text>
+              <Text style={styles.hospitalMeta}>2.4 mi · 24h · (650) 555-0911</Text>
+            </View>
+          </View>
+          <View style={styles.hospitalRow}>
+            <Ionicons name="call-outline" size={16} color={colors.brand} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.hospitalName}>Nurse Hotline</Text>
+              <Text style={styles.hospitalMeta}>{t("免费 · 24h · (800) 555-0144")}</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.row,
+        { justifyContent: isAI ? "flex-start" : "flex-end" },
+      ]}
+    >
+      <View
+        style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}
+        testID={`bubble-${msg.role}`}
+      >
+        {isAI && <Text style={styles.senderLabel}>NURI</Text>}
+        {msg.image_base64 ? (
+          <Image
+            source={{ uri: msg.image_base64 }}
+            style={styles.bubbleImage}
+            contentFit="cover"
+          />
+        ) : null}
+        {msg.text ? (
+          <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
+            {isAI ? (
+              <RichText text={msg.text} />
+            ) : (
+              msg.text
+            )}
+          </Text>
+        ) : null}
+        {post ? (
+          <Pressable
+            style={styles.postCard}
+            onPress={() => router.push(`/daily-post?id=${encodeURIComponent(post.id)}` as never)}
+            accessibilityRole="button"
+            testID="chat-daily-post-card"
+          >
+            <Text style={styles.postCardEyebrow}>{t("每日精选")}</Text>
+            <Text style={styles.postCardTitle}>{post.headline}</Text>
+            {(post.takeaways || []).slice(0, 2).map((line, i) => (
+              <Text key={i} style={styles.postCardLine} numberOfLines={2}>
+                · {line}
+              </Text>
+            ))}
+            <View style={styles.postCardCta}>
+              <Text style={styles.postCardCtaText}>{t("点击查看更多")}</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.brand} />
+            </View>
+          </Pressable>
+        ) : null}
+        {isAI && actionsEnabled && msg.text ? (
+          <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
+            <Pressable
+              onPress={() => onCopy?.(msg)}
+              style={styles.responseAction}
+              accessibilityRole="button"
+              accessibilityLabel={t("复制回复")}
+              testID={`chat-copy-${msg.id}`}
+            >
+              <Ionicons name="copy-outline" size={17} color={colors.onSurfaceTertiary} />
+            </Pressable>
+            <Pressable
+              onPress={() => onFeedback?.(msg, "like")}
+              disabled={feedbackSaving}
+              style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={t("喜欢这条回复")}
+              accessibilityState={{ selected: msg.feedback_rating === "like", disabled: feedbackSaving }}
+              aria-pressed={msg.feedback_rating === "like"}
+              testID={`chat-like-${msg.id}`}
+            >
+              <Ionicons name={msg.feedback_rating === "like" ? "thumbs-up" : "thumbs-up-outline"} size={18} color={msg.feedback_rating === "like" ? colors.brand : colors.onSurfaceTertiary} />
+            </Pressable>
+            <Pressable
+              onPress={() => onFeedback?.(msg, "dislike")}
+              disabled={feedbackSaving}
+              style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={t("不喜欢这条回复")}
+              accessibilityState={{ selected: msg.feedback_rating === "dislike", disabled: feedbackSaving }}
+              aria-pressed={msg.feedback_rating === "dislike"}
+              testID={`chat-dislike-${msg.id}`}
+            >
+              <Ionicons name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"} size={18} color={msg.feedback_rating === "dislike" ? colors.brand : colors.onSurfaceTertiary} />
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+// ── Sub-component: animated "typing…" indicator ─────────────────────────────
+function TypingDots() {
+  const dot1 = useRef(new Animated.Value(0)).current;
+  const dot2 = useRef(new Animated.Value(0)).current;
+  const dot3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const bounce = (dot: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, {
+            toValue: -5,
+            duration: 280,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(dot, {
+            toValue: 0,
+            duration: 280,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.delay(Math.max(0, 400 - delay)),
+        ])
+      );
+
+    const a1 = bounce(dot1, 0);
+    const a2 = bounce(dot2, 130);
+    const a3 = bounce(dot3, 260);
+    a1.start();
+    a2.start();
+    a3.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [dot1, dot2, dot3]);
+
+  return (
+    <View style={[styles.row, { justifyContent: "flex-start" }]}>
+      <View style={styles.avatarSlot}>
+        <NuriAvatar size={30} />
+      </View>
+      <View style={[styles.bubble, styles.bubbleAI, styles.typingBubble]}>
+        <Text style={styles.senderLabel}>NURI</Text>
+        <View style={styles.dotsRow}>
+          {[dot1, dot2, dot3].map((dot, i) => (
+            <Animated.View
+              key={i}
+              style={[styles.dot, { transform: [{ translateY: dot }] }]}
+            />
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: "transparent" },
+  phoneCanvas: { flex: 1, alignSelf: "center", overflow: "hidden" },
+  backgroundImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  haloBlue: { position: "absolute", width: 396, height: 396, borderRadius: 198, backgroundColor: "rgba(123,166,255,0.82)", left: -188, top: 142 },
+  haloRed: { position: "absolute", width: 384, height: 384, borderRadius: 192, backgroundColor: "rgba(255,118,139,0.74)", right: -204, bottom: -58 },
+
+  header: {
+    flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14, gap: 4,
+  },
+  backBtn: {
+    width: 28, height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerName: {
+    fontSize: 24, fontWeight: "900", color: "#3A2F5A",
+  },
+  onlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 1,
+  },
+  onlineDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.success,
+  },
+  headerSub: { fontSize: type.sm, color: colors.muted },
+
+  scroll: { paddingHorizontal: 18, paddingVertical: 16, paddingBottom: 18, gap: 12 },
+  historyStatus: {
+    alignSelf: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginVertical: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.86)",
+  },
+  historyStatusText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
+  row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
+  avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
+
+  bubble: {
+    maxWidth: "88%", paddingVertical: 14, paddingHorizontal: 18, borderRadius: 25,
+  },
+  bubbleAI: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 25,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  bubbleUser: {
+    borderTopRightRadius: 25,
+    backgroundColor: "#5D86E8",
+  },
+  senderLabel: { display: "none" },
+  bubbleText: { color: "#241C3F", fontSize: 16, lineHeight: 21 },
+  bubbleImage: {
+    width: 160,
+    height: 120,
+    borderRadius: radius.sm,
+    marginBottom: spacing.sm,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  responseActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    // Keep the 17/18pt native icons inside separate, non-overlapping 44pt targets.
+    width: 132,
+    height: 44,
+    gap: 0,
+    marginTop: 10,
+  },
+  responseAction: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  responseActionSelected: { backgroundColor: "rgba(108, 79, 214, 0.12)" },
+
+  bold: { fontWeight: "700" },
+  typingBubble: { paddingVertical: spacing.md },
+  dotsRow: { flexDirection: "row", gap: 5, alignItems: "center", height: 16 },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.brand,
+    opacity: 0.85,
+  },
+
+  cardDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
+  },
+  cardDividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  postCard: {
+    marginTop: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100, 76, 195, 0.24)",
+    backgroundColor: "rgba(250, 248, 255, 0.94)",
+    gap: 6,
+  },
+  postCardEyebrow: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
+  postCardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#241C3F" },
+  postCardLine: { fontSize: type.sm, lineHeight: 19, color: colors.onSurfaceTertiary },
+  postCardCta: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
+  postCardCtaText: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
+  cardDividerLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    maxWidth: "62%",
+  },
+  cardDividerText: {
+    fontSize: type.sm,
+    color: colors.onSurfaceTertiary,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  memoryContextCard: {
+    marginBottom: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100, 76, 195, 0.24)",
+    backgroundColor: "rgba(250, 248, 255, 0.94)",
+    gap: spacing.sm,
+    shadowColor: colors.brand,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  memoryContextHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  memoryContextIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EEE9FF",
+  },
+  memoryContextTitle: {
+    flex: 1,
+    color: "#3A2F5A",
+    fontSize: type.base,
+    fontWeight: "800",
+  },
+  memoryContextNotice: {
+    color: colors.onSurfaceTertiary,
+    fontSize: type.sm,
+    lineHeight: 19,
+  },
+  memoryContextItems: {
+    gap: spacing.sm,
+    paddingTop: 2,
+  },
+  memoryContextItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "rgba(238, 233, 255, 0.72)",
+  },
+  memoryContextBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 7,
+    backgroundColor: colors.brand,
+  },
+  memoryContextText: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: type.sm,
+    lineHeight: 20,
+  },
+  transitionTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  transitionTitle: { fontSize: type.lg, fontWeight: "700", color: colors.onSurface },
+  transitionSub: {
+    fontSize: type.sm,
+    color: colors.muted,
+    marginTop: spacing.sm,
+    lineHeight: 18,
+  },
+  transitionBtn: {
+    marginTop: spacing.md,
+    backgroundColor: colors.brand,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  transitionBtnText: { color: "#fff", fontWeight: "700", fontSize: type.base },
+
+  planCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderColor: colors.brand,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: 6,
+  },
+  planHead: { flexDirection: "row", alignItems: "center", gap: 5 },
+  planBadge: { fontSize: 11, fontWeight: "700", color: colors.brand },
+  planTitle: { fontSize: 15, fontWeight: "800", color: colors.onSurface },
+  planGoal: { fontSize: 12, color: colors.muted },
+  planTask: { gap: 2, marginTop: 4 },
+  planAction: { fontSize: 13, color: colors.onSurface, lineHeight: 19 },
+  planMeta: { fontSize: 12, color: colors.muted, lineHeight: 18 },
+  planFoot: { fontSize: 11, color: colors.muted, marginTop: 4 },
+  hospitalCard: {
+    flex: 1,
+    backgroundColor: "#fff",
+    borderColor: colors.error,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  hospitalText: { fontSize: type.base, color: colors.onSurface, lineHeight: 20 },
+  hospitalDivider: {
+    height: 1,
+    backgroundColor: colors.divider,
+    marginVertical: spacing.xs,
+  },
+  hospitalRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+  hospitalName: { fontSize: type.base, fontWeight: "600", color: colors.onSurface },
+  hospitalMeta: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
+
+  composer: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  imageProcessing: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
+  imageProcessingText: {
+    color: colors.onSurfaceTertiary,
+    fontSize: type.sm,
+    fontWeight: "600",
+  },
+  imagePreview: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: spacing.sm,
+    paddingRight: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: "rgba(100,76,195,0.22)",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    shadowColor: "#3A2F5A",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  imagePreviewThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  imagePreviewCopy: { flex: 1, gap: 3 },
+  imagePreviewTitle: { color: colors.onSurface, fontSize: type.sm, fontWeight: "800" },
+  imagePreviewHint: { color: colors.muted, fontSize: 11, lineHeight: 16 },
+  imageRemove: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F0ECFA",
+  },
+  inputPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "#3A2F5A",
+    paddingLeft: 6,
+    paddingRight: 6,
+    gap: spacing.sm,
+  },
+  iconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.pill,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  input: {
+    flex: 1,
+    minHeight: 38,
+    maxHeight: 110,
+    paddingVertical: Platform.OS === "ios" ? 10 : 6,
+    fontSize: type.base,
+    color: colors.onSurface,
+  },
+  micBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.pill,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sendBtn: { backgroundColor: colors.brand },
+  recordingBtn: { backgroundColor: "#E5484D" },
+  voiceBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+    paddingVertical: 8,
+    paddingLeft: 14,
+    paddingRight: 6,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.94)",
+  },
+  voiceDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#E5484D" },
+  voiceBannerText: { flex: 1, fontSize: type.sm, color: "#3A2F5A" },
+  voiceBannerHint: { fontSize: type.sm, color: colors.muted },
+  imageMenuOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    paddingBottom: Platform.OS === "ios" ? 24 : 16,
+    backgroundColor: "rgba(25,18,48,0.34)",
+  },
+  imageMenu: {
+    padding: spacing.md,
+    paddingTop: spacing.sm,
+    borderRadius: 24,
+    backgroundColor: "#FFFDFC",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  imageMenuHandle: {
+    alignSelf: "center",
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: spacing.md,
+    backgroundColor: "#D7D0E5",
+  },
+  imageMenuTitle: { color: colors.onSurface, fontSize: type.lg, fontWeight: "900" },
+  imageMenuHint: {
+    color: colors.muted,
+    fontSize: type.sm,
+    lineHeight: 19,
+    marginTop: 4,
+    marginBottom: spacing.sm,
+  },
+  imagePrivacyHint: {
+    color: colors.onSurfaceTertiary,
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "#F5F1FD",
+  },
+  imageMenuAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    minHeight: 58,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  imageMenuIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F0ECFA",
+  },
+  imageMenuActionText: {
+    flex: 1,
+    color: colors.onSurface,
+    fontSize: type.base,
+    fontWeight: "700",
+  },
+  imageMenuCancel: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 48,
+    marginTop: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: "#F3F0F7",
+  },
+  imageMenuCancelText: { color: colors.onSurface, fontSize: type.base, fontWeight: "700" },
+});

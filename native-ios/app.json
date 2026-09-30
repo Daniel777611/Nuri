@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "NURI Native Lab",
+    "slug": "nuri-native-lab",
+    "version": "0.3.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/native-lab-icon.png",
+    "scheme": "nuri",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.ordashtech.nuri",
+      "buildNumber": "1001",
+      "appleTeamId": "6PL6HQYU7P",
+      "supportsTablet": false,
+      "entitlements": { "aps-environment": "production" },
+      "infoPlist": {
+        "NuriAPNSEnvironment": "production",
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": false }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#000"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "./plugins/withNuriNative",
+      ["expo-media-library", { "photosPermission": "NURI 仅在你主动保存任务卡时访问相册。", "savePhotosPermission": "NURI 需要将你主动分享的任务卡保存到相册。" }],
+      ["expo-audio", { "microphonePermission": "NURI 需要使用麦克风，将你主动录制的语音转成文字。" }],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "允许 NURI 访问你的相册，以便在对话中添加图片。",
+          "cameraPermission": "允许 NURI 使用相机，以便拍照并在对话中添加图片。",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-image.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#000"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

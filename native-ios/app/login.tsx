@@ -1,0 +1,210 @@
+import { useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  Pressable,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+} from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
+import { useHeaderHeight } from "@react-navigation/elements";
+import { Ionicons } from "@expo/vector-icons";
+
+import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
+import { savePendingVerification } from "@/src/authFlow";
+import { useT } from "@/src/i18n";
+import { safeNotificationRoute } from "@/src/nativePushRuntime";
+import { colors, radius, spacing, type } from "@/src/theme";
+
+export default function Login() {
+  const router = useRouter();
+  const { returnTo } = useLocalSearchParams<{ returnTo?: string | string[] }>();
+  const notificationReturn = safeNotificationRoute(returnTo);
+  const safeReturnTo = notificationReturn && /^\/notifications\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(notificationReturn) ? notificationReturn : null;
+  const headerHeight = useHeaderHeight();
+  const { t, locale, setLocale } = useT();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    setError(null);
+    setSubmitting(true);
+    const normalizedEmail = email.trim().toLowerCase();
+    try {
+      const res = await api.login({
+        email: normalizedEmail,
+        password,
+        language: locale,
+      });
+      await auth.setToken(res.access_token);
+      // Old users must also complete the basic-info flow before entering tabs
+      if (res.user?.language) await setLocale(res.user.language);
+      const onboarded = !!res.user?.onboarding_completed;
+      await auth.setOnboarded(onboarded);
+      router.replace(onboarded ? (safeReturnTo ?? "/(tabs)") as never : "/onboarding");
+    } catch (e: any) {
+      // Right password, address never confirmed: the server has just mailed
+      // a fresh code, so go straight to the screen that takes it.
+      if (apiErrorDetail(e) === "EMAIL_NOT_VERIFIED") {
+        await savePendingVerification(normalizedEmail, 60);
+        router.push("/verify-email");
+        return;
+      }
+      const msg = String(e?.message || "");
+      if (isAuthError(e) || msg.includes("401")) setError(t("邮箱或密码错误"));
+      else setError(t("登录失败，请重试"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={headerHeight}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1, padding: spacing.lg, justifyContent: "center" }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.logo}>
+            <Ionicons name="leaf-outline" size={28} color={colors.brand} />
+          </View>
+          <Text style={styles.h1}>{t("欢迎回来")}</Text>
+          <Text style={styles.sub}>
+            {t("登录继续你和 AI 育儿助手的对话。")}
+          </Text>
+
+          <Text style={styles.label}>{t("邮箱")}</Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            placeholder="you@example.com"
+            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            style={styles.input}
+            testID="login-email"
+          />
+
+          <Text style={[styles.label, { marginTop: spacing.lg }]}>{t("密码")}</Text>
+          <TextInput
+            value={password}
+            onChangeText={setPassword}
+            placeholder="••••••"
+            placeholderTextColor={colors.muted}
+            secureTextEntry
+            style={styles.input}
+            testID="login-password"
+          />
+          <Pressable
+            onPress={() => router.push("/forgot-password")}
+            style={styles.forgot}
+            testID="login-forgot-password"
+          >
+            <Text style={styles.forgotText}>{t("忘记密码？")}</Text>
+          </Pressable>
+
+          {error ? (
+            <View style={styles.errorBox} testID="login-error">
+              <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          ) : null}
+
+          <Pressable
+            onPress={submit}
+            disabled={!email || !password || submitting}
+            style={[
+              styles.cta,
+              (!email || !password || submitting) && { opacity: 0.5 },
+            ]}
+            testID="login-submit-btn"
+          >
+            <Text style={styles.ctaText}>{submitting ? t("登录中...") : t("登录")}</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => router.replace("/register")}
+            style={styles.altBtn}
+            testID="login-go-register"
+          >
+            <Text style={styles.altBtnText}>
+              {t("还没有账号？")}<Text style={{ color: colors.brand }}>{t("立即注册")}</Text>
+            </Text>
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.surface },
+  logo: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
+  },
+  h1: { fontSize: type.xxl, fontWeight: "700", color: colors.onSurface },
+  sub: {
+    fontSize: type.base,
+    color: colors.muted,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  label: {
+    fontSize: type.base,
+    color: colors.onSurfaceSecondary,
+    marginBottom: spacing.sm,
+    fontWeight: "600",
+  },
+  input: {
+    backgroundColor: colors.surfaceSecondary,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    fontSize: type.lg,
+    color: colors.onSurface,
+  },
+  errorBox: {
+    marginTop: spacing.lg,
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FCA5A5",
+    borderWidth: 1,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    flexDirection: "row",
+    gap: spacing.sm,
+    alignItems: "center",
+  },
+  errorText: { color: colors.error, flex: 1 },
+  forgot: { alignSelf: "flex-end", marginTop: spacing.sm, paddingVertical: spacing.xs },
+  forgotText: { color: colors.brand, fontSize: type.base },
+  cta: {
+    marginTop: spacing.xl,
+    backgroundColor: colors.brand,
+    paddingVertical: spacing.md + 2,
+    borderRadius: radius.md,
+    alignItems: "center",
+  },
+  ctaText: { color: "#fff", fontSize: type.lg, fontWeight: "700" },
+  altBtn: { marginTop: spacing.lg, alignItems: "center", paddingVertical: spacing.sm },
+  altBtnText: { color: colors.muted, fontSize: type.base },
+});

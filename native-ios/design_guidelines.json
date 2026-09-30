@@ -1,0 +1,149 @@
+{
+  "app_name": "Parenting AI Agent (育儿助手)",
+  "personality": "1 iOS-Native Clean structure fused with Hand-Drawn warmth and color restraint",
+  "personality_one_liner": "Warm, trustworthy, and organized—providing restrained guidance without preaching.",
+  "color": {
+    "surface": "#FAFAF9",
+    "onSurface": "#1C1917",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#292524",
+    "surfaceTertiary": "#F5F5F4",
+    "onSurfaceTertiary": "#44403C",
+    "surfaceInverse": "#292524",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#FF7A59",
+    "brandPrimary": "#FF7A59",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#FF8A6C",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FFF1EE",
+    "onBrandTertiary": "#9E3C22",
+    "success": "#34D399",
+    "onSuccess": "#FFFFFF",
+    "warning": "#FBBF24",
+    "onWarning": "#FFFFFF",
+    "error": "#E15241",
+    "onError": "#FFFFFF",
+    "info": "#60A5FA",
+    "onInfo": "#FFFFFF",
+    "border": "#E7E5E4",
+    "borderStrong": "#D6D3D1",
+    "divider": "#F5F5F4"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room for readability (especially for Chinese-English mixed text). Use standard scales to pad cards inside columns to keep them from hugging screen edges.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 16,
+    "pill": 999
+  },
+  "shadow_tier": "0",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons outline",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Bottom tab bar",
+      "Sticky feedback/action sheets in Tasks and Chat screens"
+    ],
+    "dont's": [
+      "Feed cards",
+      "Form fields",
+      "Profile cards"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Home",
+      "purpose": "A calming, organized feed displaying daily tips, hot news, and product recommendations with direct 'Ask AI' integration.",
+      "states": {
+        "loading": "Centered spinner in brandPrimary color.",
+        "empty": "Subtle empty state illustration with 'No updates today'.",
+        "error": "Restrained red 'Failed to load feed' with a retry button."
+      },
+      "layout": "Vertical scroll feed. Use edge-to-edge column layout with 'lg' padding. Cards have a unified 12px (md) border radius, light '#E7E5E4' borders, and NO shadows. Distinguish cards visually by tags and icons: '科普' (Daily Tips, neutral tone, book icon), '热点' (Hot News, flame icon), '推荐' (Product Rec, clearly tagged). Each card includes a prominent 'Ask AI' CTA."
+    },
+    {
+      "name": "AI Chat",
+      "purpose": "A contextual conversation space with predefined paths, image uploads, and actionable transitions.",
+      "states": {
+        "loading": "Typing indicator 'thinking' animation for AI.",
+        "empty": "Predefined conversation starter prompts in brandTertiary chips.",
+        "error": "Inline error bubble with retry arrow."
+      },
+      "layout": "Standard chat interface. AI bubbles left-aligned in 'surfaceTertiary' (#F5F5F4). User bubbles right-aligned in 'brandPrimary' (#FF7A59). Include image upload preview support. When AI suggests an action, display a distinct 'Transition Card' that links to task generation."
+    },
+    {
+      "name": "Tasks",
+      "purpose": "Manage actionable parenting goals with satisfying completion feedback and emoji reflection.",
+      "states": {
+        "loading": "Skeleton loaders for task list items.",
+        "empty": "Illustration showing a clean slate with 'All caught up!'.",
+        "error": "Error loading tasks, pull to refresh."
+      },
+      "layout": "Top segmented control (Today / This Week). Task cards feature a checkbox (with checked animation), title, and source attribution. 'This Week' tasks have a progress bar. Upon checking off a task, trigger a Bottom Sheet feedback modal prompting emoji reflection (😊😐😣), followed by a brief insight tip."
+    },
+    {
+      "name": "Profile",
+      "purpose": "Manage family info with a high emphasis on privacy and trust.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "No child added, show 'Add Child' hero card.",
+        "error": "Failed to load profile."
+      },
+      "layout": "List-based settings layout. Highlight child info cards (nickname, age, allergies) using 'surfaceSecondary' with borders. Prominently display privacy settings toggles (trust-building). Include a clear, non-destructive looking 'Delete all data' button."
+    }
+  ],
+  "images": {
+    "product_recommendation_card": {
+      "url": "https://images.pexels.com/photos/9271758/pexels-photo-9271758.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Minimalist wooden stacking baby toy"
+    },
+    "home_empty_state": {
+      "url": "https://images.unsplash.com/photo-1607322851003-f5a88dc5b960?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA0MTJ8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwbW9kZXJuJTIwYmFieSUyMG51cnNlcnklMjBuYXR1cmFsJTIwbGlnaHR8ZW58MHx8fHwxNzgxOTg2NDc5fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Minimalist baby nursery room"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the user's color palette: primary is warm coral/orange (#FF7A59), avoiding clinical blues.",
+    "Icons must strictly be 'Ionicons outline'—do not use filled versions except for active tab bar states.",
+    "Cards MUST NOT use shadows. Use 12px (md) rounded corners and a light border (#E7E5E4) to separate them from the off-white background (#FAFAF9).",
+    "Support Chinese-English mixed reading smoothly; prioritize Chinese titles but retain English terms (e.g., GPA, IEP) without awkward line breaks.",
+    "Chat screen requires distinct color coding: AI left (light gray) and User right (warm coral). Incorporate a 'thinking' animation for AI responses.",
+    "Implement the task completion flow carefully: checking a task triggers an animation, followed by a bottom sheet modal for emoji reflection (😊😐😣).",
+    "The Profile page must prominently feature privacy toggles to build trust for NA Chinese families, avoiding any hidden tracking UI.",
+    "Avoid childish cartoon styles. Aim for a restrained, trustworthy, and warm editorial feel similar to a high-end journal or modern parenting tool."
+  ]
+}
