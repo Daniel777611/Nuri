@@ -143,6 +143,7 @@ function authFixture(f) {
     "./theme": { API: "https://nuri.invalid/api" },
     "./preview-api": { isPreviewMode: false },
     "./utils/storage": { storage: f.native.storage },
+    "./aiConsent": load("../../../aiConsent.ts"),
   }).auth;
 }
 

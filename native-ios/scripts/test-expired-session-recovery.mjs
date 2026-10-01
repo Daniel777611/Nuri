@@ -59,6 +59,7 @@ const storage = {
 const client = load("../src/api.ts", {
   "./theme": { API: "https://nuri.invalid/api" },
   "./preview-api": { isPreviewMode: false }, "./utils/storage": { storage },
+  "./aiConsent": load("../src/aiConsent.ts", {}),
 });
 const helper = load("../src/authExpiredRecovery.tsx", {
   react,

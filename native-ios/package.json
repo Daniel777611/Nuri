@@ -19,6 +19,8 @@
     "test:native-auth": "node ./scripts/test-expired-session-recovery.mjs",
     "test:native-storage": "node --test ./src/utils/storage/__tests__/native-storage.test.mjs",
     "test:native-lab-billing": "node ./scripts/test-native-lab-billing.mjs",
+    "test:account-deletion": "node ./scripts/test-account-deletion.mjs",
+    "test:ai-consent": "node ./scripts/test-ai-consent.mjs",
     "typecheck": "tsc --noEmit",
     "e2e:login": "playwright test e2e/login-recommendations.spec.ts",
     "e2e:login:prompt": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-e2e-login.ps1",

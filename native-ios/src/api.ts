@@ -5,6 +5,7 @@
 import { API } from "./theme";
 import { isPreviewMode, previewRequest } from "./preview-api";
 import { storage } from "./utils/storage";
+import { AIConsentController, requiresAIConsent } from "./aiConsent";
 
 export type PersonalizedResourceStatus =
   | "research_on_open"
@@ -387,6 +388,7 @@ function retryPendingPushCleanup() {
 }
 
 function publishSession(token: string | null) {
+  aiConsent.sessionChanged();
   sessionListeners.forEach((listener) => {
     try { listener(token); } catch { /* Session storage still owns login/logout. */ }
   });
@@ -412,6 +414,7 @@ export const PUSH_INSTALLATION_KEY = "nuri.push.installation_id";
 export const auth = {
   TOKEN_KEY,
   setToken: (t: string) => queueAuthChange(async () => {
+    aiConsent.sessionChanged(); // Invalidate old AI work before the Keychain write begins.
     const saved = await storage.secureSet(TOKEN_KEY, t);
     if (saved) {
       locallySignedOut = false;
@@ -490,7 +493,8 @@ export class ApiError extends Error {
     this.status = status;
     let parsed: any = null;
     try { parsed = JSON.parse(detail); } catch { /* not JSON */ }
-    this.detail = typeof parsed?.detail === "string" ? parsed.detail : "";
+    this.detail = typeof parsed?.detail === "string" ? parsed.detail
+      : typeof parsed?.detail?.code === "string" ? parsed.detail.code : "";
     this.retryAfterMs =
       typeof parsed?.error?.retry_after_ms === "number" ? parsed.error.retry_after_ms : null;
   }
@@ -508,8 +512,12 @@ export function apiErrorDetail(err: unknown): string {
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000, sessionToken?: string): Promise<T> {
-  if (isPreviewMode) return previewRequest(path, init) as Promise<T>;
   const token = sessionToken === undefined ? await getToken() : sessionToken;
+  const lease = requiresAIConsent(path, init) ? await aiConsent.authorize(token || null) : null;
+  if (isPreviewMode) {
+    if (lease) aiConsent.assertCurrent(lease);
+    return previewRequest(path, init) as Promise<T>;
+  }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) || {}),
@@ -534,11 +542,15 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
   };
 
   // timeoutMs=0 means no timeout (used for long-running generation calls)
-  if (!timeoutMs) return check(await fetch(API + path, requestInit));
+  if (!timeoutMs) {
+    if (lease) aiConsent.assertCurrent(lease);
+    return check(await fetch(API + path, requestInit));
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    if (lease) aiConsent.assertCurrent(lease);
     return await check(
       await fetch(API + path, { ...requestInit, signal: controller.signal }),
     );
@@ -546,6 +558,15 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
     clearTimeout(timer);
   }
 }
+
+export const aiConsent = new AIConsentController({
+  storage,
+  getToken,
+  resolveUser: async (token) => {
+    const me = await req("/auth/me", undefined, 30000, token);
+    return me?.id;
+  },
+});
 
 // ── SSE chat streaming ───────────────────────────────────────────────────────
 // Thrown when the host genuinely lacks the stream route (or returns a wrong
@@ -675,6 +696,7 @@ async function streamMessage(
   if (isPreviewMode) throw new StreamUnsupportedError("preview mode");
 
   const token = await getToken();
+  const lease = await aiConsent.authorize(token);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "text/event-stream",
@@ -693,11 +715,13 @@ async function streamMessage(
   });
 
   if (!SUPPORTS_FETCH_STREAM) {
+    aiConsent.assertCurrent(lease);
     await xhrStream(url, headers, payload, feed);
   } else {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
     try {
+      aiConsent.assertCurrent(lease);
       const res = await fetch(url, {
         method: "POST",
         headers,
@@ -954,6 +978,13 @@ export const api = {
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),
   wipe: () => req(`/privacy/wipe`, { method: "POST" }),
+  // Destructive, owner-bound request. The confirmation/password are supplied
+  // only by the dedicated account-deletion screen, never persisted or logged.
+  deleteAccount: (password: string, expectedToken: string) =>
+    req<{ ok: boolean; account_deleted: boolean; subscription_cancelled: boolean }>(
+      "/auth/account", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", password }) },
+      45000, expectedToken,
+    ),
 
   // ── Daily post card ───────────────────────────────────────────────────────
   // The first request of the parent's day builds the card (search + two model

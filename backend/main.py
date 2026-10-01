@@ -57,7 +57,7 @@ from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import (
-    billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
+    account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, runtime, stores, usage_dashboard,
 )
 from backend.feed import daily_post as feed_daily_post
@@ -346,6 +346,11 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
     stays in `detail` untouched and the flat message summarises it.
     """
     errors = exc.errors()
+    if _request.url.path == "/api/auth/account":
+        # Pydantic includes the rejected input in its errors. Reauthentication
+        # passwords must never be echoed in a response/error object.
+        errors = [{key: value for key, value in error.items() if key not in {"input", "ctx"}}
+                  for error in errors]
     first = errors[0] if errors else {}
     where = ".".join(str(p) for p in (first.get("loc") or [])[1:]) or "body"
     body = _error_body(
@@ -458,7 +463,18 @@ def _decode_token(token: str) -> Optional[str]:
 
 async def _opt_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> Optional[str]:
     if creds and creds.scheme.lower() == "bearer":
-        return _decode_token(creds.credentials)
+        uid = _decode_token(creds.credentials)
+        if not isinstance(uid, str) or not uid:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid token",
+                                headers={"WWW-Authenticate": "Bearer"})
+        # These are our own stateless JWTs, not Supabase Auth sessions. A
+        # valid signature must not resurrect a removed account or reach its
+        # warm personalization caches. Check durable identity on every call,
+        # including the optional-auth detail route; never use a local cache.
+        if not await account_deletion.load_account(_get_supabase(), uid, fields="id"):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer exists",
+                                headers={"WWW-Authenticate": "Bearer"})
+        return uid
     return None
 
 async def _req_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> str:
@@ -534,6 +550,14 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
     language: Optional[AuthLanguage] = None
+
+class AccountDelete(BaseModel):
+    # No client-selected user ID/email and no administrator credential.
+    model_config = {"extra": "forbid"}
+    confirmation: Literal["DELETE"]
+    password: str = Field(..., min_length=1, strict=True)
+
+    _password_length = field_validator("password")(_password_fits_bcrypt)
 
 class EmailCodeRequest(BaseModel):
     email: EmailStr
@@ -1424,6 +1448,15 @@ async def me(uid: str = Depends(_req_uid)):
     if not res.data:
         raise HTTPException(404, "user not found")
     return _to_public(res.data[0])
+
+@api.delete("/auth/account")
+async def delete_own_account(body: AccountDelete, uid: str = Depends(_req_uid)):
+    """Permanently remove only the account proven by the caller's JWT."""
+    await account_deletion.delete_account(
+        _get_supabase(), uid, body.password, _verify_pw,
+        privileged_storage=bool(runtime.SUPABASE_SERVICE_ROLE_KEY),
+    )
+    return {"ok": True, "account_deleted": True, "subscription_cancelled": False}
 
 @api.put("/auth/me")
 async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):

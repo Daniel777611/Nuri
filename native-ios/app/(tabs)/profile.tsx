@@ -303,6 +303,11 @@ export default function Profile() {
         ) : null}
 
         <Section title={t("账户")}>
+          <Pressable style={styles.child} onPress={() => router.push("/ai-permission")} accessibilityRole="button" testID="profile-ai-permission">
+            <Ionicons name="shield-checkmark-outline" size={20} color={colors.brand} />
+            <Text style={[styles.childName, { flex: 1 }]}>{locale === "en" ? "Third-party AI permission" : locale === "zh-TW" ? "第三方 AI 使用許可" : "第三方 AI 使用许可"}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
           <Pressable
             style={styles.child}
             accessibilityRole="link"
@@ -315,6 +320,11 @@ export default function Profile() {
             <Ionicons name="open-outline" size={18} color={colors.muted} />
           </Pressable>
           {policyError ? <Text style={[styles.privacyUnavailableText, { padding: spacing.md }]} accessibilityLiveRegion="polite">{policyError}</Text> : null}
+          <Pressable style={styles.child} onPress={() => router.push("/account-deletion")} accessibilityRole="button" testID="profile-delete-account">
+            <Ionicons name="trash-outline" size={20} color={colors.error} />
+            <Text style={[styles.childName, { flex: 1, color: colors.error }]}>{locale === "en" ? "Permanently delete account" : locale === "zh-TW" ? "永久刪除帳號" : "永久删除账号"}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
           <View style={styles.langRow}>
             <Text style={styles.langLabel}>{t("语言偏好")}</Text>
             <View style={styles.languageOptions}>

@@ -440,21 +440,22 @@ def test_a_signed_out_wipe_no_longer_clears_everyone(env, monkeypatch):
     assert memstore.tasks == [{"id": "t", "user_id": "someone", "done": False}]
 
 
-def test_one_account_cannot_touch_anothers_in_memory_task(env, monkeypatch):
+def test_auth_outage_cannot_touch_anothers_in_memory_task(env, monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: None)
     monkeypatch.setattr(memstore, "tasks", [{
         "id": "t1", "user_id": "owner", "done": False, "scope": "today",
         "progress_done": 0, "progress_total": 1,
     }])
     intruder = {"Authorization": f"Bearer {main._make_token('intruder')}"}
-    assert env.client.patch("/api/tasks/t1", json={"done": True}, headers=intruder).status_code == 404
-    env.client.delete("/api/tasks/t1", headers=intruder)
+    # Fresh durable identity is required even when fallback task data is warm.
+    assert env.client.patch("/api/tasks/t1", json={"done": True}, headers=intruder).status_code == 503
+    assert env.client.delete("/api/tasks/t1", headers=intruder).status_code == 503
     assert memstore.tasks[0]["done"] is False
-    insights = env.client.get("/api/tasks/insights", headers=intruder).json()
-    assert insights["total_completed"] == 0
+    assert env.client.get("/api/tasks/insights", headers=intruder).status_code == 503
 
 
 def test_a_favorite_cannot_be_filed_in_another_accounts_collection(env):
+    env.db.tables["users"] = [{"id": "intruder"}]
     env.db.tables["collections"] = [{"id": "theirs", "user_id": "owner", "name": "x", "created_at": "1"}]
     intruder = {"Authorization": f"Bearer {main._make_token('intruder')}"}
     res = env.client.post("/api/favorites/save", headers=intruder,
