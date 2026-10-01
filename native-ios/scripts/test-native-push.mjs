@@ -24,7 +24,7 @@ function loadTypeScript(relative, dependencies) {
 
 const state = {
   token: "aa".repeat(32), environment: "production",
-  installationId: "b22911a4-37dd-47b1-a775-632b0b800733", bundleId: "com.ordashtech.nuri",
+  installationId: "b22911a4-37dd-47b1-a775-632b0b800733", bundleId: "com.ordashtech.nuri.nativelab",
   permissionStatus: "authorized", timeZone: "America/Chicago", appVersion: "0.3.0", buildNumber: "15",
 };
 const notification = "/notifications/12345678-1234-1234-1234-123456789abc";
@@ -81,14 +81,67 @@ function fixture(overrides = {}) {
 }
 
 assert.equal(parseNativeToken({ ...state, bundleId: "other.app" }), null);
+assert.equal(parseNativeToken({ ...state, bundleId: "com.ordashtech.nuri" }), null,
+  "the lab must reject the original web-shell identity instead of spoofing its APNs topic");
+assert.equal(parseNativeToken({ ...state, bundleId: undefined }), null);
 assert.equal(parseNativeToken({ ...state, token: "not-an-apns-token" }), null);
 assert.equal(parseNativeToken({ ...state, installationId: "bad" }), null);
 assert.equal(parseNativeToken({ ...state, permissionStatus: "invented" }), null);
 assert.equal(parseNativeToken(state).apns_token, state.token);
+assert.equal(parseNativeToken(state).bundle_id, "com.ordashtech.nuri.nativelab");
 for (const route of ["https://nurifam.app/notifications/12345678", "/notifications/../login", "/notifications/%2e%2e", "/chat/12345678", "/notifications/12345678?x=1"]) {
   assert.equal(safeNotificationRoute(route), null);
 }
 assert.equal(safeNotificationRoute(notification), notification);
+
+// Native storage and reminder ownership are lab-only, even if these bridge
+// sources were accidentally compiled into a build with the original app ID.
+// Generated iOS copies are managed by prebuild, not edited by this test.
+{
+  const swift = readFileSync(new URL("../native/NuriPushBridge.swift", import.meta.url), "utf8");
+  const delegate = readFileSync(new URL("../native/NuriAppDelegate.swift", import.meta.url), "utf8");
+  for (const contents of [swift, delegate]) {
+    assert.doesNotMatch(contents, /"com\.ordashtech\.nuri(?!\.nativelab)[^"]*"/,
+      "native lab must not read, delete or migrate the original app's namespaces");
+  }
+  const expectedKeys = {
+    expectedBundleId: "com.ordashtech.nuri.nativelab",
+    tokenKey: "com.ordashtech.nuri.nativelab.apns-token",
+    tokenEnvironmentKey: "com.ordashtech.nuri.nativelab.apns-token-environment",
+    keychainService: "com.ordashtech.nuri.nativelab.installation",
+    keychainAccount: "native-lab-installation-id",
+    enabledKey: "com.ordashtech.nuri.nativelab.reminder-enabled",
+    intervalKey: "com.ordashtech.nuri.nativelab.reminder-interval-seconds",
+    reminderIdentifier: "com.ordashtech.nuri.nativelab.local-reminder",
+    batchIdentifierPrefix: "com.ordashtech.nuri.nativelab.local-reminder.batch.",
+  };
+  for (const [name, expected] of Object.entries(expectedKeys)) {
+    assert.equal(swift.match(new RegExp(`private let ${name} = "([^"]+)"`))?.[1], expected);
+  }
+  assert.match(swift, /guard Bundle\.main\.bundleIdentifier == expectedBundleId else \{ return \}/);
+  assert.match(swift, /guard let bundleId = bundle\.bundleIdentifier, bundleId == self\.expectedBundleId/);
+  assert.doesNotMatch(swift, /bundleIdentifier\s*\?\?|legacyIntervalKey|legacyIdentifiers|removeLegacyTests|kSecAttrAccessGroup/);
+  assert.match(delegate, /"com\.ordashtech\.nuri\.nativelab\.reminders-initialized"/);
+  assert.match(swift, /Notification\.Name\("NuriNativeLabPushStateDidChange"\)/);
+  assert.match(swift, /Notification\.Name\("NuriNativeLabNotificationRouteDidOpen"\)/);
+  assert.match(swift, /实验版远程 APNs 尚待后端支持/);
+}
+
+// A backend which only allowlists the original bundle rejects Native Lab with
+// 422. Preserve its true topic, leave registration retryable, and do not alter
+// the signed-in session as if this capability error were an authentication 401.
+{
+  const attempted = [];
+  const { runtime } = fixture({ register: async (device, owner) => {
+    attempted.push([device.bundle_id, owner]);
+    throw { status: 422, message: "bundle not supported" };
+  } });
+  await runtime.acceptState(state);
+  await runtime.setSession("lab-owner");
+  await runtime.sync();
+  assert.deepEqual(attempted, [["com.ordashtech.nuri.nativelab", "lab-owner"],
+    ["com.ordashtech.nuri.nativelab", "lab-owner"]]);
+}
 
 // Native token and signed-in JWT may arrive in either order; duplicates are
 // local no-ops, while a new owner or changed device state gets an upsert.

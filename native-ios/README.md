@@ -4,11 +4,14 @@ Private native iOS test client on the `iOS-native-test` branch. This is an Expo 
 
 ## Isolation
 
-- Display name: **NURI Native Lab**, version **0.3.0 (1001)**.
-- Bundle ID remains `com.ordashtech.nuri` because the existing APNs backend accepts that identity. It uses the existing production API at `https://nurifam.app/api` and the user's existing NURI account/data; this is **not** an isolated backend sandbox.
+- Display name: **NURI Native Lab**, version **0.3.0 (1002)**.
+- Independent Bundle ID: `com.ordashtech.nuri.nativelab`. The original web-shell app keeps `com.ordashtech.nuri`; both can be installed on the same phone. The lab uses only `nuri-native-lab://` links and separate login/installation/reminder storage. No old app data is migrated or deleted.
+- It uses the existing production API at `https://nurifam.app/api` and the user's existing NURI account/data; this is **not** an isolated backend sandbox. Signing in is independent, but account-level server data/preferences are shared.
 - Upload using `ExportOptions-InternalOnly.plist`. Its `testFlightInternalTestingOnly` flag is mandatory. Never submit this build to external testing or add it to the public `NURI Friends & Family` group.
-- Only add it to a dedicated internal `NURI Native Lab` group. Public builds, public links, and tester caps must remain unchanged.
-- Installing it replaces the previous NURI app on that particular tester's phone. It does not coexist as a second app. Switching back is possible by installing the public build again from TestFlight.
+- The separate Apple App ID and App Store Connect app record are registered: Apple App ID **6818022351**, distinct from the original **6814282315**. Add builds only to its dedicated internal `NURI Native Lab` group. Public builds, public links, and tester caps must remain unchanged.
+- The earlier local `0.3.0 (1001)` archive used the original identity and is **superseded: never upload or install it**. Use only archives verified as `com.ordashtech.nuri.nativelab`.
+- Remote APNs delivery is not yet compatible with the unchanged backend: it validates registrations against a single `APNS_BUNDLE_ID` and sends that topic. The lab must send its real identity, never impersonate the old app. Supporting both apps requires approved multi-topic backend work; changing the global topic to the lab would break old-app push. Local reminders remain explicitly local test reminders.
+- iOS lab billing is read-only. Existing membership remains usable, but checkout and subscription-management calls are disabled until the backend can return specifically to the lab; its current app return route opens the original shell.
 
 ## Implemented consumer flows
 
@@ -32,6 +35,7 @@ pnpm test:native-voice
 pnpm test:native-push
 pnpm test:native-bootstrap
 pnpm test:native-auth
+pnpm test:native-storage
 pnpm exec expo prebuild --platform ios --no-install
 cd ios
 pod install
@@ -41,4 +45,4 @@ Open `ios/NURINativeLab.xcworkspace`. The local config plugin installs the APNs 
 
 ## Internal TestFlight release
 
-Archive scheme `NURINativeLab`, Release, generic iOS device, with the existing company Apple Distribution identity and App Store provisioning profile. Check the final archive's bundle ID, version/build, APNs production entitlement, permissions and embedded JavaScript. Export/upload only with `ExportOptions-InternalOnly.plist`. After Apple finishes processing, verify the internal-only label and attach the build only to the dedicated internal group before reporting it available to testers.
+Archive scheme `NURINativeLab`, Release, generic iOS device, with the existing company Apple Distribution identity and a **new lab-specific** `NURI Native Lab App Store Connect` provisioning profile. The old `NURI App Store Connect` profile cannot sign this distinct Bundle ID. Check the final archive's bundle ID, version/build, APNs production entitlement, permissions and embedded JavaScript. Export/upload only with `ExportOptions-InternalOnly.plist`. After Apple finishes processing, verify the separate app record and internal-only label and attach the build only to the lab's dedicated internal group before reporting it available to testers.

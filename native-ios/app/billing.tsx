@@ -8,6 +8,9 @@
 // there — and comes back to /billing?from=app in that browser, which is not
 // signed in, so that visit only says "go back to the app". Back in the app,
 // the page re-reads the membership when it returns to the foreground.
+// Native Lab iOS is deliberately read-only: the backend's app payment return
+// still targets the original shell. Status queries remain available regardless
+// of storefront capability, but Checkout/Portal cannot be started in this lab.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -30,8 +33,8 @@ import { useT } from "@/src/i18n";
 import { isNativeShell, useOnReturnToApp, usePurchaseAllowed } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-/** The iOS shell registers this scheme; opening it brings the app forward. */
-const IOS_APP_URL = "nuri://";
+/** Only open the independent lab; never route back into the public shell. */
+const IOS_APP_URL = "nuri-native-lab://";
 
 const FIGMA_FRAME_WIDTH = 402;
 
@@ -76,7 +79,13 @@ function BillingPage({ checkout }: { checkout?: string }) {
   const { t, locale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const checkoutResult = checkout === "success" || checkout === "cancel" ? checkout : null;
+  const nativeLabReadOnly = Platform.OS === "ios";
+  const readOnlyNotice = locale === "en"
+    ? "NURI Native Lab shows membership status only. Payment return links are not yet isolated from the original app, so subscriptions, subscription management, and payment history are unavailable in this iOS test app."
+    : locale === "zh-TW"
+      ? "NURI Native Lab 僅供查看會員狀態。付款返回連結尚未適配獨立實驗版，此 iOS 實驗版暫不支援開通、管理訂閱或查看付款紀錄。"
+      : "NURI Native Lab 仅供查看会员状态。支付返回链接尚未适配独立实验版，此 iOS 实验版暂不支持开通、管理订阅或查看付款记录。";
+  const checkoutResult = !nativeLabReadOnly && (checkout === "success" || checkout === "cancel") ? checkout : null;
 
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -146,6 +155,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
   }, [load, pollUntilMember]));
 
   const subscribe = async (interval: BillingInterval) => {
+    if (Platform.OS === "ios") return;
     setBusy(interval);
     setActionError("");
     try {
@@ -167,6 +177,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
   };
 
   const manage = async () => {
+    if (Platform.OS === "ios") return;
     setBusy("portal");
     setActionError("");
     try {
@@ -217,7 +228,9 @@ function BillingPage({ checkout }: { checkout?: string }) {
             <Banner tone="muted" testID="billing-banner-cancel">{t("已取消支付，没有产生扣款。")}</Banner>
           ) : null}
 
-          {inShell && !purchaseAllowed ? (
+          {nativeLabReadOnly ? <Banner tone="muted" testID="billing-native-lab-read-only">{readOnlyNotice}</Banner> : null}
+
+          {inShell && !purchaseAllowed && !nativeLabReadOnly ? (
             <Banner tone="muted" testID="billing-shell-notice">{t("App 内暂不支持开通会员。")}</Banner>
           ) : (!status && !loadFailed) || (syncing && !status?.entitled) ? (
             <ActivityIndicator style={{ marginTop: spacing.xxl }} color={colors.brand} />
@@ -225,18 +238,18 @@ function BillingPage({ checkout }: { checkout?: string }) {
             <Banner tone="error" testID="billing-load-failed">
               {t("会员信息暂时无法读取，请稍后再试。")}
             </Banner>
-          ) : status?.entitled && sub ? (
+          ) : status?.entitled && (sub || nativeLabReadOnly) ? (
             <View style={[styles.card, { marginHorizontal: spacing.lg }]} testID="billing-member-card">
               <View style={styles.memberRow}>
                 <Ionicons name="checkmark-circle" size={20} color={colors.brand} />
                 <Text style={styles.memberTitle}>{t("你已是 NURI 会员")}</Text>
-                {planLabel(sub.interval) ? <Text style={styles.chip}>{planLabel(sub.interval)}</Text> : null}
+                {planLabel(sub?.interval) ? <Text style={styles.chip}>{planLabel(sub?.interval)}</Text> : null}
               </View>
-              {sub.status === "past_due" ? (
+              {sub?.status === "past_due" ? (
                 <Text style={[styles.meta, { color: colors.error }]}>
                   {t("上次扣款没有成功，请更新付款方式以免会员中断。")}
                 </Text>
-              ) : sub.current_period_end ? (
+              ) : sub?.current_period_end ? (
                 <Text style={styles.meta}>
                   {sub.cancel_at_period_end
                     ? t("会员将于 {date} 到期，不再续费", { date: formatDate(sub.current_period_end, locale) })
@@ -244,9 +257,9 @@ function BillingPage({ checkout }: { checkout?: string }) {
                 </Text>
               ) : null}
               <Pressable
-                style={[styles.secondaryBtn, busy === "portal" && styles.disabled]}
+                style={[styles.secondaryBtn, (nativeLabReadOnly || busy === "portal") && styles.disabled]}
                 onPress={manage}
-                disabled={busy !== null}
+                disabled={nativeLabReadOnly || busy !== null}
                 testID="billing-manage-btn"
               >
                 {busy === "portal" ? (
@@ -269,19 +282,19 @@ function BillingPage({ checkout }: { checkout?: string }) {
                   per={plan.interval === "year" ? t("每年") : t("每月")}
                   cta={t("订阅")}
                   busy={busy === plan.interval}
-                  disabled={busy !== null}
+                  disabled={nativeLabReadOnly || busy !== null}
                   onPress={() => subscribe(plan.interval)}
                 />
               ))}
               {status.has_customer ? (
-                <Pressable onPress={manage} disabled={busy !== null} testID="billing-history-btn">
+                <Pressable onPress={manage} disabled={nativeLabReadOnly || busy !== null} testID="billing-history-btn">
                   <Text style={styles.link}>{t("查看付款记录")}</Text>
                 </Pressable>
               ) : null}
-              <Text style={styles.fineprint}>
+              {!nativeLabReadOnly ? <Text style={styles.fineprint}>
                 {t("付款由 Stripe 安全处理，NURI 不会保存你的银行卡信息。订阅会自动续费，可随时取消。")}
-              </Text>
-              {inShell ? (
+              </Text> : null}
+              {inShell && !nativeLabReadOnly ? (
                 // Said before the parent leaves the app, not after.
                 <Text style={styles.fineprint} testID="billing-external-notice">
                   {t("点击订阅后，会在手机浏览器中打开 Stripe 付款页面；付款完成后回到 NURI App 即可。")}

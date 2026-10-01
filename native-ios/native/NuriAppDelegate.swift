@@ -53,11 +53,10 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
       NuriPushStore.shared.storeNotificationRoute(from: userInfo)
     }
 
-    // Earlier TestFlight builds scheduled on-device placeholder reminders.
-    // Clear them once on upgrade so only backend APNs payloads are presented.
-    // Clear legacy placeholders only on the first Native Lab launch. Future
-    // launches preserve explicitly enabled, clearly labelled test reminders.
-    let migrationKey = "com.ordashtech.nuri.native-lab.reminders-migrated"
+    // The lab is a separate app, not an upgrade of the original web shell.
+    // Initialize only lab-owned reminders once; future launches preserve its
+    // explicitly enabled, clearly labelled local test reminders.
+    let migrationKey = "com.ordashtech.nuri.nativelab.reminders-initialized"
     if !UserDefaults.standard.bool(forKey: migrationKey) {
       NuriReminderScheduler.shared.disableAndClear()
       UserDefaults.standard.set(true, forKey: migrationKey)

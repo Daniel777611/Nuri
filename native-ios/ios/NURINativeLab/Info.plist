@@ -27,13 +27,13 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>nuri</string>
-          <string>com.ordashtech.nuri</string>
+          <string>nuri-native-lab</string>
+          <string>com.ordashtech.nuri.nativelab</string>
         </array>
       </dict>
     </array>
     <key>CFBundleVersion</key>
-    <string>1001</string>
+    <string>1002</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>LSMinimumSystemVersion</key>

@@ -6,23 +6,25 @@ import UIKit
 import UserNotifications
 
 extension Notification.Name {
-  static let nuriPushStateDidChange = Notification.Name("NuriPushStateDidChange")
-  static let nuriNotificationRouteDidOpen = Notification.Name("NuriNotificationRouteDidOpen")
+  static let nuriPushStateDidChange = Notification.Name("NuriNativeLabPushStateDidChange")
+  static let nuriNotificationRouteDidOpen = Notification.Name("NuriNativeLabNotificationRouteDidOpen")
 }
 
 final class NuriPushStore {
   static let shared = NuriPushStore()
 
-  private let tokenKey = "com.ordashtech.nuri.apns-token"
-  private let tokenEnvironmentKey = "com.ordashtech.nuri.apns-token-environment"
-  private let keychainService = "com.ordashtech.nuri.installation"
-  private let keychainAccount = "installation-id"
+  private let expectedBundleId = "com.ordashtech.nuri.nativelab"
+  private let tokenKey = "com.ordashtech.nuri.nativelab.apns-token"
+  private let tokenEnvironmentKey = "com.ordashtech.nuri.nativelab.apns-token-environment"
+  private let keychainService = "com.ordashtech.nuri.nativelab.installation"
+  private let keychainAccount = "native-lab-installation-id"
   private let routeLock = NSLock()
   private var pendingRoute: String?
 
   private init() {}
 
   func updateDeviceToken(_ deviceToken: Data) {
+    guard Bundle.main.bundleIdentifier == expectedBundleId else { return }
     let token = deviceToken.map { String(format: "%02x", $0) }.joined()
     let environment = pushEnvironment()
 
@@ -78,11 +80,17 @@ final class NuriPushStore {
       }
 
       let bundle = Bundle.main
+      // Never reuse or impersonate the original web-shell APNs topic. An
+      // incorrectly configured build has no valid Native Lab push snapshot.
+      guard let bundleId = bundle.bundleIdentifier, bundleId == self.expectedBundleId else {
+        completion(nil)
+        return
+      }
       let state: [String: Any] = [
         "token": token,
         "environment": environment,
         "installationId": self.installationId(),
-        "bundleId": bundle.bundleIdentifier ?? "com.ordashtech.nuri",
+        "bundleId": bundleId,
         "permissionStatus": Self.permissionStatus(settings.authorizationStatus),
         "timeZone": TimeZone.current.identifier,
         "appVersion": bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
@@ -189,16 +197,11 @@ final class NuriReminderScheduler {
 
   private let center = UNUserNotificationCenter.current()
   private let defaults = UserDefaults.standard
-  private let queue = DispatchQueue(label: "com.ordashtech.nuri.local-reminder-settings")
-  private let enabledKey = "com.ordashtech.nuri.reminder-enabled"
-  private let intervalKey = "com.ordashtech.nuri.reminder-interval-seconds"
-  private let legacyIntervalKey = "com.ordashtech.nuri.reminder-interval-minutes"
-  private let reminderIdentifier = "com.ordashtech.nuri.local-reminder"
-  private let batchIdentifierPrefix = "com.ordashtech.nuri.local-reminder.batch."
-  private let legacyIdentifiers = [
-    "com.ordashtech.nuri.hourly-test-reminder",
-    "com.ordashtech.nuri.immediate-test-reminder",
-  ]
+  private let queue = DispatchQueue(label: "com.ordashtech.nuri.nativelab.local-reminder-settings")
+  private let enabledKey = "com.ordashtech.nuri.nativelab.reminder-enabled"
+  private let intervalKey = "com.ordashtech.nuri.nativelab.reminder-interval-seconds"
+  private let reminderIdentifier = "com.ordashtech.nuri.nativelab.local-reminder"
+  private let batchIdentifierPrefix = "com.ordashtech.nuri.nativelab.local-reminder.batch."
   private let maximumIntervalSeconds = 31_536_000
   private let maximumPendingRequests = 64
   private let maximumBatchCount = 60
@@ -206,10 +209,7 @@ final class NuriReminderScheduler {
   private var operationRunning = false
   private var foregroundObserver: NSObjectProtocol?
 
-  private init() {
-    // Kept only to remove schedules created by earlier TestFlight builds.
-    // Real notification content is supplied by remote APNs payloads.
-  }
+  private init() {}
 
   // Serialize the whole asynchronous operation, not just its initial dispatch.
   // A launch/foreground restore reads preferences when its turn begins, so it
@@ -233,16 +233,9 @@ final class NuriReminderScheduler {
   }
 
   private func savedPreferences() -> Preferences {
-    let interval: Int
-    if defaults.object(forKey: intervalKey) != nil {
-      interval = defaults.integer(forKey: intervalKey)
-    } else {
-      // Version 0.2.4 stored minutes. Convert lazily without changing the
-      // installed repeating request or resetting its next delivery time.
-      let oldMinutes = defaults.integer(forKey: legacyIntervalKey)
-      interval = (1...(maximumIntervalSeconds / 60)).contains(oldMinutes)
-        ? oldMinutes * 60 : 3600
-    }
+    // Read only this lab's settings. There is deliberately no original-app
+    // or older web-shell preference/keychain migration path.
+    let interval = defaults.integer(forKey: intervalKey)
     return Preferences(
       enabled: defaults.bool(forKey: enabledKey),
       intervalSeconds: (1...maximumIntervalSeconds).contains(interval) ? interval : 3600
@@ -254,14 +247,8 @@ final class NuriReminderScheduler {
     defaults.set(preferences.intervalSeconds, forKey: intervalKey)
   }
 
-  private func removeLegacyTests() {
-    center.removePendingNotificationRequests(withIdentifiers: legacyIdentifiers)
-    center.removeDeliveredNotifications(withIdentifiers: legacyIdentifiers)
-  }
-
   func restoreSavedSettings() {
     enqueue {
-      self.removeLegacyTests()
       self.apply(self.savedPreferences(), requestPermission: false) { result in
         if case .failure = result {
           NSLog("NURI local reminder: restore failed")
@@ -271,18 +258,15 @@ final class NuriReminderScheduler {
     }
   }
 
-  /// Removes every legacy local reminder before this build registers for APNs.
-  /// This prevents a previous tester setting from producing a placeholder that
-  /// could be mistaken for a backend notification after an app update.
+  /// Initializes only the lab's local reminders to disabled on first launch.
+  /// It never reads or removes the original web-shell app's notification IDs.
   func disableAndClear() {
     enqueue {
       self.defaults.set(false, forKey: self.enabledKey)
       self.defaults.removeObject(forKey: self.intervalKey)
-      self.defaults.removeObject(forKey: self.legacyIntervalKey)
       self.center.getPendingNotificationRequests { requests in
         self.queue.async {
           self.cancelOwnedRequests(requests) {
-            self.removeLegacyTests()
             self.finishOperation()
           }
         }
@@ -325,7 +309,6 @@ final class NuriReminderScheduler {
         return
       }
 
-      self.removeLegacyTests()
       let preferences = Preferences(
         enabled: enabled,
         intervalSeconds: intervalSeconds.intValue
@@ -443,7 +426,7 @@ final class NuriReminderScheduler {
     }
 
     if preferences.intervalSeconds >= 60 {
-      // Accept the previous build's compatible hourly request without resetting.
+      // Retain a compatible request owned by this lab without resetting it.
       return request.identifier == reminderIdentifier && trigger.repeats
         && trigger.timeInterval == TimeInterval(preferences.intervalSeconds)
     }
@@ -501,8 +484,8 @@ final class NuriReminderScheduler {
     dueDate: Date?
   ) -> UNMutableNotificationContent {
     let content = UNMutableNotificationContent()
-    content.title = "NURI 测试提醒"
-    content.body = "这条用于验证提醒频率；真实通知内容由后端 APNs 发送。"
+    content.title = "NURI Native Lab 测试提醒"
+    content.body = "仅用于验证本机提醒频率；实验版远程 APNs 尚待后端支持。"
     content.sound = .default
 
     var userInfo: [String: Any] = [

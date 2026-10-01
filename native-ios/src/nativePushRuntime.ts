@@ -19,7 +19,9 @@ export function parseNativeToken(detail: unknown): PushDeviceRegistration | null
   const value = detail as Partial<NativePushState>;
   if (typeof value.token !== "string" || !/^[0-9a-f]{32,256}$/i.test(value.token)) return null;
   if (typeof value.installationId !== "string" || !uuid.test(value.installationId)) return null;
-  if (value.bundleId !== "com.ordashtech.nuri") return null;
+  // Native Lab must report its actual APNs topic. The current backend rejects
+  // this new bundle until configured; never substitute the original app ID.
+  if (value.bundleId !== "com.ordashtech.nuri.nativelab") return null;
   if (value.environment !== "sandbox" && value.environment !== "production") return null;
   if (!value.permissionStatus || !permissions.has(value.permissionStatus)) return null;
   return {
