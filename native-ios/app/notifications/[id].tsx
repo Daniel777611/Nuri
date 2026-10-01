@@ -7,12 +7,12 @@
 // The server answers 404 for a notification that belongs to someone else,
 // which this screen shows exactly like one that never existed.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
-import { api, ApiError, isAuthError } from "@/src/api";
+import { api, auth, ApiError, isAuthError } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
@@ -24,20 +24,35 @@ export default function NotificationScreen() {
   const router = useRouter();
   const { t } = useT();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const mountedRef = useRef(false);
+  const requestSequenceRef = useRef(0);
+  const sessionRevisionRef = useRef(0);
 
   const open = useCallback(async () => {
+    if (!mountedRef.current) return;
+    const request = ++requestSequenceRef.current;
+    const revision = sessionRevisionRef.current;
+    const requestIsCurrent = () => mountedRef.current && requestSequenceRef.current === request && sessionRevisionRef.current === revision;
     const notificationRoute = typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ? safeNotificationRoute(`/notifications/${id}`) : null;
     if (!notificationRoute) {
       setState({ kind: "missing" });
       return;
     }
     setState({ kind: "loading" });
+    let token: string | null = null;
     try {
+      token = await auth.getToken();
+      if (!requestIsCurrent()) return;
       const { session_id } = await api.openNotification(id as string);
+      const currentToken = await auth.getToken();
+      if (!requestIsCurrent() || currentToken !== token) return;
       // Replace, not push: going back from the conversation should not land
       // on a screen whose only job was to forward.
       router.replace(`/chat/${session_id}` as never);
     } catch (err) {
+      if (!requestIsCurrent()) return;
+      const currentToken = await auth.getToken();
+      if (!requestIsCurrent() || currentToken !== token) return;
       if (isAuthError(err)) {
         router.replace({ pathname: "/login", params: { returnTo: notificationRoute } });
         return;
@@ -47,7 +62,14 @@ export default function NotificationScreen() {
   }, [id, router]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    const unsubscribe = auth.subscribeSessionChange(() => { sessionRevisionRef.current += 1; });
     void open();
+    return () => {
+      mountedRef.current = false;
+      requestSequenceRef.current += 1;
+      unsubscribe();
+    };
   }, [open]);
 
   return (

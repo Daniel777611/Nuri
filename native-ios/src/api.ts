@@ -419,8 +419,12 @@ export const auth = {
     }
     return saved;
   }),
-  clearToken: (options?: { forceLocal?: boolean }) => queueAuthChange(async () => {
+  clearToken: (options?: { forceLocal?: boolean; expectedToken?: string | null }): Promise<boolean> => queueAuthChange(async () => {
     const token = (await storage.secureGet(TOKEN_KEY, "")) || null;
+    // Compare inside the same queue as setToken: a late 401 must not retire a
+    // newer account, even when that login was already queued before recovery.
+    // The captured token is memory-only and is never logged or put in errors.
+    if (options && "expectedToken" in options && token !== options.expectedToken) return false;
     const installationId = await storage.getItem<string | null>(PUSH_INSTALLATION_KEY, null);
     signingOut = true;
     publishSession(null);
@@ -443,8 +447,8 @@ export const auth = {
       locallySignedOut = true;
       const removed = await storage.secureRemove(TOKEN_KEY);
       if (!removed) throw new AuthSignOutError("LOCAL_SIGNOUT_FAILED");
-      const onboardedRemoved = await storage.removeItem(ONBOARDED_KEY);
-      return [removed, onboardedRemoved];
+      await storage.removeItem(ONBOARDED_KEY);
+      return true;
     } finally {
       signingOut = false;
     }
@@ -456,7 +460,13 @@ export const auth = {
     return () => { sessionListeners.delete(listener); };
   },
   getToken,
-  setOnboarded: (done: boolean) => storage.setItem(ONBOARDED_KEY, done),
+  setOnboarded: (done: boolean, options?: { expectedToken?: string | null }): Promise<boolean> => queueAuthChange(async () => {
+    if (options && "expectedToken" in options) {
+      const token = (await storage.secureGet(TOKEN_KEY, "")) || null;
+      if (signingOut || locallySignedOut || token !== options.expectedToken) return false;
+    }
+    return storage.setItem(ONBOARDED_KEY, done);
+  }),
   getOnboarded: () => storage.getItem(ONBOARDED_KEY, false),
 };
 

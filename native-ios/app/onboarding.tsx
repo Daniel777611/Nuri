@@ -80,9 +80,13 @@ export default function Onboarding() {
   const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
+      const requestToken = await auth.getToken();
       try {
+        if (cancelled) return;
         const [me, kids] = await Promise.all([api.me(), api.listChildren()]);
+        if (cancelled || await auth.getToken() !== requestToken) return;
         setNickname(me?.nickname || ""); setCity(me?.city || ""); setParentRole(me?.parent_role || "");
         // Only the choices this page offers: an older account can hold one that
         // was retired (e.g. "education"), which has no chip to untick and made
@@ -97,8 +101,9 @@ export default function Onboarding() {
           if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
         }
       } catch (error) {
+        if (cancelled) return;
         if (isAuthError(error)) {
-          await recoverExpiredCredentials(error);
+          await recoverExpiredCredentials(error, requestToken);
           return;
         }
         // A first-time account returns an empty children array, not an error.
@@ -107,6 +112,7 @@ export default function Onboarding() {
         setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
       }
     })();
+    return () => { cancelled = true; };
   }, [router, t, recoverExpiredCredentials]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
@@ -141,18 +147,24 @@ export default function Onboarding() {
     }
     setSaving(true);
     setSyncError("");
+    const requestToken = await auth.getToken();
     try {
       const child = { nickname: childName.trim(), birth_date: birthDate, gender: existingChild?.gender || "other", allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
       const saved: any = existingChild?.id
         ? await api.updateChild(existingChild.id, child)
         : await api.addChild(child);
       if (saved?.birth_date !== birthDate) throw new Error("Child birthday was not persisted");
+      // The next write must not continue under a login that replaced the
+      // session which submitted the child. Capture directly before that call.
+      const profileRequestToken = await auth.getToken();
+      if (profileRequestToken !== requestToken) return;
       await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
-      await auth.setOnboarded(true);
+      if (!await auth.setOnboarded(true, { expectedToken: requestToken })) return;
+      if (await auth.getToken() !== requestToken) return;
       router.replace("/(tabs)");
     } catch (error) {
       if (isAuthError(error)) {
-        await recoverExpiredCredentials(error);
+        await recoverExpiredCredentials(error, requestToken);
         return;
       }
       setSyncError(t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));

@@ -59,21 +59,24 @@ export default function Register() {
 
         try {
           const me: any = await api.me();
-          if (cancelled) return;
-          await auth.setOnboarded(!!me?.onboarding_completed);
+          if (cancelled || await auth.getToken() !== token) return;
+          if (!await auth.setOnboarded(!!me?.onboarding_completed, { expectedToken: token })) return;
+          if (cancelled || await auth.getToken() !== token) return;
           router.replace(me?.onboarding_completed ? "/(tabs)" : "/onboarding");
           return;
         } catch (err) {
+          if (cancelled) return;
           // Only a rejected token means the session is really gone; then the
           // form is legitimate. A timeout or a 5xx says nothing about the
           // credentials, so route on the last known state rather than handing
           // back a form that can strand the account.
           if (isAuthError(err)) {
-            await recoverExpiredCredentials(err);
+            await recoverExpiredCredentials(err, token);
             return;
           }
-          if (cancelled) return;
-          router.replace((await auth.getOnboarded()) ? "/(tabs)" : "/onboarding");
+          const onboarded = await auth.getOnboarded();
+          if (cancelled || await auth.getToken() !== token) return;
+          router.replace(onboarded ? "/(tabs)" : "/onboarding");
           return;
         }
       } finally {

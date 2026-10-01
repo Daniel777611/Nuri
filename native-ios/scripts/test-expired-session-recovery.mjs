@@ -42,10 +42,16 @@ const react = {
 const jsx = (type, props) => ({ type, props });
 const values = new Map();
 let deleteSucceeds = true;
+let removalBarrier = null;
 const storage = {
   secureGet: async (key, fallback) => values.get(key) || fallback,
   secureSet: async (key, value) => { values.set(key, value); return true; },
-  secureRemove: async (key) => { if (!deleteSucceeds) return false; values.delete(key); return true; },
+  secureRemove: async (key) => {
+    if (removalBarrier) await removalBarrier;
+    if (!deleteSucceeds) return false;
+    values.delete(key);
+    return true;
+  },
   getItem: async (key, fallback) => values.get(key) || fallback,
   setItem: async (key, value) => { values.set(key, value); return true; },
   removeItem: async (key) => { values.delete(key); return true; },
@@ -64,6 +70,7 @@ const helper = load("../src/authExpiredRecovery.tsx", {
   "./nativePush": { openNotificationSettings: async () => { settingsOpened += 1; throw new Error("settings unavailable"); } },
 });
 function resetHooks() {
+  effects.forEach((effect) => effect?.());
   states.length = refs.length = callbacks.length = effects.length = 0;
 }
 function render(renderable) {
@@ -89,10 +96,10 @@ try {
   await client.auth.setToken("expired-owner");
   values.set(client.PUSH_INSTALLATION_KEY, "b22911a4-37dd-47b1-a775-632b0b800733");
   for (const error of [{ status: 500 }, { status: 503 }, { status: 429 }, new Error("offline")]) {
-    assert.equal((await helper.recoverExpiredSession(error)).kind, "not_rejected");
+    assert.equal((await helper.recoverExpiredSession(error, "expired-owner")).kind, "not_rejected");
     assert.equal(await client.auth.getToken(), "expired-owner", "non-401 must preserve credentials");
   }
-  assert.equal((await helper.recoverExpiredSession({ status: 401 })).kind, "cleared");
+  assert.equal((await helper.recoverExpiredSession({ status: 401 }, "expired-owner")).kind, "cleared");
   assert.equal(await client.auth.getToken(), null);
   assert.equal(client.auth.getPushCleanupStatus().pending, true, "unconfirmed push retirement remains disclosed");
 
@@ -103,7 +110,7 @@ try {
   resetHooks();
   let routed = 0;
   let recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
-  await recovery.recover({ status: 401 });
+  await recovery.recover({ status: 401 }, "expired-owner");
   recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
   assert.equal(recovery.blocked, true);
   assert.equal(recovery.failureCode, "LOCAL_SIGNOUT_FAILED");
@@ -121,10 +128,81 @@ try {
   await client.auth.setToken("expired-owner");
   resetHooks();
   recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
-  const cleanup = recovery.recover({ status: 401 });
+  const cleanup = recovery.recover({ status: 401 }, "expired-owner");
   effects.forEach((effect) => effect?.());
   await cleanup;
   assert.equal(routed, 1);
+
+  // A 401 that only arrives after unmount cannot start clearing a later login.
+  await client.auth.setToken("owner-a");
+  resetHooks();
+  recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
+  effects.forEach((effect) => effect?.());
+  await client.auth.setToken("owner-b");
+  await recovery.recover({ status: 401 }, "owner-a");
+  assert.equal(await client.auth.getToken(), "owner-b");
+  assert.equal(routed, 1);
+
+  // Even a still-mounted page must not clear B because an old A request failed.
+  resetHooks();
+  recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
+  assert.equal((await helper.recoverExpiredSession({ status: 401 }, "owner-a")).kind, "session_changed");
+  await recovery.recover({ status: 401 }, "owner-a");
+  assert.equal(await client.auth.getToken(), "owner-b");
+  assert.equal(routed, 1);
+
+  // Queue-order race: B's login may have been queued before A's 401 cleanup.
+  // The expected-owner comparison must happen inside the serialized callback,
+  // before session broadcasts, push cleanup or credential removal.
+  await client.auth.setToken("owner-a");
+  const sessionEvents = [];
+  const unsubscribe = client.auth.subscribeSessionChange((value) => sessionEvents.push(value));
+  const newerLogin = client.auth.setToken("owner-b");
+  const lateCleanup = helper.recoverExpiredSession({ status: 401 }, "owner-a");
+  await newerLogin;
+  assert.equal((await lateCleanup).kind, "session_changed");
+  assert.equal(await client.auth.getToken(), "owner-b");
+  assert.deepEqual(sessionEvents, ["owner-b"], "mismatch must not publish logout or clear delivered notifications");
+  unsubscribe();
+
+  // A late /me result cannot overwrite the newer account's local routing flag.
+  assert.equal(await client.auth.setOnboarded(false, { expectedToken: "owner-b" }), true);
+  assert.equal(await client.auth.setOnboarded(true, { expectedToken: "owner-a" }), false);
+  assert.equal(await client.auth.getOnboarded(), false);
+  assert.equal(await client.auth.setOnboarded(true, { expectedToken: "owner-b" }), true);
+  assert.equal(await client.auth.getOnboarded(), true);
+  await client.auth.setToken("owner-a");
+  const queuedLogin = client.auth.setToken("owner-b");
+  const staleOnboarding = client.auth.setOnboarded(false, { expectedToken: "owner-a" });
+  await queuedLogin;
+  assert.equal(await staleOnboarding, false);
+  assert.equal(await client.auth.getOnboarded(), true);
+
+  // A failed Keychain removal exposes no session to onboarding writes, even
+  // though recovery must still be able to compare its raw credential on retry.
+  deleteSucceeds = false;
+  await assert.rejects(client.auth.clearToken({ forceLocal: true, expectedToken: "owner-b" }),
+    (error) => error.code === "LOCAL_SIGNOUT_FAILED");
+  assert.equal(await client.auth.setOnboarded(false, { expectedToken: "owner-b" }), false);
+  assert.equal(await client.auth.getOnboarded(), true);
+  deleteSucceeds = true;
+  assert.equal(await client.auth.clearToken({ forceLocal: true, expectedToken: "owner-b" }), true);
+
+  // If B queues login while A's own clearing is already running, B's token is
+  // safe in the auth queue. A must also avoid late navigation once B is active.
+  await client.auth.setToken("owner-a");
+  resetHooks();
+  recovery = render(() => helper.useExpiredSessionRecovery(() => { routed += 1; }));
+  let finishRemoval;
+  removalBarrier = new Promise((resolve) => { finishRemoval = resolve; });
+  const retiringA = recovery.recover({ status: 401 }, "owner-a");
+  await tick();
+  const loginDuringCleanup = client.auth.setToken("owner-b");
+  finishRemoval();
+  await Promise.all([retiringA, loginDuringCleanup]);
+  removalBarrier = null;
+  assert.equal(await client.auth.getToken(), "owner-b");
+  assert.equal(routed, 1, "retired owner must not navigate over a login completed during clearing");
 
   // The failure panel has a retry and system-settings action. A failed system
   // settings promise is caught and converted to text, not an unhandled reject.
@@ -149,10 +227,10 @@ try {
 // branch, block forms after cleanup failure, and never invoke strict logout.
 for (const [path, count] of [["../app/onboarding.tsx", 2], ["../app/child/[id].tsx", 3], ["../app/register.tsx", 1]]) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
-  assert.equal((source.match(/await recoverExpiredCredentials\((?:error|err)\)/g) || []).length, count);
+  assert.equal((source.match(/await recoverExpiredCredentials\((?:error|err), (?:requestToken|token)\)/g) || []).length, count);
   assert.doesNotMatch(source, /auth\.clearToken\(/);
   assert.match(source, /if \(recovery\.blocked\) return <ExpiredSessionRecoveryNotice/);
 }
 const profile = readFileSync(new URL("../app/(tabs)/profile.tsx", import.meta.url), "utf8");
 assert.match(profile, /auth\.clearToken\(forceLocal \? \{ forceLocal: true \} : undefined\)/);
-console.log("Expired JWT recovery: 401-only local cleanup, Keychain failure/retry, unmount and actionable UI checks passed.");
+console.log("Expired JWT recovery: 401-only cleanup, Keychain retry, stale-session/queue races, guarded onboarding and actionable UI checks passed.");

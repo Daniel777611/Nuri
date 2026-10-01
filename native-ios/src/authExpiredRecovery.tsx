@@ -8,16 +8,18 @@ import { openNotificationSettings } from "./nativePush";
 
 export type ExpiredSessionRecoveryResult =
   | { kind: "not_rejected" }
+  | { kind: "session_changed" }
   | { kind: "cleared" }
   | { kind: "failed"; code: string };
 
 /** Only an actual 401 permits local recovery; network/5xx never clear login. */
-export async function recoverExpiredSession(error: unknown): Promise<ExpiredSessionRecoveryResult> {
+export async function recoverExpiredSession(error: unknown, expectedToken: string | null): Promise<ExpiredSessionRecoveryResult> {
   if (!isAuthError(error)) return { kind: "not_rejected" };
   try {
     // A rejected JWT cannot authenticate push retirement. The existing auth
     // client retains bounded push cleanup separately and reports Keychain loss.
-    await auth.clearToken({ forceLocal: true });
+    const cleared = await auth.clearToken({ forceLocal: true, expectedToken });
+    if (cleared === false) return { kind: "session_changed" };
     return { kind: "cleared" };
   } catch (failure) {
     const code = failure && typeof failure === "object" && "code" in failure
@@ -32,25 +34,42 @@ export function useExpiredSessionRecovery(onCleared?: () => void) {
   const mounted = useRef(true);
   const busy = useRef(false);
   const rejectedError = useRef<unknown>(null);
+  const rejectedToken = useRef<string | null | undefined>(undefined);
+  const publishedToken = useRef<string | null | undefined>(undefined);
   const clearedCallback = useRef(onCleared);
   clearedCallback.current = onCleared;
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    const unsubscribe = auth.subscribeSessionChange((token) => { publishedToken.current = token; });
+    return () => {
+      mounted.current = false;
+      unsubscribe();
+    };
   }, []);
 
-  const recover = useCallback(async (error?: unknown): Promise<void> => {
+  const recover = useCallback(async (error?: unknown, expectedToken?: string | null): Promise<void> => {
+    if (!mounted.current) return;
     if (error !== undefined) {
-      if (!isAuthError(error)) return;
+      if (!isAuthError(error) || expectedToken === undefined) return;
       rejectedError.current = error;
+      rejectedToken.current = expectedToken;
     }
-    if (!rejectedError.current || busy.current) return;
+    if (!rejectedError.current || rejectedToken.current === undefined || busy.current) return;
     busy.current = true;
     if (mounted.current) setPending(true);
     try {
-      const result = await recoverExpiredSession(rejectedError.current);
+      const result = await recoverExpiredSession(rejectedError.current, rejectedToken.current);
       if (!mounted.current) return;
+      // A newer login may have queued while the old owner's Keychain removal
+      // was already executing. Its credentials survive the auth queue; do not
+      // subsequently cover that login with an old error panel or navigation.
+      if (result.kind === "failed" || result.kind === "cleared") {
+        const currentToken = await auth.getToken();
+        // getToken itself awaits Keychain: a login published during that read
+        // must invalidate its earlier null snapshot too.
+        if (!mounted.current || currentToken !== null || publishedToken.current) return;
+      }
       if (result.kind === "failed") setFailureCode(result.code);
       else if (result.kind === "cleared") {
         setFailureCode(null);

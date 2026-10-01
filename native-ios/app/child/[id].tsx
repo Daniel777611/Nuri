@@ -14,7 +14,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api, isAuthError } from "@/src/api";
+import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import {
   compareDateOnly,
@@ -52,10 +52,14 @@ export default function ChildEdit() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (isNew) return;
+      const requestToken = await auth.getToken();
       try {
+        if (cancelled) return;
         const list = await api.listChildren();
+        if (cancelled || await auth.getToken() !== requestToken) return;
         const c = list.find((x: any) => x.id === id);
         if (!c) {
           setLoadError(t("没有找到这份孩子资料，请返回后重试。"));
@@ -67,13 +71,15 @@ export default function ChildEdit() {
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
       } catch (error) {
+        if (cancelled) return;
         if (isAuthError(error)) {
-          await recoverExpiredCredentials(error);
+          await recoverExpiredCredentials(error, requestToken);
           return;
         }
         setLoadError(t("孩子资料加载失败，请检查网络后重试。"));
       }
     })();
+    return () => { cancelled = true; };
   }, [id, isNew, router, t, recoverExpiredCredentials]);
 
   const parsedBirthDate = parseDateOnly(birthDate);
@@ -101,6 +107,7 @@ export default function ChildEdit() {
         .filter(Boolean),
       notes: notes.trim(),
     };
+    const requestToken = await auth.getToken();
     try {
       const saved: any = isNew
         ? await api.addChild(body)
@@ -108,10 +115,11 @@ export default function ChildEdit() {
       if (saved?.birth_date !== body.birth_date) {
         throw new Error("The saved birthday did not match the submitted value");
       }
+      if (await auth.getToken() !== requestToken) return;
       goBack();
     } catch (error) {
       if (isAuthError(error)) {
-        await recoverExpiredCredentials(error);
+        await recoverExpiredCredentials(error, requestToken);
         return;
       }
       setSaveError(t("保存失败，这次修改尚未写入。请检查网络后重试。"));
@@ -124,12 +132,14 @@ export default function ChildEdit() {
     if (isNew || !id || saving) return;
     setSaving(true);
     setSaveError("");
+    const requestToken = await auth.getToken();
     try {
       await api.deleteChild(id as string);
+      if (await auth.getToken() !== requestToken) return;
       goBack();
     } catch (error) {
       if (isAuthError(error)) {
-        await recoverExpiredCredentials(error);
+        await recoverExpiredCredentials(error, requestToken);
         return;
       }
       setSaveError(t("删除失败，孩子资料仍然保留。请稍后重试。"));
