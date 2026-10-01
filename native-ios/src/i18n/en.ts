@@ -69,8 +69,8 @@ export const en: Record<string, string> = {
   "完成": "Done",
   "保存中...": "Saving...",
   "孩子基本信息": "About your child",
-  "这些信息只用来给你更个性化的建议，永远不会分享给第三方":
-    "Used only to personalise your advice. Never shared with third parties.",
+  "这些信息用于个性化 AI 建议。使用 AI 功能时，相关信息可能由第三方 AI 服务处理；详情请参阅隐私政策。":
+    "This information is used to personalise AI suggestions. When you use AI features, relevant information may be processed by third-party AI services. Please refer to the privacy policy for details.",
   "孩子怎么称呼？": "What do you call your child?",
   "例如：小满": "e.g. Abi",
   "孩子的出生日期": "Date of birth",

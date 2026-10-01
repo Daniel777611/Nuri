@@ -54,7 +54,7 @@
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>NURI 需要将你主动分享的任务卡保存到相册。</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>NURI 仅在你主动保存任务卡时访问相册。</string>
+    <string>允许 NURI 在你主动选择聊天图片或保存任务卡时使用相册。</string>
     <key>NSUserActivityTypes</key>
     <array>
       <string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>

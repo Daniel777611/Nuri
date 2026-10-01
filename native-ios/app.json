@@ -36,12 +36,12 @@
       "expo-router",
       "expo-secure-store",
       "./plugins/withNuriNative",
-      ["expo-media-library", { "photosPermission": "NURI 仅在你主动保存任务卡时访问相册。", "savePhotosPermission": "NURI 需要将你主动分享的任务卡保存到相册。" }],
+      ["expo-media-library", { "photosPermission": "允许 NURI 在你主动选择聊天图片或保存任务卡时使用相册。", "savePhotosPermission": "NURI 需要将你主动分享的任务卡保存到相册。" }],
       ["expo-audio", { "microphonePermission": "NURI 需要使用麦克风，将你主动录制的语音转成文字。" }],
       [
         "expo-image-picker",
         {
-          "photosPermission": "允许 NURI 访问你的相册，以便在对话中添加图片。",
+          "photosPermission": "允许 NURI 在你主动选择聊天图片或保存任务卡时使用相册。",
           "cameraPermission": "允许 NURI 使用相机，以便拍照并在对话中添加图片。",
           "microphonePermission": false
         }
