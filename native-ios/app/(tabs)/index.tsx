@@ -25,9 +25,14 @@ import {
 import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
 import { useT } from "@/src/i18n";
+import { aiPermissionHref } from "@/src/aiPermissionNavigation";
+import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 
 const mascotImage = require("@/assets/images/homepage/figma-mascot.png");
 const nativeLogoImage = require("@/assets/images/nuri-logo.png");
+// This bundled PNG is 598 × 831. Size from one axis so a different
+// viewport cannot stretch the character inside the card's crop window.
+const MASCOT_ASPECT_RATIO = 598 / 831;
 
 const C = {
   canvas: "#FFF9F3",
@@ -120,7 +125,7 @@ function DevSheet({
 
 export default function Home() {
   const { generation, capture, current } = useAccountScope();
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
@@ -128,7 +133,7 @@ export default function Home() {
   // Keep the same content geometry as the 402px Figma phone frame. On a real
   // phone the frame shrinks with the viewport; on desktop it remains centered.
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const dailyCardWidth = Math.max(280, phoneWidth - 60);
+  const dailyCardWidth = Math.max(0, phoneWidth - 60);
   const [nickname, setNickname] = useState("Momo妈妈");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
@@ -136,13 +141,17 @@ export default function Home() {
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
   const [nuriPreviewStatus, setNuriPreviewStatus] =
     useState<NuriPreviewStatus>("loading");
+  const [nuriFailure, setNuriFailure] = useState<RequestFailureKind | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
   const openingNuriChat = useRef(false);
+  const homeActive = useRef(false);
+  const chatOperation = useRef(0);
   // Today's card. Built once per local day on the server; every focus just
   // re-reads it, which is also how a new day's card appears after midnight.
   const [dailyPost, setDailyPost] = useState<DailyPost | null>(null);
   const [dailyPostStatus, setDailyPostStatus] = useState<DailyPostStatus>("loading");
+  const [dailyFailure, setDailyFailure] = useState<RequestFailureKind | null>(null);
   const dailyPostRequest = useRef(0);
   const dailyPostPolls = useRef(0);
 
@@ -150,6 +159,7 @@ export default function Home() {
     dailyPostRequest.current++;
     nuriPreviewRequest.current++;
     openingNuriChat.current = false;
+    chatOperation.current++;
     dailyPostPolls.current = 0;
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, [generation]);
@@ -164,6 +174,7 @@ export default function Home() {
     const ticket = capture();
     if (ticket === null) return;
     const requestId = ++dailyPostRequest.current;
+    setDailyFailure(null);
     // A warm focus keeps the card on screen while it is re-read.
     if (!quiet) setDailyPostStatus((current) => (current === "ready" ? current : "loading"));
     try {
@@ -184,12 +195,13 @@ export default function Home() {
         setDailyPost(null);
         setDailyPostStatus(res.state === "unavailable" ? "error" : "empty");
       }
-    } catch {
+    } catch (error) {
       if (current(ticket) && requestId === dailyPostRequest.current) {
+        setDailyFailure(requestFailureKind(error));
         setDailyPostStatus((current) => (current === "ready" ? current : "error"));
       }
     }
-  }, [capture, current, setDailyPost, setDailyPostStatus]);
+  }, [capture, current, setDailyPost, setDailyPostStatus, setDailyFailure]);
 
   useEffect(() => {
     if (dailyPostStatus !== "pending" || !isHomeFocused) return;
@@ -217,6 +229,7 @@ export default function Home() {
     const ticket = capture();
     if (ticket === null) return;
     const requestId = ++nuriPreviewRequest.current;
+    setNuriFailure(null);
     setNuriPreviewStatus("loading");
     try {
       const preview: MainConversationPreview = await api.getMainConversationPreview();
@@ -241,37 +254,53 @@ export default function Home() {
         hasPersonalContext,
       });
       setNuriPreviewStatus(hasPersonalContext ? "ready" : "empty");
-    } catch {
+    } catch (error) {
       if (current(ticket) && requestId === nuriPreviewRequest.current) {
+        setNuriFailure(requestFailureKind(error));
         setNuriPreviewStatus("error");
       }
     }
-  }, [capture, current, setNuriPreview, setNuriPreviewStatus]);
+  }, [capture, current, setNuriPreview, setNuriPreviewStatus, setNuriFailure]);
+
+  const handleFailure = (failure: RequestFailureKind | null, retry: () => void) => {
+    if (failure === "permission") router.push(aiPermissionHref("/(tabs)"));
+    else if (failure === "session") router.push("/login");
+    else retry();
+  };
 
   const openNuriChat = async () => {
     const ticket = capture();
-    if (ticket === null) return;
+    if (ticket === null || !homeActive.current) return;
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
-    if (nuriPreviewStatus === "error" && !nuriPreview) {
-      await loadNuriPreview();
+    if (nuriPreviewStatus === "error" && (!nuriPreview || nuriFailure === "permission" || nuriFailure === "session")) {
+      handleFailure(nuriFailure, () => void loadNuriPreview());
       return;
     }
 
     openingNuriChat.current = true;
+    const operation = ++chatOperation.current;
+    const acceptsResult = () => current(ticket) && homeActive.current && operation === chatOperation.current;
     let navigated = false;
     try {
-      // Preview is display data and can outlive a deleted legacy session in a
-      // mounted browser tab. Always ask the idempotent server endpoint for the
-      // account's current canonical conversation immediately before routing.
-      const session = await api.getOrStartMainSession();
-      if (!current(ticket)) return;
+      // Re-read the server's canonical preview at tap time. Opening existing
+      // history is a pure read; only creating/greeting a conversation needs AI.
+      const preview = await api.getMainConversationPreview();
+      if (!acceptsResult()) return;
+      const session = preview.has_conversation && preview.session_id
+        ? { id: preview.session_id }
+        : await api.getOrStartMainSession();
+      if (!acceptsResult()) return;
       router.push(`/chat/${session.id}`);
       navigated = true;
-    } catch {
-      if (!current(ticket)) return;
-      showToast(t("对话暂时无法打开，请稍后再试"));
+    } catch (error) {
+      if (!acceptsResult()) return;
+      const failure = requestFailureKind(error);
+      setNuriFailure(failure);
+      setNuriPreviewStatus("error");
+      if (failure === "permission" || failure === "session") handleFailure(failure, () => {});
+      else showToast(requestFailureCopy(locale, failure).title);
     } finally {
-      if (current(ticket) && !navigated) openingNuriChat.current = false;
+      if (acceptsResult() && !navigated) openingNuriChat.current = false;
     }
   };
 
@@ -307,8 +336,11 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
+      homeActive.current = true;
       void loadNuriPreview();
       return () => {
+        homeActive.current = false;
+        chatOperation.current++;
         nuriPreviewRequest.current += 1;
         openingNuriChat.current = false;
       };
@@ -324,7 +356,9 @@ export default function Home() {
     : "";
   const hasPersonalContext = !!nuriPreview?.hasPersonalContext;
   const nuriMemo =
-    hasLoadedPreview && nuriPreview?.hasLastUserMessage
+    nuriPreviewStatus === "error" && nuriFailure
+      ? requestFailureCopy(locale, nuriFailure).title
+    : hasLoadedPreview && nuriPreview?.hasLastUserMessage
       ? lastUserExcerpt
         ? t("你还记得我们上次谈到“{excerpt}”吗？最近怎么样？", {
             excerpt: lastUserExcerpt,
@@ -342,6 +376,8 @@ export default function Home() {
   const nuriActionText =
     nuriPreviewStatus === "loading" && !nuriPreview
       ? t("正在加载")
+      : nuriPreviewStatus === "error" && nuriFailure
+        ? requestFailureCopy(locale, nuriFailure).action
       : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
       : nuriPreview?.sessionId
@@ -380,7 +416,7 @@ export default function Home() {
             >
               <View style={styles.avatar}>
                 {avatarUrl ? (
-                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} resizeMode="cover" />
                 ) : (
                   <Text style={styles.avatarText}>{nickname.slice(0, 1)}</Text>
                 )}
@@ -409,7 +445,9 @@ export default function Home() {
                 status={dailyPostStatus}
                 card={dailyPost}
                 onPress={openDailyPost}
-                onRetry={() => void loadDailyPost()}
+                onRetry={() => handleFailure(dailyFailure, () => void loadDailyPost())}
+                failureText={dailyFailure ? requestFailureCopy(locale, dailyFailure).title : undefined}
+                failureAction={dailyFailure ? requestFailureCopy(locale, dailyFailure).action : undefined}
               />
             </>
           ) : null}
@@ -454,8 +492,8 @@ export default function Home() {
                   {nuriActionText}
                 </Text>
               </View>
-              <View pointerEvents="none" style={styles.mascotCrop}>
-                <Image source={mascotImage} style={styles.mascot} resizeMode="stretch" />
+              <View pointerEvents="none" style={styles.mascotCrop} testID="home-mascot-crop">
+                <Image source={mascotImage} style={styles.mascot} resizeMode="contain" testID="home-mascot-image" />
               </View>
             </LinearGradient>
           </Pressable>
@@ -476,7 +514,7 @@ export default function Home() {
         >
           <Pressable
             style={styles.navigationItem}
-            onPress={() => setDevSheet({ emoji: "🌱", name: t("知识图书馆") })}
+            onPress={() => router.push("/knowledge" as never)}
             accessibilityRole="button"
             accessibilityLabel={t("知识图书馆")}
           >
@@ -645,11 +683,12 @@ const styles = StyleSheet.create({
     left: "50%",
     right: -13,
     top: 106,
-    bottom: -69,
   },
   mascot: {
     width: "100%",
-    height: "100%",
+    // RN Image otherwise supplies the bundled source's intrinsic pixel height.
+    height: undefined,
+    aspectRatio: MASCOT_ASPECT_RATIO,
     transform: [{ scaleX: -1 }],
   },
   bottomNavigation: {

@@ -4,7 +4,7 @@
 //
 // Reads the same GET /feed/daily-post as Home; by the time a parent gets here
 // the card exists, so this is a row read, not a second generation.
-import { useCallback, useEffect } from "react";
+import { useCallback, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
@@ -17,7 +17,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
@@ -25,6 +25,9 @@ import * as WebBrowser from "expo-web-browser";
 import { api, type DailyPostCard } from "@/src/api";
 import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
 import { useT } from "@/src/i18n";
+import { aiPermissionHref } from "@/src/aiPermissionNavigation";
+import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
+import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 
 const C = {
   canvas: "#FFF9F3",
@@ -45,16 +48,29 @@ export default function DailyPostScreen() {
   const [card, setCard] = useState<DailyPostCard | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [openingChat, setOpeningChat] = useState(false);
+  const [failure, setFailure] = useState<RequestFailureKind | null>(null);
+  const [failureSource, setFailureSource] = useState<"load" | "chat">("load");
+  const [retry, setRetry] = useState(0);
+  const focused = useRef(false);
+  const chatOperation = useRef(0);
+  const chatBusy = useRef(false);
   // Set when a care notification opens a specific card; otherwise today's.
   const { id } = useLocalSearchParams<{ id?: string }>();
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     const ticket = capture();
     if (ticket === null) return;
     let cancelled = false;
+    focused.current = true;
+    chatOperation.current++;
+    chatBusy.current = false;
+    setFailure(null);
+    setOpeningChat(false);
+    setState((previous) => previous === "ready" && retry === 0 ? previous : "loading");
     (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
       .then((res) => {
         if (cancelled || !current(ticket)) return;
+        setFailureSource("load");
         if (res.state === "ready" && res.card) {
           setCard(res.card);
           setState("ready");
@@ -62,11 +78,18 @@ export default function DailyPostScreen() {
           setState("missing");
         }
       })
-      .catch(() => !cancelled && current(ticket) && setState("missing"));
+      .catch((error) => {
+        if (cancelled || !current(ticket)) return;
+        setFailure(requestFailureKind(error));
+        setState("missing");
+      });
     return () => {
       cancelled = true;
+      focused.current = false;
+      chatOperation.current++;
+      chatBusy.current = false;
     };
-  }, [id, capture, current, setCard, setState]);
+  }, [id, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setFailureSource]));
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
 
@@ -84,18 +107,31 @@ export default function DailyPostScreen() {
   const talkItThrough = useCallback(async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (!card || openingChat) return;
+    if (!card || !focused.current || chatBusy.current) return;
+    const operation = ++chatOperation.current;
+    const acceptsResult = () => current(ticket) && focused.current && operation === chatOperation.current;
+    chatBusy.current = true;
+    setFailure(null);
     setOpeningChat(true);
     try {
       // The server records the chat and drops a marker into the one
       // conversation, so NURI's next reply knows which post this is about.
       const session = await api.startSession({ card_id: card.card_id });
-      if (!current(ticket)) return;
+      if (!acceptsResult()) return;
       router.push(`/chat/${session.id}`);
-    } catch {
+    } catch (error) {
+      if (!acceptsResult()) return;
+      setFailureSource("chat");
+      setFailure(requestFailureKind(error));
+      chatBusy.current = false;
       setOpeningChat(false);
     }
-  }, [card, openingChat, router, capture, current, setOpeningChat]);
+  }, [card, router, capture, current, setOpeningChat, setFailure, setFailureSource]);
+
+  const failureNotice = failure ? <RequestFailureNotice error={failure}
+    onRetry={() => failureSource === "chat" ? void talkItThrough() : setRetry((value) => value + 1)}
+    onPermission={() => router.push(aiPermissionHref("/daily-post"))}
+    onLogin={() => router.push("/login")} /> : null;
 
   if (state === "loading") {
     return (
@@ -110,7 +146,7 @@ export default function DailyPostScreen() {
       <SafeAreaView style={styles.safe}>
         <View style={[styles.page, { width: pageWidth }]}>
           <BackButton onPress={goBack} label={t("返回")} />
-          <Text style={styles.body}>{t("今天的家长经验暂时打不开，回首页再试试。")}</Text>
+          {failureNotice || <Text style={styles.body}>{t("今天的家长经验暂时打不开，回首页再试试。")}</Text>}
         </View>
       </SafeAreaView>
     );
@@ -136,6 +172,7 @@ export default function DailyPostScreen() {
       <ScrollView contentContainerStyle={{ alignItems: "center", paddingBottom: 40 }}>
         <View style={[styles.page, { width: pageWidth }]}>
           <BackButton onPress={goBack} label={t("返回")} />
+          {failureNotice}
 
           <Text style={styles.greeting} testID="daily-post-greeting">
             {dailyPostGreeting(t, card.nickname, card.audience)}

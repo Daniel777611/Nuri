@@ -10,11 +10,12 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri.nativelab",
-      "buildNumber": "1004",
+      "buildNumber": "1005",
       "appleTeamId": "6PL6HQYU7P",
       "supportsTablet": false,
       "entitlements": { "aps-environment": "production" },
       "infoPlist": {
+        "CFBundleDisplayName": "Nuri",
         "NuriAPNSEnvironment": "production",
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": false }

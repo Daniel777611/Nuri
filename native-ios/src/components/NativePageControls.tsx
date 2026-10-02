@@ -6,6 +6,8 @@ import { useT } from "@/src/i18n";
 import { colors } from "@/src/theme";
 import { useAIConsent } from "@/src/useAIConsent";
 import { aiConsentCopy } from "@/src/aiConsentCopy";
+import { aiPermissionHref } from "@/src/aiPermissionNavigation";
+import { requestFailureCopy } from "@/src/requestFailure";
 import { requestGuardedNativeNavigation, type NativeNavigationAction } from "./nativeNavigation";
 
 /** Inline Stack header controls. The native header owns the top safe area. */
@@ -15,7 +17,7 @@ export default function NativePageControls() {
   const { t, locale } = useT();
   const { state } = useAIConsent();
   const aiCopy = aiConsentCopy(locale);
-  const openPermission = () => { if (pathname !== "/ai-permission") router.push("/ai-permission" as never); };
+  const openPermission = () => { if (pathname !== "/ai-permission") router.push(aiPermissionHref(pathname)); };
   const notificationsLabel = locale === "en" ? "Notification settings" : locale === "zh-TW" ? "通知設定" : "通知设置";
 
   const navigate = (action: NativeNavigationAction) => {
@@ -37,7 +39,7 @@ export default function NativePageControls() {
       <Control icon="notifications-outline" label={notificationsLabel} onPress={() => navigate("notifications")} testID="native-header-notifications" />
       <Pressable onPress={openPermission} style={styles.aiButton} accessibilityRole="button" accessibilityLabel={aiCopy.header} testID="native-header-ai-permission"><Ionicons name="shield-checkmark-outline" size={20} color={colors.brand} /><Text style={styles.aiText}>{aiCopy.header}</Text></Pressable>
     </View>
-      {pathname !== "/ai-permission" && ["not_allowed", "error"].includes(state.status) ? <Pressable onPress={openPermission} style={styles.banner} accessibilityRole="button" testID="native-ai-permission-blocked"><Text style={styles.bannerText}>{aiCopy.banner}</Text></Pressable> : null}
+      {pathname !== "/ai-permission" && ["not_allowed", "error"].includes(state.status) ? <Pressable onPress={openPermission} style={styles.banner} accessibilityRole="button" testID="native-ai-permission-blocked"><Text style={styles.bannerText}>{state.status === "error" ? (state.failure === "session" ? requestFailureCopy(locale, "session").detail : aiCopy.loadError) : aiCopy.banner}</Text></Pressable> : null}
     </View>
   );
 }

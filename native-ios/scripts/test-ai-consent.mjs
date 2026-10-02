@@ -16,6 +16,8 @@ function load(path, dependencies = {}, jsx = false) {
 }
 const policy = load("../src/aiConsent.ts");
 const copy = load("../src/aiConsentCopy.ts");
+const navigation = load("../src/aiPermissionNavigation.ts");
+const failureCopy = load("../src/requestFailure.ts");
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
 const nativeResponse = globalThis.Response;
@@ -24,6 +26,9 @@ function fixture({ nativeXHR = false, values = new Map(), ordinary = new Map() }
   const calls = [];
   const secureReads = [];
   const writes = [];
+  const removals = [];
+  const meStatuses = new Map();
+  let meBarrier = null;
   let readBarrier = null;
   let writeBarrier = null;
   let failSecureWrite = false;
@@ -47,7 +52,7 @@ function fixture({ nativeXHR = false, values = new Map(), ordinary = new Map() }
       }
       values.set(key, value); return true;
     },
-    secureRemove: async (key) => { values.delete(key); return true; },
+    secureRemove: async (key) => { removals.push(key); values.delete(key); return true; },
     getItem: async (key, fallback) => failOrdinaryRead && key.startsWith("ai_consent.") ? fallback : ordinary.get(key) ?? fallback,
     setItem: async (key, value) => { ordinary.set(key, value); return true; },
     removeItem: async (key) => { ordinary.delete(key); return true; },
@@ -63,7 +68,14 @@ function fixture({ nativeXHR = false, values = new Map(), ordinary = new Map() }
   const response = async (url, init = {}) => {
     const path = url.replace("https://nuri.invalid/api", "");
     calls.push({ path, method: init.method || "GET", body: init.body, owner: init.headers?.Authorization });
-    if (path === "/auth/me") return { ok: true, status: 200, json: async () => ({ id: init.headers?.Authorization === "Bearer account-B" ? "user-B" : "user-A" }) };
+    if (path === "/auth/me") {
+      const owner = init.headers?.Authorization;
+      const status = meStatuses.get(owner) ?? 200;
+      const barrier = meBarrier?.owner === owner ? meBarrier : null;
+      if (barrier) await barrier.promise;
+      if (status !== 200) return { ok: false, status, text: async () => JSON.stringify({ detail: "mock-private-response-body" }) };
+      return { ok: true, status, json: async () => ({ id: owner === "Bearer account-B" ? "user-B" : "user-A" }) };
+    }
     if (path.endsWith("/stream")) return new nativeResponse('data: {"type":"done","user_message":{"id":"u"},"ai_messages":[]}\n\n', { headers: { "content-type": "text/event-stream" } });
     return { ok: true, status: 200, json: async () => ({ id: "session", text: "mock transcript", items: [] }) };
   };
@@ -82,7 +94,10 @@ function fixture({ nativeXHR = false, values = new Map(), ordinary = new Map() }
     await client.aiConsent.refresh();
     assert.equal(await client.aiConsent.setAllowed(true, client.aiConsent.getState()), true);
   };
-  return { ...client, permit, calls, values, ordinary, secureReads, writes,
+  return { ...client, permit, calls, values, ordinary, secureReads, writes, removals,
+    setMeStatus: (token, status) => meStatuses.set(`Bearer ${token}`, status),
+    pauseMe: (token) => meBarrier = { ...deferred(), owner: `Bearer ${token}` },
+    releaseMe: () => { const barrier = meBarrier; meBarrier = null; barrier.resolve(); },
     pauseReads: () => readBarrier = deferred(), releaseReads: () => { const b = readBarrier; readBarrier = null; b.resolve(); },
     pauseWrites: () => writeBarrier = deferred(), releaseWrites: () => { const b = writeBarrier; writeBarrier = null; b.resolve(); },
     failSecureWrites: () => { failSecureWrite = true; },
@@ -95,7 +110,7 @@ const blocked = (error) => error.aiConsentRequired === true;
 
 test("fresh/restored account has no assumed permission; auto greeting and home effects never reach network", async () => {
   const f = fixture(); await f.auth.setToken("account-A");
-  for (const run of [() => f.api.getOrStartMainSession(), () => f.api.startSession({ child_id: "child" }), () => f.api.getDailyPost(), () => f.api.getMainConversationPreview(), () => f.api.getPersonalizedFeed()]) await assert.rejects(run(), blocked);
+  for (const run of [() => f.api.getOrStartMainSession(), () => f.api.startSession({ child_id: "child" }), () => f.api.getDailyPost(), () => f.api.getPersonalizedFeed()]) await assert.rejects(run(), blocked);
   assert.deepEqual(aiCalls(f), []);
   assert.ok(f.calls.every((call) => call.path === "/auth/me"));
   assert.equal(f.aiConsent.getState().status, "not_allowed");
@@ -107,12 +122,40 @@ test("every actual profile/text/audio/image/context adapter is fail-closed, not 
     () => f.api.addChild({ nickname: "mock" }), () => f.api.updateChild("child", { birth_date: "2020-01-01" }), () => f.api.updateMe({ nickname: "mock" }),
     () => f.api.sendMessage("session", { text: "mock" }), () => f.api.sendMessage("session", { text: "", image_base64: "data:image/jpeg;base64,bW9jaw==" }),
     () => f.api.streamMessage("session", { text: "mock" }, () => {}), () => f.api.transcribeVoice("bW9jaw==", "en"),
-    () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardDetail("card"), () => f.api.getCardResearch("card"),
+    () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardResearch("card"),
     () => f.api.taskInsights(), () => f.api.createTask({ text: "mock" }), () => f.api.updateTask("task", { mood: "mock" }),
     () => f.api.openNotification("notification"), () => f.api.setPrivacy({ daily_push: true }), () => f.api.setPrivacy({ allow_external_content_research: true }), () => f.api.setPrivacy({ allow_history_training: true }),
   ];
   for (const run of operations) await assert.rejects(run(), blocked);
   assert.deepEqual(aiCalls(f), []);
+});
+
+test("exact GET read allowlist permits actual preview/feed/search/detail/saved-daily adapters without asking for AI permission", async () => {
+  const f = fixture(); await f.auth.setToken("account-A");
+  await f.api.getMainConversationPreview(); await f.api.getFeed(); await f.api.getFeed(true);
+  await f.api.searchCards("mock/query", "article"); await f.api.getAltCard("mock-card");
+  await f.api.getCardDetail("mock-card", "session-A", "mock-context", "recommendation-A", "article", "prepared-A");
+  await f.api.getDailyPostById("mock-daily-id");
+  assert.deepEqual(f.calls.map(({ path }) => path.split("?")[0]), ["/chat/main/preview", "/feed", "/feed", "/feed/search", "/feed/alt", "/feed/mock-card/detail", "/feed/daily-post/mock-daily-id"]);
+  assert.ok(f.calls.every(({ method, owner }) => method === "GET" && owner === "Bearer account-A"));
+  assert.equal(f.secureReads.length, 0);
+  assert.equal(f.aiConsent.getState().status, "unknown", "reading existing data must not silently grant AI permission");
+  f.calls.length = 0;
+  for (const run of [() => f.api.getDailyPost(), () => f.api.getPersonalizedFeed(), () => f.api.getOrStartMainSession(), () => f.api.sendMessage("session-A", { text: "mock" }), () => f.api.generateCards({ keywords: ["mock"] })]) {
+    await assert.rejects(run(), blocked);
+  }
+  assert.deepEqual(aiCalls(f), []);
+});
+
+test("read exceptions are exact GET routes, not a blanket GET/feed or chat-preview write exemption", () => {
+  for (const path of ["/feed", "/feed?shuffle=true", "/feed/search?q=mock", "/feed/alt?exclude=mock", "/feed/card-A/detail?session_id=mock", "/chat/main/preview", "/feed/daily-post/mock?existing=true"]) {
+    assert.equal(policy.requiresAIConsent(path), false, path);
+    assert.equal(policy.requiresAIConsent(path, { method: "get" }), false, path);
+    assert.equal(policy.requiresAIConsent(path, { method: "POST" }), true, path);
+  }
+  for (const path of ["/feed/personalized?count=3", "/feed/daily-post?tz=UTC", "/feed/daily-post/mock/events", "/feed/card-A/research", "/feed/searching", "/feed/card-A/detail/extra"]) {
+    assert.equal(policy.requiresAIConsent(path), true, path);
+  }
 });
 
 test("login/privacy/deletion and existing non-AI reads remain usable without AI permission", async () => {
@@ -256,26 +299,97 @@ test("old refresh completing after a choice cannot overwrite the current permiss
   await assert.rejects(f.api.getOrStartMainSession(), blocked);
 });
 
-function uiFixture(f, locale) {
-  let cursor = 0; const states = []; const effects = []; const links = []; const routes = [];
+function uiFixture(f, locale, { returnTo, canGoBack = false } = {}) {
+  let cursor = 0; const hooks = []; const effects = []; const links = []; const routes = [];
   const dependencies = {
-    react: { useState: (initial) => { const n = cursor++; if (!(n in states)) states[n] = initial; return [states[n], (value) => { states[n] = value; }]; }, useRef: (initial) => ({ current: initial }), useEffect: (callback) => effects.push(callback) },
+    react: {
+      useState: (initial) => { const n = cursor++; if (!(n in hooks)) hooks[n] = { value: typeof initial === "function" ? initial() : initial }; return [hooks[n].value, (value) => { hooks[n].value = typeof value === "function" ? value(hooks[n].value) : value; }]; },
+      useRef: (initial) => { const n = cursor++; if (!(n in hooks)) hooks[n] = { current: initial }; return hooks[n]; },
+      useEffect: (callback, deps) => {
+        const n = cursor++; const previous = hooks[n];
+        if (!previous || !deps || deps.some((value, index) => value !== previous.deps?.[index])) {
+          effects.push(() => { previous?.cleanup?.(); hooks[n] = { deps, cleanup: callback() }; });
+        }
+      },
+    },
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: "Fragment" },
     "react-native": { ActivityIndicator: "ActivityIndicator", Linking: { openURL: async (url) => links.push(url) }, Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
-    "expo-router": { useRouter: () => ({ replace: (route) => routes.push(route) }) },
+    "expo-router": { useLocalSearchParams: () => ({ returnTo }), useRouter: () => ({ replace: (route) => routes.push(route), canGoBack: () => canGoBack, back: () => routes.push("back") }) },
     "@/src/api": f, "@/src/aiConsent": policy, "@/src/aiConsentCopy": copy, "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState(), refresh: f.aiConsent.refresh }) },
+    "@/src/aiPermissionNavigation": navigation,
+    "@/src/requestFailure": failureCopy,
     "@/src/i18n": { useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
   };
   const page = load("../app/ai-permission.tsx", dependencies, true).default;
-  const render = () => { cursor = 0; return page(); };
+  const render = () => { cursor = 0; const tree = page(); effects.splice(0).forEach((run) => run()); return tree; };
   const find = (node, id) => {
     if (!node || typeof node !== "object") return null;
     if (node.props?.testID === id) return node;
     for (const child of Array.isArray(node.props?.children) ? node.props.children.flat(Infinity) : [node.props?.children]) { const found = find(child, id); if (found) return found; }
     return null;
   };
-  return { render, find, links, routes, unmount: () => effects.forEach((run) => run()?.()) };
+  return { render, find, links, routes, unmount: () => hooks.forEach((hook) => hook?.cleanup?.()) };
 }
+
+function headerFixture(f, locale) {
+  const routes = [];
+  const Controls = load("../src/components/NativePageControls.tsx", {
+    "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
+    "react-native": { Pressable: "Pressable", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
+    "@expo/vector-icons": { Ionicons: "Icon" },
+    "expo-router": { usePathname: () => "/knowledge", useRouter: () => ({ push: (route) => routes.push(route) }) },
+    "@/src/i18n": { useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
+    "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
+    "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
+    "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
+  }, true).default;
+  const tree = Controls();
+  const banner = tree.props.children.find((node) => node?.props?.testID === "native-ai-permission-blocked");
+  return { tree, banner, routes };
+}
+
+for (const status of [401, 503]) test(`actual permission refresh ${status} is classified without clearing credentials; page/header route honestly`, async () => {
+  const f = fixture(); await f.auth.setToken("account-A"); f.setMeStatus("account-A", status);
+  const sessionEvents = []; const unsubscribe = f.auth.subscribeSessionChange((token) => sessionEvents.push(token));
+  await assert.rejects(f.aiConsent.refresh(), (error) => error.status === status);
+  const state = f.aiConsent.getState();
+  assert.equal(state.status, "error"); assert.equal(state.failure, status === 401 ? "session" : "unavailable");
+  assert.equal(state.userId, null);
+  assert.deepEqual(Object.keys(state).sort(), ["failure", "session", "status", "userId", "version"]);
+  assert.ok(!JSON.stringify(state).includes("mock-private-response-body"));
+  for (const locale of ["zh-CN", "zh-TW", "en"]) {
+    const expected = status === 401 ? failureCopy.requestFailureCopy(locale, "session").detail : copy.aiConsentCopy(locale).loadError;
+    const ui = uiFixture(f, locale); const tree = ui.render();
+    assert.equal(ui.find(tree, "ai-permission-allow"), null, "unverified identity cannot grant permission");
+    assert.equal(ui.find(tree, "ai-permission-status").props.children[1].props.children, expected);
+    ui.find(tree, "ai-permission-non-ai").props.onPress();
+    assert.deepEqual(ui.routes, [status === 401 ? "/login" : "/(tabs)/profile"]);
+    const header = headerFixture(f, locale);
+    assert.equal(header.banner.props.children.props.children, expected);
+    header.banner.props.onPress();
+    assert.deepEqual(header.routes, [{ pathname: "/ai-permission", params: { returnTo: "/knowledge" } }]);
+    assert.ok(!JSON.stringify(header.tree).includes("mock-private-response-body"));
+  }
+  assert.equal(await f.auth.getToken(), "account-A"); assert.deepEqual(f.removals, []); assert.deepEqual(sessionEvents, []);
+  f.setMeStatus("account-A", 200); await f.aiConsent.refresh();
+  assert.equal(f.aiConsent.getState().status, "not_allowed"); assert.equal(f.aiConsent.getState().failure, undefined);
+  assert.equal(await f.auth.getToken(), "account-A"); unsubscribe();
+});
+
+test("late A permission identity response cannot overwrite B with A's 401/503/success or clear B's token", async () => {
+  for (const status of [401, 503, 200]) {
+    const f = fixture(); await f.auth.setToken("account-A"); f.setMeStatus("account-A", status); f.pauseMe("account-A");
+    const sessionEvents = []; const unsubscribe = f.auth.subscribeSessionChange((token) => sessionEvents.push(token));
+    const pending = f.aiConsent.refresh(); const rejected = assert.rejects(pending, (error) => error.name === "SessionChangedError");
+    await tick(); await f.auth.setToken("account-B"); await f.aiConsent.refresh();
+    const ownerB = f.aiConsent.getState(); assert.equal(ownerB.status, "not_allowed"); assert.equal(ownerB.userId, "user-B");
+    f.releaseMe(); await rejected;
+    assert.deepEqual(f.aiConsent.getState(), ownerB);
+    assert.equal(await f.auth.getToken(), "account-B"); assert.deepEqual(f.removals, []); assert.deepEqual(sessionEvents, ["account-B"]);
+    assert.equal(f.aiConsent.getState().failure, undefined); unsubscribe();
+  }
+});
+
 for (const locale of ["zh-CN", "zh-TW", "en"]) test("actual " + locale + " page has explicit allow/decline, verified links and non-AI route", async () => {
   const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh(); const ui = uiFixture(f, locale); let tree = ui.render();
   const allow = ui.find(tree, "ai-permission-allow"); assert.ok(allow);
@@ -304,4 +418,61 @@ test("actual button callback after page unmount cannot grant permission", async 
   ui.unmount(); callback(); await tick();
   assert.equal(f.writes.length, 0);
   await assert.rejects(f.api.getOrStartMainSession(), blocked);
+});
+
+test("actual allow button returns only after the user's permission has been durably saved", async () => {
+  const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh();
+  const ui = uiFixture(f, "en", { returnTo: "/knowledge" });
+  const allow = ui.find(ui.render(), "ai-permission-allow").props.onPress;
+  f.pauseWrites(); allow(); allow(); await tick();
+  assert.deepEqual(ui.routes, []); assert.equal(f.writes.length, 1, "double click must not duplicate the grant");
+  f.releaseWrites(); await tick();
+  assert.equal(f.aiConsent.getState().status, "allowed");
+  assert.deepEqual(ui.routes, ["/knowledge"]);
+});
+
+test("actual permitted return uses history back to preserve original detail parameters", async () => {
+  const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh();
+  const ui = uiFixture(f, "zh-CN", { returnTo: "/detail/card-A", canGoBack: true });
+  ui.find(ui.render(), "ai-permission-allow").props.onPress(); await tick();
+  assert.deepEqual(ui.routes, ["back"]);
+});
+
+test("actual decline never returns to a generating screen or silently grants permission", async () => {
+  const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh();
+  const ui = uiFixture(f, "en", { returnTo: "/daily-post", canGoBack: true });
+  ui.find(ui.render(), "ai-permission-decline").props.onPress(); await tick();
+  assert.deepEqual(ui.routes, []); assert.equal(f.aiConsent.getState().status, "not_allowed");
+  await assert.rejects(f.api.getDailyPost(), blocked);
+});
+
+test("actual page rejects external/array returnTo and only its explicit continue action uses safe home fallback", async () => {
+  for (const returnTo of ["https://outside.invalid/", "//outside.invalid/", ["/knowledge"]]) {
+    const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh();
+    const ui = uiFixture(f, "en", { returnTo, canGoBack: true });
+    ui.find(ui.render(), "ai-permission-allow").props.onPress(); await tick();
+    assert.deepEqual(ui.routes, []);
+    ui.find(ui.render(), "ai-permission-continue").props.onPress();
+    assert.deepEqual(ui.routes, ["/(tabs)"]);
+  }
+});
+
+test("failed permission persistence must not navigate back or report the user allowed", async () => {
+  const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh(); f.failSecureWrites();
+  const ui = uiFixture(f, "en", { returnTo: "/knowledge" });
+  ui.find(ui.render(), "ai-permission-allow").props.onPress(); await tick();
+  assert.deepEqual(ui.routes, []); assert.notEqual(f.aiConsent.getState().status, "allowed");
+  assert.ok(ui.find(ui.render(), "ai-permission-error"));
+});
+
+test("in-flight allow cannot navigate an unmounted page or a different signed-in account", async () => {
+  for (const end of ["unmount", "switch"]) {
+    const f = fixture(); await f.auth.setToken("account-A"); await f.aiConsent.refresh();
+    const ui = uiFixture(f, "en", { returnTo: "/knowledge" });
+    f.pauseWrites(); ui.find(ui.render(), "ai-permission-allow").props.onPress(); await tick();
+    if (end === "unmount") ui.unmount(); else await f.auth.setToken("account-B");
+    f.releaseWrites(); await tick();
+    assert.deepEqual(ui.routes, []);
+    if (end === "switch") { await assert.rejects(f.api.getOrStartMainSession(), blocked); assert.equal(f.aiConsent.getState().userId, "user-B"); }
+  }
 });

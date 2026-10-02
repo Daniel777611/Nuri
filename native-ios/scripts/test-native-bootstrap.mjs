@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { IOSConfig } from '@expo/config-plugins';
 import ts from 'typescript';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -10,10 +11,12 @@ const start = delegate.indexOf('factory.startReactNative(');
 assert.ok(bind > 0 && bind < start, 'Expo SDK 54 must bind its factory before creating the root view');
 assert.equal(read('../ios/NURINativeLab/AppDelegate.swift'), delegate, 'generated delegate must match the source plugin');
 const config = JSON.parse(read('../app.json')).expo;
+assert.equal(config.name, 'NURI Native Lab', 'keep the technical Expo project name so prebuild does not rename the isolated Xcode target');
+assert.equal(config.ios.infoPlist.CFBundleDisplayName, 'Nuri', 'the phone label must use the requested short display name');
 assert.equal(config.ios.bundleIdentifier, 'com.ordashtech.nuri.nativelab');
 assert.equal(config.scheme, 'nuri-native-lab');
 assert.equal(config.version, '0.3.0');
-assert.equal(config.ios.buildNumber, '1004');
+assert.equal(config.ios.buildNumber, '1005');
 assert.equal(config.ios.entitlements['aps-environment'], 'production');
 assert.equal(config.ios.infoPlist.NuriAPNSEnvironment, 'production');
 assert.match(read('../ExportOptions-InternalOnly.plist'), /<key>testFlightInternalTestingOnly<\/key>\s*<true\s*\/>/);
@@ -27,6 +30,7 @@ assert.match(externalExport, /<key>method<\/key><string>app-store-connect<\/stri
 const project = read('../ios/NURINativeLab.xcodeproj/project.pbxproj');
 assert.match(project, /PRODUCT_BUNDLE_IDENTIFIER = "?com\.ordashtech\.nuri\.nativelab"?;/);
 assert.ok(!/PRODUCT_BUNDLE_IDENTIFIER = com\.ordashtech\.nuri;/.test(project));
+assert.deepEqual([...project.matchAll(/CURRENT_PROJECT_VERSION = (\d+);/g)].map((match) => match[1]), [config.ios.buildNumber, config.ios.buildNumber], 'Debug and Release must use the current candidate build number');
 const plist = read('../ios/NURINativeLab/Info.plist');
 assert.match(plist, /<string>nuri-native-lab<\/string>/);
 assert.ok(!/<string>nuri<\/string>/.test(plist), 'old app URL scheme must not be claimed');
@@ -37,6 +41,22 @@ const imagePicker = config.plugins.find((plugin) => Array.isArray(plugin) && plu
 assert.equal(mediaLibrary?.photosPermission, photoPurpose);
 assert.equal(imagePicker?.photosPermission, photoPurpose);
 const plistString = (key) => plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`))?.[1];
+assert.equal(plistString('CFBundleVersion'), config.ios.buildNumber, 'the binary target build number must match its source config');
+assert.equal(plistString('CFBundleShortVersionString'), config.version, 'keep the marketing version aligned without changing it');
+assert.equal(plistString('CFBundleDisplayName'), config.ios.infoPlist.CFBundleDisplayName, 'the actual target Info.plist must match the source display name');
+assert.equal(plistString('CFBundleName'), '$(PRODUCT_NAME)', 'keep the technical product identity separate from its phone label');
+assert.doesNotMatch(project, /INFOPLIST_KEY_CFBundleDisplayName\s*=/, 'build settings must not override the target display-name plist');
+assert.match(project, /INFOPLIST_FILE = NURINativeLab\/Info\.plist;/, 'the binary must consume the updated target plist');
+// Run Expo's installed display-name mod in memory only: explicit Info.plist
+// names must survive prebuild even while the technical Expo name stays long.
+const displayModConfig = IOSConfig.Name.withDisplayName(structuredClone(config));
+const displayModResult = await displayModConfig.mods.ios.infoPlist({
+  ...displayModConfig,
+  modRawConfig: structuredClone(config),
+  modResults: structuredClone(config.ios.infoPlist),
+  modRequest: { platform: 'ios', introspect: true },
+});
+assert.equal(displayModResult.modResults.CFBundleDisplayName, 'Nuri', 'Expo must preserve the explicit phone display name without renaming the project');
 assert.equal(plistString('NSPhotoLibraryUsageDescription'), photoPurpose, 'generated photo purpose must match both source plugins');
 assert.equal(plistString('NSPhotoLibraryAddUsageDescription'), mediaLibrary.savePhotosPermission, 'generated save purpose must match its source plugin');
 

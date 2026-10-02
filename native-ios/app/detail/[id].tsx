@@ -49,6 +49,9 @@ import {
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 import { cardReason, cardText } from "@/src/cardText";
+import { aiPermissionHref } from "@/src/aiPermissionNavigation";
+import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
+import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DETAIL_FRAME_WIDTH = 402;
@@ -334,6 +337,7 @@ export default function Detail() {
   const [loadError, setLoadError] =
     useState<"expired" | "preparing" | "generic" | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
+  const [requestFailure, setRequestFailure] = useState<RequestFailureKind | null>(null);
   const [favorited, setFavorited] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const sharingRef = useRef(false);
@@ -436,11 +440,12 @@ export default function Detail() {
     return () => subscription.remove();
   }, [flushDwell]);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     const ticket = capture();
     if (ticket === null) return;
     if (!id) return;
     let active = true;
+    setRequestFailure(null);
     const requestId = ++contentRequestId.current;
     const identity = [
       id,
@@ -510,7 +515,7 @@ export default function Detail() {
             return;
           }
         } catch (error: unknown) {
-          if (!scopeCurrent(ticket)) return;
+          if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
           const status =
             error && typeof error === "object" ? (error as any).status : null;
           // A preparation can finish between navigation and this GET. The
@@ -530,6 +535,7 @@ export default function Detail() {
           return;
         }
 
+        if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         const prepared = await preparePersonalizedFeedOnce(handoff.preparationItems);
         if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         const preparedItem = (prepared?.items || []).find(
@@ -563,6 +569,7 @@ export default function Detail() {
         if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         const status =
           error && typeof error === "object" ? (error as any).status : null;
+        if (status !== 404 && status !== 409) setRequestFailure(requestFailureKind(error));
         if (guide) {
           setCard((current: any) =>
             isReadyDetail(current, contentCategory) &&
@@ -606,6 +613,8 @@ export default function Detail() {
       contentRequestId.current += 1;
       flushDwell();
     };
+  // reloadSequence intentionally revalidates the same focused detail on retry.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     contextCreatedAt,
     contentCategory,
@@ -629,7 +638,8 @@ export default function Detail() {
     setFeedbackSubmitting,
     setResourceRefreshState,
     setFavorited,
-  ]);
+    setRequestFailure,
+  ]));
 
   const toggleFavorite = async () => {
     const ticket = capture();
@@ -660,9 +670,13 @@ export default function Detail() {
       const session = await api.startSession({ card_id: card.id, title: card.title });
       if (!scopeCurrent(ticket)) return;
       router.push(`/chat/${session.id}`);
-    } catch {
+    } catch (error) {
       if (!scopeCurrent(ticket)) return;
-      showToast(t("对话暂时无法打开，请稍后再试"));
+      const failure = requestFailureKind(error);
+      setRequestFailure(failure);
+      if (failure === "permission") router.push(aiPermissionHref(`/detail/${id}`));
+      else if (failure === "session") router.push("/login");
+      else showToast(t("对话暂时无法打开，请稍后再试"));
     }
   };
 
@@ -934,7 +948,12 @@ export default function Detail() {
   };
 
   const renderBody = () => {
+    const failureNotice = requestFailure ? <RequestFailureNotice error={requestFailure}
+      onRetry={() => setReloadSequence((value) => value + 1)}
+      onPermission={() => router.push(aiPermissionHref(`/detail/${id}`))}
+      onLogin={() => router.push("/login")} /> : null;
     if (loadError) {
+      if (failureNotice) return failureNotice;
       const recommendationExpired = loadError === "expired";
       const recommendationPreparing = loadError === "preparing";
       return (
@@ -1046,6 +1065,7 @@ export default function Detail() {
         showsVerticalScrollIndicator={false}
         testID="content-detail-scroll"
       >
+        {failureNotice}
         <View
           style={[
             styles.typeChip,

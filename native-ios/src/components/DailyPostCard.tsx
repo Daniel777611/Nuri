@@ -54,6 +54,8 @@ export default function DailyPostCard({
   card,
   onPress,
   onRetry,
+  failureText,
+  failureAction,
 }: {
   width: number;
   nickname: string;
@@ -61,6 +63,8 @@ export default function DailyPostCard({
   card: Card | null;
   onPress: (card: Card) => void;
   onRetry: () => void;
+  failureText?: string;
+  failureAction?: string;
 }) {
   const { t } = useT();
 
@@ -108,13 +112,13 @@ export default function DailyPostCard({
             </Text>
             <Text style={styles.headline} numberOfLines={3}>
               {failed
-                ? t("今天的家长经验暂时没加载出来，点一下再试试。")
+                ? failureText || t("今天的家长经验暂时没加载出来，点一下再试试。")
                 : t("今天还没找到合适的家长经验。和NURI多聊聊你的情况，明天会更贴近你。")}
             </Text>
             <View style={{ flex: 1 }} />
             {failed ? (
               <View style={styles.footer}>
-                <Text style={styles.cta}>{t("重试")}</Text>
+                <Text style={styles.cta}>{failureAction || t("重试")}</Text>
                 <View style={styles.arrow}>
                   <Ionicons name="refresh" size={22} color="#3A2F5A" />
                 </View>

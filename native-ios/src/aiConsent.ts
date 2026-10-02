@@ -10,6 +10,8 @@ export type AIConsentState = {
   userId: string | null;
   session: number;
   version: string;
+  // Classification only; never retain the backend response body or token.
+  failure?: "session" | "unavailable";
 };
 type Context = { token: string; userId: string; session: number };
 export type AIConsentLease = Context & { decision: number };
@@ -28,10 +30,15 @@ export class AIConsentError extends Error {
   }
 }
 
-/** Conservative API boundary: even a GET can start personalized generation. */
+/** Conservative API boundary: even a GET can start personalized generation.
+ * Exact read-only exceptions are audited against the shared backend. Do not
+ * generalize these to all GETs: daily-post can invoke OpenAI on first load. */
 export function requiresAIConsent(path: string, init?: RequestInit): boolean {
   const route = path.split("?")[0];
   const method = (init?.method || "GET").toUpperCase();
+  if (method === "GET" && (["/feed", "/feed/search", "/feed/alt", "/chat/main/preview"].includes(route)
+      || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
+      || /^\/feed\/daily-post\/[a-zA-Z0-9_-]+$/.test(route))) return false;
   if (route.startsWith("/feed")) return true;
   if (route === "/chat/main/preview" || route === "/chat/transcribe") return true;
   if (route.startsWith("/chat") && method !== "GET" && method !== "DELETE") return true;
@@ -71,8 +78,8 @@ export class AIConsentController {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
-  private publish(status: AIConsentState["status"], userId = this.context?.userId || null) {
-    this.state = { status, userId, session: this.session, version: AI_CONSENT_VERSION };
+  private publish(status: AIConsentState["status"], userId = this.context?.userId || null, failure?: AIConsentState["failure"]) {
+    this.state = { status, userId, session: this.session, version: AI_CONSENT_VERSION, ...(failure ? { failure } : {}) };
     this.listeners.forEach((listener) => { try { listener(this.getState()); } catch { /* UI cannot bypass the gate. */ } });
   }
   sessionChanged = () => {
@@ -126,7 +133,10 @@ export class AIConsentController {
       if (!this.same(context) || decision !== this.decision) return this.getState();
       this.publish(allowed ? "allowed" : "not_allowed");
     } catch (error) {
-      if (session === this.session && decision === this.decision && this.state.status !== "signed_out") this.publish("error");
+      if (session === this.session && decision === this.decision && this.state.status !== "signed_out") {
+        const status = error && typeof error === "object" && "status" in error ? error.status : null;
+        this.publish("error", null, status === 401 ? "session" : "unavailable");
+      }
       if (!(error instanceof AIConsentError)) throw error;
     }
     return this.getState();

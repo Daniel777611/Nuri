@@ -91,6 +91,8 @@ function page(path, f, options = {}) {
   const dep = {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/useAccountState": hooks,
     "@/src/api": f, "@/src/sessionBoundary": f.boundary,
+    "@/src/requestFailure": load("../src/requestFailure.ts"),
+    "@/src/aiPermissionNavigation": load("../src/aiPermissionNavigation.ts"),
     "@/src/theme": { colors: {}, radius: {}, spacing: {}, type: {} },
     "expo-router": { useRouter: () => router, useLocalSearchParams: () => options.params || {}, useFocusEffect: (fn) => r.react.useEffect(fn, [fn]), Redirect: "Redirect", Stack: { Screen: "Screen" } },
     "react-native": { View: "View", Text: "Text", Image: "Image", TextInput: "Input", Pressable: "Pressable", Switch: "Switch", ScrollView: "ScrollView", KeyboardAvoidingView: "KeyboardAvoidingView", ActivityIndicator: "ActivityIndicator", FlatList: "FlatList", Platform: { OS: "ios" }, AppState: { addEventListener: () => ({ remove() {} }) }, Linking: { openURL: async () => {} }, StyleSheet: { create: (value) => value, absoluteFill: {} }, useWindowDimensions: () => ({ width: 402 }) },
@@ -106,7 +108,7 @@ function page(path, f, options = {}) {
     "@/src/authFlow": { savePendingVerification: async () => {}, cleanCode: (value) => value, useCountdown: () => 0, authErrorMessage: () => "error" },
     "@/src/nativePushRuntime": { safeNotificationRoute: () => null },
   };
-  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
+  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "RequestFailureNotice"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
   const component = load(path, dep).default;
   let tree;
   function expand(node) {
@@ -139,7 +141,9 @@ for (const failure of ["401 body", "transport"]) test("late A " + failure + " ca
     await f.login("A"); const barrier = deferred();
     f.responder = (path) => path === "/children" ? failure === "transport" ? barrier.promise : { ...response(null, 401), text: () => barrier.promise } : null;
     const rejected = assert.rejects(f.api.listChildren(), (error) => error.sessionChanged && !f.isAuthError(error)); await tick(); await f.login("B");
-    failure === "transport" ? barrier.reject(new Error("offline")) : barrier.resolve('{"detail":"expired"}'); await rejected;
+    if (failure === "transport") barrier.reject(new Error("offline"));
+    else barrier.resolve('{"detail":"expired"}');
+    await rejected;
     assert.equal(await f.auth.getToken(), "account-B");
   } finally { f.restore(); }
 });
@@ -229,8 +233,10 @@ test("actual Home late canonical-session result cannot navigate B or an unmounte
     const f = fixture(), barrier = deferred(); let p;
     try {
       await f.login("A"); await f.permit(); p = page("../app/(tabs)/index.tsx", f); p.render(); await tick(); p.render();
-      f.responder = (path) => path === "/chat/sessions" ? barrier.promise : null;
+      f.responder = (path) => path === "/chat/main/preview" ? response({ has_conversation: false, session_id: null })
+        : path === "/chat/sessions" ? barrier.promise : null;
       const pending = p.find("home-nuri-card").props.onPress(); await tick();
+      assert.ok(f.calls.some((call) => call.path === "/chat/sessions" && call.init.method === "POST"), "canonical creation must reach the held request");
       if (unmount) p.unmount(); else { await f.login("B"); p.render(); }
       barrier.resolve(response({ id: "A-private-chat" })); await pending; assert.deepEqual(p.routes, []);
     } finally { p?.unmount(); f.restore(); }

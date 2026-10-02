@@ -527,7 +527,21 @@ export function apiErrorDetail(err: unknown): string {
 }
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
+function logRequestFailure(path: string, init: RequestInit | undefined, started: number, error: unknown) {
+  // Deliberately no URL/query, identifiers, body, headers, token or Error.message.
+  const route = path.split("?")[0];
+  const operation = route === "/auth/me" ? "identity" : route === "/chat/main/preview" ? "chat-preview"
+    : route === "/chat/sessions" ? "chat-entry" : route === "/feed/daily-post" ? "daily-post"
+    : route === "/feed/search" ? "knowledge-search" : /^\/feed\/[^/]+\/detail$/.test(route) ? "knowledge-detail" : "other";
+  const failure = error && typeof error === "object" ? error as { status?: number; code?: string; name?: string; aiConsentRequired?: boolean } : {};
+  const outcome = failure.status === 401 || failure.code === "AI_SESSION_CHANGED" || failure.name === "SessionChangedError" ? "session"
+    : failure.aiConsentRequired ? "permission" : failure.name === "AbortError" ? "timeout" : typeof failure.status === "number" ? "service" : "connection";
+  console.warn("[NURI request]", JSON.stringify({ operation, method: (init?.method || "GET").toUpperCase(), outcome,
+    status: typeof failure.status === "number" ? failure.status : null, elapsedMs: Math.max(0, Date.now() - started) }));
+}
+
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000, sessionToken?: string): Promise<T> {
+  const started = Date.now();
   const generation = getSessionGeneration();
   // These operations deliberately finish for a captured owner after a switch.
   // Their callers implement owner-CAS cleanup and must receive true outcomes.
@@ -535,7 +549,9 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
   const assertCurrent = () => { if (isolated) assertSessionGeneration(generation); };
   const token = sessionToken === undefined ? await getToken() : sessionToken;
   assertCurrent();
-  const lease = requiresAIConsent(path, init) ? await aiConsent.authorize(token || null) : null;
+  let lease = null;
+  try { lease = requiresAIConsent(path, init) ? await aiConsent.authorize(token || null) : null; }
+  catch (error) { logRequestFailure(path, init, started, error); throw error; }
   if (isPreviewMode) {
     if (lease) aiConsent.assertCurrent(lease);
     const value = await previewRequest(path, init) as T;
@@ -573,7 +589,7 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
     if (lease) aiConsent.assertCurrent(lease);
     assertCurrent();
     try { return await check(await fetch(API + path, requestInit)); }
-    catch (error) { assertCurrent(); throw error; }
+    catch (error) { logRequestFailure(path, init, started, error); assertCurrent(); throw error; }
   }
 
   const controller = new AbortController();
@@ -586,6 +602,7 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
       await fetch(API + path, { ...requestInit, signal: controller.signal }),
     );
   } catch (error) {
+    logRequestFailure(path, init, started, error);
     assertCurrent();
     throw error;
   } finally {
