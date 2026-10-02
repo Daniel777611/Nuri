@@ -21,6 +21,7 @@
     "test:native-ui": "node --test ./src/components/__tests__/native-ui.test.mjs",
     "test:native-bootstrap": "node ./scripts/test-native-bootstrap.mjs",
     "test:native-auth": "node ./scripts/test-expired-session-recovery.mjs",
+    "test:native-login": "node --test ./scripts/test-login-native-storage.mjs",
     "test:session-isolation": "node ./scripts/test-session-isolation.mjs",
     "test:native-storage": "node --test ./src/utils/storage/__tests__/native-storage.test.mjs",
     "test:native-lab-billing": "node ./scripts/test-native-lab-billing.mjs",

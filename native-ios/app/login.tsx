@@ -1,4 +1,5 @@
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
+import { useState as useLocalState } from "react";
 import {
   View,
   Text,
@@ -21,7 +22,7 @@ import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Login() {
-  const { capture, current, isMounted } = useAccountScope();
+  const { generation, capture, current, isMounted } = useAccountScope();
   const router = useRouter();
   const { returnTo } = useLocalSearchParams<{ returnTo?: string | string[] }>();
   const notificationReturn = safeNotificationRoute(returnTo);
@@ -32,15 +33,46 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Keychain replacement invalidates the form's old epoch even when its write
+  // fails. Keep only this non-sensitive error outside account state, and bind
+  // it to the exact identity/phase so a new session never inherits it.
+  const [localFailure, setLocalFailure] = useLocalState<{ identity: number; generation: number; kind: "save" | "read" | "onboarding" } | null>(null);
+  const failureKind = localFailure?.identity === auth.getIdentityGeneration() && localFailure.generation === generation ? localFailure.kind : null;
+  const localFailureCopy = locale === "en" ? {
+    save: "Your sign-in credentials could not be saved securely on this device. Re-enter your email and password, then retry. This sign-in has not been confirmed.",
+    read: "This device could not read back your securely saved sign-in credentials. Re-enter your email and password, then retry. Sign-in has not been confirmed.",
+    onboarding: "This device could not save your sign-in setup state. Re-enter your email and password, then retry. Sign-in setup has not been completed.",
+  } : locale === "zh-TW" ? {
+    save: "本機未能安全保存登入憑據。請重新填寫電子郵件和密碼後重試；本次登入尚未確認完成。",
+    read: "本機未能讀回安全保存的登入憑據。請重新填寫電子郵件和密碼後重試；登入尚未確認完成。",
+    onboarding: "本機未能保存登入設定狀態。請重新填寫電子郵件和密碼後重試；登入設定尚未完成。",
+  } : {
+    save: "本机未能安全保存登录凭据。请重新填写邮箱和密码后重试；本次登录尚未确认完成。",
+    read: "本机未能读回安全保存的登录凭据。请重新填写邮箱和密码后重试；登录尚未确认完成。",
+    onboarding: "本机未能保存登录设置状态。请重新填写邮箱和密码后重试；登录设置尚未完成。",
+  };
+  const visibleError = failureKind ? localFailureCopy[failureKind] : error;
 
   const submit = async () => {
     const ticket = capture();
     if (ticket === null || submitting) return;
     let ownerIdentity: number | null = null;
-    const ownsLogin = async (token: string) => {
-      const live = await auth.getToken();
-      return isMounted() && ownerIdentity === auth.getIdentityGeneration() && live === token;
+    let ownerGeneration: number | null = null;
+    const ownsStoragePhase = () => isMounted() && ownerIdentity === auth.getIdentityGeneration()
+      && ownerGeneration === auth.getSessionGeneration();
+    const showLocalFailure = (kind: "save" | "read" | "onboarding") => {
+      if (!ownsStoragePhase()) return;
+      setLocalFailure((previous) => ownsStoragePhase()
+        ? { identity: ownerIdentity!, generation: ownerGeneration!, kind } : previous);
     };
+    const ownsLogin = async (token: string) => {
+      if (!ownsStoragePhase()) return false;
+      const live = await auth.getToken();
+      if (!ownsStoragePhase()) return false;
+      if (live !== token) { showLocalFailure("read"); return false; }
+      return true;
+    };
+    setLocalFailure(null);
     setError(null);
     setSubmitting(true);
     const normalizedEmail = email.trim().toLowerCase();
@@ -53,13 +85,19 @@ export default function Login() {
       if (!current(ticket)) return;
       ownerIdentity = auth.getIdentityGeneration() + 1;
       const saved = await auth.setToken(res.access_token, { expectedGeneration: ticket });
-      if (!saved || !await ownsLogin(res.access_token)) return;
+      // A failed secure write advances the boundary at replacement start/end,
+      // but a CAS mismatch does not. A successful intervening B login advances
+      // it again at publish; neither mismatch may display A's storage error.
+      ownerGeneration = saved ? auth.getSessionGeneration() : ticket + 2;
+      if (!saved) { showLocalFailure("save"); return; }
+      if (!await ownsLogin(res.access_token)) return;
       // Old users must also complete the basic-info flow before entering tabs
       if (res.user?.language) await setLocale(res.user.language);
       if (!await ownsLogin(res.access_token)) return;
       const onboarded = !!res.user?.onboarding_completed;
-      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: auth.getSessionGeneration() });
-      if (!stored || !await ownsLogin(res.access_token)) return;
+      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: ownerGeneration });
+      if (!stored) { if (await ownsLogin(res.access_token)) showLocalFailure("onboarding"); return; }
+      if (!await ownsLogin(res.access_token)) return;
       router.replace(onboarded ? (safeReturnTo ?? "/(tabs)") as never : "/onboarding");
     } catch (e: any) {
       if (!current(ticket)) return;
@@ -130,10 +168,10 @@ export default function Login() {
             <Text style={styles.forgotText}>{t("忘记密码？")}</Text>
           </Pressable>
 
-          {error ? (
-            <View style={styles.errorBox} testID="login-error">
+          {visibleError ? (
+            <View style={styles.errorBox} testID="login-error" accessibilityLiveRegion="polite">
               <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
-              <Text style={styles.errorText}>{error}</Text>
+              <Text style={styles.errorText}>{visibleError}</Text>
             </View>
           ) : null}
 
