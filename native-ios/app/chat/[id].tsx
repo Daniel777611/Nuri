@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Animated,
@@ -238,6 +239,7 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail() {
+  const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const headerHeight = useHeaderHeight();
@@ -294,18 +296,21 @@ export default function ChatDetail() {
   const showToast = useCallback((message: string) => {
     setToastMsg(message);
     setTimeout(() => setToastMsg(null), 1800);
-  }, []);
+  }, [setToastMsg]);
 
   const copyResponse = useCallback(async (message: Msg) => {
+    if (capture() === null) return;
     try {
       await copyChatText(message.text);
       showToast(t("已复制回复"));
     } catch {
       showToast(t("复制失败，请重试"));
     }
-  }, [showToast, t]);
+  }, [showToast, t, capture]);
 
   const rateResponse = useCallback(async (message: Msg, rating: "like" | "dislike") => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!id || feedbackSavingRef.current.has(message.id) || message.feedback_rating === rating) return;
     const previous = message.feedback_rating ?? null;
     feedbackSavingRef.current.add(message.id);
@@ -314,10 +319,12 @@ export default function ChatDetail() {
       item.id === message.id ? { ...item, feedback_rating: rating } : item));
     try {
       const saved = await api.setChatMessageFeedback(id, message.id, rating);
+      if (!current(ticket)) return;
       setMessages((current) => current.map((item) =>
         item.id === message.id ? { ...item, feedback_rating: saved.rating } : item));
       showToast(t("已记录你的反馈"));
     } catch {
+      if (!current(ticket)) return;
       setMessages((current) => current.map((item) =>
         item.id === message.id ? { ...item, feedback_rating: previous } : item));
       showToast(t("反馈保存失败，请重试"));
@@ -327,35 +334,41 @@ export default function ChatDetail() {
         next.delete(message.id);
         return next;
       });
-      feedbackSavingRef.current.delete(message.id);
+      if (current(ticket)) feedbackSavingRef.current.delete(message.id);
     }
-  }, [id, showToast, t]);
+  }, [id, showToast, t, capture, current, setFeedbackSavingIds, setMessages]);
 
   const load = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!id) return;
     setHistoryLoadState("loading");
     try {
       const msgs = await api.getMessages(id);
+      if (!current(ticket)) return;
       setMessages(msgs);
       setHistoryLoadState("ready");
     } catch (error) {
+      if (!current(ticket)) return;
       // Old clients could keep a deleted session URL in navigation history.
       // A 404 is safe to heal because the authenticated, idempotent endpoint
       // returns only this account's current canonical conversation.
       if (error instanceof ApiError && error.status === 404) {
         try {
           const session = await api.getOrStartMainSession();
+          if (!current(ticket)) return;
           if (session?.id && session.id !== id) {
             router.replace(`/chat/${session.id}`);
             return;
           }
         } catch {
+          if (!current(ticket)) return;
           // Fall through to an explicit retry state; never render fake history.
         }
       }
       setHistoryLoadState("error");
     }
-  }, [id, router]);
+  }, [id, router, capture, current, setMessages, setHistoryLoadState]);
 
   useEffect(() => {
     load();
@@ -368,10 +381,12 @@ export default function ChatDetail() {
   // Home's daily card is fixed for the day, so a finished turn no longer
   // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
   const returnHome = useCallback(() => {
+    if (capture() === null) return;
     router.dismissTo("/(tabs)");
-  }, [router]);
+  }, [router, capture]);
 
   const requestHomeReturn = useCallback(() => {
+    if (capture() === null) return;
     pendingHeaderNavigationRef.current = null;
     if (sendingRef.current) {
       if (!pendingHomeReturnRef.current) {
@@ -381,9 +396,10 @@ export default function ChatDetail() {
       return;
     }
     returnHome();
-  }, [returnHome, showToast, t]);
+  }, [returnHome, showToast, t, capture]);
 
   useFocusEffect(useCallback(() => registerNativeNavigationGuard(`/chat/${id}`, (action) => {
+    if (capture() === null) return;
     if (action !== "notifications") { requestHomeReturn(); return; }
     if (sendingRef.current) {
       pendingHomeReturnRef.current = false;
@@ -392,9 +408,11 @@ export default function ChatDetail() {
     } else {
       router.push("/notification-settings" as never);
     }
-  }), [id, locale, requestHomeReturn, router, showToast]));
+  }), [id, locale, requestHomeReturn, router, showToast, capture]));
 
   const send = async (textOverride?: string, imageBase64?: string | null) => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!id || sendingRef.current) return;
     const text = (textOverride ?? input).trim();
     const selectedImage = imageBase64
@@ -428,17 +446,20 @@ export default function ChatDetail() {
       let res;
       try {
         res = await api.streamMessage(id, payload, (chunk) => {
+          if (!current(ticket)) return;
           // First token replaces the typing dots with the live bubble.
           setTyping(false);
           setStreamingText((prev) => prev + chunk);
         });
       } catch (err) {
+        if (!current(ticket)) return;
         if (!isStreamUnsupported(err)) throw err;
         // The stream never started, so nothing was persisted — the plain
         // endpoint can serve this turn instead.
         setTyping(true);
         res = await api.sendMessage(id, payload);
       }
+      if (!current(ticket)) return;
       setMessages((p) => [
         ...p.filter((m) => m.id !== optimistic.id),
         res.user_message,
@@ -453,6 +474,7 @@ export default function ChatDetail() {
         returnHome();
       }
     } catch {
+      if (!current(ticket)) return;
       // Mid-stream failures may have already persisted the user message, so
       // preserve both the draft and its stable key. An unchanged retry then
       // asks the backend to replay the same durable turn rather than generating
@@ -466,10 +488,12 @@ export default function ChatDetail() {
       showToast(t("发送失败，请重试"));
       await load().catch(() => {});
     } finally {
-      setStreamingText("");
-      setTyping(false);
-      setSending(false);
-      sendingRef.current = false;
+      if (current(ticket)) {
+        setStreamingText("");
+        setTyping(false);
+        setSending(false);
+        sendingRef.current = false;
+      }
     }
   };
 
@@ -479,6 +503,20 @@ export default function ChatDetail() {
       voiceTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    sendingRef.current = false;
+    failedSendRef.current = null;
+    pendingHomeReturnRef.current = false;
+    pendingHeaderNavigationRef.current = null;
+    feedbackSavingRef.current.clear();
+    pendingNativePickerRef.current = null;
+    if (nativePickerFallbackTimerRef.current) clearTimeout(nativePickerFallbackTimerRef.current);
+    voiceStartVersionRef.current++;
+    clearVoiceTimer();
+    voiceRecordingRef.current?.cancel();
+    voiceRecordingRef.current = null;
+  }, [generation, clearVoiceTimer]);
 
   // Stack keeps covered screens mounted. Blur, background, and a late
   // permission result must all release the microphone and reset the controls.
@@ -493,7 +531,7 @@ export default function ChatDetail() {
       setVoiceState("idle");
       setVoiceSeconds(0);
     };
-  }, [clearVoiceTimer]));
+  }, [clearVoiceTimer, setVoiceState, setVoiceSeconds]));
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -510,7 +548,7 @@ export default function ChatDetail() {
       setVoiceSeconds(0);
     });
     return () => subscription.remove();
-  }, [clearVoiceTimer]);
+  }, [clearVoiceTimer, setVoiceState, setVoiceSeconds]);
 
   const explainVoiceError = (error: unknown) => {
     const code = error instanceof VoiceInputError ? error.code : "failed";
@@ -522,6 +560,8 @@ export default function ChatDetail() {
   };
 
   const stopVoice = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     const recording = voiceRecordingRef.current;
     if (!recording) return;
     const version = voiceStartVersionRef.current;
@@ -530,8 +570,9 @@ export default function ChatDetail() {
     setVoiceState("transcribing");
     try {
       const clip = await recording.stop();
+      if (!current(ticket)) return;
       const { text } = await api.transcribeVoice(clip, locale);
-      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
+      if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       const spoken = (text || "").trim();
       if (!spoken) {
         showToast(t("没有听清，请再说一次"));
@@ -539,9 +580,9 @@ export default function ChatDetail() {
       }
       setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
     } catch (error) {
-      if (voiceActiveRef.current && version === voiceStartVersionRef.current) explainVoiceError(error);
+      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) explainVoiceError(error);
     } finally {
-      if (voiceActiveRef.current && version === voiceStartVersionRef.current) {
+      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) {
         setVoiceState("idle");
         setVoiceSeconds(0);
       }
@@ -558,6 +599,8 @@ export default function ChatDetail() {
   };
 
   const startVoice = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (voiceState !== "idle" || voiceStartInFlightRef.current) return;
     if (!isVoiceInputSupported()) {
       showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
@@ -568,13 +611,13 @@ export default function ChatDetail() {
     const version = ++voiceStartVersionRef.current;
     try {
       const recording = await startVoiceRecording();
-      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) {
+      if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) {
         recording.cancel();
         return;
       }
       voiceRecordingRef.current = recording;
     } catch (error) {
-      if (!voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
+      if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       setVoiceState("idle");
       explainVoiceError(error);
       return;
@@ -604,14 +647,17 @@ export default function ChatDetail() {
     showToast(t("图片处理失败，请重试"));
   };
 
-  const acceptPickerResult = async (result: ImagePicker.ImagePickerResult) => {
+  const acceptPickerResult = async (result: ImagePicker.ImagePickerResult, ticket = capture()) => {
+    if (!current(ticket)) return;
     if (result.canceled || !result.assets?.length) return;
     setProcessingImage(true);
     try {
       const asset = result.assets[0];
       const prepared = await prepareChatImage(asset);
+      if (!current(ticket)) return;
       setPendingImage(prepared);
     } catch (error) {
+      if (!current(ticket)) return;
       explainImageError(error);
     } finally {
       setProcessingImage(false);
@@ -619,9 +665,12 @@ export default function ChatDetail() {
   };
 
   const openNativePicker = async (source: "camera" | "library") => {
+    const ticket = capture();
+    if (ticket === null) return;
     try {
       if (source === "camera") {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!current(ticket)) return;
         if (!permission.granted) {
           showToast(t("需要相机权限才能拍照，请在系统设置中允许"));
           return;
@@ -633,11 +682,12 @@ export default function ChatDetail() {
           base64: false,
           exif: false,
           quality: 0.68,
-        }));
+        }), ticket);
         return;
       }
 
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!current(ticket)) return;
       if (!permission.granted) {
         showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
         return;
@@ -649,8 +699,9 @@ export default function ChatDetail() {
         base64: false,
         exif: false,
         quality: 0.78,
-      }));
+      }), ticket);
     } catch {
+      if (!current(ticket)) return;
       showToast(t(source === "camera" ? "无法打开相机，请重试" : "无法读取图片，请重试"));
     }
   };
@@ -667,6 +718,7 @@ export default function ChatDetail() {
   };
 
   const deferNativePickerUntilModalCloses = (source: "camera" | "library") => {
+    if (capture() === null) return;
     pendingNativePickerRef.current = source;
     setImageMenuVisible(false);
     // onDismiss is reliable on iOS. Android does not consistently emit it for
@@ -677,6 +729,8 @@ export default function ChatDetail() {
   };
 
   const openSafeWebPicker = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     try {
       // Do not force capture=environment or use Expo's eager Web metadata
       // decode. Safari owns the chooser transition and NURI validates the raw
@@ -684,8 +738,9 @@ export default function ChatDetail() {
       const pendingAsset = pickWebChatImageFile();
       setImageMenuVisible(false);
       const asset = await pendingAsset;
-      if (asset) await acceptPickerResult({ canceled: false, assets: [asset] });
+      if (asset && current(ticket)) await acceptPickerResult({ canceled: false, assets: [asset] }, ticket);
     } catch (error) {
+      if (!current(ticket)) return;
       explainImageError(error);
     }
   };
@@ -707,6 +762,7 @@ export default function ChatDetail() {
   };
 
   const openImageInput = () => {
+    if (capture() === null) return;
     // The iOS app is a WKWebView shell. Its browser-owned file chooser already
     // offers Camera and Photo Library, so opening a NURI menu first only adds a
     // redundant extra step and can break Safari's required user gesture.

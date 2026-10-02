@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { useAccountState, useAccountScope } from "@/src/useAccountState";
 import { useFocusEffect } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,6 +14,7 @@ import { parseReminderInterval, withDailyPushPreference } from "@/src/components
 import { colors, radius, spacing } from "@/src/theme";
 
 export default function NotificationSettings() {
+  const { capture, current } = useAccountScope();
   const { locale } = useT();
   const headerHeight = useHeaderHeight();
   const text = (key: NotificationCopyKey, values?: Record<string, string | number>) => notificationText(locale, key, values);
@@ -20,15 +22,15 @@ export default function NotificationSettings() {
   const [enabled, setEnabled] = useState(false);
   const [minutes, setMinutes] = useState("0");
   const [seconds, setSeconds] = useState("30");
-  const [dailyPush, setDailyPush] = useState(false);
-  const [privacyAvailable, setPrivacyAvailable] = useState(false);
+  const [dailyPush, setDailyPush] = useAccountState(false);
+  const [privacyAvailable, setPrivacyAvailable] = useAccountState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"local" | "remote" | "permission" | null>(null);
   const busyRef = useRef(false);
   const activeRef = useRef(false);
   const draftDirtyRef = useRef(false);
   const [localMessage, setLocalMessage] = useState<NotificationCopyKey | null>(null);
-  const [remoteMessage, setRemoteMessage] = useState<NotificationCopyKey | null>(null);
+  const [remoteMessage, setRemoteMessage] = useAccountState<NotificationCopyKey | null>(null);
 
   const applySettings = useCallback((next: NativeReminderSettings, updateDraft = true) => {
     setSaved(next);
@@ -41,6 +43,7 @@ export default function NotificationSettings() {
   }, []);
 
   const reload = useCallback(async () => {
+    const ticket = capture();
     setLoading(true);
     const [local, remote] = await Promise.allSettled([getReminderSettings(), api.getPrivacy()]);
     if (!activeRef.current) return;
@@ -50,10 +53,12 @@ export default function NotificationSettings() {
     } else {
       setLocalMessage("localUnavailable");
     }
-    setPrivacyAvailable(remote.status === "fulfilled");
-    if (remote.status === "fulfilled") setDailyPush(remote.value?.daily_push === true);
+    if (current(ticket)) {
+      setPrivacyAvailable(remote.status === "fulfilled");
+      if (remote.status === "fulfilled") setDailyPush(remote.value?.daily_push === true);
+    }
     setLoading(false);
-  }, [applySettings]);
+  }, [applySettings, capture, current, setPrivacyAvailable, setDailyPush]);
 
   useFocusEffect(useCallback(() => {
     activeRef.current = true;
@@ -65,17 +70,20 @@ export default function NotificationSettings() {
   }, [reload]));
 
   const changeRemote = async (next: boolean) => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!privacyAvailable || busyRef.current) return;
     busyRef.current = true;
     setBusy("remote");
     setRemoteMessage(null);
     try {
       // Read fresh preferences so a notification switch never reverts consent.
-      const current = await api.getPrivacy();
-      await api.setPrivacy(withDailyPushPreference(current, next));
-      if (activeRef.current) { setDailyPush(next); setRemoteMessage("remoteSaved"); }
+      const preferences = await api.getPrivacy();
+      if (!activeRef.current || !current(ticket)) return;
+      await api.setPrivacy(withDailyPushPreference(preferences, next));
+      if (activeRef.current && current(ticket)) { setDailyPush(next); setRemoteMessage("remoteSaved"); }
     } catch {
-      if (activeRef.current) setRemoteMessage("remoteFailed");
+      if (activeRef.current && current(ticket)) setRemoteMessage("remoteFailed");
     } finally {
       busyRef.current = false;
       if (activeRef.current) setBusy(null);

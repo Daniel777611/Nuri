@@ -4,7 +4,7 @@ Independent native iOS test client on the `iOS-native-test` branch. The user req
 
 ## Isolation
 
-- Display name: **NURI Native Lab**, version **0.3.0 (1003)**.
+- Display name: **NURI Native Lab**, version **0.3.0 (1004)** (local release candidate, not yet uploaded).
 - Independent Bundle ID: `com.ordashtech.nuri.nativelab`. The original web-shell app keeps `com.ordashtech.nuri`; both can be installed on the same phone. The lab uses only `nuri-native-lab://` links and separate login/installation/reminder storage. No old app data is migrated or deleted.
 - It uses the existing production API at `https://nurifam.app/api` and the user's existing NURI account/data; this is **not** an isolated backend sandbox. Signing in is independent, but account-level server data/preferences are shared.
 - Upload using **`ExportOptions-ExternalTestFlight.plist`**, with `testFlightInternalTestingOnly=false`, so the build can enter Beta App Review. This does not submit an App Store production release. `ExportOptions-InternalOnly.plist` is a retained alternate template, not the current release route.
@@ -35,6 +35,7 @@ pnpm test:native-voice
 pnpm test:native-push
 pnpm test:native-bootstrap
 pnpm test:native-auth
+pnpm test:session-isolation
 pnpm test:native-storage
 pnpm test:ai-consent
 pnpm test:account-deletion
@@ -47,7 +48,9 @@ Open `ios/NURINativeLab.xcworkspace`. The local config plugin installs the APNs 
 
 ## External TestFlight release
 
-Archive scheme `NURINativeLab`, Release, generic iOS device, with the existing company Apple Distribution identity and the **lab-specific** `NURI Native Lab App Store Connect` provisioning profile. The old `NURI App Store Connect` profile cannot sign this distinct Bundle ID. Check the final archive's bundle ID, version/build, APNs production entitlement, permissions and embedded JavaScript. Export/upload with `ExportOptions-ExternalTestFlight.plist`. Build 1002 was signed successfully but its first upload failed before success, so it has not been published as Internal Only. The saved 1002 archive predates the latest privacy/photo-purpose/AI/account-deletion corrections; the release candidate is 1003 rebuilt from final native source. Do not re-upload an already accepted build number if this status changes.
+Build 1004 adds monotonic session boundaries: account-specific views clear immediately when credentials change, and old JSON/error/stream results or callbacks cannot repopulate another account's screen, overwrite its login, or perform a second write under its JWT. Captured-owner push cleanup and account deletion retain their explicit ownership checks. The reproducible isolation suite executes real API modules, hooks and component callbacks with mocked transports (21 checks); it is not a production end-to-end test.
+
+Archive scheme `NURINativeLab`, Release, generic iOS device, with the existing company Apple Distribution identity and the **lab-specific** `NURI Native Lab App Store Connect` provisioning profile. The old `NURI App Store Connect` profile cannot sign this distinct Bundle ID. Check the final archive's bundle ID, version/build, APNs production entitlement, permissions and embedded JavaScript. Export/upload with `ExportOptions-ExternalTestFlight.plist`. Build 1003 uploaded through Xcode Organizer and is processed in App Store Connect as Ready to Submit; it has not been submitted for Beta App Review or distributed. The next local candidate is 1004, incorporating account-switch isolation fixes, and needs its own signed archive and upload. Saved 1002/1003 archives do not contain the new fixes. Never re-upload an already accepted build number.
 
 After processing, confirm the build is eligible for external testing, provide the real beta description/feedback/contact information, the public privacy URL `https://nurifam.com/privacy`, a valid review login and honest testing notes (including the lab's remote APNs and payment limitations). Submit Beta App Review for the independent external group. No fabricated accounts, credentials, contacts or attachments. Do not report installability until Apple has approved the build and the tester invitation has actually been distributed. Use an invitation to the user's own TestFlight account; creating a public link or inviting others requires a separate explicit request.
 

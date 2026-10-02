@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Image,
@@ -30,6 +31,7 @@ import { useT } from "@/src/i18n";
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 
 export default function Register() {
+  const { capture, current } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const recovery = useExpiredSessionRecovery();
@@ -50,22 +52,25 @@ export default function Register() {
   // the database under the old id. That is what "孩子没了" actually was.
   // Preview mode is exempt: it has no real session and exists to review screens.
   useEffect(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (isPreviewMode) return;
     let cancelled = false;
     (async () => {
       try {
         const token = await auth.getToken();
+        if (!current(ticket)) return;
         if (!token) return;
 
         try {
           const me: any = await api.me();
-          if (cancelled || await auth.getToken() !== token) return;
-          if (!await auth.setOnboarded(!!me?.onboarding_completed, { expectedToken: token })) return;
-          if (cancelled || await auth.getToken() !== token) return;
+          if (cancelled || await auth.getToken() !== token || !current(ticket)) return;
+          if (!await auth.setOnboarded(!!me?.onboarding_completed, { expectedToken: token, expectedGeneration: ticket })) return;
+          if (cancelled || await auth.getToken() !== token || !current(ticket)) return;
           router.replace(me?.onboarding_completed ? "/(tabs)" : "/onboarding");
           return;
         } catch (err) {
-          if (cancelled) return;
+          if (cancelled || !current(ticket)) return;
           // Only a rejected token means the session is really gone; then the
           // form is legitimate. A timeout or a 5xx says nothing about the
           // credentials, so route on the last known state rather than handing
@@ -75,7 +80,7 @@ export default function Register() {
             return;
           }
           const onboarded = await auth.getOnboarded();
-          if (cancelled || await auth.getToken() !== token) return;
+          if (cancelled || await auth.getToken() !== token || !current(ticket)) return;
           router.replace(onboarded ? "/(tabs)" : "/onboarding");
           return;
         }
@@ -84,11 +89,13 @@ export default function Register() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router, recoverExpiredCredentials]);
+  }, [router, recoverExpiredCredentials, capture, current, setCheckingSession]);
 
   const canNext = /\S+@\S+\.\S+/.test(email) && password.length >= 6;
 
   const submit = async () => {
+    const ticket = capture();
+    if (ticket === null || submitting) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -99,9 +106,12 @@ export default function Register() {
         password,
         language: locale,
       });
+      if (!current(ticket)) return;
       await savePendingVerification(res.email, res.resend_after);
+      if (!current(ticket)) return;
       router.replace("/verify-email");
     } catch (e: any) {
+      if (!current(ticket)) return;
       const msg = String(e?.message || "");
       setError(
         msg.includes("已注册")

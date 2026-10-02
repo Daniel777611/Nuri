@@ -55,6 +55,7 @@ function apiFixture() {
     "./theme": { API: "https://nuri.invalid/api" },
     "./preview-api": { isPreviewMode: false }, "./utils/storage": { storage },
     "./aiConsent": loadTypeScript("../src/aiConsent.ts", {}),
+    "./sessionBoundary": loadTypeScript("../src/sessionBoundary.ts", {}),
   });
   return { client, storage, secureValues, ordinaryValues,
     failCredentialRemoval: () => { removeCredentials = false; },
@@ -363,6 +364,7 @@ assert.match(api, /publishSession\(null\)/);
     const client = loadTypeScript("../src/api.ts", {
       "./theme": { API: "https://nuri.invalid/api" },
       "./aiConsent": loadTypeScript("../src/aiConsent.ts", {}),
+      "./sessionBoundary": loadTypeScript("../src/sessionBoundary.ts", {}),
       "./preview-api": { isPreviewMode: false }, "./utils/storage": { storage },
     });
     const sessions = [];

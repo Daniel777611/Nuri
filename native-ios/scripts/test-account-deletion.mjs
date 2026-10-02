@@ -45,6 +45,7 @@ function fixture({ status = 200, result = confirmed, locale = "en" } = {}) {
   const client = load("../src/api.ts", {
     "./theme": { API: "https://nuri.invalid/api" }, "./preview-api": { isPreviewMode: false },
     "./utils/storage": { storage }, "./aiConsent": policy,
+    "./sessionBoundary": load("../src/sessionBoundary.ts"),
   });
   // No production address or real deletion is ever contacted by this test.
   globalThis.fetch = async (url, init = {}) => {

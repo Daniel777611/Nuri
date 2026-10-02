@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAccountScope, useAccountState } from "@/src/useAccountState";
 import {
   View,
   Text,
@@ -26,33 +27,49 @@ const FIGMA_FRAME_WIDTH = 402;
 
 export default function Profile() {
   const router = useRouter();
+  const { generation, capture, current, isMounted } = useAccountScope();
   const { t, locale, setLocale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const [children, setChildren] = useState<any[]>([]);
-  const [favorites, setFavorites] = useState<any[]>([]);
-  const [privacy, setPrivacy] = useState<any>({
+  const [children, setChildren] = useAccountState<any[]>([]);
+  const [favorites, setFavorites] = useAccountState<any[]>([]);
+  const [privacy, setPrivacy] = useAccountState<any>({
     allow_history_training: false,
     allow_external_content_research: false,
     daily_push: false,
     anonymous_community_share: false,
     language: "zh-CN",
   });
-  const [privacyUnavailable, setPrivacyUnavailable] = useState(true);
-  const [confirmWipe, setConfirmWipe] = useState(false);
+  const [privacyUnavailable, setPrivacyUnavailable] = useAccountState(true);
+  const [confirmWipe, setConfirmWipe] = useAccountState(false);
   const [signingOut, setSigningOut] = useState(false);
   const signingOutRef = useRef(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [logoutFailureCode, setLogoutFailureCode] = useState("");
   const [policyError, setPolicyError] = useState<string | null>(null);
   const purchaseAllowed = usePurchaseAllowed();
+  const logoutOwner = useRef<{ token: string; identity: number } | null>(null);
+  const logoutVersion = useRef(0);
+  useEffect(() => {
+    if (logoutOwner.current && logoutOwner.current.identity !== auth.getIdentityGeneration()) {
+      logoutOwner.current = null;
+      logoutVersion.current++;
+      signingOutRef.current = false;
+      setSigningOut(false); setLogoutError(null); setLogoutFailureCode("");
+    }
+  }, [generation]);
 
   const load = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
+    const token = await auth.getToken();
+    if (!token || !current(ticket)) return;
     const [childrenResult, privacyResult, favoritesResult] = await Promise.allSettled([
       api.listChildren(),
       api.getPrivacy(),
       api.listFavorites(),
     ]);
+    if (!current(ticket)) return;
     if (childrenResult.status === "fulfilled") setChildren(childrenResult.value);
     if (favoritesResult.status === "fulfilled") setFavorites(favoritesResult.value);
     if (privacyResult.status === "fulfilled") {
@@ -65,7 +82,7 @@ export default function Profile() {
       }));
       setPrivacyUnavailable(true);
     }
-  }, []);
+  }, [capture, current, setChildren, setFavorites, setPrivacy, setPrivacyUnavailable]);
 
   useFocusEffect(
     useCallback(() => {
@@ -74,7 +91,8 @@ export default function Profile() {
   );
 
   const updatePrivacy = async (patch: any) => {
-    if (privacyUnavailable) return;
+    const ticket = capture();
+    if (ticket === null || privacyUnavailable) return;
     const previous = privacy;
     // `locale` — not `privacy.language` — is what the parent is looking at, so
     // toggling an unrelated switch can't push a stale language back up and undo
@@ -82,9 +100,11 @@ export default function Profile() {
     const next = { ...privacy, language: locale, ...patch };
     setPrivacy(next);
     if (patch.language) await setLocale(patch.language);
+    if (!current(ticket)) return;
     try {
       await api.setPrivacy(next);
     } catch {
+      if (!current(ticket)) return;
       // Do not leave a privacy toggle visually enabled/disabled when the
       // persisted setting did not actually save.
       setPrivacy(previous);
@@ -92,23 +112,46 @@ export default function Profile() {
     }
   };
 
+  const finishSignOut = async (identity: number) => {
+    const token = await auth.getToken();
+    if (isMounted() && identity === auth.getIdentityGeneration() && token === null) router.replace("/login");
+  };
+
   const wipeAll = async () => {
-    await api.wipe();
-    await auth.clearToken();
-    setConfirmWipe(false);
-    router.replace("/login");
+    const ticket = capture();
+    if (ticket === null) return;
+    const token = await auth.getToken();
+    if (!token || !current(ticket)) return;
+    try {
+      await api.wipe();
+      if (!current(ticket)) return;
+      setConfirmWipe(false);
+      await logout();
+    } catch {
+      if (!current(ticket)) return;
+      setLogoutError(locale === "en" ? "Cloud-data removal was not confirmed. Check your connection and retry." : locale === "zh-TW" ? "雲端資料清除尚未確認，請檢查網路後重試。" : "云端数据清除尚未确认，请检查网络后重试。");
+    }
   };
 
   const logout = async (forceLocal = false) => {
-    if (signingOutRef.current) return;
+    const ticket = capture();
+    if (ticket === null || signingOutRef.current) return;
+    const identity = auth.getIdentityGeneration();
+    const token = await auth.getToken();
+    if (!current(ticket)) return;
+    const owner = token ? { token, identity } : logoutOwner.current;
+    if (!owner || owner.identity !== identity) return;
+    logoutOwner.current = owner;
+    const version = ++logoutVersion.current;
     signingOutRef.current = true;
     setSigningOut(true);
     setLogoutError(null);
     setLogoutFailureCode("");
     try {
-      await auth.clearToken(forceLocal ? { forceLocal: true } : undefined);
-      router.replace("/login");
+      const cleared = await auth.clearToken({ expectedToken: owner.token, expectedGeneration: ticket, ...(forceLocal ? { forceLocal: true } : {}) });
+      if (cleared) await finishSignOut(identity);
     } catch (error) {
+      if (!isMounted() || identity !== auth.getIdentityGeneration() || version !== logoutVersion.current) return;
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
       setLogoutFailureCode(code);
       if (code === "PUSH_CLEANUP_PENDING") {
@@ -123,8 +166,7 @@ export default function Profile() {
         setLogoutError(locale === "en" ? "Sign-out was not confirmed. Check your connection and retry." : locale === "zh-TW" ? "登出尚未確認，請檢查網路後重試。" : "登出尚未确认，请检查网络后重试。");
       }
     } finally {
-      signingOutRef.current = false;
-      setSigningOut(false);
+      if (isMounted() && version === logoutVersion.current) { signingOutRef.current = false; setSigningOut(false); }
     }
   };
 

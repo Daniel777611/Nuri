@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Image,
@@ -51,6 +52,7 @@ const YEARS = Array.from({ length: 9 }, (_, i) => new Date().getFullYear() - i);
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 export default function Onboarding() {
+  const { capture, current } = useAccountScope();
   const { t } = useT();
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
@@ -80,13 +82,15 @@ export default function Onboarding() {
   const [syncError, setSyncError] = useState("");
 
   useEffect(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     let cancelled = false;
     (async () => {
       const requestToken = await auth.getToken();
       try {
-        if (cancelled) return;
+        if (cancelled || !current(ticket)) return;
         const [me, kids] = await Promise.all([api.me(), api.listChildren()]);
-        if (cancelled || await auth.getToken() !== requestToken) return;
+        if (cancelled || await auth.getToken() !== requestToken || !current(ticket)) return;
         setNickname(me?.nickname || ""); setCity(me?.city || ""); setParentRole(me?.parent_role || "");
         // Only the choices this page offers: an older account can hold one that
         // was retired (e.g. "education"), which has no chip to untick and made
@@ -101,7 +105,7 @@ export default function Onboarding() {
           if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
         }
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || !current(ticket)) return;
         if (isAuthError(error)) {
           await recoverExpiredCredentials(error, requestToken);
           return;
@@ -113,7 +117,7 @@ export default function Onboarding() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router, t, recoverExpiredCredentials]);
+  }, [router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setExistingChild, setChildName, setBirthYear, setBirthMonth, setBirthDay, setSyncError]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
   const birthDate = birthYear && birthMonth && birthDay
@@ -140,6 +144,8 @@ export default function Onboarding() {
     : t("请选择孩子的出生年、月、日");
 
   const save = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (saving) return;
     if (!childName.trim() || !validBirthDate) {
       setPage(0);
@@ -148,6 +154,7 @@ export default function Onboarding() {
     setSaving(true);
     setSyncError("");
     const requestToken = await auth.getToken();
+    if (!current(ticket)) return;
     try {
       const child = { nickname: childName.trim(), birth_date: birthDate, gender: existingChild?.gender || "other", allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
       const saved: any = existingChild?.id
@@ -157,12 +164,14 @@ export default function Onboarding() {
       // The next write must not continue under a login that replaced the
       // session which submitted the child. Capture directly before that call.
       const profileRequestToken = await auth.getToken();
-      if (profileRequestToken !== requestToken) return;
+      if (profileRequestToken !== requestToken || !current(ticket)) return;
       await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
-      if (!await auth.setOnboarded(true, { expectedToken: requestToken })) return;
-      if (await auth.getToken() !== requestToken) return;
+      if (!current(ticket)) return;
+      if (!await auth.setOnboarded(true, { expectedToken: requestToken, expectedGeneration: ticket })) return;
+      if (await auth.getToken() !== requestToken || !current(ticket)) return;
       router.replace("/(tabs)");
     } catch (error) {
+      if (!current(ticket)) return;
       if (isAuthError(error)) {
         await recoverExpiredCredentials(error, requestToken);
         return;

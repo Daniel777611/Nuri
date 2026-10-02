@@ -57,6 +57,7 @@ function fixture({ nativeXHR = false, values = new Map(), ordinary = new Map() }
   const client = load("../src/api.ts", {
     "./theme": { API: "https://nuri.invalid/api" }, "./preview-api": { isPreviewMode: false },
     "./utils/storage": { storage }, "./aiConsent": policy,
+    "./sessionBoundary": load("../src/sessionBoundary.ts"),
   });
   globalThis.Response = oldResponse;
   const response = async (url, init = {}) => {

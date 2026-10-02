@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Image,
@@ -38,6 +39,7 @@ const wordmark = require("@/assets/images/nuri-wordmark.png");
 // address was never confirmed. Either way the server has already mailed a
 // code; this screen trades it for the session.
 export default function VerifyEmail() {
+  const { capture, current, isMounted } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const headerHeight = useHeaderHeight();
@@ -54,8 +56,10 @@ export default function VerifyEmail() {
   const secondsLeft = useCountdown(resendAt);
 
   useEffect(() => {
+    const ticket = capture();
     (async () => {
       const pending = await loadPendingVerification();
+      if (!current(ticket)) return;
       if (!pending) {
         router.replace("/register");
         return;
@@ -63,23 +67,37 @@ export default function VerifyEmail() {
       setEmail(pending.email);
       setResendAt(pending.resendAt);
     })();
-  }, [router]);
+  }, [router, capture, current, setEmail, setResendAt]);
 
   const submit = async () => {
+    const ticket = capture();
+    if (ticket === null || submitting) return;
+    let ownerIdentity: number | null = null;
+    const ownsLogin = async (token: string) => {
+      const live = await auth.getToken();
+      return isMounted() && ownerIdentity === auth.getIdentityGeneration() && live === token;
+    };
     if (!email) return;
     setError(null);
     setNotice(null);
     setSubmitting(true);
     try {
       const res = await api.verifyEmail({ email, code });
-      await auth.setToken(res.access_token);
+      if (!current(ticket)) return;
+      ownerIdentity = auth.getIdentityGeneration() + 1;
+      const saved = await auth.setToken(res.access_token, { expectedGeneration: ticket });
+      if (!saved || !await ownsLogin(res.access_token)) return;
       const onboarded = !!res.user?.onboarding_completed;
-      await auth.setOnboarded(onboarded);
+      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: auth.getSessionGeneration() });
+      if (!stored || !await ownsLogin(res.access_token)) return;
       await clearPendingVerification();
+      if (!await ownsLogin(res.access_token)) return;
       router.replace(onboarded ? "/(tabs)" : "/onboarding");
     } catch (e) {
+      if (!current(ticket)) return;
       if (apiErrorDetail(e) === "EMAIL_ALREADY_VERIFIED") {
         await clearPendingVerification();
+        if (!current(ticket)) return;
         router.replace("/login");
         return;
       }
@@ -91,17 +109,22 @@ export default function VerifyEmail() {
   };
 
   const resend = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!email || secondsLeft > 0) return;
     setError(null);
     setNotice(null);
     setResending(true);
     try {
       const res = await api.resendVerification({ email, language: locale });
+      if (!current(ticket)) return;
       await savePendingVerification(email, res.resend_after);
+      if (!current(ticket)) return;
       setResendAt(Date.now() + res.resend_after * 1000);
       setCode("");
       setNotice(t("新的验证码已发送"));
     } catch (e: any) {
+      if (!current(ticket)) return;
       if (e?.retryAfterMs) setResendAt(Date.now() + e.retryAfterMs);
       setError(authErrorMessage(e, t) || t("发送失败，请稍后重试"));
     } finally {
@@ -110,7 +133,10 @@ export default function VerifyEmail() {
   };
 
   const switchEmail = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     await clearPendingVerification();
+    if (!current(ticket)) return;
     router.replace("/register");
   };
 

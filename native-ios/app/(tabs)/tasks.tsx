@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
+import { useAccountScope, useAccountState as useState } from "@/src/useAccountState";
 import {
   View,
   Text,
@@ -33,6 +34,7 @@ import Toast from "@/src/components/Toast";
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 export default function Tasks() {
+  const { capture, current } = useAccountScope();
   const { t } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
@@ -62,14 +64,17 @@ export default function Tasks() {
   };
 
   const load = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     const all = await api.listTasks();
+    if (!current(ticket)) return;
     setTasks(all.map(toTaskItem));
     setLoaded(true);
-  }, []);
+  }, [capture, current]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
+      void load().catch(() => {});
     }, [load])
   );
 
@@ -78,23 +83,29 @@ export default function Tasks() {
 
   // ---- 打卡流程：立刻打卡 → API → bottom sheet 感想 → 归档动效 ----
   const checkin = async (t: TaskItem) => {
-    if (t.completed_at) return;
-    const updated = await api.updateTask(t.id, { done: true });
-    setSheetFor(toTaskItem(updated)); // 卡片状态在 sheet 关闭后才更新，避免打卡瞬间跳区
+    const ticket = capture();
+    if (ticket === null || t.completed_at) return;
+    try { const updated = await api.updateTask(t.id, { done: true });
+      if (current(ticket)) setSheetFor(toTaskItem(updated));
+    } catch { /* No stale/error result may become a completion sheet. */ }
   };
 
   const onSheetDone = async (rating: string | null) => {
+    const ticket = capture();
+    if (ticket === null) return;
     const updated = sheetFor;
     setSheetFor(null);
     if (!updated) return;
     if (rating) {
-      api.updateTask(updated.id, { mood: rating });
+      try { await api.updateTask(updated.id, { mood: rating }); } catch { return; }
+      if (!current(ticket)) return;
       showToast(t("已记录你的感受 ✓"));
     }
     if (updated.completed_at) {
       // 淡出 + 轻微下移动效后归入「已完成」
       setArchivingId(updated.id);
       setTimeout(() => {
+        if (!current(ticket)) return;
         applyUpdate(updated);
         setArchivingId(null);
       }, 380);
@@ -104,21 +115,30 @@ export default function Tasks() {
   };
 
   const backfill = async (task: TaskItem) => {
-    const updated = await api.updateTask(task.id, { done: true, backfilled: true });
+    const ticket = capture();
+    if (ticket === null) return;
+    let updated;
+    try { updated = await api.updateTask(task.id, { done: true, backfilled: true }); } catch { return; }
+    if (!current(ticket)) return;
     applyUpdate(toTaskItem(updated));
     showToast(t("已补全打卡"));
   };
 
   const onConfirm = async () => {
-    if (!confirm) return;
+    const ticket = capture();
+    if (ticket === null || !confirm) return;
+    try {
     if (confirm.kind === "delete") {
       await api.deleteTask(confirm.task.id);
+      if (!current(ticket)) return;
       setTasks((prev) => prev.filter((t) => t.id !== confirm.task.id));
     } else {
       await api.clearCompletedTasks();
+      if (!current(ticket)) return;
       await load();
     }
     setConfirm(null);
+    } catch { /* Preserve the current account's state on failure. */ }
   };
 
   const toggleFilter = (key: string) =>

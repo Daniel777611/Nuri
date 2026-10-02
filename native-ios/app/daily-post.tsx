@@ -4,7 +4,8 @@
 //
 // Reads the same GET /feed/daily-post as Home; by the time a parent gets here
 // the card exists, so this is a row read, not a second generation.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Linking,
@@ -36,6 +37,7 @@ const C = {
 };
 
 export default function DailyPostScreen() {
+  const { capture, current } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -47,10 +49,12 @@ export default function DailyPostScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
 
   useEffect(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     let cancelled = false;
     (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
       .then((res) => {
-        if (cancelled) return;
+        if (cancelled || !current(ticket)) return;
         if (res.state === "ready" && res.card) {
           setCard(res.card);
           setState("ready");
@@ -58,15 +62,16 @@ export default function DailyPostScreen() {
           setState("missing");
         }
       })
-      .catch(() => !cancelled && setState("missing"));
+      .catch(() => !cancelled && current(ticket) && setState("missing"));
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, capture, current, setCard, setState]);
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
 
   const openSource = useCallback(() => {
+    if (capture() === null) return;
     if (!card || !/^https:\/\//i.test(card.source_url)) return;
     void api.dailyPostEvent(card.id, "source_click").catch(() => {});
     // Opened inside the tap's own call stack so browsers don't treat the new
@@ -74,20 +79,23 @@ export default function DailyPostScreen() {
     const opening =
       Platform.OS === "web" ? Linking.openURL(card.source_url) : WebBrowser.openBrowserAsync(card.source_url);
     void opening.catch(() => {});
-  }, [card]);
+  }, [card, capture]);
 
   const talkItThrough = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!card || openingChat) return;
     setOpeningChat(true);
     try {
       // The server records the chat and drops a marker into the one
       // conversation, so NURI's next reply knows which post this is about.
       const session = await api.startSession({ card_id: card.card_id });
+      if (!current(ticket)) return;
       router.push(`/chat/${session.id}`);
     } catch {
       setOpeningChat(false);
     }
-  }, [card, openingChat, router]);
+  }, [card, openingChat, router, capture, current, setOpeningChat]);
 
   if (state === "loading") {
     return (

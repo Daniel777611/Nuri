@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   View,
   Text,
@@ -32,6 +33,7 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 ];
 
 export default function ChildEdit() {
+  const { capture, current } = useAccountScope();
   const { t } = useT();
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
@@ -52,14 +54,16 @@ export default function ChildEdit() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     let cancelled = false;
     (async () => {
       if (isNew) return;
       const requestToken = await auth.getToken();
       try {
-        if (cancelled) return;
+        if (cancelled || !current(ticket)) return;
         const list = await api.listChildren();
-        if (cancelled || await auth.getToken() !== requestToken) return;
+        if (cancelled || await auth.getToken() !== requestToken || !current(ticket)) return;
         const c = list.find((x: any) => x.id === id);
         if (!c) {
           setLoadError(t("没有找到这份孩子资料，请返回后重试。"));
@@ -71,7 +75,7 @@ export default function ChildEdit() {
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || !current(ticket)) return;
         if (isAuthError(error)) {
           await recoverExpiredCredentials(error, requestToken);
           return;
@@ -80,7 +84,7 @@ export default function ChildEdit() {
       }
     })();
     return () => { cancelled = true; };
-  }, [id, isNew, router, t, recoverExpiredCredentials]);
+  }, [id, isNew, router, t, recoverExpiredCredentials, capture, current, setLoadError, setNickname, setBirthDate, setGender, setAllergies, setNotes]);
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
@@ -94,6 +98,8 @@ export default function ChildEdit() {
   const canSave = !!nickname.trim() && !birthDateError;
 
   const save = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!canSave || saving) return;
     setSaving(true);
     setSaveError("");
@@ -108,6 +114,7 @@ export default function ChildEdit() {
       notes: notes.trim(),
     };
     const requestToken = await auth.getToken();
+    if (!current(ticket)) return;
     try {
       const saved: any = isNew
         ? await api.addChild(body)
@@ -115,9 +122,10 @@ export default function ChildEdit() {
       if (saved?.birth_date !== body.birth_date) {
         throw new Error("The saved birthday did not match the submitted value");
       }
-      if (await auth.getToken() !== requestToken) return;
+      if (await auth.getToken() !== requestToken || !current(ticket)) return;
       goBack();
     } catch (error) {
+      if (!current(ticket)) return;
       if (isAuthError(error)) {
         await recoverExpiredCredentials(error, requestToken);
         return;
@@ -129,15 +137,19 @@ export default function ChildEdit() {
   };
 
   const remove = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (isNew || !id || saving) return;
     setSaving(true);
     setSaveError("");
     const requestToken = await auth.getToken();
+    if (!current(ticket)) return;
     try {
       await api.deleteChild(id as string);
-      if (await auth.getToken() !== requestToken) return;
+      if (await auth.getToken() !== requestToken || !current(ticket)) return;
       goBack();
     } catch (error) {
+      if (!current(ticket)) return;
       if (isAuthError(error)) {
         await recoverExpiredCredentials(error, requestToken);
         return;

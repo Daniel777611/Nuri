@@ -1,4 +1,6 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
+import { SessionChangedError } from "@/src/sessionBoundary";
 import { ActivityIndicator, Image, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,6 +20,7 @@ import { useT } from "@/src/i18n";
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 export default function TaskDetail() {
+  const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -30,18 +33,21 @@ export default function TaskDetail() {
   const exportingRef = useRef(false);
   const taskCardRef = useRef<View>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "error">("loading");
+  useEffect(() => { exportingRef.current = false; }, [generation]);
 
   useFocusEffect(useCallback(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     let active = true;
     setLoadState("loading");
     api.listTasks().then((all: any[]) => {
-      if (!active) return;
+      if (!active || !current(ticket)) return;
       const raw = all.find((item) => item.id === id);
       setTask(raw ? toTaskItem(raw) : null);
       setLoadState(raw ? "ready" : "missing");
-    }).catch(() => { if (active) setLoadState("error"); });
+    }).catch(() => { if (active && current(ticket)) setLoadState("error"); });
     return () => { active = false; };
-  }, [id]));
+  }, [id, capture, current, setTask, setLoadState]));
 
   if (!task) return <SafeAreaView style={styles.safe}><View style={styles.loading}><Text style={styles.muted}>{loadState === "loading" ? t("加载中...") : loadState === "missing" ? t("没有找到这个任务") : t("任务加载失败，请返回后重试")}</Text></View></SafeAreaView>;
 
@@ -49,30 +55,54 @@ export default function TaskDetail() {
   const ratio = progressRatio(task);
   const completed = !!task.completed_at;
   const checkin = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (completed) return;
-    const updated = await api.updateTask(task.id, { done: true });
-    setTask(toTaskItem(updated));
-    setSheetOpen(true);
+    try {
+      const updated = await api.updateTask(task.id, { done: true });
+      if (!current(ticket)) return;
+      setTask(toTaskItem(updated));
+      setSheetOpen(true);
+    } catch { /* Keep the existing card; never open an old-account sheet. */ }
   };
-  const onSheetDone = (rating: string | null) => {
+  const onSheetDone = async (rating: string | null) => {
+    const ticket = capture();
+    if (ticket === null) return;
     setSheetOpen(false);
-    if (rating) { api.updateTask(task.id, { mood: rating }); setToastMsg(t("已记录你的感受 ✓")); setTimeout(() => setToastMsg(null), 2000); }
-    if (task.completed_at) setTimeout(() => router.canGoBack() ? router.back() : router.replace("/(tabs)/tasks"), rating ? 900 : 400);
+    if (rating) {
+      try { await api.updateTask(task.id, { mood: rating }); } catch { return; }
+      if (!current(ticket)) return;
+      setToastMsg(t("已记录你的感受 ✓")); setTimeout(() => setToastMsg(null), 2000);
+    }
+    if (task.completed_at) setTimeout(() => {
+      if (!current(ticket)) return;
+      if (router.canGoBack()) router.back(); else router.replace("/(tabs)/tasks");
+    }, rating ? 900 : 400);
   };
 
   const saveCard = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (exportingRef.current || !taskCardRef.current) return;
     exportingRef.current = true;
     setExporting(true);
     try {
       await saveTaskCardToPhotos({
         requestWritePermission: () => MediaLibrary.requestPermissionsAsync(true),
-        captureCard: () => captureRef(taskCardRef, { format: "png", result: "tmpfile" }),
-        saveToPhotos: MediaLibrary.saveToLibraryAsync,
+        captureCard: () => {
+          if (!current(ticket)) throw new SessionChangedError();
+          return captureRef(taskCardRef, { format: "png", result: "tmpfile" });
+        },
+        saveToPhotos: (uri) => {
+          if (!current(ticket)) throw new SessionChangedError();
+          return MediaLibrary.saveToLibraryAsync(uri);
+        },
         releaseCapture,
       });
+      if (!current(ticket)) return;
       setToastMsg(t("图片已保存到相册"));
     } catch (error) {
+      if (!current(ticket)) return;
       const denied = error instanceof TaskCardExportError && error.code === "permission_denied";
       setToastMsg(locale === "en"
         ? denied ? "Allow access to save photos in system settings, then try again." : "The image was not saved. Please try again."
@@ -80,9 +110,11 @@ export default function TaskDetail() {
           ? denied ? "請在系統設定允許新增照片後，再儲存任務卡。" : "圖片未儲存，請重試。"
           : denied ? "请在系统设置允许添加照片后，再保存任务卡。" : "图片未保存，请重试。");
     } finally {
-      exportingRef.current = false;
-      setExporting(false);
-      setTimeout(() => setToastMsg(null), 3000);
+      if (current(ticket)) {
+        exportingRef.current = false;
+        setExporting(false);
+        setTimeout(() => setToastMsg(null), 3000);
+      }
     }
   };
 

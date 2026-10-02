@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Animated,
@@ -303,6 +304,7 @@ function guideFromHandoff(
 }
 
 export default function Detail() {
+  const { generation, capture, current: scopeCurrent } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
@@ -327,8 +329,8 @@ export default function Detail() {
     handoff_key?: string;
     rank?: string;
   }>();
-  const initialHandoff = getRecommendationDetailHandoff(handoffKey);
-  const [card, setCard] = useState<any>(() => guideFromHandoff(initialHandoff));
+  // Never retain a personalized handoff as the hook's cross-session initial.
+  const [card, setCard] = useState<any>(null);
   const [loadError, setLoadError] =
     useState<"expired" | "preparing" | "generic" | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
@@ -358,12 +360,22 @@ export default function Detail() {
       ? parsedRecommendationRank
       : undefined;
 
+  useEffect(() => {
+    sharingRef.current = false;
+    resourceSwitchInFlight.current = false;
+    detailIdentity.current = "";
+    dwellStartedAt.current = null;
+    dwellSent.current = false;
+    detailViewTracked.current = false;
+  }, [generation]);
+
   const trackRecommendation = useCallback(
     (
       event: RecommendationEventName,
       payload: Omit<RecommendationEventInput, "event" | "card_id"> = {},
-    ) =>
-      api.trackRecommendationEvent({
+    ) => {
+      if (capture() === null) return Promise.resolve(null);
+      return api.trackRecommendationEvent({
         event,
         card_id: typeof id === "string" ? id : undefined,
         recommendation_id: recommendationId || undefined,
@@ -371,11 +383,13 @@ export default function Detail() {
         position: recommendationPosition,
         content_category: contentCategory || undefined,
         ...payload,
-      }),
-    [contentCategory, feedRequestId, id, recommendationId, recommendationPosition],
+      });
+    },
+    [contentCategory, feedRequestId, id, recommendationId, recommendationPosition, capture],
   );
 
   const flushDwell = useCallback(() => {
+    if (capture() === null) return;
     if (dwellSent.current || dwellStartedAt.current === null) return;
     const durationMs = Math.min(30 * 60 * 1000, Math.max(0, Date.now() - dwellStartedAt.current));
     dwellSent.current = true;
@@ -387,7 +401,7 @@ export default function Detail() {
         duration_ms: durationMs,
       })
       .catch(() => {});
-  }, []);
+  }, [capture]);
 
   const showToast = useCallback(
     (msg: string) => {
@@ -406,7 +420,7 @@ export default function Detail() {
         }),
       ]).start(() => setToast(null));
     },
-    [toastOpacity]
+    [toastOpacity, setToast]
   );
 
   useFocusEffect(
@@ -423,6 +437,8 @@ export default function Detail() {
   }, [flushDwell]);
 
   useEffect(() => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!id) return;
     let active = true;
     const requestId = ++contentRequestId.current;
@@ -454,7 +470,7 @@ export default function Detail() {
     }
 
     const acceptDetail = (detail: any) => {
-      if (!active || contentRequestId.current !== requestId) return;
+      if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
       setCard(detail);
       setLoadError(null);
       if (!detailViewTracked.current) {
@@ -488,12 +504,13 @@ export default function Detail() {
       try {
         try {
           const detail = await fetchDetail(preparedContentSetId);
-          if (!active || contentRequestId.current !== requestId) return;
+          if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
           if (isUsableGuide(detail)) {
             acceptDetail(detail);
             return;
           }
         } catch (error: unknown) {
+          if (!scopeCurrent(ticket)) return;
           const status =
             error && typeof error === "object" ? (error as any).status : null;
           // A preparation can finish between navigation and this GET. The
@@ -514,7 +531,7 @@ export default function Detail() {
         }
 
         const prepared = await preparePersonalizedFeedOnce(handoff.preparationItems);
-        if (!active || contentRequestId.current !== requestId) return;
+        if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         const preparedItem = (prepared?.items || []).find(
           (item) =>
             item.recommendation_id === recommendationId &&
@@ -537,13 +554,13 @@ export default function Detail() {
         }
 
         const detail = await fetchDetail(preparedItem.prepared_content_set_id);
-        if (!active || contentRequestId.current !== requestId) return;
+        if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         if (!isReadyDetail(detail, contentCategory)) {
           throw new Error("prepared detail did not contain a complete resource pair");
         }
         acceptDetail(detail);
       } catch (error: unknown) {
-        if (!active || contentRequestId.current !== requestId) return;
+        if (!active || !scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
         const status =
           error && typeof error === "object" ? (error as any).status : null;
         if (guide) {
@@ -579,7 +596,7 @@ export default function Detail() {
     api
       .listFavorites()
       .then((favorites: any[]) => {
-        if (active) setFavorited(favorites.some((item: any) => item.id === id));
+        if (active && scopeCurrent(ticket)) setFavorited(favorites.some((item: any) => item.id === id));
       })
       .catch(() => {});
 
@@ -602,21 +619,37 @@ export default function Detail() {
     reloadSequence,
     sessionId,
     trackRecommendation,
+    capture,
+    scopeCurrent,
+    setCard,
+    setLoadError,
+    setContentFeedback,
+    setFeedbackReasonOpen,
+    setFeedbackReason,
+    setFeedbackSubmitting,
+    setResourceRefreshState,
+    setFavorited,
   ]);
 
   const toggleFavorite = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!id) return;
     try {
       const result = await api.toggleFavorite(id as string);
+      if (!scopeCurrent(ticket)) return;
       setFavorited(result.favorited);
       showToast(result.favorited ? t("已收藏") : t("已取消收藏"));
       trackRecommendation("favorite", { value: result.favorited ? 1 : 0 }).catch(() => {});
     } catch {
+      if (!scopeCurrent(ticket)) return;
       showToast(t("收藏暂时没有保存，请稍后再试"));
     }
   };
 
   const askAI = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!card) return;
     trackRecommendation("continue_chat").catch(() => {});
     try {
@@ -625,13 +658,17 @@ export default function Detail() {
         return;
       }
       const session = await api.startSession({ card_id: card.id, title: card.title });
+      if (!scopeCurrent(ticket)) return;
       router.push(`/chat/${session.id}`);
     } catch {
+      if (!scopeCurrent(ticket)) return;
       showToast(t("对话暂时无法打开，请稍后再试"));
     }
   };
 
   const openResource = async (resource: LearningResource, position: number) => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (!/^https:\/\//i.test(resource.url || "")) {
       showToast(t("这个外部链接暂时不可用"));
       return;
@@ -653,11 +690,14 @@ export default function Detail() {
         await WebBrowser.openBrowserAsync(resource.url);
       }
     } catch {
+      if (!scopeCurrent(ticket)) return;
       showToast(t("外部内容暂时无法打开，请稍后再试"));
     }
   };
 
   const shareResource = async (copyOnly = false) => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (sharingRef.current) return;
     const resource = firstShareableResource(card?.resources);
     if (!resource) { showToast(t("暂无可分享的来源链接")); return; }
@@ -665,19 +705,22 @@ export default function Detail() {
     try {
       if (copyOnly) {
         const copied = await Clipboard.setStringAsync(resource.url);
+        if (!scopeCurrent(ticket)) return;
         if (!copied) throw new Error("copy unavailable");
         showToast(t("已复制链接"));
       } else {
         const result = await Share.share(Platform.OS === "ios"
           ? { title: resource.title, message: resource.title, url: resource.url }
           : { title: resource.title, message: `${resource.title}\n${resource.url}` });
+        if (!scopeCurrent(ticket)) return;
         if (result.action !== Share.sharedAction) return;
       }
       void api.trackEvent("share", { card_id: card?.id, card_type: card?.type }).catch(() => {});
     } catch {
+      if (!scopeCurrent(ticket)) return;
       showToast(t("分享未完成，请重试"));
     } finally {
-      sharingRef.current = false;
+      if (scopeCurrent(ticket)) sharingRef.current = false;
     }
   };
 
@@ -685,6 +728,8 @@ export default function Detail() {
     value: "helpful" | "not_relevant",
     reason?: RecommendationFeedbackReason,
   ) => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (contentFeedback || feedbackSubmitting) return;
     if (value === "not_relevant" && !reason) {
       setFeedbackReasonOpen(true);
@@ -698,6 +743,7 @@ export default function Detail() {
         locale: card?.preferred_locale || undefined,
         content_category: card?.content_category || contentCategory,
       });
+      if (!scopeCurrent(ticket)) return;
       if (result?.accepted === false) {
         setFeedbackReasonOpen(false);
         showToast(t("个性化已关闭，这次选择不会保存"));
@@ -707,6 +753,7 @@ export default function Detail() {
       setFeedbackReason(reason || null);
       setFeedbackReasonOpen(false);
     } catch {
+      if (!scopeCurrent(ticket)) return;
       showToast(t("反馈暂时没有保存，请再试一次"));
     } finally {
       setFeedbackSubmitting(false);
@@ -714,6 +761,8 @@ export default function Detail() {
   };
 
   const refreshResourcePair = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (
       !card ||
       !id ||
@@ -780,7 +829,7 @@ export default function Detail() {
           currentResources.map((resource) => resource.id),
           nextPreparedPair.pair_id,
         );
-        if (contentRequestId.current === requestId) {
+        if (scopeCurrent(ticket) && contentRequestId.current === requestId) {
           const persistedAlternates = preparedAlternatePairs(
             persisted,
             activeCategory,
@@ -799,14 +848,15 @@ export default function Detail() {
           );
         }
       } catch {
+        if (!scopeCurrent(ticket)) return;
         trackRecommendation("content_refresh", {
           locale: card?.preferred_locale || undefined,
           content_category: activeCategory,
         }).catch(() => {});
         showToast(t("内容已切换，但暂时没有同步到其他设备"));
       } finally {
-        resourceSwitchInFlight.current = false;
-        if (contentRequestId.current === requestId) {
+        if (scopeCurrent(ticket)) resourceSwitchInFlight.current = false;
+        if (scopeCurrent(ticket) && contentRequestId.current === requestId) {
           setResourceRefreshState("idle");
         }
       }
@@ -827,7 +877,7 @@ export default function Detail() {
         activeCategory,
         currentResources.map((resource) => resource.id),
       );
-      if (contentRequestId.current !== requestId) return;
+      if (!scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
       const nextResources: LearningResource[] = Array.isArray(result?.resources)
         ? result.resources
         : [];
@@ -875,11 +925,11 @@ export default function Detail() {
       setResourceRefreshState("idle");
       showToast(t("暂时没能换新内容，请稍后再试"));
     } catch {
-      if (contentRequestId.current !== requestId) return;
+      if (!scopeCurrent(ticket) || contentRequestId.current !== requestId) return;
       setResourceRefreshState("idle");
       showToast(t("暂时没能换新内容，请稍后再试"));
     } finally {
-      resourceSwitchInFlight.current = false;
+      if (scopeCurrent(ticket)) resourceSwitchInFlight.current = false;
     }
   };
 

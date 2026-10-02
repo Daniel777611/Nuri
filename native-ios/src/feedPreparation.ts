@@ -2,6 +2,7 @@ import {
   api,
   type PrepareFeedResponse,
 } from "./api";
+import { getSessionGeneration } from "./sessionBoundary";
 
 export type FeedPreparationItem = {
   card_id: string;
@@ -26,7 +27,7 @@ export function preparePersonalizedFeedOnce(items: FeedPreparationItem[]) {
   const normalized = [...items].sort((left, right) =>
     left.recommendation_id.localeCompare(right.recommendation_id),
   );
-  const key = preparationKey(normalized);
+  const key = `${getSessionGeneration()}:${preparationKey(normalized)}`;
   const existing = inFlightFeedPreparations.get(key);
   if (existing) return existing;
 

@@ -1,5 +1,6 @@
 import type { HeroCard } from "./components/HeroCarousel";
 import type { FeedPreparationItem } from "./feedPreparation";
+import { subscribeSessionBoundary } from "./sessionBoundary";
 
 export type RecommendationDetailHandoff = {
   card: HeroCard;
@@ -10,6 +11,7 @@ export type RecommendationDetailHandoff = {
 const HANDOFF_TTL_MS = 15 * 60 * 1000;
 const MAX_HANDOFFS = 12;
 const handoffs = new Map<string, RecommendationDetailHandoff>();
+subscribeSessionBoundary(() => handoffs.clear());
 
 export function recommendationDetailHandoffKey(card: HeroCard): string {
   return card.recommendation_id || `${card.id}:${card.content_category || "topic"}`;

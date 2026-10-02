@@ -13,7 +13,7 @@ const config = JSON.parse(read('../app.json')).expo;
 assert.equal(config.ios.bundleIdentifier, 'com.ordashtech.nuri.nativelab');
 assert.equal(config.scheme, 'nuri-native-lab');
 assert.equal(config.version, '0.3.0');
-assert.equal(config.ios.buildNumber, '1003');
+assert.equal(config.ios.buildNumber, '1004');
 assert.equal(config.ios.entitlements['aps-environment'], 'production');
 assert.equal(config.ios.infoPlist.NuriAPNSEnvironment, 'production');
 assert.match(read('../ExportOptions-InternalOnly.plist'), /<key>testFlightInternalTestingOnly<\/key>\s*<true\s*\/>/);

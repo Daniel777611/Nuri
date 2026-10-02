@@ -13,6 +13,7 @@
 // of storefront capability, but Checkout/Portal cannot be started in this lab.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAccountScope, useAccountState } from "@/src/useAccountState";
 import {
   ActivityIndicator,
   Linking,
@@ -75,6 +76,7 @@ export default function Billing() {
 }
 
 function BillingPage({ checkout }: { checkout?: string }) {
+  const { capture, current } = useAccountScope();
   const router = useRouter();
   const { t, locale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
@@ -87,8 +89,8 @@ function BillingPage({ checkout }: { checkout?: string }) {
       : "NURI Native Lab 仅供查看会员状态。支付返回链接尚未适配独立实验版，此 iOS 实验版暂不支持开通、管理订阅或查看付款记录。";
   const checkoutResult = !nativeLabReadOnly && (checkout === "success" || checkout === "cancel") ? checkout : null;
 
-  const [status, setStatus] = useState<BillingStatus | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [status, setStatus] = useAccountState<BillingStatus | null>(null);
+  const [loadFailed, setLoadFailed] = useAccountState(false);
   const [busy, setBusy] = useState<BillingInterval | "portal" | null>(null);
   const [actionError, setActionError] = useState("");
   const inShell = isNativeShell();
@@ -96,16 +98,20 @@ function BillingPage({ checkout }: { checkout?: string }) {
   const returnTo = inShell ? "app" : "web";
 
   const load = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return null;
     try {
       const next = await api.billingStatus();
+      if (!current(ticket)) return null;
       setStatus(next);
       setLoadFailed(false);
       return next;
     } catch {
+      if (!current(ticket)) return null;
       setLoadFailed(true);
       return null;
     }
-  }, []);
+  }, [capture, current, setStatus, setLoadFailed]);
 
   useFocusEffect(
     useCallback(() => {

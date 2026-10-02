@@ -32,6 +32,7 @@ function loadTypescriptModule(relativePath) {
     module,
     exports: module.exports,
     require(specifier) {
+      if (specifier === "./sessionBoundary") return loadTypescriptModule("../src/sessionBoundary.ts");
       throw new Error(`Unexpected runtime import from contract module: ${specifier}`);
     },
     console,
@@ -157,9 +158,10 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
   const detail = read("../app/detail/[id].tsx");
   assert.match(
     detail,
-    /const initialHandoff = getRecommendationDetailHandoff\(handoffKey\);[\s\S]{0,180}useState<any>\(\(\) => guideFromHandoff\(initialHandoff\)\)/,
-    "the destination must paint the in-memory guide on its first render",
+    /const \[card, setCard\] = useState<any>\(null\)/,
+    "cross-session initial state must never retain a personalized handoff",
   );
+  assert.match(detail, /const handoff = getRecommendationDetailHandoff\(handoffKey\);[\s\S]*?const guide = guideFromHandoff\(handoff\)/, "the current session still consumes the in-memory guide before remote research");
 
   const guideStart = detail.indexOf("function guideFromHandoff(");
   const guideEnd = detail.indexOf("\nexport default function Detail()", guideStart);

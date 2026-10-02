@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { auth, isAuthError } from "./api";
@@ -29,12 +29,14 @@ export async function recoverExpiredSession(error: unknown, expectedToken: strin
 }
 
 export function useExpiredSessionRecovery(onCleared?: () => void) {
+  const identity = useSyncExternalStore(auth.subscribeSessionBoundary, auth.getIdentityGeneration, auth.getIdentityGeneration);
   const [failureCode, setFailureCode] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const mounted = useRef(true);
   const busy = useRef(false);
   const rejectedError = useRef<unknown>(null);
   const rejectedToken = useRef<string | null | undefined>(undefined);
+  const rejectedIdentity = useRef<number | null>(null);
   const publishedToken = useRef<string | null | undefined>(undefined);
   const clearedCallback = useRef(onCleared);
   clearedCallback.current = onCleared;
@@ -48,19 +50,33 @@ export function useExpiredSessionRecovery(onCleared?: () => void) {
     };
   }, []);
 
+  useEffect(() => {
+    if (rejectedIdentity.current !== null && rejectedIdentity.current !== identity) {
+      rejectedIdentity.current = null;
+      rejectedError.current = null;
+      rejectedToken.current = undefined;
+      busy.current = false;
+      setFailureCode(null);
+      setPending(false);
+    }
+  }, [identity]);
+
   const recover = useCallback(async (error?: unknown, expectedToken?: string | null): Promise<void> => {
     if (!mounted.current) return;
     if (error !== undefined) {
       if (!isAuthError(error) || expectedToken === undefined) return;
       rejectedError.current = error;
       rejectedToken.current = expectedToken;
+      rejectedIdentity.current = auth.getIdentityGeneration();
     }
     if (!rejectedError.current || rejectedToken.current === undefined || busy.current) return;
+    const ownerIdentity = rejectedIdentity.current;
+    if (ownerIdentity !== auth.getIdentityGeneration()) return;
     busy.current = true;
     if (mounted.current) setPending(true);
     try {
       const result = await recoverExpiredSession(rejectedError.current, rejectedToken.current);
-      if (!mounted.current) return;
+      if (!mounted.current || ownerIdentity !== auth.getIdentityGeneration()) return;
       // A newer login may have queued while the old owner's Keychain removal
       // was already executing. Its credentials survive the auth queue; do not
       // subsequently cover that login with an old error panel or navigation.
@@ -68,7 +84,7 @@ export function useExpiredSessionRecovery(onCleared?: () => void) {
         const currentToken = await auth.getToken();
         // getToken itself awaits Keychain: a login published during that read
         // must invalidate its earlier null snapshot too.
-        if (!mounted.current || currentToken !== null || publishedToken.current) return;
+        if (!mounted.current || ownerIdentity !== auth.getIdentityGeneration() || currentToken !== null || publishedToken.current) return;
       }
       if (result.kind === "failed") setFailureCode(result.code);
       else if (result.kind === "cleared") {
@@ -77,14 +93,17 @@ export function useExpiredSessionRecovery(onCleared?: () => void) {
       }
     } catch {
       // Navigation failures must not escape an effect/event's async handler.
-      if (mounted.current) setFailureCode("UNCONFIRMED");
+      if (mounted.current && ownerIdentity === auth.getIdentityGeneration()) setFailureCode("UNCONFIRMED");
     } finally {
-      busy.current = false;
-      if (mounted.current) setPending(false);
+      if (ownerIdentity === auth.getIdentityGeneration()) {
+        busy.current = false;
+        if (mounted.current) setPending(false);
+      }
     }
   }, []);
 
-  return { blocked: failureCode !== null, failureCode, pending, recover };
+  const owned = rejectedIdentity.current === identity;
+  return { blocked: owned && failureCode !== null, failureCode: owned ? failureCode : null, pending: owned && pending, recover };
 }
 
 /** Keeps rejected credentials from silently restoring after an app restart. */

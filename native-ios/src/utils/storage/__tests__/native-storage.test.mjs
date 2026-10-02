@@ -144,6 +144,7 @@ function authFixture(f) {
     "./preview-api": { isPreviewMode: false },
     "./utils/storage": { storage: f.native.storage },
     "./aiConsent": load("../../../aiConsent.ts"),
+    "./sessionBoundary": load("../../../sessionBoundary.ts"),
   }).auth;
 }
 

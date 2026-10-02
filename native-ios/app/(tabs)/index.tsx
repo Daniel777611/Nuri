@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   View,
   Text,
@@ -118,6 +119,7 @@ function DevSheet({
 }
 
 export default function Home() {
+  const { generation, capture, current } = useAccountScope();
   const { t } = useT();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -144,19 +146,29 @@ export default function Home() {
   const dailyPostRequest = useRef(0);
   const dailyPostPolls = useRef(0);
 
+  useEffect(() => {
+    dailyPostRequest.current++;
+    nuriPreviewRequest.current++;
+    openingNuriChat.current = false;
+    dailyPostPolls.current = 0;
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, [generation]);
+
   const showToast = useCallback((m: string) => {
     setToastMsg(m);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMsg(null), 2000);
-  }, []);
+  }, [setToastMsg]);
 
   const loadDailyPost = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const ticket = capture();
+    if (ticket === null) return;
     const requestId = ++dailyPostRequest.current;
     // A warm focus keeps the card on screen while it is re-read.
     if (!quiet) setDailyPostStatus((current) => (current === "ready" ? current : "loading"));
     try {
       const res = await api.getDailyPost();
-      if (requestId !== dailyPostRequest.current) return;
+      if (!current(ticket) || requestId !== dailyPostRequest.current) return;
       if (res.state === "ready" && res.card) {
         setDailyPost(res.card);
         setDailyPostStatus("ready");
@@ -173,11 +185,11 @@ export default function Home() {
         setDailyPostStatus(res.state === "unavailable" ? "error" : "empty");
       }
     } catch {
-      if (requestId === dailyPostRequest.current) {
+      if (current(ticket) && requestId === dailyPostRequest.current) {
         setDailyPostStatus((current) => (current === "ready" ? current : "error"));
       }
     }
-  }, []);
+  }, [capture, current, setDailyPost, setDailyPostStatus]);
 
   useEffect(() => {
     if (dailyPostStatus !== "pending" || !isHomeFocused) return;
@@ -194,18 +206,21 @@ export default function Home() {
 
   const openDailyPost = useCallback(
     (card: DailyPost) => {
+      if (capture() === null) return;
       void api.dailyPostEvent(card.id, "open").catch(() => {});
       router.push("/daily-post");
     },
-    [router],
+    [router, capture],
   );
 
   const loadNuriPreview = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     const requestId = ++nuriPreviewRequest.current;
     setNuriPreviewStatus("loading");
     try {
       const preview: MainConversationPreview = await api.getMainConversationPreview();
-      if (requestId !== nuriPreviewRequest.current) return;
+      if (!current(ticket) || requestId !== nuriPreviewRequest.current) return;
       const sessionId =
         preview?.has_conversation && typeof preview.session_id === "string"
           ? preview.session_id
@@ -227,13 +242,15 @@ export default function Home() {
       });
       setNuriPreviewStatus(hasPersonalContext ? "ready" : "empty");
     } catch {
-      if (requestId === nuriPreviewRequest.current) {
+      if (current(ticket) && requestId === nuriPreviewRequest.current) {
         setNuriPreviewStatus("error");
       }
     }
-  }, []);
+  }, [capture, current, setNuriPreview, setNuriPreviewStatus]);
 
   const openNuriChat = async () => {
+    const ticket = capture();
+    if (ticket === null) return;
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
     if (nuriPreviewStatus === "error" && !nuriPreview) {
       await loadNuriPreview();
@@ -247,20 +264,25 @@ export default function Home() {
       // mounted browser tab. Always ask the idempotent server endpoint for the
       // account's current canonical conversation immediately before routing.
       const session = await api.getOrStartMainSession();
+      if (!current(ticket)) return;
       router.push(`/chat/${session.id}`);
       navigated = true;
     } catch {
+      if (!current(ticket)) return;
       showToast(t("对话暂时无法打开，请稍后再试"));
     } finally {
-      if (!navigated) openingNuriChat.current = false;
+      if (current(ticket) && !navigated) openingNuriChat.current = false;
     }
   };
 
   useFocusEffect(
     useCallback(() => {
+      const ticket = capture();
+      if (ticket === null) return;
       api
         .me()
         .then((me: any) => {
+          if (!current(ticket)) return;
           if (me?.nickname) setNickname(me.nickname);
           const candidate = me?.avatar_url || me?.photo_url || me?.picture;
           setAvatarUrl(
@@ -270,7 +292,7 @@ export default function Home() {
           );
         })
         .catch(() => {});
-    }, [])
+    }, [capture, current, setNickname, setAvatarUrl])
   );
 
   useFocusEffect(

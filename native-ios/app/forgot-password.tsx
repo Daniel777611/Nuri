@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -23,6 +23,7 @@ import { colors, radius, spacing, type } from "@/src/theme";
 // the new password together. The server answers "sent" whether or not the
 // address has an account, so this screen never says which it was either.
 export default function ForgotPassword() {
+  const { capture, current, isMounted } = useAccountScope();
   const router = useRouter();
   const headerHeight = useHeaderHeight();
   const { t, locale } = useT();
@@ -40,15 +41,19 @@ export default function ForgotPassword() {
   const emailLooksValid = /\S+@\S+\.\S+/.test(normalizedEmail);
 
   const sendCode = async () => {
+    const ticket = capture();
+    if (ticket === null || submitting) return;
     setError(null);
     setNotice(null);
     setSubmitting(true);
     try {
       const res = await api.forgotPassword({ email: normalizedEmail, language: locale });
+      if (!current(ticket)) return;
       setResendAt(Date.now() + res.resend_after * 1000);
       setStep("reset");
       setNotice(t("如果这个邮箱注册过 NURI，验证码已经发过去了。"));
     } catch (e) {
+      if (!current(ticket)) return;
       setError(authErrorMessage(e, t) || t("发送失败，请稍后重试"));
     } finally {
       setSubmitting(false);
@@ -56,6 +61,13 @@ export default function ForgotPassword() {
   };
 
   const reset = async () => {
+    const ticket = capture();
+    if (ticket === null || submitting) return;
+    let ownerIdentity: number | null = null;
+    const ownsLogin = async (token: string) => {
+      const live = await auth.getToken();
+      return isMounted() && ownerIdentity === auth.getIdentityGeneration() && live === token;
+    };
     setError(null);
     setNotice(null);
     setSubmitting(true);
@@ -65,11 +77,16 @@ export default function ForgotPassword() {
         code,
         new_password: password,
       });
-      await auth.setToken(res.access_token);
+      if (!current(ticket)) return;
+      ownerIdentity = auth.getIdentityGeneration() + 1;
+      const saved = await auth.setToken(res.access_token, { expectedGeneration: ticket });
+      if (!saved || !await ownsLogin(res.access_token)) return;
       const onboarded = !!res.user?.onboarding_completed;
-      await auth.setOnboarded(onboarded);
+      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: auth.getSessionGeneration() });
+      if (!stored || !await ownsLogin(res.access_token)) return;
       router.replace(onboarded ? "/(tabs)" : "/onboarding");
     } catch (e) {
+      if (!current(ticket)) return;
       setError(authErrorMessage(e, t) || t("重置失败，请重试"));
     } finally {
       setSubmitting(false);

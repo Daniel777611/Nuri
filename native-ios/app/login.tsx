@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 export default function Login() {
+  const { capture, current, isMounted } = useAccountScope();
   const router = useRouter();
   const { returnTo } = useLocalSearchParams<{ returnTo?: string | string[] }>();
   const notificationReturn = safeNotificationRoute(returnTo);
@@ -33,6 +34,13 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
+    const ticket = capture();
+    if (ticket === null || submitting) return;
+    let ownerIdentity: number | null = null;
+    const ownsLogin = async (token: string) => {
+      const live = await auth.getToken();
+      return isMounted() && ownerIdentity === auth.getIdentityGeneration() && live === token;
+    };
     setError(null);
     setSubmitting(true);
     const normalizedEmail = email.trim().toLowerCase();
@@ -42,17 +50,24 @@ export default function Login() {
         password,
         language: locale,
       });
-      await auth.setToken(res.access_token);
+      if (!current(ticket)) return;
+      ownerIdentity = auth.getIdentityGeneration() + 1;
+      const saved = await auth.setToken(res.access_token, { expectedGeneration: ticket });
+      if (!saved || !await ownsLogin(res.access_token)) return;
       // Old users must also complete the basic-info flow before entering tabs
       if (res.user?.language) await setLocale(res.user.language);
+      if (!await ownsLogin(res.access_token)) return;
       const onboarded = !!res.user?.onboarding_completed;
-      await auth.setOnboarded(onboarded);
+      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: auth.getSessionGeneration() });
+      if (!stored || !await ownsLogin(res.access_token)) return;
       router.replace(onboarded ? (safeReturnTo ?? "/(tabs)") as never : "/onboarding");
     } catch (e: any) {
+      if (!current(ticket)) return;
       // Right password, address never confirmed: the server has just mailed
       // a fresh code, so go straight to the screen that takes it.
       if (apiErrorDetail(e) === "EMAIL_NOT_VERIFIED") {
         await savePendingVerification(normalizedEmail, 60);
+        if (!current(ticket)) return;
         router.push("/verify-email");
         return;
       }

@@ -27,6 +27,7 @@ let effectIndex = 0;
 let locale = "zh-CN";
 let settingsOpened = 0;
 const react = {
+  useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
   useState: (initial) => {
     const index = stateIndex++;
     if (!(index in states)) states[index] = initial;
@@ -60,6 +61,7 @@ const client = load("../src/api.ts", {
   "./theme": { API: "https://nuri.invalid/api" },
   "./preview-api": { isPreviewMode: false }, "./utils/storage": { storage },
   "./aiConsent": load("../src/aiConsent.ts", {}),
+  "./sessionBoundary": load("../src/sessionBoundary.ts", {}),
 });
 const helper = load("../src/authExpiredRecovery.tsx", {
   react,
@@ -233,5 +235,5 @@ for (const [path, count] of [["../app/onboarding.tsx", 2], ["../app/child/[id].t
   assert.match(source, /if \(recovery\.blocked\) return <ExpiredSessionRecoveryNotice/);
 }
 const profile = readFileSync(new URL("../app/(tabs)/profile.tsx", import.meta.url), "utf8");
-assert.match(profile, /auth\.clearToken\(forceLocal \? \{ forceLocal: true \} : undefined\)/);
+assert.match(profile, /auth\.clearToken\(\{ expectedToken: owner\.token/);
 console.log("Expired JWT recovery: 401-only cleanup, Keychain retry, stale-session/queue races, guarded onboarding and actionable UI checks passed.");

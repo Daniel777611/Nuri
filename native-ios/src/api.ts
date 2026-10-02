@@ -6,6 +6,7 @@ import { API } from "./theme";
 import { isPreviewMode, previewRequest } from "./preview-api";
 import { storage } from "./utils/storage";
 import { AIConsentController, requiresAIConsent } from "./aiConsent";
+import { assertSessionGeneration, getIdentityGeneration, getSessionGeneration, invalidateSession, subscribeSessionBoundary, SessionChangedError } from "./sessionBoundary";
 
 export type PersonalizedResourceStatus =
   | "research_on_open"
@@ -300,6 +301,7 @@ const ONBOARDED_KEY = "onboarding_completed";
 const sessionListeners = new Set<(token: string | null) => void>();
 let signingOut = false;
 let locallySignedOut = false;
+let replacingSession = false;
 let authChange: Promise<unknown> = Promise.resolve();
 let pushWrite: Promise<unknown> = Promise.resolve();
 let pushCleanupRetry: Promise<{ pending: boolean; retryUntil: number | null }> | null = null;
@@ -388,6 +390,7 @@ function retryPendingPushCleanup() {
 }
 
 function publishSession(token: string | null) {
+  invalidateSession();
   aiConsent.sessionChanged();
   sessionListeners.forEach((listener) => {
     try { listener(token); } catch { /* Session storage still owns login/logout. */ }
@@ -401,9 +404,9 @@ function queueAuthChange<T>(change: () => Promise<T>): Promise<T> {
 }
 
 async function getToken(): Promise<string | null> {
-  if (signingOut || locallySignedOut) return null;
+  if (signingOut || locallySignedOut || replacingSession) return null;
   const token = (await storage.secureGet(TOKEN_KEY, "")) || null;
-  return signingOut || locallySignedOut ? null : token;
+  return signingOut || locallySignedOut || replacingSession ? null : token;
 }
 
 // The native install id the current session registered for push, written by
@@ -413,24 +416,31 @@ export const PUSH_INSTALLATION_KEY = "nuri.push.installation_id";
 
 export const auth = {
   TOKEN_KEY,
-  setToken: (t: string) => queueAuthChange(async () => {
+  setToken: (t: string, options?: { expectedGeneration?: number }) => queueAuthChange(async () => {
+    // A late login must not overwrite a newer login already ahead in this queue.
+    if (options?.expectedGeneration !== undefined && options.expectedGeneration !== getSessionGeneration()) return false;
+    replacingSession = true;
+    invalidateSession(true);
     aiConsent.sessionChanged(); // Invalidate old AI work before the Keychain write begins.
-    const saved = await storage.secureSet(TOKEN_KEY, t);
+    let saved = false;
+    try { saved = await storage.secureSet(TOKEN_KEY, t); }
+    finally { replacingSession = false; invalidateSession(); }
     if (saved) {
       locallySignedOut = false;
       publishSession(t);
     }
     return saved;
   }),
-  clearToken: (options?: { forceLocal?: boolean; expectedToken?: string | null }): Promise<boolean> => queueAuthChange(async () => {
+  clearToken: (options?: { forceLocal?: boolean; expectedToken?: string | null; expectedGeneration?: number }): Promise<boolean> => queueAuthChange(async () => {
     const token = (await storage.secureGet(TOKEN_KEY, "")) || null;
+    if (options?.expectedGeneration !== undefined && options.expectedGeneration !== getSessionGeneration()) return false;
     // Compare inside the same queue as setToken: a late 401 must not retire a
     // newer account, even when that login was already queued before recovery.
     // The captured token is memory-only and is never logged or put in errors.
     if (options && "expectedToken" in options && token !== options.expectedToken) return false;
-    const installationId = await storage.getItem<string | null>(PUSH_INSTALLATION_KEY, null);
     signingOut = true;
     publishSession(null);
+    const installationId = await storage.getItem<string | null>(PUSH_INSTALLATION_KEY, null);
     try {
       if (installationId && token) {
         if (options?.forceLocal) {
@@ -454,6 +464,7 @@ export const auth = {
       return true;
     } finally {
       signingOut = false;
+      invalidateSession();
     }
   }),
   getPushCleanupStatus,
@@ -463,11 +474,16 @@ export const auth = {
     return () => { sessionListeners.delete(listener); };
   },
   getToken,
-  setOnboarded: (done: boolean, options?: { expectedToken?: string | null }): Promise<boolean> => queueAuthChange(async () => {
+  getSessionGeneration,
+  getIdentityGeneration,
+  subscribeSessionBoundary,
+  setOnboarded: (done: boolean, options?: { expectedToken?: string | null; expectedGeneration?: number }): Promise<boolean> => queueAuthChange(async () => {
+    if (options?.expectedGeneration !== undefined && options.expectedGeneration !== getSessionGeneration()) return false;
     if (options && "expectedToken" in options) {
       const token = (await storage.secureGet(TOKEN_KEY, "")) || null;
       if (signingOut || locallySignedOut || token !== options.expectedToken) return false;
     }
+    if (options?.expectedGeneration !== undefined && options.expectedGeneration !== getSessionGeneration()) return false;
     return storage.setItem(ONBOARDED_KEY, done);
   }),
   getOnboarded: () => storage.getItem(ONBOARDED_KEY, false),
@@ -512,11 +528,19 @@ export function apiErrorDetail(err: unknown): string {
 
 // ── Fetch wrapper: attaches bearer token, applies a timeout ─────────────────
 async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000, sessionToken?: string): Promise<T> {
+  const generation = getSessionGeneration();
+  // These operations deliberately finish for a captured owner after a switch.
+  // Their callers implement owner-CAS cleanup and must receive true outcomes.
+  const isolated = !path.startsWith("/mobile/push-devices") && path !== "/auth/account" && !["/billing/checkout", "/billing/portal"].includes(path);
+  const assertCurrent = () => { if (isolated) assertSessionGeneration(generation); };
   const token = sessionToken === undefined ? await getToken() : sessionToken;
+  assertCurrent();
   const lease = requiresAIConsent(path, init) ? await aiConsent.authorize(token || null) : null;
   if (isPreviewMode) {
     if (lease) aiConsent.assertCurrent(lease);
-    return previewRequest(path, init) as Promise<T>;
+    const value = await previewRequest(path, init) as T;
+    assertCurrent();
+    return value;
   }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -534,27 +558,38 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
   };
 
   const check = async (res: Response) => {
-    if (!res.ok) throw new ApiError(res.status, path, await res.text());
+    assertCurrent();
+    if (!res.ok) { const detail = await res.text(); assertCurrent(); throw new ApiError(res.status, path, detail); }
     // A 204 has no body; parsing one threw, which made a successful DELETE
     // look like a failure to every caller.
     if (res.status === 204) return undefined;
-    return res.json();
+    const result = await res.json();
+    assertCurrent();
+    return result;
   };
 
   // timeoutMs=0 means no timeout (used for long-running generation calls)
   if (!timeoutMs) {
     if (lease) aiConsent.assertCurrent(lease);
-    return check(await fetch(API + path, requestInit));
+    assertCurrent();
+    try { return await check(await fetch(API + path, requestInit)); }
+    catch (error) { assertCurrent(); throw error; }
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const unsubscribe = isolated ? subscribeSessionBoundary(() => controller.abort()) : () => {};
   try {
     if (lease) aiConsent.assertCurrent(lease);
+    assertCurrent();
     return await check(
       await fetch(API + path, { ...requestInit, signal: controller.signal }),
     );
+  } catch (error) {
+    assertCurrent();
+    throw error;
   } finally {
+    unsubscribe();
     clearTimeout(timer);
   }
 }
@@ -638,8 +673,12 @@ function xhrStream(
   payload: string,
   feed: (chunk: string) => void,
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
+  let unsubscribe = () => {};
+  return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    unsubscribe = subscribeSessionBoundary(() => {
+      try { xhr.abort(); } finally { reject(new SessionChangedError()); }
+    });
     xhr.open("POST", url);
     Object.entries(headers).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     let consumed = 0;
@@ -681,7 +720,7 @@ function xhrStream(
     xhr.ontimeout = () => reject(new Error("stream timed out"));
     xhr.timeout = CHAT_TIMEOUT_MS;
     xhr.send(payload);
-  });
+  }).finally(() => unsubscribe());
 }
 
 /**
@@ -695,7 +734,9 @@ async function streamMessage(
 ): Promise<{ user_message: any; ai_messages: any[] }> {
   if (isPreviewMode) throw new StreamUnsupportedError("preview mode");
 
+  const generation = getSessionGeneration();
   const token = await getToken();
+  assertSessionGeneration(generation);
   const lease = await aiConsent.authorize(token);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -709,6 +750,7 @@ async function streamMessage(
   let result: { user_message: any; ai_messages: any[] } | null = null;
   let failure: string | null = null;
   const feed = makeSseParser((e) => {
+    if (generation !== getSessionGeneration()) return;
     if (e.type === "delta") onDelta(e.text);
     else if (e.type === "done") result = { user_message: e.user_message, ai_messages: e.ai_messages };
     else if (e.type === "error") failure = e.message || "stream error";
@@ -716,12 +758,16 @@ async function streamMessage(
 
   if (!SUPPORTS_FETCH_STREAM) {
     aiConsent.assertCurrent(lease);
-    await xhrStream(url, headers, payload, feed);
+    assertSessionGeneration(generation);
+    try { await xhrStream(url, headers, payload, feed); }
+    catch (error) { assertSessionGeneration(generation); throw error; }
   } else {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+    const unsubscribe = subscribeSessionBoundary(() => controller.abort());
     try {
       aiConsent.assertCurrent(lease);
+      assertSessionGeneration(generation);
       const res = await fetch(url, {
         method: "POST",
         headers,
@@ -729,7 +775,9 @@ async function streamMessage(
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw streamHttpError(res.status, url, await res.text());
+        const detail = await res.text();
+        assertSessionGeneration(generation);
+        throw streamHttpError(res.status, url, detail);
       }
       // A host that buffers the response (or an old backend) won't send SSE.
       if (
@@ -746,11 +794,16 @@ async function streamMessage(
         feed(decoder.decode(value, { stream: true }));
       }
       feed(decoder.decode());
+    } catch (error) {
+      assertSessionGeneration(generation);
+      throw error;
     } finally {
+      unsubscribe();
       clearTimeout(timer);
     }
   }
 
+  assertSessionGeneration(generation);
   if (failure) throw new Error(failure);
   if (!result) throw new Error("stream ended without a result");
   return result;

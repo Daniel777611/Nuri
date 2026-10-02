@@ -27,10 +27,11 @@ function fixture({ platform = "ios", locale = "en", purchaseAllowed = true, inSh
   const platformValue = { OS: platform };
   const dependencies = {
     "react": {
-      useState: (initial) => { const index = stateCursor++; if (!(index in states)) states[index] = initial; return [states[index], (next) => { states[index] = typeof next === "function" ? next(states[index]) : next; }]; },
+      useState: (initial) => { const index = stateCursor++; if (!(index in states)) states[index] = typeof initial === "function" ? initial() : initial; return [states[index], (next) => { states[index] = typeof next === "function" ? next(states[index]) : next; }]; },
       useRef: (initial) => { const index = refCursor++; if (!(index in refs)) refs[index] = { current: initial }; return refs[index]; },
       useCallback: (callback) => callback,
       useEffect: (callback) => effects.push(callback),
+      useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
     },
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", ScrollView: "ScrollView", ActivityIndicator: "ActivityIndicator", Platform: platformValue, Linking: { openURL: (url) => links.push(url) }, StyleSheet: { create: (styles) => styles }, useWindowDimensions: () => ({ width: 402 }) },
@@ -46,6 +47,10 @@ function fixture({ platform = "ios", locale = "en", purchaseAllowed = true, inSh
     "@/src/nativeShell": { isNativeShell: () => inShell, usePurchaseAllowed: () => purchaseAllowed, useOnReturnToApp: (callback) => { returned = callback; } },
     "@/src/theme": { colors: {}, radius: {}, spacing: {}, type: {} },
   };
+  const hookModule = { exports: {} };
+  const hookCode = ts.transpileModule(readFileSync(new URL("../src/useAccountState.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+  new Function("require", "module", "exports", hookCode)((name) => name === "react" ? dependencies.react : { auth: { getSessionGeneration: () => 0, subscribeSessionBoundary: () => () => {} } }, hookModule, hookModule.exports);
+  dependencies["@/src/useAccountState"] = hookModule.exports;
   const loaded = { exports: {} };
   new Function("require", "module", "exports", compiled)((name) => { assert.ok(name in dependencies, "unexpected dependency " + name); return dependencies[name]; }, loaded, loaded.exports);
   function expand(node) {
