@@ -250,9 +250,11 @@ async def generate_post_event(
 
 
 # ── Test accounts ─────────────────────────────────────────────────────────────
-# Accounts listed in PUSH_TEST_EMAILS get both notifications every half hour
-# (the /internal/push/test-accounts cron) so the team can watch the content
-# without waiting a day. Quiet hours still apply; the daily cap does not, or the
+# Accounts listed in PUSH_TEST_EMAILS can get both notifications every half
+# hour (the /internal/push/test-accounts endpoint) so the team can watch the
+# content without waiting a day. Its cron is off: to turn the burst back on,
+# add `{"path": "/api/internal/push/test-accounts", "schedule": "*/30 * * * *"}`
+# to vercel.json. Without it these accounts get the normal two a day. Quiet hours still apply; the daily cap does not, or the
 # fifth run of the day would be cancelled.
 
 DEFAULT_TEST_EMAILS = "daniel@ordashlab.com,123@123.com,contact@ordashteches.com"
