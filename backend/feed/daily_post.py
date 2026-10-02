@@ -889,31 +889,34 @@ def _is_unique_violation(exc: Exception) -> bool:
 
 class DailyPostStore:
     """The one row per parent per local day, and the claim that stops two
-    requests from generating it twice."""
+    requests from generating it twice. The daily video (daily_video.py) keeps
+    the same row shape in its own table."""
+
+    table = TABLE
 
     def __init__(self, sb):
         self.sb = sb
 
     def load(self, user_id: str, day: date) -> Optional[dict]:
-        rows = self.sb.table(TABLE).select("*").eq("user_id", user_id) \
+        rows = self.sb.table(self.table).select("*").eq("user_id", user_id) \
             .eq("day", day.isoformat()).limit(1).execute().data or []
         return rows[0] if rows else None
 
     def load_by_id(self, user_id: str, row_id: str) -> Optional[dict]:
-        rows = self.sb.table(TABLE).select("*").eq("id", row_id) \
+        rows = self.sb.table(self.table).select("*").eq("id", row_id) \
             .eq("user_id", user_id).limit(1).execute().data or []
         return rows[0] if rows else None
 
     def recent_urls(self, user_id: str, now: datetime) -> set[str]:
         since = (now - timedelta(days=REPEAT_WINDOW_DAYS)).date().isoformat()
-        rows = self.sb.table(TABLE).select("source_url").eq("user_id", user_id) \
+        rows = self.sb.table(self.table).select("source_url").eq("user_id", user_id) \
             .gte("day", since).execute().data or []
         return {r["source_url"] for r in rows if r.get("source_url")}
 
     def claim_new(self, user_id: str, day: date, now: datetime) -> Optional[str]:
         row_id = str(uuid.uuid4())
         try:
-            self.sb.table(TABLE).insert({
+            self.sb.table(self.table).insert({
                 "id": row_id, "user_id": user_id, "day": day.isoformat(),
                 "status": "pending", "created_at": now.isoformat(), "updated_at": now.isoformat(),
             }).execute()
@@ -926,24 +929,24 @@ class DailyPostStore:
     def claim_existing(self, row: dict, now: datetime) -> bool:
         """Take over a stale or retryable row. Conditional on nobody having
         touched it since it was read, so only one retry runs."""
-        res = self.sb.table(TABLE).update({"status": "pending", "updated_at": now.isoformat()}) \
+        res = self.sb.table(self.table).update({"status": "pending", "updated_at": now.isoformat()}) \
             .eq("id", row["id"]).eq("updated_at", row["updated_at"]).execute()
         return bool(res.data)
 
     def mark(self, user_id: str, row_id: str, column: str, now: datetime) -> bool:
         """Stamp the first open / source click / chat of this card. False if
         the card is not this parent's."""
-        rows = self.sb.table(TABLE).select("id").eq("id", row_id).eq("user_id", user_id) \
+        rows = self.sb.table(self.table).select("id").eq("id", row_id).eq("user_id", user_id) \
             .limit(1).execute().data or []
         if not rows:
             return False
-        self.sb.table(TABLE).update({column: now.isoformat()}).eq("id", row_id) \
+        self.sb.table(self.table).update({column: now.isoformat()}).eq("id", row_id) \
             .eq("user_id", user_id).is_(column, "null").execute()
         return True
 
     def finish(self, row_id: str, *, status: str, now: datetime, card: Optional[dict] = None,
                basis: Optional[str] = None, queries: Optional[dict] = None, error: str = "") -> None:
-        self.sb.table(TABLE).update({
+        self.sb.table(self.table).update({
             "status": status,
             "card": card,
             "source_url": (card or {}).get("source_url"),

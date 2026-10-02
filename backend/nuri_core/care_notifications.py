@@ -221,6 +221,7 @@ def _clip(text: str, limit: int) -> str:
 #: a notification does, to decide what NURI says in the conversation.
 KIND_CARE = "care"
 KIND_DAILY_POST = "daily_post"
+KIND_DAILY_VIDEO = "daily_video"
 
 
 def build_prompt(signals: CareSignals, nickname: str = "") -> str:
@@ -317,6 +318,19 @@ def post_intro(post: dict) -> str:
         "点下面的卡片可以看全文。\n"
         "看完想聊聊其中哪一点，或者说说你家的情况，我们一起看看怎么用得上。"
     )
+
+
+def video_message(video: dict) -> tuple[str, str]:
+    """The daily video's notification. The video's own title is public; the
+    parent's keyword is not, so it waits for the chat, where the intro names
+    it (backend/feed/daily_video.intro)."""
+    title = "今天的精选视频"
+    shown = str(video.get("display_title") or video.get("title") or "").strip()
+    body = (
+        _clip(f"{shown}。点开就能看，看完可以和 NURI 聊聊。", BODY_MAX_CHARS)
+        if shown else "为你找到一个育儿视频，点开就能看。"
+    )
+    return title, body
 
 
 def dedupe_key(uid: str, day: str, kind: str = KIND_CARE) -> str:

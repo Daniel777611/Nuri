@@ -437,6 +437,42 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     };
   }
   if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
+  // A fixed video (a real pediatrician's explainer) for the second card.
+  if (routePath.endsWith("/summary") && routePath.startsWith("/feed/daily-video/")) {
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    return {
+      summary:
+        "Cook Children's 儿科医生 Christina Sherrod 讲孩子为什么会发脾气、什么时候会慢慢减少，以及家长怎么应对：不要用喊叫、打骂或惩罚让情绪立刻停下，先给孩子一个安静安全的环境，等情绪过去再处理；同时要设好界限，孩子打人、踢人时要说不可以，并让他暂停一下。",
+    };
+  }
+  if (routePath === "/feed/daily-video" || (routePath.startsWith("/feed/daily-video/") && method === "GET")) {
+    const nickname = profile.nickname || "";
+    return {
+      state: "ready",
+      day: new Date().toISOString().slice(0, 10),
+      card: {
+        id: "preview-daily-video",
+        card_id: "dailyvideo:preview-daily-video",
+        day: new Date().toISOString().slice(0, 10),
+        platform: "youtube",
+        video_id: "vIULng1QDpo",
+        source_url: "https://www.youtube.com/watch?v=vIULng1QDpo",
+        thumbnail_url: "https://i.ytimg.com/vi/vIULng1QDpo/hqdefault.jpg",
+        title: "What to Do When Your Child Has a Tantrum | Ask-a-Doc | Cook Children's",
+        display_title: "孩子发脾气时，家长该怎么做",
+        channel: "Cook Children's Health Care System",
+        speaker_kind: "institution",
+        video_lang: "en",
+        summary: "",
+        concern: "宝宝一不如意就躺地哭闹",
+        basis: "conversation",
+        locale: "zh-CN",
+        nickname,
+        intro: `${nickname ? `${nickname}你好呀，` : "你好呀，"}最近你和NURI聊到「宝宝一不如意就躺地哭闹」，找到一个相关的视频，你可能会感兴趣：`,
+      },
+    };
+  }
+  if (routePath.startsWith("/feed/daily-video/") && method === "POST") return { recorded: true };
   // NURI之家: a fixed check-in so the card can be reviewed without a model.
   if (routePath === "/chat/main/checkin" && method === "GET") {
     return {
@@ -469,6 +505,23 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     const messageId = `notification-${notificationId}`;
     const list = messages[session.id] || [];
     const isPost = notificationId.includes("post");
+    if (notificationId.includes("video") && !list.some((message: any) => message.id === messageId)) {
+      const video = (await previewRequest("/feed/daily-video")).card;
+      messages[session.id] = [...list, {
+        id: messageId,
+        session_id: session.id,
+        role: "ai",
+        created_at: new Date().toISOString(),
+        text: video.intro,
+        transition: {
+          kind: "card_opened",
+          card_id: video.card_id,
+          title: video.display_title,
+          video: { id: video.id, title: video.display_title, thumbnail_url: video.thumbnail_url, channel: video.channel },
+        },
+      }];
+      return { session_id: session.id, kind: "daily_video" };
+    }
     if (!list.some((message: any) => message.id === messageId)) {
       const daily = (await previewRequest("/feed/daily-post")).card;
       messages[session.id] = [...list, {

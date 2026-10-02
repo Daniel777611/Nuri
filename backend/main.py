@@ -62,6 +62,7 @@ from backend import (
 )
 from backend.feed import checkin as feed_checkin
 from backend.feed import daily_post as feed_daily_post
+from backend.feed import daily_video as feed_daily_video
 from backend.feed import delivery as feed_delivery
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
@@ -395,7 +396,9 @@ async def _protect_personalized_feed_cache(request: Request, call_next):
                 )
     response = await call_next(request)
     path = request.url.path
-    is_private_feed = path.endswith(("/feed/personalized", "/feed/daily-post")) or bool(
+    is_private_feed = path.endswith(("/feed/personalized", "/feed/daily-post", "/feed/daily-video")) or bool(
+        re.search(r"/feed/daily-(?:post|video)/", path)
+    ) or bool(
         re.search(r"/feed/[^/]+/(?:detail|research)$", path)
     )
     is_private_chat = path.startswith("/api/chat/")
@@ -1589,6 +1592,42 @@ class DailyPostEventIn(BaseModel):
 async def daily_post_event(row_id: str, body: DailyPostEventIn, uid: str = Depends(_req_uid)):
     """First open / tap-through / chat of today's card, for the dashboard."""
     recorded = await feed_daily_post.record_event(uid, row_id, body.event)
+    return {"recorded": recorded}
+
+
+@api.get("/feed/daily-video")
+async def get_daily_video(tz: Optional[str] = None, uid: str = Depends(_req_uid)):
+    """Home's second daily card: one YouTube video for this parent, fixed for
+    their local day. Same states as /feed/daily-post. See
+    backend/feed/daily_video.py."""
+    return await feed_daily_video.get_daily_video(uid, tz)
+
+
+@api.get("/feed/daily-video/{row_id}")
+async def get_daily_video_by_id(row_id: str, uid: str = Depends(_req_uid)):
+    card = await feed_daily_video.get_card(uid, row_id)
+    if not card:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "daily video not found")
+    return {"state": "ready", "day": card.get("day"), "card": card}
+
+
+@api.get("/feed/daily-video/{row_id}/summary")
+async def get_daily_video_summary(row_id: str, uid: str = Depends(_req_uid)):
+    """About 150 characters on the video, from its title and description,
+    written the first time a parent opens it and kept after that."""
+    try:
+        summary = await feed_daily_video.get_summary(uid, row_id)
+    except Exception as exc:
+        print(f"[warn] daily video summary failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "summary unavailable") from exc
+    if summary is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "daily video not found")
+    return {"summary": summary}
+
+
+@api.post("/feed/daily-video/{row_id}/events", status_code=status.HTTP_202_ACCEPTED)
+async def daily_video_event(row_id: str, body: DailyPostEventIn, uid: str = Depends(_req_uid)):
+    recorded = await feed_daily_video.record_event(uid, row_id, body.event)
     return {"recorded": recorded}
 
 
@@ -4410,6 +4449,14 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
             await feed_daily_post.record_event(
                 uid, body.card_id[len(feed_daily_post.CARD_ID_PREFIX):], "chat",
             )
+    elif body.card_id and body.card_id.startswith(feed_daily_video.CARD_ID_PREFIX):
+        marker_extra = await feed_daily_video.marker_fields(uid, body.card_id)
+        if marker_extra is None:
+            body = body.model_copy(update={"card_id": None})
+        else:
+            await feed_daily_video.record_event(
+                uid, body.card_id[len(feed_daily_video.CARD_ID_PREFIX):], "chat",
+            )
 
     existing = await _existing_session_for(uid)
     if existing:
@@ -6264,6 +6311,7 @@ _PRIVACY_WIPE_USER_TABLES = (
     "email_logs",
     "user_visits",
     "daily_post_cards",
+    "daily_video_cards",
     "conversation_checkins",
 )
 
@@ -6559,7 +6607,18 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
             "summary": "；".join((post.get("takeaways") or [])[:2]),
             "source_label": post.get("source_label", ""),
         }
-    card_id = None if post else data.get("card_id")
+    video_id = None if post else data.get("daily_video_id")
+    video = await feed_daily_video.get_card(uid, str(video_id)) if video_id else None
+    if video:
+        target = {
+            "kind": "daily_video",
+            "id": video["id"],
+            "route": f"/daily-video?id={video['id']}",
+            "title": video.get("display_title") or video.get("title") or "",
+            "summary": video.get("intro") or "",
+            "source_label": "YouTube",
+        }
+    card_id = None if (post or video) else data.get("card_id")
     if card_id:
         card = LEARNING_CONTENT_BY_ID.get(card_id)
         if card:
@@ -6646,6 +6705,23 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
             },
         }
         await feed_daily_post.record_event(uid, post["id"], "chat")
+    video_id = None if post else data.get("daily_video_id")
+    video = await feed_daily_video.get_card(uid, str(video_id)) if video_id else None
+    if video:
+        # The knowledge card: NURI's intro line, with the video riding on it.
+        text = video.get("intro") or text
+        transition = {
+            "kind": CARD_OPENED,
+            "card_id": video["card_id"],
+            "title": video.get("display_title") or video.get("title") or "",
+            "context": (await feed_daily_video.marker_fields(uid, video["card_id"]) or {}).get("context", ""),
+            "video": {
+                "id": video["id"],
+                "title": video.get("display_title") or video.get("title") or "",
+                "thumbnail_url": video.get("thumbnail_url") or "",
+                "channel": video.get("channel") or "",
+            },
+        }
 
     message = {
         "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri:notification-open:{notification_id}")),
@@ -6665,7 +6741,10 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
                                      session_id=session["id"]):
             _raise_chat_storage_error("notification message insert", e)
 
-    return {"session_id": session["id"], "kind": "daily_post" if post else "care"}
+    return {
+        "session_id": session["id"],
+        "kind": "daily_post" if post else "daily_video" if video else "care",
+    }
 
 
 # ── Billing (Stripe) ──────────────────────────────────────────────────────────
@@ -6811,9 +6890,10 @@ async def internal_care_generate(
     authorization: Optional[str] = Header(default=None),
     limit: int = 50,
 ):
-    """Queue each eligible account's two notifications for the day.
+    """Queue each eligible account's three notifications for the day.
 
-    The featured post is due now and the care line in the parent's evening
+    The featured post is due now, the daily video in the afternoon
+    (push_service.VIDEO_LOCAL_HOUR) and the care line in the evening
     (push_service.CARE_LOCAL_HOUR). Either still passes through the
     dispatcher's quiet hours and daily cap, so producing one is never the same
     as interrupting someone.
@@ -6835,6 +6915,7 @@ async def internal_care_generate(
 
     generators = {
         "daily_post": push_service.generate_post_event,
+        "daily_video": push_service.generate_video_event,
         "care": push_service.generate_care_event,
     }
     queued = {kind: 0 for kind in generators}
@@ -6872,9 +6953,10 @@ async def internal_push_test_accounts(authorization: Optional[str] = Header(defa
         lambda: sb.table("users").select("id,email").in_("email", emails).execute().data or []
     )
     slot = push_service.tester_slot(datetime.now(timezone.utc))
-    queued = {"daily_post": 0, "care": 0}
+    queued = {"daily_post": 0, "daily_video": 0, "care": 0}
     for row in rows:
         for kind, generate in (("daily_post", push_service.generate_post_event),
+                               ("daily_video", push_service.generate_video_event),
                                ("care", push_service.generate_care_event)):
             try:
                 if await generate(sb, row["id"], slot=slot):

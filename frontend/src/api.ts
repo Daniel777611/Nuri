@@ -204,7 +204,7 @@ export type PushDeviceRegistration = {
 /** A tapped notification, now written into the conversation as NURI's message. */
 export type OpenedNotification = {
   session_id: string;
-  kind: "care" | "daily_post";
+  kind: "care" | "daily_post" | "daily_video";
 };
 
 /** NURI之家: what NURI asks about the last conversation (backend/feed/checkin.py). */
@@ -281,6 +281,41 @@ export type DailyPostCard = {
   /** Who the greeting addresses: "其他妈妈" for a mom, "其他家长" otherwise. */
   audience: "mom" | "parent";
   nickname: string;
+};
+
+// ── Daily video (backend/feed/daily_video.py) ───────────────────────────────
+export type DailyVideoCard = {
+  id: string;
+  /** Pass to startSession({ card_id }) to talk it through with NURI. */
+  card_id: string;
+  day: string;
+  platform: "youtube";
+  video_id: string;
+  source_url: string;
+  thumbnail_url: string;
+  /** The video's own title, as YouTube shows it. */
+  title: string;
+  /** The title rewritten short, in the parent's language. */
+  display_title: string;
+  channel: string;
+  speaker_kind: "pediatrician" | "psychologist" | "institution" | "educator" | "creator";
+  video_lang: "zh" | "en";
+  /** "" until the detail page asks for it (GET /feed/daily-video/{id}/summary). */
+  summary: string;
+  concern: string;
+  basis: "conversation" | "profile";
+  locale: string;
+  nickname: string;
+  /** The knowledge card's line: "Linda你好呀，最近你和NURI聊到「…」…". */
+  intro: string;
+};
+
+export type DailyVideoResponse = {
+  state: "ready" | "pending" | "empty" | "unavailable" | "disabled";
+  day: string;
+  tz?: string;
+  card: DailyVideoCard | null;
+  retry_after_s?: number;
 };
 
 export type DailyPostResponse = {
@@ -849,6 +884,20 @@ export const api = {
   // An earlier card by id, for a care notification that named it.
   getDailyPostById: (id: string): Promise<DailyPostResponse> =>
     req(`/feed/daily-post/${encodeURIComponent(id)}`),
+  getDailyVideo: (): Promise<DailyVideoResponse> => {
+    const tz = deviceTimeZone();
+    return req(`/feed/daily-video${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+  },
+  getDailyVideoById: (id: string): Promise<DailyVideoResponse> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}`),
+  // The first open writes the summary with a model call.
+  getDailyVideoSummary: (id: string): Promise<{ summary: string }> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/summary`, undefined, 30000),
+  dailyVideoEvent: (id: string, event: "open" | "source_click" | "chat") =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/events`, {
+      method: "POST",
+      body: JSON.stringify({ event }),
+    }),
   dailyPostEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req(`/feed/daily-post/${encodeURIComponent(id)}/events`, {
       method: "POST",

@@ -62,6 +62,21 @@ def _log_safe(message: str, **fields: Any) -> None:
 #: run makes it (the morning, for most parents); care waits for the evening, so
 #: the two never land on the lock screen together.
 CARE_LOCAL_HOUR = 18
+#: Local hour the daily video goes out: between the morning's featured post
+#: and the evening's care line, so the three arrive one at a time.
+VIDEO_LOCAL_HOUR = 14
+
+
+def video_send_time(prefs: dict, now: datetime) -> datetime:
+    """14:00 the parent's time; if that has passed but the care line has not
+    gone yet, now; otherwise 14:00 tomorrow."""
+    local = now.astimezone(_zone(prefs))
+    target = local.replace(hour=VIDEO_LOCAL_HOUR, minute=0, second=0, microsecond=0)
+    if target > local:
+        return target.astimezone(timezone.utc)
+    if local.hour < CARE_LOCAL_HOUR:
+        return now
+    return (target + timedelta(days=1)).astimezone(timezone.utc)
 
 
 def _zone(prefs: dict) -> Any:
@@ -246,6 +261,49 @@ async def generate_post_event(
         uid, care.KIND_DAILY_POST, title, body, day, now,
         full_content=care.post_intro(post),
         data={"daily_post_id": post["id"], **_tester_data(slot)},
+    ))
+
+
+async def _daily_video(sb: Any, uid: str) -> Optional[dict]:
+    """The parent's video for their local day — the one Home shows."""
+    from backend.feed import daily_video as feed_daily_video
+
+    zone = (await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))).get("time_zone")
+    try:
+        result = await feed_daily_video.get_daily_video(uid, zone)
+    except Exception as exc:  # noqa: BLE001 - the notification can go without it
+        log.warning("daily video failed: %s", type(exc).__name__)
+        return None
+    card = result.get("card") if result.get("state") == "ready" else None
+    return card if card and card.get("id") and card.get("video_id") else None
+
+
+async def generate_video_event(
+    sb: Any,
+    uid: str,
+    *,
+    now: Optional[datetime] = None,
+    slot: Optional[str] = None,
+) -> Optional[dict]:
+    """Queue the parent's daily video (the knowledge card) for the afternoon.
+
+    Returns ``None`` when no video could be found today, or one is already queued.
+    """
+    now = now or _now()
+    video = await _daily_video(sb, uid)
+    if not video:
+        return None
+    title, body = care.video_message(video)
+    if slot:
+        scheduled_at = now
+    else:
+        prefs = await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))
+        scheduled_at = video_send_time(prefs, now)
+    day = slot or now.astimezone(timezone.utc).date().isoformat()
+    return await _queue(sb, _event_row(
+        uid, care.KIND_DAILY_VIDEO, title, body, day, scheduled_at,
+        full_content=video.get("intro") or "",
+        data={"daily_video_id": video["id"], **_tester_data(slot)},
     ))
 
 

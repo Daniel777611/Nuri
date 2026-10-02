@@ -18,11 +18,13 @@ import { useIsFocused } from "@react-navigation/native";
 import {
   api,
   type DailyPostCard as DailyPost,
+  type DailyVideoCard as DailyVideo,
   type MainCheckin,
   type MainConversationPreview,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
+import DailyVideoCard from "@/src/components/DailyVideoCard";
 import { useT } from "@/src/i18n";
 
 const mascotImage = require("@/assets/images/homepage/figma-mascot.png");
@@ -147,6 +149,13 @@ export default function Home() {
   const [dailyPostStatus, setDailyPostStatus] = useState<DailyPostStatus>("loading");
   const dailyPostRequest = useRef(0);
   const dailyPostPolls = useRef(0);
+  // The second card in the carousel: today's YouTube video. Same states and
+  // polling as the post; each is built on its own, so one never waits on the other.
+  const [dailyVideo, setDailyVideo] = useState<DailyVideo | null>(null);
+  const [dailyVideoStatus, setDailyVideoStatus] = useState<DailyPostStatus>("loading");
+  const dailyVideoRequest = useRef(0);
+  const dailyVideoPolls = useRef(0);
+  const [dailyPage, setDailyPage] = useState(0);
 
   const showToast = useCallback((m: string) => {
     setToastMsg(m);
@@ -195,6 +204,53 @@ export default function Home() {
     }, DAILY_POST_POLL_MS);
     return () => clearTimeout(timer);
   }, [dailyPostStatus, isHomeFocused, loadDailyPost]);
+
+  const loadDailyVideo = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const requestId = ++dailyVideoRequest.current;
+    if (!quiet) setDailyVideoStatus((current) => (current === "ready" ? current : "loading"));
+    try {
+      const res = await api.getDailyVideo();
+      if (requestId !== dailyVideoRequest.current) return;
+      if (res.state === "ready" && res.card) {
+        setDailyVideo(res.card);
+        setDailyVideoStatus("ready");
+        dailyVideoPolls.current = 0;
+      } else if (res.state === "pending") {
+        setDailyVideoStatus("pending");
+      } else if (res.state === "disabled") {
+        setDailyVideo(null);
+        setDailyVideoStatus("disabled");
+      } else {
+        setDailyVideo(null);
+        setDailyVideoStatus(res.state === "unavailable" ? "error" : "empty");
+      }
+    } catch {
+      if (requestId === dailyVideoRequest.current) {
+        setDailyVideoStatus((current) => (current === "ready" ? current : "error"));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (dailyVideoStatus !== "pending" || !isHomeFocused) return;
+    if (dailyVideoPolls.current >= DAILY_POST_POLL_LIMIT) {
+      setDailyVideoStatus("empty");
+      return;
+    }
+    const timer = setTimeout(() => {
+      dailyVideoPolls.current += 1;
+      void loadDailyVideo({ quiet: true });
+    }, DAILY_POST_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [dailyVideoStatus, isHomeFocused, loadDailyVideo]);
+
+  const openDailyVideo = useCallback(
+    (card: DailyVideo) => {
+      void api.dailyVideoEvent(card.id, "open").catch(() => {});
+      router.push(`/daily-video?id=${encodeURIComponent(card.id)}` as never);
+    },
+    [router],
+  );
 
   const openDailyPost = useCallback(
     (card: DailyPost) => {
@@ -303,11 +359,14 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       dailyPostPolls.current = 0;
+      dailyVideoPolls.current = 0;
       void loadDailyPost();
+      void loadDailyVideo();
       return () => {
         dailyPostRequest.current += 1;
+        dailyVideoRequest.current += 1;
       };
-    }, [loadDailyPost])
+    }, [loadDailyPost, loadDailyVideo])
   );
 
   useFocusEffect(
@@ -400,7 +459,7 @@ export default function Home() {
             </Pressable>
           </View>
 
-          {dailyPostStatus !== "disabled" ? (
+          {dailyPostStatus !== "disabled" || dailyVideoStatus !== "disabled" ? (
             <>
               <View style={styles.sectionHeading}>
                 {Platform.OS === "web" ? (
@@ -415,14 +474,49 @@ export default function Home() {
                 <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
               </View>
 
-              <DailyPostCard
-                width={dailyCardWidth}
-                nickname={dailyPost?.nickname ?? ""}
-                status={dailyPostStatus}
-                card={dailyPost}
-                onPress={openDailyPost}
-                onRetry={() => void loadDailyPost()}
-              />
+              {/* Swipe between today's picks: the parents' post (Meta) and the
+                  video (YouTube). A source that is switched off just drops out. */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={dailyCardWidth + 17}
+                snapToAlignment="start"
+                decelerationRate="fast"
+                disableIntervalMomentum
+                contentContainerStyle={{ paddingRight: 17 }}
+                onScroll={(event) =>
+                  setDailyPage(Math.round(event.nativeEvent.contentOffset.x / (dailyCardWidth + 17)))
+                }
+                scrollEventThrottle={16}
+                testID="home-daily-carousel"
+              >
+                {dailyPostStatus !== "disabled" ? (
+                  <DailyPostCard
+                    width={dailyCardWidth}
+                    nickname={dailyPost?.nickname ?? ""}
+                    status={dailyPostStatus}
+                    card={dailyPost}
+                    onPress={openDailyPost}
+                    onRetry={() => void loadDailyPost()}
+                  />
+                ) : null}
+                {dailyVideoStatus !== "disabled" ? (
+                  <DailyVideoCard
+                    width={dailyCardWidth}
+                    status={dailyVideoStatus}
+                    card={dailyVideo}
+                    onPress={openDailyVideo}
+                    onRetry={() => void loadDailyVideo()}
+                  />
+                ) : null}
+              </ScrollView>
+              {dailyPostStatus !== "disabled" && dailyVideoStatus !== "disabled" ? (
+                <View style={styles.dailyDots} accessibilityElementsHidden importantForAccessibility="no">
+                  {[0, 1].map((i) => (
+                    <View key={i} style={[styles.dailyDot, dailyPage === i && styles.dailyDotActive]} />
+                  ))}
+                </View>
+              ) : null}
             </>
           ) : null}
 
@@ -633,6 +727,9 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     overflow: "hidden",
   },
+  dailyDots: { flexDirection: "row", justifyContent: "center", gap: 6, marginTop: 10 },
+  dailyDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(38,27,69,0.18)" },
+  dailyDotActive: { width: 18, backgroundColor: "#4C368C" },
   nuriTopicPill: {
     alignSelf: "flex-start",
     maxWidth: "100%",
