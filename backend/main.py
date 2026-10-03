@@ -32,7 +32,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
   Daily push admin       /admin/daily-push*
 """
 
-import asyncio, hmac, io, json, logging, os, time, uuid, hashlib, random, re
+import asyncio, hmac, io, json, logging, os, secrets, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from typing import List, Literal, NamedTuple, Optional, Sequence, get_args
@@ -56,6 +56,7 @@ from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
+from backend import google_auth
 from backend import (
     billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, runtime, stores, usage_dashboard,
@@ -1372,6 +1373,84 @@ async def login(body: UserLogin):
             pass
         raise HTTPException(403, "EMAIL_NOT_VERIFIED")
     return _auth_response(doc)
+
+
+class GoogleLogin(BaseModel):
+    #: The ID token Google Identity Services returned to the page.
+    credential: str = Field(..., min_length=20, max_length=8000)
+    language: Optional[AuthLanguage] = None
+
+
+@api.post("/auth/google")
+async def google_login(body: GoogleLogin):
+    """One-tap sign-in and sign-up with a Google account.
+
+    Google has already verified the address, which proves the mailbox just as
+    NURI's emailed code does, so:
+
+    * an existing account with that address signs in;
+    * one registered but never verified is taken over by whoever proves the
+      mailbox — the same rule as /auth/register — and its password is
+      replaced, so whoever parked the address can't sign in with it later;
+    * otherwise a new, verified account is created and the parent goes on to
+      onboarding, with Google's first name pre-filled as the nickname.
+
+    A Google account has no NURI password. "Forgot password" sets one if the
+    parent ever wants to sign in with email too.
+    """
+    if not google_auth.enabled():
+        raise HTTPException(503, "GOOGLE_SIGNIN_UNAVAILABLE")
+    try:
+        claims = await anyio.to_thread.run_sync(lambda: google_auth.verify_id_token(body.credential))
+    except google_auth.GoogleTokenError as exc:
+        logger.warning("google_signin_rejected", extra={
+            "event": "google_signin_rejected", "reason": str(exc)[:80],
+        })
+        raise HTTPException(401, "GOOGLE_TOKEN_INVALID") from exc
+    except Exception as exc:  # Google's key endpoint unreachable, for one
+        logger.error("google_signin_failed", extra={
+            "event": "google_signin_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "GOOGLE_SIGNIN_UNAVAILABLE") from exc
+
+    sb = _require_auth_storage()
+    email = email_verification.normalize(claims["email"])
+    user = await _user_by_email(sb, email)
+    if user:
+        if user.get("email_verified_at"):
+            return {**_auth_response(user), "created": False}
+        updates = {
+            "email_verified_at": _now(),
+            "hashed_password": _hash_pw(secrets.token_urlsafe(32)),
+        }
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("users").update(updates)
+                .eq("id", user["id"]).is_("email_verified_at", "null").execute()
+            )
+        except Exception as exc:
+            raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+        return {**_auth_response({**user, **updates}), "created": False}
+
+    doc = {
+        "id": str(uuid.uuid4()), "email": email, "created_at": _now(),
+        "email_verified_at": _now(),
+        "nickname": google_auth.display_name(claims), "city": "", "top_concerns": [],
+        # Unknowable to anyone: the account signs in through Google.
+        "hashed_password": _hash_pw(secrets.token_urlsafe(32)),
+    }
+    try:
+        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(doc).execute())
+    except Exception as exc:
+        err = str(exc)
+        if "23505" in err or "duplicate" in err.lower() or "unique" in err.lower():
+            # Two taps raced; the other request made the account.
+            raced = await _user_by_email(sb, email)
+            if raced:
+                return {**_auth_response(raced), "created": False}
+        print(f"[error] google register write error: {type(exc).__name__}")
+        raise HTTPException(500, "注册失败，请稍后重试") from exc
+    return {**_auth_response(doc), "created": True}
 
 
 @api.post("/auth/password/forgot")

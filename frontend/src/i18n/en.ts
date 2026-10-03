@@ -149,6 +149,11 @@ export const en: Record<string, string> = {
   "今天还没找到合适的家长经验。和NURI多聊聊你的情况，明天会更贴近你。":
     "No good parent story today. Tell NURI a bit more and tomorrow's will fit you better.",
   "重试": "Try again",
+  "或": "or",
+  "正在登录…": "Signing in…",
+  "Google 登录暂时不可用，请用邮箱登录。": "Google sign-in isn't available right now. Please use your email.",
+  "Google 登录没有成功，请再试一次。": "Google sign-in didn't work. Please try again.",
+  "Google 登录加载失败，请检查网络或用邮箱登录。": "Google sign-in couldn't load. Check your connection or use your email.",
   "看看她们怎么做": "See what they did",
   "看看大家怎么做": "See what they did",
   "今天的家长经验暂时打不开，回首页再试试。": "Today's parent story can't be opened right now. Try again from Home.",

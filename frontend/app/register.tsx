@@ -23,6 +23,7 @@ import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 import { api, auth, isAuthError } from "@/src/api";
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
+import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 import { useT } from "@/src/i18n";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
@@ -195,6 +196,8 @@ export default function Register() {
                   <Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
                 </Pressable>
               </View>
+              {/* A Google account needs no code: Google has already verified it. */}
+              <GoogleSignInButton width={phoneWidth - 72} />
             </View>
           </ScrollView>
         </KeyboardAvoidingView>

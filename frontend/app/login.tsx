@@ -7,6 +7,7 @@ import {
   Pressable,
   KeyboardAvoidingView,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -14,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
 import { savePendingVerification } from "@/src/authFlow";
+import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
@@ -24,6 +26,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { width: viewportWidth } = useWindowDimensions();
 
   const submit = async () => {
     setError(null);
@@ -120,6 +123,8 @@ export default function Login() {
           >
             <Text style={styles.ctaText}>{submitting ? t("登录中...") : t("登录")}</Text>
           </Pressable>
+
+          <GoogleSignInButton width={Math.min(viewportWidth, 480) - spacing.lg * 2} />
 
           <Pressable
             onPress={() => router.replace("/register")}

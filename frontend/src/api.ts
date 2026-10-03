@@ -855,6 +855,9 @@ export const api = {
   resetPassword: (b: { email: string; code: string; new_password: string }) =>
     req(`/auth/password/reset`, { method: "POST", body: JSON.stringify(b) }),
   login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  // Sign in or sign up with the ID token Google Identity Services returned.
+  googleLogin: (b: { credential: string; language?: string }) =>
+    req(`/auth/google`, { method: "POST", body: JSON.stringify(b) }, 30000),
   // Generous timeout: this is the launch check, and it's the request most
   // likely to hit a serverless cold start.
   me: () => req(`/auth/me`, undefined, 30000),
