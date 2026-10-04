@@ -32,6 +32,12 @@ import androidx.core.view.WindowInsetsCompat
  * (`nuri:fcm-token`) and tapped routes (`nuri:open-route`). The same contract
  * as the iOS shell, see private/handoff/NURI_iOS_Push_Handoff_2026-09-10.md §3.
  */
+
+/** Video players NURI embeds in its own pages, allowed only as frames on /embed/. */
+private val EMBED_FRAME_HOSTS = setOf(
+    "www.youtube-nocookie.com", "youtube-nocookie.com", "www.youtube.com", "youtube.com",
+)
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
@@ -167,6 +173,15 @@ class MainActivity : ComponentActivity() {
         return uri.scheme == origin.scheme && uri.host == origin.host && uri.port == origin.port
     }
 
+    /** The daily video's player, loading as a frame inside one of our pages. */
+    private fun isEmbeddedPlayer(request: WebResourceRequest): Boolean {
+        val uri = request.url
+        return !request.isForMainFrame &&
+            uri.scheme == "https" &&
+            uri.host in EMBED_FRAME_HOSTS &&
+            (uri.path ?: "").startsWith("/embed/")
+    }
+
     /** Hand the page this phone's token, if there is one and the page is ours. */
     private fun sendTokenToPage() {
         if (!isTrusted(currentUrl)) return
@@ -188,6 +203,9 @@ class MainActivity : ComponentActivity() {
     private inner class ShellWebViewClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             if (isTrusted(request.url.toString())) return false
+            // The daily video plays inside the page; "Watch on YouTube" is a
+            // main-frame navigation and still goes to the YouTube app below.
+            if (isEmbeddedPlayer(request)) return false
             // Everything else — articles, videos, tel: and mailto: — belongs
             // to the phone's own apps, never inside the shell with the bridge.
             try {

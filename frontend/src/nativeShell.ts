@@ -20,6 +20,34 @@ export function shellKind(): ShellKind {
   return null;
 }
 
+/** The shell's version from its user agent, e.g. [0, 2, 10]; null in a browser. */
+export function shellVersion(): number[] | null {
+  if (!isNativeShell() || typeof navigator === "undefined") return null;
+  const match = (navigator.userAgent || "").match(/(?:NURI-Mobile-Shell|NuriAndroid)\/(\d+)\.(\d+)(?:\.(\d+))?/);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3] || 0)] : null;
+}
+
+function atLeast(version: number[] | null, wanted: number[]): boolean {
+  if (!version) return false;
+  for (let i = 0; i < wanted.length; i += 1) {
+    if ((version[i] || 0) !== wanted[i]) return (version[i] || 0) > wanted[i];
+  }
+  return true;
+}
+
+/**
+ * Whether a YouTube player embedded in the page can play here.
+ *
+ * Up to 0.2.9 the iOS shell sent every non-NURI address — the player's frame
+ * included — to Safari, where YouTube refuses an embed opened on its own
+ * (Error 153). 0.2.10 lets the player load in place. Browsers and the Android
+ * shell were never affected.
+ */
+export function canEmbedVideo(): boolean {
+  if (shellKind() !== "ios") return true;
+  return atLeast(shellVersion(), [0, 2, 10]);
+}
+
 // The shells answer `nuri:request-storefront` with a `nuri:storefront` event.
 // Only the iOS shell (0.2.9+) does; the Android APK doesn't need to.
 const STOREFRONT_EVENT = "nuri:storefront";

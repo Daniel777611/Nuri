@@ -1,5 +1,6 @@
 import {
   BLOCKED_SCHEMES,
+  EMBED_FRAME_HOSTS,
   EXTERNAL_SCHEMES,
   TRUSTED_HOSTS,
 } from './config';
@@ -9,7 +10,12 @@ export type NavigationDecision =
   | { action: 'external'; url: string }
   | { action: 'block'; reason: string };
 
-export function decideNavigation(rawUrl: string): NavigationDecision {
+/**
+ * `isTopFrame` is false for a frame inside the page (an <iframe>). Only the
+ * video players in EMBED_FRAME_HOSTS may load there; any other frame follows
+ * the same rules as a top-level navigation.
+ */
+export function decideNavigation(rawUrl: string, isTopFrame = true): NavigationDecision {
   if (
     rawUrl === 'about:blank' ||
     rawUrl.startsWith('blob:') ||
@@ -37,6 +43,18 @@ export function decideNavigation(rawUrl: string): NavigationDecision {
     if (parsed.username || parsed.password) {
       return { action: 'block', reason: 'url_credentials' };
     }
+    return { action: 'allow' };
+  }
+
+  if (
+    !isTopFrame &&
+    scheme === 'https:' &&
+    EMBED_FRAME_HOSTS.has(parsed.hostname.toLowerCase()) &&
+    parsed.pathname.startsWith('/embed/') &&
+    !parsed.port &&
+    !parsed.username &&
+    !parsed.password
+  ) {
     return { action: 'allow' };
   }
 

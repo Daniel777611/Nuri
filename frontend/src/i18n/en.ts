@@ -184,6 +184,7 @@ export const en: Record<string, string> = {
   "查看原帖": "View the original post",
   "精选文章": "Selected Article",
   "精选视频": "Selected Video",
+  "点击在 YouTube 中播放": "Tap to play on YouTube",
   "和你聊过的「{concern}」有关": "About “{concern}”, from your chats",
   "适合 {concern}": "For {concern}",
   "为你挑的育儿视频": "A parenting video picked for you",

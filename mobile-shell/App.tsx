@@ -309,8 +309,10 @@ export default function App() {
   }, []);
 
   const shouldStartLoad = useCallback(
-    (request: { url: string }) => {
-      const decision = decideNavigation(request.url);
+    (request: { url: string; isTopFrame?: boolean }) => {
+      // isTopFrame is false for an <iframe> in the page: the daily video's
+      // player may load there (see EMBED_FRAME_HOSTS).
+      const decision = decideNavigation(request.url, request.isTopFrame !== false);
       if (decision.action === 'allow') {
         return true;
       }
@@ -510,7 +512,7 @@ export default function App() {
           allowFileAccess={false}
           cacheEnabled
           pullToRefreshEnabled
-          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.9"
+          applicationNameForUserAgent="NURI-Mobile-Shell/0.2.10"
         /> : null}
 
         {loading && !error ? (

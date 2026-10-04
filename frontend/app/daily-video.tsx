@@ -7,6 +7,7 @@
 import { createElement, useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -23,6 +24,7 @@ import * as WebBrowser from "expo-web-browser";
 
 import { api, type DailyVideoCard } from "@/src/api";
 import { useT } from "@/src/i18n";
+import { canEmbedVideo } from "@/src/nativeShell";
 
 const C = {
   canvas: "#FFF9F3",
@@ -38,8 +40,38 @@ function embedUrl(videoId: string): string {
   return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?playsinline=1&rel=0&modestbranding=1`;
 }
 
-function Player({ videoId, width }: { videoId: string; width: number }) {
+function Player({
+  videoId,
+  thumbnailUrl,
+  width,
+  onOpenYouTube,
+}: {
+  videoId: string;
+  thumbnailUrl: string;
+  width: number;
+  onOpenYouTube: () => void;
+}) {
+  const { t } = useT();
   const height = Math.round((width * 9) / 16);
+  if (Platform.OS === "web" && !canEmbedVideo()) {
+    // An older iOS shell can't play it in the page (see canEmbedVideo), so
+    // offer the YouTube app straight away rather than a black frame.
+    return (
+      <Pressable
+        onPress={onOpenYouTube}
+        style={[styles.player, { width, height }]}
+        accessibilityRole="button"
+        testID="daily-video-poster"
+      >
+        <Image source={{ uri: thumbnailUrl }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <View style={styles.posterShade} />
+        <View style={styles.posterPlay}>
+          <Ionicons name="play" size={28} color="#FFFFFF" style={{ marginLeft: 3 }} />
+        </View>
+        <Text style={styles.posterHint}>{t("点击在 YouTube 中播放")}</Text>
+      </Pressable>
+    );
+  }
   if (Platform.OS === "web") {
     // The app ships as a web page inside the iOS/Android shells, so this is
     // the player every parent sees.
@@ -50,6 +82,9 @@ function Player({ videoId, width }: { videoId: string; width: number }) {
           title: "YouTube video",
           allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture",
           allowFullScreen: true,
+          // YouTube checks which page embeds the player and refuses without
+          // it (Error 153); send our origin even if a stricter default applies.
+          referrerPolicy: "strict-origin-when-cross-origin",
           style: { width: "100%", height: "100%", border: 0 },
         })}
       </View>
@@ -169,7 +204,12 @@ export default function DailyVideoScreen() {
 
           <Text style={styles.intro} testID="daily-video-intro">{card.intro}</Text>
 
-          <Player videoId={card.video_id} width={playerWidth} />
+          <Player
+            videoId={card.video_id}
+            thumbnailUrl={card.thumbnail_url}
+            width={playerWidth}
+            onOpenYouTube={openYouTube}
+          />
 
           <Text style={styles.title} testID="daily-video-title">{card.display_title || card.title}</Text>
           <View style={styles.metaRow}>
@@ -241,6 +281,15 @@ const styles = StyleSheet.create({
   backText: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 14 },
   intro: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 16, lineHeight: 25, marginTop: 4, marginBottom: 14 },
   player: { borderRadius: 18, overflow: "hidden", backgroundColor: "#000000" },
+  posterShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.25)" },
+  posterPlay: {
+    position: "absolute", top: "50%", left: "50%", width: 64, height: 64, marginTop: -40, marginLeft: -32,
+    borderRadius: 32, backgroundColor: "#FF0033", alignItems: "center", justifyContent: "center",
+  },
+  posterHint: {
+    position: "absolute", left: 0, right: 0, bottom: 14, textAlign: "center",
+    color: "#FFFFFF", fontFamily: "NotoSansSC_600SemiBold", fontSize: 13,
+  },
   title: { color: C.text, fontFamily: "NotoSansSC_700Bold", fontSize: 17, lineHeight: 25, marginTop: 14 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 },
   meta: { flex: 1, color: C.soft, fontFamily: "NotoSansSC_400Regular", fontSize: 12 },

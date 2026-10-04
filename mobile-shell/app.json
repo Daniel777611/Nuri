@@ -2,14 +2,14 @@
   "expo": {
     "name": "NURI",
     "slug": "nuri-mobile-shell",
-    "version": "0.2.9",
+    "version": "0.2.10",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "nuri",
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri",
-      "buildNumber": "14",
+      "buildNumber": "15",
       "supportsTablet": false,
       "entitlements": {
         "aps-environment": "$(APS_ENVIRONMENT)"
