@@ -18,10 +18,13 @@ import { useIsFocused } from "@react-navigation/native";
 import {
   api,
   type DailyPostCard as DailyPost,
+  type DailyVideoCard as DailyVideo,
+  type MainCheckin,
   type MainConversationPreview,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
+import DailyVideoCard from "@/src/components/DailyVideoCard";
 import { useT } from "@/src/i18n";
 
 const mascotImage = require("@/assets/images/homepage/figma-mascot.png");
@@ -133,6 +136,10 @@ export default function Home() {
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
   const [nuriPreviewStatus, setNuriPreviewStatus] =
     useState<NuriPreviewStatus>("loading");
+  // What NURI asks about the last conversation once it is over. Null while
+  // loading; the card shows the plain preview until it arrives.
+  const [checkin, setCheckin] = useState<MainCheckin | null>(null);
+  const checkinRequest = useRef(0);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nuriPreviewRequest = useRef(0);
   const openingNuriChat = useRef(false);
@@ -142,6 +149,13 @@ export default function Home() {
   const [dailyPostStatus, setDailyPostStatus] = useState<DailyPostStatus>("loading");
   const dailyPostRequest = useRef(0);
   const dailyPostPolls = useRef(0);
+  // The second card in the carousel: today's YouTube video. Same states and
+  // polling as the post; each is built on its own, so one never waits on the other.
+  const [dailyVideo, setDailyVideo] = useState<DailyVideo | null>(null);
+  const [dailyVideoStatus, setDailyVideoStatus] = useState<DailyPostStatus>("loading");
+  const dailyVideoRequest = useRef(0);
+  const dailyVideoPolls = useRef(0);
+  const [dailyPage, setDailyPage] = useState(0);
 
   const showToast = useCallback((m: string) => {
     setToastMsg(m);
@@ -191,6 +205,53 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [dailyPostStatus, isHomeFocused, loadDailyPost]);
 
+  const loadDailyVideo = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const requestId = ++dailyVideoRequest.current;
+    if (!quiet) setDailyVideoStatus((current) => (current === "ready" ? current : "loading"));
+    try {
+      const res = await api.getDailyVideo();
+      if (requestId !== dailyVideoRequest.current) return;
+      if (res.state === "ready" && res.card) {
+        setDailyVideo(res.card);
+        setDailyVideoStatus("ready");
+        dailyVideoPolls.current = 0;
+      } else if (res.state === "pending") {
+        setDailyVideoStatus("pending");
+      } else if (res.state === "disabled") {
+        setDailyVideo(null);
+        setDailyVideoStatus("disabled");
+      } else {
+        setDailyVideo(null);
+        setDailyVideoStatus(res.state === "unavailable" ? "error" : "empty");
+      }
+    } catch {
+      if (requestId === dailyVideoRequest.current) {
+        setDailyVideoStatus((current) => (current === "ready" ? current : "error"));
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (dailyVideoStatus !== "pending" || !isHomeFocused) return;
+    if (dailyVideoPolls.current >= DAILY_POST_POLL_LIMIT) {
+      setDailyVideoStatus("empty");
+      return;
+    }
+    const timer = setTimeout(() => {
+      dailyVideoPolls.current += 1;
+      void loadDailyVideo({ quiet: true });
+    }, DAILY_POST_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [dailyVideoStatus, isHomeFocused, loadDailyVideo]);
+
+  const openDailyVideo = useCallback(
+    (card: DailyVideo) => {
+      void api.dailyVideoEvent(card.id, "open").catch(() => {});
+      router.push(`/daily-video?id=${encodeURIComponent(card.id)}` as never);
+    },
+    [router],
+  );
+
   const openDailyPost = useCallback(
     (card: DailyPost) => {
       void api.dailyPostEvent(card.id, "open").catch(() => {});
@@ -232,8 +293,31 @@ export default function Home() {
     }
   }, []);
 
+  const loadCheckin = useCallback(async () => {
+    const requestId = ++checkinRequest.current;
+    try {
+      const result = await api.getMainCheckin();
+      if (requestId === checkinRequest.current) setCheckin(result);
+    } catch {
+      if (requestId === checkinRequest.current) setCheckin({ state: "unavailable" });
+    }
+  }, []);
+
   const openNuriChat = async () => {
-    if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
+    if (openingNuriChat.current) return;
+    if (checkin?.state === "ready" && checkin.id) {
+      // NURI asked on Home; in the chat it has to read as NURI having asked,
+      // so the parent can simply answer.
+      openingNuriChat.current = true;
+      try {
+        const opened = await api.openMainCheckin(checkin.id);
+        router.push(`/chat/${opened.session_id}`);
+        return;
+      } catch {
+        openingNuriChat.current = false; // fall through to the plain open
+      }
+    }
+    if (nuriPreviewStatus === "loading") return;
     if (nuriPreviewStatus === "error" && !nuriPreview) {
       await loadNuriPreview();
       return;
@@ -275,38 +359,46 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       dailyPostPolls.current = 0;
+      dailyVideoPolls.current = 0;
       void loadDailyPost();
+      void loadDailyVideo();
       return () => {
         dailyPostRequest.current += 1;
+        dailyVideoRequest.current += 1;
       };
-    }, [loadDailyPost])
+    }, [loadDailyPost, loadDailyVideo])
   );
 
   useFocusEffect(
     useCallback(() => {
       void loadNuriPreview();
+      void loadCheckin();
       return () => {
         nuriPreviewRequest.current += 1;
+        checkinRequest.current += 1;
         openingNuriChat.current = false;
       };
-    }, [loadNuriPreview])
+    }, [loadNuriPreview, loadCheckin])
   );
 
   const hasLoadedPreview = !!nuriPreview;
-  const lastUserExcerpt = nuriPreview?.hasLastUserMessage
-    ? conversationExcerpt(nuriPreview.lastUserMessage)
-    : "";
   const memoryExcerpt = nuriPreview?.memoryText
     ? conversationExcerpt(nuriPreview.memoryText)
     : "";
   const hasPersonalContext = !!nuriPreview?.hasPersonalContext;
-  const nuriMemo =
-    hasLoadedPreview && nuriPreview?.hasLastUserMessage
-      ? lastUserExcerpt
-        ? t("你还记得我们上次谈到“{excerpt}”吗？最近怎么样？", {
-            excerpt: lastUserExcerpt,
-          })
-        : t("你还记得我们上次分享的那张图片吗？最近怎么样？")
+  const checkinReady = checkin?.state === "ready" && !!checkin.line;
+  // The last message itself is never quoted back: it is as often "谢谢" or a
+  // language switch as the subject. Once the conversation is over NURI asks
+  // about its real subject; until then it offers to carry on.
+  const nuriTopic = checkinReady ? checkin?.topic || "" : "";
+  const nuriMemo = checkinReady
+    ? checkin!.line!
+    : checkin?.state === "active"
+      ? t("刚才的话还没聊完，要接着聊吗？")
+      : hasLoadedPreview && nuriPreview?.hasLastUserMessage && !checkin
+        ? t("正在整理我们上次的对话…")
+        : hasLoadedPreview && nuriPreview?.hasLastUserMessage
+          ? t("欢迎回来。宝宝这几天怎么样？想聊的时候我都在。")
       : hasLoadedPreview && memoryExcerpt
         ? t("我记得你提过“{excerpt}”。最近有新变化吗？", {
             excerpt: memoryExcerpt,
@@ -317,7 +409,9 @@ export default function Home() {
           ? t("正在整理我们上次的对话…")
           : t("今天想聊聊什么？我在这里陪你。");
   const nuriActionText =
-    nuriPreviewStatus === "loading" && !nuriPreview
+    checkinReady && !checkin?.opened
+      ? t("回复NURI")
+      : nuriPreviewStatus === "loading" && !nuriPreview
       ? t("正在加载")
       : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
@@ -365,7 +459,7 @@ export default function Home() {
             </Pressable>
           </View>
 
-          {dailyPostStatus !== "disabled" ? (
+          {dailyPostStatus !== "disabled" || dailyVideoStatus !== "disabled" ? (
             <>
               <View style={styles.sectionHeading}>
                 {Platform.OS === "web" ? (
@@ -380,14 +474,49 @@ export default function Home() {
                 <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
               </View>
 
-              <DailyPostCard
-                width={dailyCardWidth}
-                nickname={dailyPost?.nickname ?? ""}
-                status={dailyPostStatus}
-                card={dailyPost}
-                onPress={openDailyPost}
-                onRetry={() => void loadDailyPost()}
-              />
+              {/* Swipe between today's picks: the parents' post (Meta) and the
+                  video (YouTube). A source that is switched off just drops out. */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={dailyCardWidth + 17}
+                snapToAlignment="start"
+                decelerationRate="fast"
+                disableIntervalMomentum
+                contentContainerStyle={{ paddingRight: 17 }}
+                onScroll={(event) =>
+                  setDailyPage(Math.round(event.nativeEvent.contentOffset.x / (dailyCardWidth + 17)))
+                }
+                scrollEventThrottle={16}
+                testID="home-daily-carousel"
+              >
+                {dailyPostStatus !== "disabled" ? (
+                  <DailyPostCard
+                    width={dailyCardWidth}
+                    nickname={dailyPost?.nickname ?? ""}
+                    status={dailyPostStatus}
+                    card={dailyPost}
+                    onPress={openDailyPost}
+                    onRetry={() => void loadDailyPost()}
+                  />
+                ) : null}
+                {dailyVideoStatus !== "disabled" ? (
+                  <DailyVideoCard
+                    width={dailyCardWidth}
+                    status={dailyVideoStatus}
+                    card={dailyVideo}
+                    onPress={openDailyVideo}
+                    onRetry={() => void loadDailyVideo()}
+                  />
+                ) : null}
+              </ScrollView>
+              {dailyPostStatus !== "disabled" && dailyVideoStatus !== "disabled" ? (
+                <View style={styles.dailyDots} accessibilityElementsHidden importantForAccessibility="no">
+                  {[0, 1].map((i) => (
+                    <View key={i} style={[styles.dailyDot, dailyPage === i && styles.dailyDotActive]} />
+                  ))}
+                </View>
+              ) : null}
             </>
           ) : null}
 
@@ -419,6 +548,13 @@ export default function Home() {
               end={{ x: 0, y: 1 }}
               style={styles.nuriCard}
             >
+              {nuriTopic ? (
+                <View style={styles.nuriTopicPill} testID="home-nuri-topic">
+                  <Text style={styles.nuriTopicText} numberOfLines={1}>
+                    {t("上次聊到 · {topic}", { topic: nuriTopic })}
+                  </Text>
+                </View>
+              ) : null}
               <Text style={styles.nuriMemo} numberOfLines={3} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
@@ -591,12 +727,31 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
     overflow: "hidden",
   },
-  nuriMemo: {
-    maxWidth: 326,
+  dailyDots: { flexDirection: "row", justifyContent: "center", gap: 6, marginTop: 10 },
+  dailyDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(38,27,69,0.18)" },
+  dailyDotActive: { width: 18, backgroundColor: "#4C368C" },
+  nuriTopicPill: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginBottom: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+  nuriTopicText: {
     color: "#FFFFFF",
     fontFamily: "NotoSansSC_600SemiBold",
-    fontSize: 24,
-    lineHeight: 34,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  nuriMemo: {
+    maxWidth: 326,
+    zIndex: 1,
+    color: "#FFFFFF",
+    fontFamily: "NotoSansSC_600SemiBold",
+    fontSize: 22,
+    lineHeight: 31,
     letterSpacing: 0.2,
   },
   nuriButton: {
@@ -621,8 +776,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: "50%",
     right: -13,
-    top: 106,
-    bottom: -69,
+    // Starts below three lines of NURI's question (and its topic pill), so
+    // the mascot never covers the words.
+    top: 150,
+    bottom: -113,
   },
   mascot: {
     width: "100%",

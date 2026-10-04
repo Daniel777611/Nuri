@@ -204,7 +204,20 @@ export type PushDeviceRegistration = {
 /** A tapped notification, now written into the conversation as NURI's message. */
 export type OpenedNotification = {
   session_id: string;
-  kind: "care" | "daily_post";
+  kind: "care" | "daily_post" | "daily_video";
+};
+
+/** NURI之家: what NURI asks about the last conversation (backend/feed/checkin.py). */
+export type MainCheckin = {
+  state: "ready" | "active" | "none" | "unavailable";
+  session_id?: string;
+  id?: string;
+  /** A few words naming the subject, e.g. "午睡哭闹". */
+  topic?: string;
+  /** What NURI says on the card, and in the chat once tapped. */
+  line?: string;
+  /** Already tapped: the line is in the conversation. */
+  opened?: boolean;
 };
 
 export type MainConversationPreview = {
@@ -247,6 +260,12 @@ export type DailyPostCard = {
   source_url: string;
   source_label: string;
   published_at: string | null;
+  /** The problem the post is about, as a question. Missing on older cards. */
+  question?: string;
+  /** Background from the post: the child's age, what happened. May be "". */
+  situation?: string;
+  /** A few words naming the post's topic. Missing on older cards. */
+  post_topic?: string;
   headline: string;
   takeaways: string[];
   /** Verbatim from the post, or "" when no clean quote could be verified. */
@@ -262,6 +281,41 @@ export type DailyPostCard = {
   /** Who the greeting addresses: "其他妈妈" for a mom, "其他家长" otherwise. */
   audience: "mom" | "parent";
   nickname: string;
+};
+
+// ── Daily video (backend/feed/daily_video.py) ───────────────────────────────
+export type DailyVideoCard = {
+  id: string;
+  /** Pass to startSession({ card_id }) to talk it through with NURI. */
+  card_id: string;
+  day: string;
+  platform: "youtube";
+  video_id: string;
+  source_url: string;
+  thumbnail_url: string;
+  /** The video's own title, as YouTube shows it. */
+  title: string;
+  /** The title rewritten short, in the parent's language. */
+  display_title: string;
+  channel: string;
+  speaker_kind: "pediatrician" | "psychologist" | "institution" | "educator" | "creator";
+  video_lang: "zh" | "en";
+  /** "" until the detail page asks for it (GET /feed/daily-video/{id}/summary). */
+  summary: string;
+  concern: string;
+  basis: "conversation" | "profile";
+  locale: string;
+  nickname: string;
+  /** The knowledge card's line: "Linda你好呀，最近你和NURI聊到「…」…". */
+  intro: string;
+};
+
+export type DailyVideoResponse = {
+  state: "ready" | "pending" | "empty" | "unavailable" | "disabled";
+  day: string;
+  tz?: string;
+  card: DailyVideoCard | null;
+  retry_after_s?: number;
 };
 
 export type DailyPostResponse = {
@@ -753,6 +807,10 @@ export const api = {
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
   getMainConversationPreview: () => req<MainConversationPreview>(`/chat/main/preview`),
+  // Can run a model call the first time after a conversation ends.
+  getMainCheckin: () => req<MainCheckin>(`/chat/main/checkin`, undefined, 30000),
+  openMainCheckin: (id: string) =>
+    req<{ session_id: string }>(`/chat/main/checkin/${encodeURIComponent(id)}/open`, { method: "POST" }),
   // The server owns canonical-session selection. This endpoint is idempotent:
   // it returns the account's existing conversation and creates the first one
   // only when the account truly has none. The client must not infer identity
@@ -826,6 +884,20 @@ export const api = {
   // An earlier card by id, for a care notification that named it.
   getDailyPostById: (id: string): Promise<DailyPostResponse> =>
     req(`/feed/daily-post/${encodeURIComponent(id)}`),
+  getDailyVideo: (): Promise<DailyVideoResponse> => {
+    const tz = deviceTimeZone();
+    return req(`/feed/daily-video${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+  },
+  getDailyVideoById: (id: string): Promise<DailyVideoResponse> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}`),
+  // The first open writes the summary with a model call.
+  getDailyVideoSummary: (id: string): Promise<{ summary: string }> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/summary`, undefined, 30000),
+  dailyVideoEvent: (id: string, event: "open" | "source_click" | "chat") =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/events`, {
+      method: "POST",
+      body: JSON.stringify({ event }),
+    }),
   dailyPostEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req(`/feed/daily-post/${encodeURIComponent(id)}/events`, {
       method: "POST",

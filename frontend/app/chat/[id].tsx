@@ -73,6 +73,14 @@ type DailyPostOnMessage = {
   source_label?: string;
 };
 
+/** `transition.video` on a card marker written when the daily video notification is opened. */
+type DailyVideoOnMessage = {
+  id: string;
+  title: string;
+  thumbnail_url?: string;
+  channel?: string;
+};
+
 async function copyChatText(text: string): Promise<void> {
   if (Platform.OS !== "web") throw new Error("clipboard unavailable");
   if (globalThis.navigator?.clipboard?.writeText) {
@@ -967,6 +975,9 @@ function MessageBubble({
   // also NURI's message, and the post rides on it as a card.
   const post: DailyPostOnMessage | null =
     msg.transition?.kind === "card_opened" && msg.transition.post?.id ? msg.transition.post : null;
+  // The knowledge card: NURI's intro line, with the day's video under it.
+  const video: DailyVideoOnMessage | null =
+    msg.transition?.kind === "card_opened" && msg.transition.video?.id ? msg.transition.video : null;
 
   if (msg.transition?.kind === "memory_context") {
     return <MemoryContextCard transition={msg.transition as MemoryContextTransition} />;
@@ -976,7 +987,7 @@ function MessageBubble({
   // marks where the subject changed instead of the card getting a chat of its
   // own. It carries no text — it is a separator, not something anyone said —
   // and without this branch it would render as an empty bubble.
-  if (msg.transition?.kind === "card_opened" && !post) {
+  if (msg.transition?.kind === "card_opened" && !post && !video) {
     return (
       <View style={styles.cardDivider} testID="chat-card-divider">
         <View style={styles.cardDividerLine} />
@@ -1116,6 +1127,30 @@ function MessageBubble({
             ))}
             <View style={styles.postCardCta}>
               <Text style={styles.postCardCtaText}>{t("点击查看更多")}</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.brand} />
+            </View>
+          </Pressable>
+        ) : null}
+        {video ? (
+          <Pressable
+            style={styles.postCard}
+            onPress={() => router.push(`/daily-video?id=${encodeURIComponent(video.id)}` as never)}
+            accessibilityRole="button"
+            testID="chat-daily-video-card"
+          >
+            {video.thumbnail_url ? (
+              <View style={styles.videoThumbWrap}>
+                <Image source={{ uri: video.thumbnail_url }} style={styles.videoThumb} contentFit="cover" />
+                <View style={styles.videoPlay}>
+                  <Ionicons name="play" size={20} color="#FFFFFF" style={{ marginLeft: 2 }} />
+                </View>
+              </View>
+            ) : null}
+            <Text style={styles.postCardEyebrow}>{t("精选视频")}</Text>
+            <Text style={styles.postCardTitle}>{video.title}</Text>
+            {video.channel ? <Text style={styles.postCardLine} numberOfLines={1}>{video.channel}</Text> : null}
+            <View style={styles.postCardCta}>
+              <Text style={styles.postCardCtaText}>{t("点击观看")}</Text>
               <Ionicons name="arrow-forward" size={14} color={colors.brand} />
             </View>
           </Pressable>
@@ -1359,6 +1394,12 @@ const styles = StyleSheet.create({
     borderColor: "rgba(100, 76, 195, 0.24)",
     backgroundColor: "rgba(250, 248, 255, 0.94)",
     gap: 6,
+  },
+  videoThumbWrap: { borderRadius: 12, overflow: "hidden", aspectRatio: 16 / 9, backgroundColor: "#000", marginBottom: 4 },
+  videoThumb: { width: "100%", height: "100%" },
+  videoPlay: {
+    position: "absolute", top: "50%", left: "50%", width: 44, height: 44, marginTop: -22, marginLeft: -22,
+    borderRadius: 22, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center",
   },
   postCardEyebrow: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
   postCardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#241C3F" },
