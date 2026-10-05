@@ -20,7 +20,9 @@ Interactive Google sign-in returns an ID token; only that credential and the lan
 
 The returned NURI JWT is installed through the existing private SecureStore/auth queue with `expectedGeneration`, read-back checks, guarded onboarding state and owner-bound navigation. Cancellation, missing configuration, server rejection, unmount, A→B/ABA changes, and late results cannot install an obsolete account. Local storage failures remain explicit and retryable. A known signed-in account cannot be silently replaced from the registration flow. Google provider caches are signed out around the interactive flow without revoking grants; this is not a claim that the Google SDK never temporarily stores its own credentials.
 
-The backend and NURI cloud account/data remain shared with the web app. Local bundle, URL scheme, Keychain and push/reminder namespaces stay isolated. No backend, Google account/project permissions, production login, deployment, or upload was changed by this integration.
+The backend and NURI cloud account/data remain shared with the web app. Local bundle, URL scheme, Keychain and push/reminder namespaces stay isolated. The separate iOS client was created after explicit user confirmation; existing Web client permissions, test-user lists and publishing status were not changed. No backend, production login, deployment, or TestFlight upload was changed by this integration.
+
+The configured Simulator Release build and signed device archive 1006 passed native configuration/signing checks. The installed native button opens Google's genuine sign-in page; user completion and the returned NURI session are still unverified. Xcode upload currently awaits reauthentication of the existing Apple Account, independently of Google setup.
 
 ## Release gate and verification
 
