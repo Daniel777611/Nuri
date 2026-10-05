@@ -20,10 +20,14 @@ import { useIsFocused } from "@react-navigation/native";
 import {
   api,
   type DailyPostCard as DailyPost,
+  type DailyVideoCard as DailyVideo,
+  type MainCheckin,
   type MainConversationPreview,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
+import DailyVideoCard from "@/src/components/DailyVideoCard";
+import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
@@ -154,6 +158,16 @@ export default function Home() {
   const [dailyFailure, setDailyFailure] = useState<RequestFailureKind | null>(null);
   const dailyPostRequest = useRef(0);
   const dailyPostPolls = useRef(0);
+  const [dailyPostPollCycle, setDailyPostPollCycle] = useState(0);
+  const [dailyVideo, setDailyVideo] = useState<DailyVideo | null>(null);
+  const [dailyVideoStatus, setDailyVideoStatus] = useState<DailyPostStatus>("loading");
+  const [videoFailure, setVideoFailure] = useState<RequestFailureKind | null>(null);
+  const [dailyPage, setDailyPage] = useState(0);
+  const dailyVideoRequest = useRef(0), dailyVideoPolls = useRef(0);
+  const [dailyVideoPollCycle, setDailyVideoPollCycle] = useState(0);
+  const [checkin, setCheckin] = useState<MainCheckin | null>(null);
+  const [checkinFailure, setCheckinFailure] = useState<RequestFailureKind | null>(null);
+  const checkinRequest = useRef(0);
 
   useEffect(() => {
     dailyPostRequest.current++;
@@ -161,6 +175,9 @@ export default function Home() {
     openingNuriChat.current = false;
     chatOperation.current++;
     dailyPostPolls.current = 0;
+    dailyVideoRequest.current++;
+    dailyVideoPolls.current = 0;
+    checkinRequest.current++;
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, [generation]);
 
@@ -203,18 +220,81 @@ export default function Home() {
     }
   }, [capture, current, setDailyPost, setDailyPostStatus, setDailyFailure]);
 
+  const loadDailyVideo = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    const ticket = capture();
+    if (ticket === null) return;
+    const request = ++dailyVideoRequest.current;
+    setVideoFailure(null);
+    if (!quiet) setDailyVideoStatus((previous) => previous === "ready" ? previous : "loading");
+    try {
+      const result = await api.getDailyVideo();
+      if (!current(ticket) || request !== dailyVideoRequest.current) return;
+      if (result.state === "ready" && result.card) { setDailyVideo(result.card); setDailyVideoStatus("ready"); dailyVideoPolls.current = 0; }
+      else if (result.state === "pending") setDailyVideoStatus("pending");
+      else { setDailyVideo(null); setDailyVideoStatus(result.state === "disabled" ? "disabled" : result.state === "unavailable" ? "error" : "empty"); }
+    } catch (error) {
+      if (current(ticket) && request === dailyVideoRequest.current) {
+        setVideoFailure(requestFailureKind(error));
+        setDailyVideoStatus((previous) => previous === "ready" ? previous : "error");
+      }
+    }
+  }, [capture, current, setDailyVideo, setDailyVideoStatus, setVideoFailure]);
+
+  useEffect(() => {
+    if (dailyVideoStatus !== "pending" || !isHomeFocused) return;
+    const ticket = capture();
+    if (ticket === null) return;
+    if (dailyVideoPolls.current >= DAILY_POST_POLL_LIMIT) { setDailyVideoStatus("empty"); return; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      if (cancelled || !current(ticket) || !homeActive.current) return;
+      dailyVideoPolls.current++;
+      await loadDailyVideo({ quiet: true });
+      // A second pending response has the same status. Explicitly advance
+      // the cycle after it settles so the next bounded poll is scheduled.
+      if (!cancelled && current(ticket) && homeActive.current) setDailyVideoPollCycle((cycle) => cycle + 1);
+    }, DAILY_POST_POLL_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [dailyVideoStatus, dailyVideoPollCycle, isHomeFocused, loadDailyVideo, setDailyVideoStatus, capture, current, setDailyVideoPollCycle]);
+
+  const loadCheckin = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null) return;
+    const request = ++checkinRequest.current;
+    setCheckinFailure(null);
+    try {
+      const result = await api.getMainCheckin();
+      if (current(ticket) && request === checkinRequest.current) setCheckin(result);
+    } catch (error) {
+      if (current(ticket) && request === checkinRequest.current) {
+        setCheckin(null); setCheckinFailure(requestFailureKind(error));
+      }
+    }
+  }, [capture, current, setCheckin, setCheckinFailure]);
+
+  const openDailyVideo = useCallback((card: DailyVideo) => {
+    if (capture() === null || !homeActive.current) return;
+    void api.dailyVideoEvent(card.id, "open").catch(() => {});
+    router.push({ pathname: "/daily-video", params: { id: card.id } });
+  }, [capture, router]);
+
   useEffect(() => {
     if (dailyPostStatus !== "pending" || !isHomeFocused) return;
+    const ticket = capture();
+    if (ticket === null) return;
     if (dailyPostPolls.current >= DAILY_POST_POLL_LIMIT) {
       setDailyPostStatus("empty");
       return;
     }
-    const timer = setTimeout(() => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      if (cancelled || !current(ticket) || !homeActive.current) return;
       dailyPostPolls.current += 1;
-      void loadDailyPost({ quiet: true });
+      await loadDailyPost({ quiet: true });
+      if (!cancelled && current(ticket) && homeActive.current) setDailyPostPollCycle((cycle) => cycle + 1);
     }, DAILY_POST_POLL_MS);
-    return () => clearTimeout(timer);
-  }, [dailyPostStatus, isHomeFocused, loadDailyPost]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [dailyPostStatus, dailyPostPollCycle, isHomeFocused, loadDailyPost, capture, current, setDailyPostPollCycle, setDailyPostStatus]);
 
   const openDailyPost = useCallback(
     (card: DailyPost) => {
@@ -286,9 +366,11 @@ export default function Home() {
       // history is a pure read; only creating/greeting a conversation needs AI.
       const preview = await api.getMainConversationPreview();
       if (!acceptsResult()) return;
-      const session = preview.has_conversation && preview.session_id
-        ? { id: preview.session_id }
-        : await api.getOrStartMainSession();
+      const session = checkin?.state === "ready" && checkin.id
+        ? { id: (await api.openMainCheckin(checkin.id)).session_id }
+        : preview.has_conversation && preview.session_id
+          ? { id: preview.session_id }
+          : await api.getOrStartMainSession();
       if (!acceptsResult()) return;
       router.push(`/chat/${session.id}`);
       navigated = true;
@@ -327,30 +409,32 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       dailyPostPolls.current = 0;
+      dailyVideoPolls.current = 0;
       void loadDailyPost();
+      void loadDailyVideo();
       return () => {
         dailyPostRequest.current += 1;
+        dailyVideoRequest.current += 1;
       };
-    }, [loadDailyPost])
+    }, [loadDailyPost, loadDailyVideo])
   );
 
   useFocusEffect(
     useCallback(() => {
       homeActive.current = true;
       void loadNuriPreview();
+      void loadCheckin();
       return () => {
         homeActive.current = false;
         chatOperation.current++;
         nuriPreviewRequest.current += 1;
+        checkinRequest.current += 1;
         openingNuriChat.current = false;
       };
-    }, [loadNuriPreview])
+    }, [loadNuriPreview, loadCheckin])
   );
 
   const hasLoadedPreview = !!nuriPreview;
-  const lastUserExcerpt = nuriPreview?.hasLastUserMessage
-    ? conversationExcerpt(nuriPreview.lastUserMessage)
-    : "";
   const memoryExcerpt = nuriPreview?.memoryText
     ? conversationExcerpt(nuriPreview.memoryText)
     : "";
@@ -358,12 +442,12 @@ export default function Home() {
   const nuriMemo =
     nuriPreviewStatus === "error" && nuriFailure
       ? requestFailureCopy(locale, nuriFailure).title
+    : checkin?.state === "ready" && checkin.line
+      ? checkin.line
+    : checkin?.state === "active"
+      ? t("刚才的话还没聊完，要接着聊吗？")
     : hasLoadedPreview && nuriPreview?.hasLastUserMessage
-      ? lastUserExcerpt
-        ? t("你还记得我们上次谈到“{excerpt}”吗？最近怎么样？", {
-            excerpt: lastUserExcerpt,
-          })
-        : t("你还记得我们上次分享的那张图片吗？最近怎么样？")
+      ? t("欢迎回来。宝宝这几天怎么样？想聊的时候我都在。")
       : hasLoadedPreview && memoryExcerpt
         ? t("我记得你提过“{excerpt}”。最近有新变化吗？", {
             excerpt: memoryExcerpt,
@@ -378,6 +462,8 @@ export default function Home() {
       ? t("正在加载")
       : nuriPreviewStatus === "error" && nuriFailure
         ? requestFailureCopy(locale, nuriFailure).action
+      : checkin?.state === "ready" && !checkin.opened
+        ? t("回复NURI")
       : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
       : nuriPreview?.sessionId
@@ -424,7 +510,7 @@ export default function Home() {
             </Pressable>
           </View>
 
-          {dailyPostStatus !== "disabled" ? (
+          {dailyPostStatus !== "disabled" || dailyVideoStatus !== "disabled" ? (
             <>
               <View style={styles.sectionHeading}>
                 {Platform.OS === "web" ? (
@@ -439,7 +525,11 @@ export default function Home() {
                 <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
               </View>
 
-              <DailyPostCard
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={dailyCardWidth + 17}
+                decelerationRate="fast" contentContainerStyle={{ paddingRight: 17 }}
+                onScroll={(event) => setDailyPage(Math.round(event.nativeEvent.contentOffset.x / (dailyCardWidth + 17)))} scrollEventThrottle={80}
+                testID="home-daily-carousel">
+              {dailyPostStatus !== "disabled" ? <DailyPostCard
                 width={dailyCardWidth}
                 nickname={dailyPost?.nickname ?? ""}
                 status={dailyPostStatus}
@@ -448,7 +538,15 @@ export default function Home() {
                 onRetry={() => handleFailure(dailyFailure, () => void loadDailyPost())}
                 failureText={dailyFailure ? requestFailureCopy(locale, dailyFailure).title : undefined}
                 failureAction={dailyFailure ? requestFailureCopy(locale, dailyFailure).action : undefined}
-              />
+              /> : null}
+              {dailyVideoStatus !== "disabled" ? <DailyVideoCard width={dailyCardWidth} status={dailyVideoStatus} card={dailyVideo}
+                onPress={openDailyVideo} onRetry={() => handleFailure(videoFailure, () => void loadDailyVideo())}
+                failureText={videoFailure ? requestFailureCopy(locale, videoFailure).title : undefined}
+                failureAction={videoFailure ? requestFailureCopy(locale, videoFailure).action : undefined} /> : null}
+              </ScrollView>
+              {dailyPostStatus !== "disabled" && dailyVideoStatus !== "disabled" ? <View style={styles.dailyDots}>
+                {[0, 1].map((page) => <View key={page} style={[styles.dailyDot, dailyPage === page && styles.dailyDotActive]} />)}
+              </View> : null}
             </>
           ) : null}
 
@@ -480,6 +578,7 @@ export default function Home() {
               end={{ x: 0, y: 1 }}
               style={styles.nuriCard}
             >
+              {checkin?.state === "ready" && checkin.topic && !nuriFailure ? <View style={styles.nuriTopicPill}><Text style={styles.nuriTopicText} numberOfLines={1}>{t("上次聊到")} · {checkin.topic}</Text></View> : null}
               <Text style={styles.nuriMemo} numberOfLines={3} testID="home-nuri-memo">
                 {nuriMemo}
               </Text>
@@ -497,6 +596,8 @@ export default function Home() {
               </View>
             </LinearGradient>
           </Pressable>
+          {checkinFailure ? <RequestFailureNotice error={checkinFailure} onRetry={() => void loadCheckin()}
+            onPermission={() => router.push(aiPermissionHref("/(tabs)"))} onLogin={() => router.push("/login")} /> : null}
         </ScrollView>
 
         <View
@@ -623,6 +724,11 @@ const styles = StyleSheet.create({
     width: 25,
     height: 24,
   },
+  dailyDots: { flexDirection: "row", alignSelf: "center", gap: 6, marginTop: 10 },
+  dailyDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#DDD6EC" },
+  dailyDotActive: { width: 18, backgroundColor: C.purple },
+  nuriTopicPill: { alignSelf: "flex-start", maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.22)", marginBottom: 8 },
+  nuriTopicText: { color: "#FFFFFF", fontFamily: "NotoSansSC_600SemiBold", fontSize: 12, lineHeight: 18 },
   nuriSectionIcon: {
     width: 22,
     height: 22,
@@ -682,7 +788,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: "50%",
     right: -13,
-    top: 106,
+    top: 150,
   },
   mascot: {
     width: "100%",

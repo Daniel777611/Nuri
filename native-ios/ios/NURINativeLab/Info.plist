@@ -31,9 +31,19 @@
           <string>com.ordashtech.nuri.nativelab</string>
         </array>
       </dict>
+      <dict>
+        <key>CFBundleURLSchemes</key>
+        <array>
+          <string>com.googleusercontent.apps.22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv</string>
+        </array>
+      </dict>
     </array>
     <key>CFBundleVersion</key>
-    <string>1005</string>
+    <string>1006</string>
+    <key>GIDClientID</key>
+    <string>22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com</string>
+    <key>GIDServerClientID</key>
+    <string>22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>LSMinimumSystemVersion</key>

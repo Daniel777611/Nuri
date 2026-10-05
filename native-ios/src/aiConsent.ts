@@ -38,9 +38,9 @@ export function requiresAIConsent(path: string, init?: RequestInit): boolean {
   const method = (init?.method || "GET").toUpperCase();
   if (method === "GET" && (["/feed", "/feed/search", "/feed/alt", "/chat/main/preview"].includes(route)
       || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
-      || /^\/feed\/daily-post\/[a-zA-Z0-9_-]+$/.test(route))) return false;
+      || /^\/feed\/daily-(?:post|video)\/[a-zA-Z0-9_-]+$/.test(route))) return false;
   if (route.startsWith("/feed")) return true;
-  if (route === "/chat/main/preview" || route === "/chat/transcribe") return true;
+  if (route === "/chat/main/preview" || route === "/chat/main/checkin" || route === "/chat/transcribe") return true;
   if (route.startsWith("/chat") && method !== "GET" && method !== "DELETE") return true;
   if (/^\/notifications\/[^/]+\/open$/.test(route)) return true;
   if (route === "/tasks/insights") return true;

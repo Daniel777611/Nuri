@@ -108,7 +108,7 @@ function page(path, f, options = {}) {
     "@/src/authFlow": { savePendingVerification: async () => {}, cleanCode: (value) => value, useCountdown: () => 0, authErrorMessage: () => "error" },
     "@/src/nativePushRuntime": { safeNotificationRoute: () => null },
   };
-  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "RequestFailureNotice"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
+  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "DailyVideoCard", "RequestFailureNotice", "GoogleSignInButton"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
   const component = load(path, dep).default;
   let tree;
   function expand(node) {

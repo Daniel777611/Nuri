@@ -1,5 +1,5 @@
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
-import { useState as useLocalState } from "react";
+import { useRef, useState as useLocalState } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { savePendingVerification } from "@/src/authFlow";
 import { useT } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
+import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
 export default function Login() {
   const { generation, capture, current, isMounted } = useAccountScope();
@@ -33,6 +34,9 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const loginAction = useRef(false);
+  const acquireLogin = () => { if (loginAction.current) return false; loginAction.current = true; return true; };
+  const releaseLogin = () => { loginAction.current = false; };
   // Keychain replacement invalidates the form's old epoch even when its write
   // fails. Keep only this non-sensitive error outside account state, and bind
   // it to the exact identity/phase so a new session never inherits it.
@@ -55,7 +59,7 @@ export default function Login() {
 
   const submit = async () => {
     const ticket = capture();
-    if (ticket === null || submitting) return;
+    if (ticket === null || submitting || !acquireLogin()) return;
     let ownerIdentity: number | null = null;
     let ownerGeneration: number | null = null;
     const ownsStoragePhase = () => isMounted() && ownerIdentity === auth.getIdentityGeneration()
@@ -113,6 +117,7 @@ export default function Login() {
       if (isAuthError(e) || msg.includes("401")) setError(t("邮箱或密码错误"));
       else setError(t("登录失败，请重试"));
     } finally {
+      releaseLogin();
       setSubmitting(false);
     }
   };
@@ -186,6 +191,8 @@ export default function Login() {
           >
             <Text style={styles.ctaText}>{submitting ? t("登录中...") : t("登录")}</Text>
           </Pressable>
+
+          <GoogleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
 
           <Pressable
             onPress={() => router.replace("/register")}

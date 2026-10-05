@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
@@ -27,6 +27,7 @@ import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/a
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
 import { useT } from "@/src/i18n";
+import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 
@@ -43,6 +44,9 @@ export default function Register() {
   const [password, setPassword] = useState(isPreviewMode ? "preview" : "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const registerAction = useRef(false);
+  const acquireRegistration = () => { if (registerAction.current) return false; registerAction.current = true; return true; };
+  const releaseRegistration = () => { registerAction.current = false; };
   const [checkingSession, setCheckingSession] = useState(!isPreviewMode);
   const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
 
@@ -95,7 +99,7 @@ export default function Register() {
 
   const submit = async () => {
     const ticket = capture();
-    if (ticket === null || submitting) return;
+    if (ticket === null || submitting || !acquireRegistration()) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -119,6 +123,7 @@ export default function Register() {
           : authErrorMessage(e, t) || t("注册失败，请检查信息后重试"),
       );
     } finally {
+      releaseRegistration();
       setSubmitting(false);
     }
   };
@@ -214,6 +219,7 @@ export default function Register() {
                   <Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
                 </Pressable>
               </View>
+              <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
             </View>
           </ScrollView>
         </KeyboardAvoidingView>

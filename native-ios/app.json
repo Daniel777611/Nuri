@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri.nativelab",
-      "buildNumber": "1005",
+      "buildNumber": "1006",
       "appleTeamId": "6PL6HQYU7P",
       "supportsTablet": false,
       "entitlements": { "aps-environment": "production" },
@@ -37,6 +37,10 @@
       "expo-router",
       "expo-secure-store",
       "./plugins/withNuriNative",
+      ["./plugins/withNuriGoogleSignIn", {
+        "iosClientId": "22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com",
+        "webClientId": "22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com"
+      }],
       ["expo-media-library", { "photosPermission": "允许 NURI 在你主动选择聊天图片或保存任务卡时使用相册。", "savePhotosPermission": "NURI 需要将你主动分享的任务卡保存到相册。" }],
       ["expo-audio", { "microphonePermission": "NURI 需要使用麦克风，将你主动录制的语音转成文字。" }],
       [

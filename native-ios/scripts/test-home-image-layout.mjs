@@ -33,6 +33,8 @@ const mocks = {
   "@react-navigation/native": { useIsFocused: () => true }, "@/src/api": { api: {} },
   "@/src/components/Toast": { __esModule: true, default: "Toast" },
   "@/src/components/DailyPostCard": { __esModule: true, default: "DailyPostCard" },
+  "@/src/components/DailyVideoCard": { __esModule: true, default: "DailyVideoCard" },
+  "@/src/components/RequestFailureNotice": { __esModule: true, default: "RequestFailureNotice" },
   "@/src/i18n": { useT: () => ({ t: (text) => text, locale: "zh-CN" }) },
   "@/src/aiPermissionNavigation": loadHelper("../src/aiPermissionNavigation.ts"),
   "@/src/requestFailure": loadHelper("../src/requestFailure.ts"),

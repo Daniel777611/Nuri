@@ -23,7 +23,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 
 import { api, type DailyPostCard } from "@/src/api";
-import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
+import { dailyPostGreeting, dailyPostTag, dailyPostQuestion, dailyPostAsker } from "@/src/components/DailyPostCard";
 import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
@@ -80,6 +80,7 @@ export default function DailyPostScreen() {
       })
       .catch((error) => {
         if (cancelled || !current(ticket)) return;
+        setFailureSource("load");
         setFailure(requestFailureKind(error));
         setState("missing");
       });
@@ -184,11 +185,16 @@ export default function DailyPostScreen() {
             <Text style={styles.basis} numberOfLines={2}>{basisNote}</Text>
           </View>
 
-          <Text style={styles.headline} testID="daily-post-headline">{card.headline}</Text>
+          <View style={styles.askBox} testID="daily-post-question">
+            <Text style={styles.asker}>{dailyPostAsker(t, card)}</Text>
+            <Text style={styles.question}>{dailyPostQuestion(t, card)}</Text>
+            {card.situation ? <Text style={styles.situation}>{card.situation}</Text> : null}
+          </View>
 
           <Text style={styles.sectionLabel}>
             {card.author_kind === "parent_group_answers" ? t("大家的建议") : t("这位家长的做法")}
           </Text>
+          <Text style={styles.headline} testID="daily-post-headline">{card.headline}</Text>
           {card.takeaways.map((item, index) => (
             <View key={`${index}:${item}`} style={styles.bulletRow}>
               <View style={styles.bulletDot} />
@@ -279,7 +285,11 @@ const styles = StyleSheet.create({
   },
   tagText: { color: C.text, fontFamily: "NotoSansSC_400Regular", fontSize: 12 },
   basis: { flex: 1, minWidth: 140, color: C.soft, fontFamily: "NotoSansSC_400Regular", fontSize: 12 },
-  headline: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 18, lineHeight: 26, marginTop: 18 },
+  askBox: { backgroundColor: "#FFFFFF", padding: 18, borderRadius: 20, borderWidth: 1, borderColor: C.line, marginTop: 18 },
+  asker: { color: C.soft, fontFamily: "NotoSansSC_600SemiBold", fontSize: 12, marginBottom: 8 },
+  question: { color: C.text, fontFamily: "NotoSansSC_700Bold", fontSize: 19, lineHeight: 27 },
+  situation: { color: C.soft, fontFamily: "NotoSansSC_400Regular", fontSize: 14, lineHeight: 22, marginTop: 10 },
+  headline: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 17, lineHeight: 25, marginBottom: 10 },
   sectionLabel: {
     color: C.soft, fontFamily: "NotoSansSC_700Bold", fontSize: 13, letterSpacing: 0.5,
     marginTop: 22, marginBottom: 8,

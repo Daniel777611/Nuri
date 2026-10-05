@@ -16,7 +16,7 @@ assert.equal(config.ios.infoPlist.CFBundleDisplayName, 'Nuri', 'the phone label 
 assert.equal(config.ios.bundleIdentifier, 'com.ordashtech.nuri.nativelab');
 assert.equal(config.scheme, 'nuri-native-lab');
 assert.equal(config.version, '0.3.0');
-assert.equal(config.ios.buildNumber, '1005');
+assert.equal(config.ios.buildNumber, '1006');
 assert.equal(config.ios.entitlements['aps-environment'], 'production');
 assert.equal(config.ios.infoPlist.NuriAPNSEnvironment, 'production');
 assert.match(read('../ExportOptions-InternalOnly.plist'), /<key>testFlightInternalTestingOnly<\/key>\s*<true\s*\/>/);
@@ -41,6 +41,16 @@ const imagePicker = config.plugins.find((plugin) => Array.isArray(plugin) && plu
 assert.equal(mediaLibrary?.photosPermission, photoPurpose);
 assert.equal(imagePicker?.photosPermission, photoPurpose);
 const plistString = (key) => plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`))?.[1];
+const googlePlugin = config.plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === './plugins/withNuriGoogleSignIn')?.[1];
+assert.match(googlePlugin?.iosClientId || '', /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/, 'this candidate must contain its real public iOS OAuth client ID');
+assert.match(googlePlugin?.webClientId || '', /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/, 'this candidate must contain its compatible public Web/server client ID');
+assert.equal(plistString('GIDClientID'), googlePlugin.iosClientId, 'prebuild must install the actual iOS OAuth client');
+assert.equal(plistString('GIDServerClientID'), googlePlugin.webClientId, 'prebuild must install the server audience rather than an iOS audience');
+assert.ok(plist.includes(`<string>${googlePlugin.iosClientId.split('.').reverse().join('.')}</string>`), 'the binary must register the exact iOS Google callback scheme');
+for (const name of ['NuriGoogleAuthBridge.swift', 'NuriGoogleAuthBridge.m']) {
+  assert.equal(read(`../ios/NURINativeLab/${name}`), read(`../native/${name}`), 'generated Google bridge must match its authoritative source');
+  assert.ok(project.includes(name), 'the native Google configuration bridge must be part of the generated target');
+}
 assert.equal(plistString('CFBundleVersion'), config.ios.buildNumber, 'the binary target build number must match its source config');
 assert.equal(plistString('CFBundleShortVersionString'), config.version, 'keep the marketing version aligned without changing it');
 assert.equal(plistString('CFBundleDisplayName'), config.ios.infoPlist.CFBundleDisplayName, 'the actual target Info.plist must match the source display name');

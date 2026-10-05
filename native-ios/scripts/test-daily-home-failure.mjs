@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import ts from "typescript";
 
-function load(path, dependencies = {}) {
+export function load(path, dependencies = {}) {
   const code = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
@@ -35,7 +35,7 @@ const readyDetail = () => ({ id: "stored-card", title: "Stored guide", summary: 
 
 // Actual modules, memory-only storage, and invalid-domain transport. No
 // production request or third-party AI provider is invoked by these tests.
-function fixture() {
+export function fixture() {
   const originalFetch = globalThis.fetch;
   const secure = new Map(), ordinary = new Map(), calls = [];
   const storage = {
@@ -63,6 +63,9 @@ function fixture() {
     if (custom) return custom;
     if (path === "/auth/me") return response({ id: "user-" + owner, nickname: owner });
     if (path.startsWith("/feed/daily-post") && init.method !== "POST") return response({ state: "ready", card: dailyCard(owner) });
+    if (path.startsWith("/feed/daily-video") && !path.endsWith("/summary") && init.method !== "POST") return response({ state: "ready", card: videoCard(owner) });
+    if (path.endsWith("/summary")) return response({ summary: owner + " summary from title and description" });
+    if (path === "/chat/main/checkin") return response({ state: "none" });
     if (path === "/chat/main/preview") return response({ has_conversation: true, session_id: "existing-" + owner, last_user_message: { text: owner + " private preview" } });
     if (path === "/chat/sessions") return response({ id: "created-" + owner });
     if (path === "/favorites") return response([]);
@@ -74,7 +77,7 @@ function fixture() {
   return f;
 }
 
-function runner() {
+export function runner() {
   const slots = [], effects = [];
   let cursor = 0, pending = [];
   const same = (a, b) => a && b && a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
@@ -94,15 +97,16 @@ function runner() {
     unmount() { effects.forEach((effect) => effect?.cleanup?.()); } };
 }
 
-function page(f, kind = "daily", params = {}) {
+export function page(f, kind = "daily", params = {}) {
   const r = runner(), routes = [], external = [], focuses = new Map();
   let focused = true, focusSlot = 0, tree;
   const jsx = (type, props) => ({ type, props });
   const animation = { start: () => {} };
-  const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator",
+  const appStateListeners = new Set();
+  const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ImageBackground: "ImageBackground",
     ScrollView: "ScrollView", Image: "Image", Modal: "Modal", Platform: { OS: "ios" },
     Linking: { openURL: async (url) => external.push(url) }, StyleSheet: { create: (value) => value, absoluteFill: {} },
-    AppState: { addEventListener: () => ({ remove() {} }) }, useWindowDimensions: () => ({ width: 390 }),
+    AppState: { currentState: "active", addEventListener: (_event, callback) => { appStateListeners.add(callback); return { remove: () => appStateListeners.delete(callback) }; } }, useWindowDimensions: () => ({ width: 390 }),
     Share: { share: async () => ({ action: "shared" }), sharedAction: "shared" },
     Animated: { Value: class {}, View: "AnimatedView", sequence: () => animation, timing: () => animation, delay: () => animation } };
   const i18n = { useT: () => ({ locale: "en", t: (text, variables = {}) => text.replace(/\{(\w+)\}/g, (_all, key) => String(variables[key] ?? key)) }) };
@@ -113,12 +117,17 @@ function page(f, kind = "daily", params = {}) {
     "@/src/i18n": i18n, "@/src/theme": theme, "@/src/requestFailure": failure });
   const daily = load("../src/components/DailyPostCard.tsx", { "react/jsx-runtime": runtime, "react-native": native,
     "@/src/i18n": i18n, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
+  const video = load("../src/components/DailyVideoCard.tsx", { "react/jsx-runtime": runtime, "react-native": native,
+    "@/src/i18n": i18n, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
+  const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": runtime, "react-native": native,
+    "@/src/i18n": i18n, "react-native-webview": { WebView: "WebView" }, "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } } });
   const handoffs = load("../src/recommendationDetailHandoff.ts", { "./sessionBoundary": f.boundary });
   const dependencies = {
     react: r.react, "react/jsx-runtime": runtime, "react-native": native,
     "@/src/api": f, "@/src/theme": theme, "@/src/i18n": i18n,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": notice, "@/src/components/DailyPostCard": daily,
+    "@/src/components/DailyVideoCard": video, "@/src/components/YouTubePlayer": player,
     "@/src/components/Toast": { __esModule: true, default: "Toast" },
     "@/src/requestFailure": failure, "@/src/aiPermissionNavigation": load("../src/aiPermissionNavigation.ts"),
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
@@ -142,7 +151,7 @@ function page(f, kind = "daily", params = {}) {
         }, [fn]);
       } },
   };
-  const path = kind === "home" ? "../app/(tabs)/index.tsx" : kind === "detail" ? "../app/detail/[id].tsx" : "../app/daily-post.tsx";
+  const path = kind === "home" ? "../app/(tabs)/index.tsx" : kind === "detail" ? "../app/detail/[id].tsx" : kind === "video" ? "../app/daily-video.tsx" : "../app/daily-post.tsx";
   const component = load(path, dependencies).default;
   function expand(node) {
     if (!node || typeof node !== "object") return node;
@@ -153,6 +162,7 @@ function page(f, kind = "daily", params = {}) {
   const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node)
     ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
   return { routes, external, handoffs, unmount: r.unmount,
+    appState: (state) => { native.AppState.currentState = state; appStateListeners.forEach((callback) => callback(state)); },
     render: () => { focusSlot = 0; tree = r.render(() => expand(component())); return tree; },
     blur: () => { focused = false; focuses.forEach((entry) => { entry.cleanup?.(); entry.cleanup = null; }); },
     focus: () => { focused = true; focuses.forEach((entry) => { entry.cleanup = entry.fn(); }); },
@@ -160,6 +170,11 @@ function page(f, kind = "daily", params = {}) {
     kind: (type) => nodes(tree).find((node) => node.type === type), visible: () => JSON.stringify(tree),
   };
 }
+
+export const videoCard = (owner) => ({ id: "video-" + owner, card_id: "dailyvideo:video-" + owner, day: "2026-10-05", platform: "youtube", video_id: "ScMzIvxBSi4",
+  source_url: "https://www.youtube.com/watch?v=ScMzIvxBSi4", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg",
+  title: owner + " video title", display_title: owner + " private video", channel: "Fixture pediatrician", speaker_kind: "pediatrician", video_lang: "en",
+  summary: "Saved description summary", concern: "Fixture sleep", basis: "conversation", locale: "en", nickname: owner, intro: owner + " intro" });
 
 test("daily-post denied permission offers CTA, then grant/refocus loads without permanent spinner", async () => {
   const f = fixture(); let p;
@@ -209,6 +224,23 @@ test("daily-post chat service retry repeats the failed chat action, not just the
     f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, before + 1);
     assert.deepEqual(p.routes, ["/chat/created-A"]);
+  } finally { p?.unmount(); f.restore(); }
+});
+
+test("daily-post chat failure followed by refocus GET failure retries the GET, not the old chat action", async () => {
+  const f = fixture(); let p;
+  try {
+    await f.login("A"); await f.permit(); p = page(f); p.render(); await tick(); p.render();
+    f.responder = (path) => path === "/chat/sessions" ? response({}, 503) : null;
+    await p.find("daily-post-chat").props.onPress(); p.render(); assert.ok(p.find("request-failure-service"));
+    f.responder = (path) => path.startsWith("/feed/daily-post") ? response({}, 503) : null;
+    p.blur(); p.focus(); await tick(); p.render(); assert.ok(p.find("request-failure-service"));
+    const chats = f.calls.filter((call) => call.path === "/chat/sessions").length;
+    const reads = f.calls.filter((call) => call.path.startsWith("/feed/daily-post")).length;
+    f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
+    assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, chats);
+    assert.equal(f.calls.filter((call) => call.path.startsWith("/feed/daily-post")).length, reads + 1);
+    assert.ok(p.find("daily-post-headline")); assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
 
@@ -277,7 +309,7 @@ for (const [status, kind] of [[401, "session"], [503, "service"]]) test("Home wa
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.match(p.visible(), /A private preview/);
+    assert.equal(p.find("home-nuri-action-label").props.children, "继续对话");
     f.responder = (path) => path === "/chat/main/preview" ? response({ detail: "private failure" }, status) : null;
     p.blur(); p.focus(); await tick(); p.render();
     const words = load("../src/requestFailure.ts").requestFailureCopy("en", kind);

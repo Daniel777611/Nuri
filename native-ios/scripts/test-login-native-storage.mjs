@@ -100,6 +100,7 @@ function page(f, locale = "en") {
     "@/src/authFlow": { savePendingVerification: async () => {} },
     "@/src/i18n": { useT: () => ({ locale, t: (key) => key, setLocale: async () => {} }) },
     "@/src/nativePushRuntime": { safeNotificationRoute: () => null },
+    "@/src/components/GoogleSignInButton": { default: "GoogleSignInButton", __esModule: true },
   }).default;
   let tree;
   const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node)

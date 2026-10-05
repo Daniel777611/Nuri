@@ -47,6 +47,20 @@ export function dailyPostTag(
     : t("{platform} 家长分享", { platform });
 }
 
+export function dailyPostQuestion(t: (s: string, v?: Record<string, string | number>) => string, card: Card): string {
+  const question = (card.question || "").trim();
+  if (question) return question;
+  const topic = (card.post_topic || card.concern || "").trim();
+  if (!topic) return card.headline;
+  return card.audience === "mom"
+    ? t("关于「{topic}」，其他妈妈是怎么做的？", { topic })
+    : t("关于「{topic}」，其他家长是怎么做的？", { topic });
+}
+
+export function dailyPostAsker(t: (s: string) => string, card: Card): string {
+  return card.author_kind === "parent_group_answers" ? t("家长群里有人问") : t("一位家长的经历");
+}
+
 export default function DailyPostCard({
   width,
   nickname,
@@ -134,14 +148,15 @@ export default function DailyPostCard({
   const sourceTag = dailyPostTag(t, card);
   // Figma defines this compact home tag by material type. Platform provenance
   // remains available in the accessible label and the detail screen.
-  const tag = t("精选文章");
+  const tag = dailyPostAsker(t, card);
+  const question = dailyPostQuestion(t, card);
   return (
     <View style={styles.wrap}>
       <Pressable
         onPress={() => onPress(card)}
         style={{ width }}
         accessibilityRole="button"
-        accessibilityLabel={`${sourceTag}。${greeting}。${card.headline}`}
+        accessibilityLabel={`${sourceTag}。${greeting}。${question}`}
         testID="home-daily-post-card"
       >
         <LinearGradient
@@ -154,12 +169,12 @@ export default function DailyPostCard({
           <View style={styles.tagPill}>
             <Text style={styles.tagText} numberOfLines={1}>{tag}</Text>
           </View>
-          <Text style={styles.headline} numberOfLines={3}>
-            {card.headline}
+          <Text style={styles.question} numberOfLines={3} testID="home-daily-post-question">
+            {question}
           </Text>
           <View style={{ flex: 1 }} />
           <View style={styles.footer}>
-            <Text style={styles.cta}>{t("点击查看更多")}</Text>
+            <Text style={styles.cta}>{card.author_kind === "parent_group_answers" ? t("看看大家怎么做") : t("看看这位家长怎么做")}</Text>
             <View style={styles.arrow}>
               <Ionicons name="arrow-forward" size={22} color="#3A2F5A" />
             </View>
@@ -188,9 +203,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   tagPill: {
-    width: 107,
+    alignSelf: "flex-start",
     height: 32,
-    paddingHorizontal: 4,
+    paddingHorizontal: 14,
     borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
@@ -211,6 +226,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     lineHeight: 28,
   },
+  question: { marginTop: 12, color: "#261B45", fontFamily: "NotoSansSC_700Bold", fontSize: 20, lineHeight: 29 },
   footer: { minHeight: 55, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   cta: {
     flex: 1,

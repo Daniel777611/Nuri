@@ -206,7 +206,17 @@ export type PushDeviceRegistration = {
 /** A tapped notification, now written into the conversation as NURI's message. */
 export type OpenedNotification = {
   session_id: string;
-  kind: "care" | "daily_post";
+  kind: "care" | "daily_post" | "daily_video";
+};
+
+/** The server may write this once with a model after the conversation ends. */
+export type MainCheckin = {
+  state: "ready" | "active" | "none" | "unavailable";
+  session_id?: string;
+  id?: string;
+  topic?: string;
+  line?: string;
+  opened?: boolean;
 };
 
 export type MainConversationPreview = {
@@ -249,6 +259,9 @@ export type DailyPostCard = {
   source_url: string;
   source_label: string;
   published_at: string | null;
+  question?: string;
+  situation?: string;
+  post_topic?: string;
   headline: string;
   takeaways: string[];
   /** Verbatim from the post, or "" when no clean quote could be verified. */
@@ -269,8 +282,40 @@ export type DailyPostCard = {
 export type DailyPostResponse = {
   state: "ready" | "pending" | "empty" | "unavailable" | "disabled";
   day: string;
-  tz: string;
+  tz?: string;
   card: DailyPostCard | null;
+  retry_after_s?: number;
+};
+
+// Matches backend/feed/daily_video.py's public_card, not a YouTube catalog.
+export type DailyVideoCard = {
+  id: string;
+  card_id: string;
+  day: string;
+  platform: "youtube";
+  video_id: string;
+  source_url: string;
+  thumbnail_url: string;
+  title: string;
+  display_title: string;
+  channel: string;
+  speaker_kind: "pediatrician" | "psychologist" | "institution" | "educator" | "creator";
+  video_lang: "zh" | "en";
+  video_topic?: string;
+  /** Empty until the detail page explicitly asks for a generated summary. */
+  summary: string;
+  concern: string;
+  basis: "conversation" | "profile";
+  locale: string;
+  nickname: string;
+  intro: string;
+};
+
+export type DailyVideoResponse = {
+  state: "ready" | "pending" | "empty" | "unavailable" | "disabled";
+  day: string;
+  tz?: string;
+  card: DailyVideoCard | null;
   retry_after_s?: number;
 };
 
@@ -291,6 +336,22 @@ export type RegisterResult = {
 };
 
 export type CodeSent = { ok: true; resend_after: number };
+
+export type AuthResponse = {
+  access_token: string;
+  token_type: "bearer";
+  user: {
+    id: string;
+    email: string;
+    nickname?: string | null;
+    city?: string | null;
+    onboarding_completed?: boolean;
+    top_concerns?: string[] | null;
+    [key: string]: unknown;
+  };
+};
+
+export type GoogleLoginResult = AuthResponse & { created: boolean };
 
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
@@ -532,6 +593,8 @@ function logRequestFailure(path: string, init: RequestInit | undefined, started:
   const route = path.split("?")[0];
   const operation = route === "/auth/me" ? "identity" : route === "/chat/main/preview" ? "chat-preview"
     : route === "/chat/sessions" ? "chat-entry" : route === "/feed/daily-post" ? "daily-post"
+    : route === "/feed/daily-video" ? "daily-video" : /^\/feed\/daily-video\/[^/]+\/summary$/.test(route) ? "video-summary"
+    : route === "/chat/main/checkin" ? "chat-checkin"
     : route === "/feed/search" ? "knowledge-search" : /^\/feed\/[^/]+\/detail$/.test(route) ? "knowledge-detail" : "other";
   const failure = error && typeof error === "object" ? error as { status?: number; code?: string; name?: string; aiConsentRequired?: boolean } : {};
   const outcome = failure.status === 401 || failure.code === "AI_SESSION_CHANGED" || failure.name === "SessionChangedError" ? "session"
@@ -979,6 +1042,10 @@ export const api = {
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify(b) }),
   listSessions: () => req(`/chat/sessions`),
   getMainConversationPreview: () => req<MainConversationPreview>(`/chat/main/preview`),
+  // Unlike preview, this GET can generate and persist a model-written line.
+  getMainCheckin: () => req<MainCheckin>(`/chat/main/checkin`, undefined, 30000),
+  openMainCheckin: (id: string) =>
+    req<{ session_id: string }>(`/chat/main/checkin/${encodeURIComponent(id)}/open`, { method: "POST" }),
   // The server owns canonical-session selection. This endpoint is idempotent:
   // it returns the account's existing conversation and creates the first one
   // only when the account truly has none. The client must not infer identity
@@ -1066,6 +1133,19 @@ export const api = {
   // An earlier card by id, for a care notification that named it.
   getDailyPostById: (id: string): Promise<DailyPostResponse> =>
     req(`/feed/daily-post/${encodeURIComponent(id)}`),
+  getDailyVideo: (): Promise<DailyVideoResponse> => {
+    const tz = deviceTimeZone();
+    return req(`/feed/daily-video${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+  },
+  // Saved, owned row only: no generation or summary call on this route.
+  getDailyVideoById: (id: string): Promise<DailyVideoResponse> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}`),
+  getDailyVideoSummary: (id: string): Promise<{ summary: string }> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/summary`, undefined, 30000),
+  dailyVideoEvent: (id: string, event: "open" | "source_click" | "chat") =>
+    req<{ recorded: boolean }>(`/feed/daily-video/${encodeURIComponent(id)}/events`, {
+      method: "POST", body: JSON.stringify({ event }),
+    }),
   dailyPostEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req(`/feed/daily-post/${encodeURIComponent(id)}/events`, {
       method: "POST",
@@ -1095,6 +1175,10 @@ export const api = {
   resetPassword: (b: { email: string; code: string; new_password: string }) =>
     req(`/auth/password/reset`, { method: "POST", body: JSON.stringify(b) }),
   login: (b: any) => req(`/auth/login`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  // Google's verified ID token is exchanged for a NURI custom-JWT session.
+  // The caller owns CAS installation; a response never changes local identity.
+  googleLogin: (b: { credential: string; language?: string }) =>
+    req<GoogleLoginResult>(`/auth/google`, { method: "POST", body: JSON.stringify(b) }, 30000),
   // Generous timeout: this is the launch check, and it's the request most
   // likely to hit a serverless cold start.
   me: () => req(`/auth/me`, undefined, 30000),

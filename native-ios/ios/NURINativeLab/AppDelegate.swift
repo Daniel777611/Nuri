@@ -2,6 +2,9 @@ import Expo
 import React
 import ReactAppDependencyProvider
 import UserNotifications
+#if canImport(GoogleSignIn)
+import GoogleSignIn
+#endif
 
 @main
 class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
@@ -138,6 +141,9 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey: Any] = [:]
   ) -> Bool {
+#if canImport(GoogleSignIn)
+    if GIDSignIn.sharedInstance.handle(url) { return true }
+#endif
     return super.application(app, open: url, options: options) || RCTLinkingManager.application(app, open: url, options: options)
   }
 

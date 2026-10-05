@@ -1,6 +1,8 @@
 // Local-only data adapter used by `npm run preview`. It lets designers review
 // every route and interaction without starting or changing the backend.
 
+import type { DailyVideoCard, MainCheckin } from "./api";
+
 export const isPreviewMode = process.env.EXPO_PUBLIC_PREVIEW_MODE === "1";
 
 // Kept in sessionStorage: the fake checkout "returns" with a full page load,
@@ -389,6 +391,10 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/auth/resend-verification" || path === "/auth/password/forgot") {
     return { ok: true, resend_after: 60 };
   }
+  if (path === "/auth/google" && method === "POST") {
+    // Never parse or retain the credential: this is a local UI fixture only.
+    return { access_token: "preview-token", token_type: "bearer", user: profile, created: false };
+  }
   // Any six digits pass in preview; there is no mailbox to read one from.
   if (
     path === "/auth/login" ||
@@ -417,6 +423,9 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         source_url: "https://www.facebook.com/groups/babysleeptrainingtipshelp/posts/1012295830523712",
         source_label: "Facebook 群组「Baby Sleep Training Tips & Help」",
         published_at: null,
+        question: "宝宝夜里醒好几次，其他家长怎么做？",
+        situation: "一位家长在讨论孩子最近频繁夜醒的情况。",
+        post_topic: "夜醒频繁",
         headline: "夜醒多的时候，先把入睡环境稳定下来",
         takeaways: ["睡前多喂一点奶", "整晚开白噪音，音量低于 50 分贝", "房间温度保持在 23–25 度"],
         excerpt: "What I did was give a little more bottle before bed, white noises do magic",
@@ -434,6 +443,46 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     };
   }
   if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
+  // Reuse main's fixed pediatrician explainer; no search or model is called.
+  if (/^\/feed\/daily-video\/[^/]+\/summary$/.test(routePath) && method === "GET") {
+    return { summary: "这段示例介绍孩子情绪激动时，先提供安全安静的环境，再平静地设定界限。此处只是本地预览文案，请以原视频为准。" };
+  }
+  if ((routePath === "/feed/daily-video" || /^\/feed\/daily-video\/[^/]+$/.test(routePath)) && method === "GET") {
+    const nickname = profile.nickname || "";
+    const card: DailyVideoCard = {
+      id: "preview-daily-video", card_id: "dailyvideo:preview-daily-video",
+      day: new Date().toISOString().slice(0, 10), platform: "youtube", video_id: "vIULng1QDpo",
+      source_url: "https://www.youtube.com/watch?v=vIULng1QDpo",
+      thumbnail_url: "https://i.ytimg.com/vi/vIULng1QDpo/hqdefault.jpg",
+      title: "What to Do When Your Child Has a Tantrum | Ask-a-Doc | Cook Children's",
+      display_title: "孩子发脾气时，家长该怎么做", channel: "Cook Children's Health Care System",
+      speaker_kind: "institution", video_lang: "en", summary: "", concern: "宝宝一不如意就躺地哭闹",
+      basis: "conversation", locale: "zh-CN", nickname,
+      intro: `${nickname ? `${nickname}你好呀，` : "你好呀，"}最近你和NURI聊到「宝宝一不如意就躺地哭闹」，找到一个相关的视频，你可能会感兴趣：`,
+    };
+    return { state: "ready", day: card.day, card };
+  }
+  if (/^\/feed\/daily-video\/[^/]+\/events$/.test(routePath) && method === "POST") return { recorded: true };
+  if (routePath === "/chat/main/checkin" && method === "GET") {
+    const preview = await previewRequest("/chat/main/preview");
+    if (!preview.session_id || !preview.last_user_message) return { state: "none" } satisfies MainCheckin;
+    return {
+      state: "ready", id: "preview-checkin", session_id: preview.session_id,
+      topic: "夜醒频繁", line: "那几天夜醒真的辛苦了，后来试过睡前仪式吗，最近怎么样？",
+      opened: (messages[preview.session_id] || []).some((message) => message.id === "checkin-preview"),
+    } satisfies MainCheckin;
+  }
+  if (/^\/chat\/main\/checkin\/[^/]+\/open$/.test(routePath) && method === "POST") {
+    const session = await previewRequest("/chat/sessions", { method: "POST", body: "{}" });
+    const list = messages[session.id] || [];
+    if (!list.some((message) => message.id === "checkin-preview")) {
+      messages[session.id] = [...list, {
+        id: "checkin-preview", session_id: session.id, role: "ai", created_at: new Date().toISOString(),
+        text: "那几天夜醒真的辛苦了，后来试过睡前仪式吗，最近怎么样？", transition: null,
+      }];
+    }
+    return { session_id: session.id };
+  }
   // A tapped notification, as the server writes it into the conversation.
   // Open /notifications/preview-post or /notifications/preview-care to review
   // either kind; a second open adds nothing, as on the server.
@@ -443,17 +492,22 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     const messageId = `notification-${notificationId}`;
     const list = messages[session.id] || [];
     const isPost = notificationId.includes("post");
+    const isVideo = !isPost && notificationId.includes("video");
     if (!list.some((message: any) => message.id === messageId)) {
       const daily = (await previewRequest("/feed/daily-post")).card;
+      const video = isVideo ? (await previewRequest("/feed/daily-video")).card : null;
       messages[session.id] = [...list, {
         id: messageId,
         session_id: session.id,
         role: "ai",
         created_at: new Date().toISOString(),
-        text: isPost
+        text: isVideo ? `今天给你挑了一段育儿视频：《${video.display_title}》，可以从这里看看。` : isPost
           ? `今天给你挑了一篇其他家长的经验分享：《${daily.headline}》，点下面的卡片可以看全文。\n看完想聊聊其中哪一点，或者说说你家的情况，我们一起看看怎么用得上。`
           : "最近的夜醒辛苦了，慢慢来就好。想聊聊的时候，我一直在。",
-        transition: isPost
+        transition: isVideo ? {
+          kind: "card_opened", card_id: video.card_id, title: video.display_title,
+          video: { id: video.id, title: video.display_title, thumbnail_url: video.thumbnail_url, channel: video.channel },
+        } : isPost
           ? {
               kind: "card_opened",
               card_id: daily.card_id,
@@ -463,7 +517,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
           : null,
       }];
     }
-    return { session_id: session.id, kind: isPost ? "daily_post" : "care" };
+    return { session_id: session.id, kind: isVideo ? "daily_video" : isPost ? "daily_post" : "care" };
   }
 
   if (path === "/auth/me" && method === "PUT") return (profile = { ...profile, ...body });
