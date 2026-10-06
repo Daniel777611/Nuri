@@ -106,7 +106,7 @@ function Player({
 }
 
 export default function DailyVideoScreen() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const { width } = useWindowDimensions();
   const pageWidth = Math.min(width, 402);
@@ -119,7 +119,8 @@ export default function DailyVideoScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    (id ? api.getDailyVideoById(String(id)) : api.getDailyVideo())
+    // Re-read on a language switch: the server answers in the new language.
+    (id ? api.getDailyVideoById(String(id), locale) : api.getDailyVideo(locale))
       .then((res) => {
         if (cancelled) return;
         if (res.state === "ready" && res.card) {
@@ -133,7 +134,7 @@ export default function DailyVideoScreen() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, locale]);
 
   const loadSummary = useCallback(async (video: DailyVideoCard) => {
     if (video.summary) {
@@ -143,13 +144,13 @@ export default function DailyVideoScreen() {
     }
     setSummaryState("loading");
     try {
-      const res = await api.getDailyVideoSummary(video.id);
+      const res = await api.getDailyVideoSummary(video.id, locale);
       setSummary(res.summary || "");
       setSummaryState(res.summary ? "ready" : "failed");
     } catch {
       setSummaryState("failed");
     }
-  }, []);
+  }, [locale]);
 
   useEffect(() => {
     if (card) void loadSummary(card);

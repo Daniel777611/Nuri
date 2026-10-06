@@ -189,3 +189,50 @@ def test_the_chat_marker_carries_the_video(world):
     fields = asyncio.run(dv.marker_fields("mom-1", card["card_id"]))
     assert fields["title"] == "孩子发脾气怎么办" and dv.watch_url(VID) in fields["context"]
     assert asyncio.run(dv.marker_fields("mom-1", "dailypost:x")) is None
+
+
+def test_another_language_is_translated_once_and_kept(world, monkeypatch):
+    calls = []
+
+    def fake_translate(fields, locale):
+        calls.append((locale, sorted(fields)))
+        return {k: f"[{locale}] {v}" for k, v in fields.items()}
+
+    monkeypatch.setattr(dv, "translate_fields", fake_translate)
+    card = _get()["card"]
+    assert card["locale"] == "zh-CN" and not calls
+
+    en = asyncio.run(dv.get_card("mom-1", card["id"], locale="en"))
+    assert en["display_title"].startswith("[en] ") and en["key_points"].startswith("[en] ")
+    assert en["intro"].startswith("Hi Linda!") and "[en] 躺地哭闹" in en["intro"]
+    assert calls == [("en", ["concern", "display_title", "key_points"])]
+
+    # Back to Chinese: the original text, no model call; English again: stored.
+    zh = asyncio.run(dv.get_card("mom-1", card["id"], locale="zh-CN"))
+    assert zh["display_title"] == "孩子发脾气怎么办" and "i18n" not in zh
+    asyncio.run(dv.get_card("mom-1", card["id"], locale="en"))
+    assert len(calls) == 1
+
+    # The summary is written in the card's language, then translated and kept.
+    summary_en = asyncio.run(dv.get_summary("mom-1", card["id"], locale="en"))
+    assert summary_en == "[en] 儿科医生讲孩子为什么发脾气，以及家长怎么应对。"
+    assert calls[-1] == ("en", ["summary"]) and world.summaries == 1
+    assert asyncio.run(dv.get_summary("mom-1", card["id"], locale="zh-CN")).startswith("儿科医生")
+    asyncio.run(dv.get_summary("mom-1", card["id"], locale="en"))
+    assert len(calls) == 2
+
+
+def test_a_failed_translation_shows_the_original(world, monkeypatch):
+    def broken(_fields, _locale):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(dv, "translate_fields", broken)
+    card = _get()["card"]
+    en = asyncio.run(dv.get_card("mom-1", card["id"], locale="en"))
+    assert en["display_title"] == "孩子发脾气怎么办" and en["locale"] == "zh-CN"
+
+
+def test_an_unknown_locale_is_ignored(world, monkeypatch):
+    monkeypatch.setattr(dv, "translate_fields", lambda *_a: pytest.fail("no translation expected"))
+    card = _get()["card"]
+    assert asyncio.run(dv.get_card("mom-1", card["id"], locale="fr"))["display_title"] == "孩子发脾气怎么办"

@@ -120,7 +120,7 @@ function DevSheet({
 }
 
 export default function Home() {
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
@@ -209,7 +209,8 @@ export default function Home() {
     const requestId = ++dailyVideoRequest.current;
     if (!quiet) setDailyVideoStatus((current) => (current === "ready" ? current : "loading"));
     try {
-      const res = await api.getDailyVideo();
+      // In the app's current language; a switch re-runs this (see deps).
+      const res = await api.getDailyVideo(locale);
       if (requestId !== dailyVideoRequest.current) return;
       if (res.state === "ready" && res.card) {
         setDailyVideo(res.card);
@@ -229,7 +230,7 @@ export default function Home() {
         setDailyVideoStatus((current) => (current === "ready" ? current : "error"));
       }
     }
-  }, []);
+  }, [locale]);
 
   useEffect(() => {
     if (dailyVideoStatus !== "pending" || !isHomeFocused) return;

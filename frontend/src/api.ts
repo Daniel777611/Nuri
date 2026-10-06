@@ -887,15 +887,26 @@ export const api = {
   // An earlier card by id, for a care notification that named it.
   getDailyPostById: (id: string): Promise<DailyPostResponse> =>
     req(`/feed/daily-post/${encodeURIComponent(id)}`),
-  getDailyVideo: (): Promise<DailyVideoResponse> => {
+  // `locale` is the app's current language: the card's text comes back in it,
+  // translated on the server the first time and kept for next time.
+  getDailyVideo: (locale?: string): Promise<DailyVideoResponse> => {
+    const params = new URLSearchParams();
     const tz = deviceTimeZone();
-    return req(`/feed/daily-video${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+    if (tz) params.set("tz", tz);
+    if (locale) params.set("locale", locale);
+    const query = params.toString();
+    return req(`/feed/daily-video${query ? `?${query}` : ""}`, undefined, 60000);
   },
-  getDailyVideoById: (id: string): Promise<DailyVideoResponse> =>
-    req(`/feed/daily-video/${encodeURIComponent(id)}`),
-  // The first open writes the summary with a model call.
-  getDailyVideoSummary: (id: string): Promise<{ summary: string }> =>
-    req(`/feed/daily-video/${encodeURIComponent(id)}/summary`, undefined, 30000),
+  getDailyVideoById: (id: string, locale?: string): Promise<DailyVideoResponse> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}${locale ? `?locale=${encodeURIComponent(locale)}` : ""}`, undefined, 30000),
+  // The first open writes the summary with a model call (and, in another
+  // language, translates it once).
+  getDailyVideoSummary: (id: string, locale?: string): Promise<{ summary: string }> =>
+    req(
+      `/feed/daily-video/${encodeURIComponent(id)}/summary${locale ? `?locale=${encodeURIComponent(locale)}` : ""}`,
+      undefined,
+      30000,
+    ),
   dailyVideoEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req(`/feed/daily-video/${encodeURIComponent(id)}/events`, {
       method: "POST",

@@ -1675,27 +1675,35 @@ async def daily_post_event(row_id: str, body: DailyPostEventIn, uid: str = Depen
 
 
 @api.get("/feed/daily-video")
-async def get_daily_video(tz: Optional[str] = None, uid: str = Depends(_req_uid)):
+async def get_daily_video(
+    tz: Optional[str] = None, locale: Optional[str] = None, uid: str = Depends(_req_uid),
+):
     """Home's second daily card: one YouTube video for this parent, fixed for
     their local day. Same states as /feed/daily-post. See
     backend/feed/daily_video.py."""
-    return await feed_daily_video.get_daily_video(uid, tz)
+    # `locale` is the app's current language; the card's text is translated
+    # into it on first view and kept (daily_video.ensure_locale).
+    return await feed_daily_video.get_daily_video(uid, tz, locale=locale)
 
 
 @api.get("/feed/daily-video/{row_id}")
-async def get_daily_video_by_id(row_id: str, uid: str = Depends(_req_uid)):
-    card = await feed_daily_video.get_card(uid, row_id)
+async def get_daily_video_by_id(
+    row_id: str, locale: Optional[str] = None, uid: str = Depends(_req_uid),
+):
+    card = await feed_daily_video.get_card(uid, row_id, locale=locale)
     if not card:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "daily video not found")
     return {"state": "ready", "day": card.get("day"), "card": card}
 
 
 @api.get("/feed/daily-video/{row_id}/summary")
-async def get_daily_video_summary(row_id: str, uid: str = Depends(_req_uid)):
+async def get_daily_video_summary(
+    row_id: str, locale: Optional[str] = None, uid: str = Depends(_req_uid),
+):
     """About 150 characters on the video, from its title and description,
     written the first time a parent opens it and kept after that."""
     try:
-        summary = await feed_daily_video.get_summary(uid, row_id)
+        summary = await feed_daily_video.get_summary(uid, row_id, locale=locale)
     except Exception as exc:
         print(f"[warn] daily video summary failed: {type(exc).__name__}: {exc}")
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "summary unavailable") from exc

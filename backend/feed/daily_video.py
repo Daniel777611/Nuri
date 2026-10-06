@@ -373,7 +373,7 @@ def intro(card: dict, nickname: str, locale: str) -> str:
     """The knowledge card's line: who it is for, what it's about, and that a
     video follows. Says "你和NURI聊到" only when the parent actually did."""
     name = (nickname or "").strip()
-    concern = (card.get("concern") or "").strip()
+    concern = (card.get("concern") or "").strip().rstrip("。.!！")
     if locale == "en":
         hello = f"Hi {name}! " if name else "Hi! "
         if card.get("basis") == "conversation" and concern:
@@ -391,16 +391,151 @@ def intro(card: dict, nickname: str, locale: str) -> str:
     return hello + f"根据孩子现在的阶段{stage}，找到一个视频，你可能会感兴趣："
 
 
-def public_card(row: dict, *, nickname: str) -> dict:
-    card = {k: v for k, v in (row.get("card") or {}).items() if k != "description"}
+def public_card(row: dict, *, nickname: str, locale: Optional[str] = None) -> dict:
+    """The card as the client sees it, in `locale` when a translation for it
+    is stored (see ensure_locale), otherwise in the language it was written in."""
+    source = row.get("card") or {}
+    shown = localized(source, locale)
+    card = {k: v for k, v in shown.items() if k not in ("description", "i18n")}
     card.update({
         "id": row["id"],
         "card_id": f"{CARD_ID_PREFIX}{row['id']}",
         "day": str(row.get("day")),
         "nickname": nickname,
-        "intro": intro(row.get("card") or {}, nickname, (row.get("card") or {}).get("locale") or "zh-CN"),
+        "locale": shown.get("locale") or source.get("locale") or "zh-CN",
+        "intro": intro(shown, nickname, shown.get("locale") or source.get("locale") or "zh-CN"),
     })
     return card
+
+
+# ── Other languages ──────────────────────────────────────────────────────────
+# A card is written once, in the language the parent used that day. When the
+# app is switched to another language, the parent-facing text is translated
+# on first view and kept under card["i18n"][locale], so switching back and
+# forth never pays for the same translation twice.
+
+#: The card's text a parent reads. `concern` is in the list because the intro
+#: quotes it ("最近你和NURI聊到「…」").
+TRANSLATED_FIELDS = ("display_title", "key_points", "summary", "concern")
+
+
+def target_locale(card: dict, locale: Optional[str]) -> Optional[str]:
+    """`locale` when it differs from the card's own language, else None."""
+    if locale not in locales.SUPPORTED_PREFERRED_LOCALES:
+        return None
+    return None if locale == (card.get("locale") or "zh-CN") else locale
+
+
+def localized(card: dict, locale: Optional[str]) -> dict:
+    """The card with its stored translation for `locale` laid over it. A field
+    not translated yet keeps its original text rather than going blank."""
+    target = target_locale(card, locale)
+    if not target:
+        return dict(card)
+    stored = {k: v for k, v in (((card.get("i18n") or {}).get(target)) or {}).items()
+              if k in TRANSLATED_FIELDS and v}
+    if not stored:
+        # Nothing translated yet (or the translation failed): stay wholly in
+        # the original language, so the intro's template matches its keyword.
+        return dict(card)
+    return {**card, **stored, "locale": target}
+
+
+def missing_translations(card: dict, locale: Optional[str]) -> list[str]:
+    target = target_locale(card, locale)
+    if not target:
+        return []
+    stored = ((card.get("i18n") or {}).get(target)) or {}
+    return [k for k in TRANSLATED_FIELDS if card.get(k) and not stored.get(k)]
+
+
+_TRANSLATE_LANGUAGE = {
+    "zh-CN": "简体中文",
+    "zh-TW": "繁體中文（台灣用語）",
+    "en": "English",
+}
+
+_TRANSLATE_SYSTEM = """You translate short texts on a parenting app's video card into {language}.
+Rules:
+- Translate faithfully; keep every concrete step, number and age. Add nothing, drop nothing.
+- Keep names of people, channels and organizations as they are (e.g. 黃瑽寧, AAP, Cook Children's).
+- Natural, warm wording a parent would read; for Traditional Chinese use Taiwan usage.
+- "concern" is a topic label that sits inside a sentence ("You've been talking with NURI
+  about ___"): translate it as a short phrase of at most 8 words, lowercase start in English,
+  no ending punctuation — not as a full sentence.
+- Return every key you are given, translated."""
+
+#: How long a translated field may run. English takes about three times the
+#: characters of the same Chinese, so these are sized for English.
+_TRANSLATED_LIMITS = {"display_title": 120, "key_points": 400, "summary": 900, "concern": 80}
+
+
+def translate_fields(fields: dict, locale: str) -> dict:
+    """`fields` translated into `locale`, one call for all of them."""
+    keys = [k for k, v in fields.items() if v]
+    if not keys:
+        return {}
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "card_translation",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {k: {"type": "string"} for k in keys},
+                "required": keys,
+                "additionalProperties": False,
+            },
+        },
+    }
+    system = _TRANSLATE_SYSTEM.replace("{language}", _TRANSLATE_LANGUAGE.get(locale, "English"))
+    data = _model_json(
+        "feed.daily_video_translate", POINTS_MODEL,
+        [{"role": "system", "content": system},
+         {"role": "user", "content": json.dumps({k: fields[k] for k in keys}, ensure_ascii=False)}],
+        response_format,
+    )
+    out = {k: dp._trim(data.get(k), _TRANSLATED_LIMITS.get(k, 400)) for k in keys}
+    if out.get("concern"):
+        out["concern"] = out["concern"].rstrip("。.!！ ")
+    return {k: v for k, v in out.items() if v}
+
+
+async def _save_card(user_id: str, row_id: str, card: dict) -> None:
+    sb = runtime.get_supabase()
+    if not sb:
+        return
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table(TABLE).update({"card": card}).eq("id", row_id).eq("user_id", user_id).execute()
+        )
+    except Exception as exc:
+        print(f"[warn] daily video card save failed: {type(exc).__name__}")
+
+
+async def ensure_locale(user_id: str, row: dict, locale: Optional[str]) -> dict:
+    """The row with its card's text available in `locale`, translating (and
+    storing) whatever isn't yet. A failed translation leaves the original
+    text showing; the next visit tries again."""
+    card = dict(row.get("card") or {})
+    missing = missing_translations(card, locale)
+    if not missing:
+        return row
+    target = target_locale(card, locale)
+    try:
+        translated = await anyio.to_thread.run_sync(
+            lambda: translate_fields({k: card[k] for k in missing}, target)
+        )
+    except Exception as exc:
+        print(f"[warn] daily video translation failed: {type(exc).__name__}")
+        return row
+    if not translated:
+        return row
+    i18n = dict(card.get("i18n") or {})
+    i18n[target] = {**(i18n.get(target) or {}), **translated}
+    card["i18n"] = i18n
+    await _save_card(user_id, row["id"], card)
+    return {**row, "card": card}
 
 
 def chat_context(card: dict) -> str:
@@ -510,7 +645,9 @@ async def _profile(user_id: str) -> tuple[dict, list[dict], str]:
     return profile, children, str(profile.get("nickname") or "").strip()
 
 
-async def get_daily_video(user_id: str, tz_name: Optional[str], *, now: Optional[datetime] = None) -> dict:
+async def get_daily_video(
+    user_id: str, tz_name: Optional[str], *, now: Optional[datetime] = None, locale: Optional[str] = None,
+) -> dict:
     """Today's video for this parent, generating it on the first request of
     their day. Always a state the home screen can render."""
     now = now or dp._now()
@@ -534,7 +671,8 @@ async def get_daily_video(user_id: str, tz_name: Optional[str], *, now: Optional
         return {**base, "state": "unavailable"}
 
     if row and row.get("status") == "ready" and row.get("card"):
-        return {**base, "state": "ready", "card": public_card(row, nickname=nickname)}
+        row = await ensure_locale(user_id, row, locale)
+        return {**base, "state": "ready", "card": public_card(row, nickname=nickname, locale=locale)}
     if row:
         wait = dp._retry_after(row, now)
         if wait is not None:
@@ -573,7 +711,8 @@ async def get_daily_video(user_id: str, tz_name: Optional[str], *, now: Optional
         return {**base, "state": "empty", "retry_after_s": dp.EMPTY_RETRY_S}
     await finish(status="ready", card=card, basis=plan.basis, queries=queries)
     row = {"id": row_id, "day": day.isoformat(), "card": card}
-    return {**base, "state": "ready", "card": public_card(row, nickname=nickname)}
+    row = await ensure_locale(user_id, row, locale)
+    return {**base, "state": "ready", "card": public_card(row, nickname=nickname, locale=locale)}
 
 
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[dp.Plan]]:
@@ -630,7 +769,7 @@ async def _load_row(user_id: str, row_id: str) -> Optional[dict]:
     return row
 
 
-async def get_card(user_id: str, row_id: str) -> Optional[dict]:
+async def get_card(user_id: str, row_id: str, locale: Optional[str] = None) -> Optional[dict]:
     """One of this parent's videos by id, whatever day it was made for."""
     row = await _load_row(user_id, row_id)
     if not row:
@@ -639,30 +778,28 @@ async def get_card(user_id: str, row_id: str) -> Optional[dict]:
         _profile_row, _children, nickname = await _profile(user_id)
     except Exception:
         nickname = ""
-    return public_card(row, nickname=nickname)
+    row = await ensure_locale(user_id, row, locale)
+    return public_card(row, nickname=nickname, locale=locale)
 
 
-async def get_summary(user_id: str, row_id: str) -> Optional[str]:
-    """The video's summary, written the first time it is asked for."""
+async def get_summary(user_id: str, row_id: str, locale: Optional[str] = None) -> Optional[str]:
+    """The video's summary, written the first time it is asked for, in the
+    card's own language; in another `locale` it is then translated and kept."""
     row = await _load_row(user_id, row_id)
     if not row:
         return None
     card = dict(row["card"])
-    if card.get("summary"):
-        return card["summary"]
-    locale = card.get("locale") or "zh-CN"
-    summary = await anyio.to_thread.run_sync(lambda: write_summary(card, locale))
-    if not summary:
-        return ""
-    card["summary"] = summary
-    sb = runtime.get_supabase()
-    try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table(TABLE).update({"card": card}).eq("id", row_id).eq("user_id", user_id).execute()
+    if not card.get("summary"):
+        summary = await anyio.to_thread.run_sync(
+            lambda: write_summary(card, card.get("locale") or "zh-CN")
         )
-    except Exception as exc:
-        print(f"[warn] daily video summary save failed: {type(exc).__name__}")
-    return summary
+        if not summary:
+            return ""
+        card["summary"] = summary
+        await _save_card(user_id, row_id, card)
+        row = {**row, "card": card}
+    row = await ensure_locale(user_id, row, locale)
+    return localized(row["card"], locale).get("summary") or ""
 
 
 async def record_event(user_id: str, row_id: str, event: str, *, now: Optional[datetime] = None) -> bool:
