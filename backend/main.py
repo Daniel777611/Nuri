@@ -1392,7 +1392,10 @@ async def google_login(body: GoogleLogin):
     Google has already verified the address, which proves the mailbox just as
     NURI's emailed code does, so:
 
-    * an existing account with that address signs in;
+    * an existing account with that address signs in — when the Google
+      account still owns the mailbox (Gmail or Google Workspace). A Google
+      account made with another provider's address could be stale, so that
+      parent is asked to use their NURI password instead (409);
     * one registered but never verified is taken over by whoever proves the
       mailbox — the same rule as /auth/register — and its password is
       replaced, so whoever parked the address can't sign in with it later;
@@ -1422,6 +1425,11 @@ async def google_login(body: GoogleLogin):
     user = await _user_by_email(sb, email)
     if user:
         if user.get("email_verified_at"):
+            # Into someone's existing account only when the Google account
+            # still owns the mailbox (Gmail / Workspace). Otherwise the
+            # parent signs in with the email password they already have.
+            if not google_auth.controls_mailbox(claims):
+                raise HTTPException(409, "GOOGLE_EMAIL_USE_PASSWORD")
             return {**_auth_response(user), "created": False}
         updates = {
             "email_verified_at": _now(),

@@ -78,6 +78,29 @@ def verify_id_token(token: str) -> dict:
     return claims
 
 
+#: Addresses Google itself hosts. Whoever holds the Google account holds the
+#: mailbox, for as long as the account exists.
+GOOGLE_HOSTED_DOMAINS = ("gmail.com", "googlemail.com")
+
+
+def controls_mailbox(claims: dict) -> bool:
+    """Whether the Google account provably still owns its address, which is
+    what signing into an *existing* NURI account by address requires.
+
+    True for Gmail, and for Google Workspace accounts (Google sends `hd`, the
+    domain the organisation administers). False for a Google account made
+    with someone else's address (a qq.com or company mail): Google checked
+    that mailbox once, at sign-up, and the address may have changed hands
+    since — the classic way to take over an account by email.
+    """
+    email = str(claims.get("email") or "").strip().lower()
+    domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+    if domain in GOOGLE_HOSTED_DOMAINS:
+        return True
+    hosted = str(claims.get("hd") or "").strip().lower()
+    return bool(hosted) and hosted == domain
+
+
 def display_name(claims: dict) -> str:
     """A first name to pre-fill onboarding's nickname with."""
     name = str(claims.get("given_name") or claims.get("name") or "").strip()

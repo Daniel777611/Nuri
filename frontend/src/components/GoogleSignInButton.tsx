@@ -94,10 +94,13 @@ export default function GoogleSignInButton({ width }: { width: number }) {
         await auth.setOnboarded(onboarded);
         router.replace(onboarded ? "/(tabs)" : "/onboarding");
       } catch (e) {
+        const detail = apiErrorDetail(e);
         setError(
-          apiErrorDetail(e) === "GOOGLE_SIGNIN_UNAVAILABLE"
+          detail === "GOOGLE_SIGNIN_UNAVAILABLE"
             ? t("Google 登录暂时不可用，请用邮箱登录。")
-            : t("Google 登录没有成功，请再试一次。"),
+            : detail === "GOOGLE_EMAIL_USE_PASSWORD"
+              ? t("这个邮箱已经注册过 NURI，请用邮箱和密码登录。")
+              : t("Google 登录没有成功，请再试一次。"),
         );
         setBusy(false);
       }

@@ -153,6 +153,7 @@ export const en: Record<string, string> = {
   "今天还没找到合适的家长经验。和NURI多聊聊你的情况，明天会更贴近你。":
     "No good parent story today. Tell NURI a bit more and tomorrow's will fit you better.",
   "重试": "Try again",
+  "这个邮箱已经注册过 NURI，请用邮箱和密码登录。": "This email already has a NURI account. Please sign in with your email and password.",
   "使用 Google 账号继续": "Continue with Google",
   "这台手机上还没有 Google 账号，可以先在系统设置里添加，或用邮箱登录。": "There's no Google account on this phone yet. Add one in Settings, or sign in with your email.",
   "或": "or",

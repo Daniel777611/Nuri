@@ -99,3 +99,33 @@ def test_without_a_client_id_google_sign_in_is_off(env, monkeypatch):
 
 def test_the_shells_client_ids_are_accepted_too(env):
     assert _google(env, _token(aud="nuri-ios.apps.googleusercontent.com")).status_code == 200
+
+
+def _verified_account(env, email):
+    env.db.tables["users"] = [{
+        "id": "u1", "email": email, "email_verified_at": "2026-09-01T00:00:00+00:00",
+        "nickname": "Momo", "city": "SF", "top_concerns": [], "hashed_password": main._hash_pw("secret12"),
+        "onboarding_completed": True,
+    }]
+
+
+def test_a_google_account_with_another_providers_address_cannot_enter_an_existing_account(env):
+    # Google checked this qq.com mailbox once, when the Google account was
+    # made; it may belong to someone else by now.
+    _verified_account(env, "mom@qq.com")
+    res = _google(env, _token(email="mom@qq.com"))
+    assert res.status_code == 409 and res.json()["detail"] == "GOOGLE_EMAIL_USE_PASSWORD"
+    assert "access_token" not in res.json()
+
+
+def test_a_workspace_account_owns_its_domain_and_may_sign_in(env):
+    _verified_account(env, "mom@ordashteches.com")
+    res = _google(env, _token(email="mom@ordashteches.com", hd="ordashteches.com"))
+    assert res.status_code == 200 and res.json()["user"]["id"] == "u1"
+    # An hd for a different domain proves nothing about this address.
+    assert _google(env, _token(email="mom@ordashteches.com", hd="other.com")).status_code == 409
+
+
+def test_any_verified_google_address_can_still_start_a_new_account(env):
+    res = _google(env, _token(email="newmom@qq.com"))
+    assert res.status_code == 200 and res.json()["created"] is True
