@@ -203,6 +203,12 @@ export default function DailyVideoScreen() {
           <BackButton onPress={goBack} label={t("返回")} />
 
           <Text style={styles.intro} testID="daily-video-intro">{card.intro}</Text>
+          {card.key_points ? (
+            <View style={styles.pointsBox} testID="daily-video-points">
+              <Text style={styles.pointsLabel}>{t("和你相关的要点")}</Text>
+              <Text style={styles.pointsText}>{card.key_points}</Text>
+            </View>
+          ) : null}
 
           <Player
             videoId={card.video_id}
@@ -280,6 +286,11 @@ const styles = StyleSheet.create({
   back: { flexDirection: "row", alignItems: "center", gap: 2, paddingVertical: 12, alignSelf: "flex-start" },
   backText: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 14 },
   intro: { color: C.text, fontFamily: "NotoSansSC_600SemiBold", fontSize: 16, lineHeight: 25, marginTop: 4, marginBottom: 14 },
+  pointsBox: {
+    borderLeftWidth: 3, borderLeftColor: C.purple, paddingLeft: 12, paddingVertical: 2, marginBottom: 16,
+  },
+  pointsLabel: { color: C.purple, fontFamily: "NotoSansSC_700Bold", fontSize: 12, marginBottom: 4 },
+  pointsText: { color: C.text, fontFamily: "NotoSansSC_500Medium", fontSize: 15, lineHeight: 23 },
   player: { borderRadius: 18, overflow: "hidden", backgroundColor: "#000000" },
   posterShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.25)" },
   posterPlay: {

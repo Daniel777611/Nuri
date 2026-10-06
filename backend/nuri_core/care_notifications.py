@@ -326,10 +326,15 @@ def video_message(video: dict) -> tuple[str, str]:
     it (backend/feed/daily_video.intro)."""
     title = "今天的精选视频"
     shown = str(video.get("display_title") or video.get("title") or "").strip()
-    body = (
-        _clip(f"{shown}。点开就能看，看完可以和 NURI 聊聊。", BODY_MAX_CHARS)
-        if shown else "为你找到一个育儿视频，点开就能看。"
-    )
+    # The key points say what the video teaches — about the subject, never
+    # about this family — so they may stand on the lock screen.
+    points = str(video.get("key_points") or "").strip()
+    if shown and points:
+        body = _clip(f"{shown}：{points}", BODY_MAX_CHARS)
+    elif shown:
+        body = _clip(f"{shown}。点开就能看，看完可以和 NURI 聊聊。", BODY_MAX_CHARS)
+    else:
+        body = "为你找到一个育儿视频，点开就能看。"
     return title, body
 
 

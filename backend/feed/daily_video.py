@@ -51,6 +51,12 @@ MODEL = os.getenv("DAILY_VIDEO_MODEL", runtime.OPENAI_CONTENT_RESEARCH_MODEL)
 SUMMARY_MODEL = os.getenv("DAILY_VIDEO_SUMMARY_MODEL", "gpt-5.4-mini")
 MODEL_TIMEOUT_S = float(os.getenv("DAILY_VIDEO_MODEL_TIMEOUT_S", "25"))
 SUMMARY_CHARS = 150
+#: Cheap: one or two sentences from a description the pick already judged.
+#: Compared 2026-10-05 on real picks: gpt-5.4-nano kept the video's concrete
+#: advice ("一抱、二问、三离开"), gpt-4.1-nano drifted into "保持耐心"-style
+#: generalities, gpt-5-nano spent ~770 reasoning tokens on one line.
+POINTS_MODEL = os.getenv("DAILY_VIDEO_POINTS_MODEL", "gpt-5.4-nano")
+POINTS_CHARS = 55
 
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
@@ -166,50 +172,64 @@ async def find_candidates(plan: dp.Plan, locale: str, exclude_urls: set[str]) ->
 
 # ── Which video ──────────────────────────────────────────────────────────────
 
-_PICK_SYSTEM = """你为 NURI 的每日视频卡片，从 YouTube 候选视频里选出一个给一位家长看。
-候选只有标题和简介（搜索引擎抓到的，可能不完整），你看不到视频本身。
+#: How a video is chosen: the model scores every candidate, and the weights
+#: below decide. Relevance outweighs expertise, so a pediatrician's general
+#: "your 11-month-old" talk loses to a focused drop-off video when the parent
+#: asked about daycare drop-off — the model, asked to pick directly, chose the
+#: famous-but-off-topic one three times in four. Language only breaks near-ties:
+#: the card's key points are in the parent's language anyway.
+RELEVANCE_WEIGHT = 0.6
+EXPERTISE_WEIGHT = 0.4
+MIN_RELEVANCE = 3          # out of 5: below this it isn't about the parent's question
+LANGUAGE_BONUS = 0.2       # for a video in the parent's own language
 
-只能选满足全部条件的一个：
-1. 是给家长看的育儿讲解或建议。给孩子看的动画、绘本故事、儿歌、早教课、睡前故事都不算——哪怕标题里有"发脾气""睡觉"这些词。
-2. 讲的人懂这件事：儿科医生、心理/发展专家、医院或公共卫生机构、幼教老师、有专业背景的育儿博主。营销号、带货、标题党、搬运剪辑、新闻、和育儿无关的不算。
-3. 讲的问题和这位家长的问题一致，孩子年龄段大体相近。
-4. 不推荐危险做法：药物剂量、偏方、体罚、违背安全睡眠等。
-语言：{language_rule}
-先填 video_topic：只看被选视频本身，用不超过 12 个字写它在讲什么问题。再和家长的问题比，如实填 fit：
-"strong" 讲的就是这个问题；"partial" 问题相近，能直接借鉴；"weak" 只是年龄段相同或只沾边。
-全部候选都不合格时，choice 返回 -1，其余字段返回空。
+_SCORE_SYSTEM = """你为 NURI 的每日视频卡片给 YouTube 候选视频打分，帮一位家长挑一个视频。
+候选只有标题和简介（搜索引擎抓到的，可能不完整），你看不到视频本身。每个候选都要打分，按编号返回。
 
-choice 不为 -1 时：
-- display_title：不超过 28 个字，把视频标题改写成简短清楚的一句（去掉 #标签、表情、频道名）。
-  不管原标题是简体、繁体还是英文，都按这个要求写：{locale_rule}
-- channel：简介里能看出的频道或讲者名字，看不出就返回空字符串。
-- speaker_kind：pediatrician / psychologist / institution / educator / creator 之一。"""
+for_parents：是不是给家长看的育儿讲解或建议。给孩子看的动画、绘本故事、儿歌、早教课、睡前故事都填 false，哪怕标题里有"发脾气""睡觉"这些词。
+safe：没有危险做法（药物剂量、偏方、体罚、违背安全睡眠等）填 true。
+relevance（0-5）：讲的是不是这位家长的问题，只看问题本身，不看讲的人多权威。
+  5 = 专门讲这个问题；4 = 讲这个问题的一部分或很接近的情况；3 = 问题相近，做法能直接借鉴；
+  2 = 同一大类但不是这个问题（例如问入托分离焦虑，视频是"11个月宝宝发育概览"）；1 = 只是年龄段相同；0 = 无关。
+expertise（0-5）：讲的人懂不懂这件事。
+  5 = 儿科医生、医院、公共卫生机构（AAP、CDC、卫生部门等）；4 = 心理/发展专家、有资质的幼教或治疗师；
+  3 = 有专业背景的育儿博主；2 = 普通家长分享经验；1 = 营销号、带货、标题党、搬运剪辑；0 = 和育儿无关的频道。
+speaker_kind：pediatrician / psychologist / institution / educator / creator / other 之一。
+channel：简介里能看出的频道或讲者名字，看不出就返回空字符串。
+display_title：不超过 28 个字，把标题改写成简短清楚的一句（去掉 #标签、表情、频道名）。不管原标题是什么语言，都按这个要求写：{locale_rule}"""
 
-_LANGUAGE_RULE = {
-    "zh-CN": "这位家长读中文。中文视频合格时优先选中文；没有合格的中文视频才选英文视频。",
-    "zh-TW": "這位家長讀中文。中文視頻合格時優先選中文；沒有合格的中文視頻才選英文視頻。",
-    "en": "这位家长读英文，只选英文视频。",
-}
-
-_PICK_FORMAT = {
+_SCORE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
-        "name": "daily_video_pick",
+        "name": "daily_video_scores",
         "strict": True,
         "schema": {
             "type": "object",
             "properties": {
-                "choice": {"type": "integer"},
-                "video_topic": {"type": "string"},
-                "fit": {"type": "string", "enum": ["strong", "partial", "weak", ""]},
-                "display_title": {"type": "string"},
-                "channel": {"type": "string"},
-                "speaker_kind": {
-                    "type": "string",
-                    "enum": ["pediatrician", "psychologist", "institution", "educator", "creator", ""],
+                "scores": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {"type": "integer"},
+                            "for_parents": {"type": "boolean"},
+                            "safe": {"type": "boolean"},
+                            "relevance": {"type": "integer"},
+                            "expertise": {"type": "integer"},
+                            "speaker_kind": {
+                                "type": "string",
+                                "enum": ["pediatrician", "psychologist", "institution", "educator", "creator", "other"],
+                            },
+                            "channel": {"type": "string"},
+                            "display_title": {"type": "string"},
+                        },
+                        "required": ["index", "for_parents", "safe", "relevance", "expertise",
+                                     "speaker_kind", "channel", "display_title"],
+                        "additionalProperties": False,
+                    },
                 },
             },
-            "required": ["choice", "video_topic", "fit", "display_title", "channel", "speaker_kind"],
+            "required": ["scores"],
             "additionalProperties": False,
         },
     },
@@ -240,11 +260,8 @@ def _model_json(call_site: str, model: str, messages: list[dict], response_forma
     return json.loads(content or "{}") if response_format else content
 
 
-def _ask_pick(candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str) -> dict:
-    system = (
-        _PICK_SYSTEM.replace("{language_rule}", _LANGUAGE_RULE.get(locale, _LANGUAGE_RULE["zh-CN"]))
-        .replace("{locale_rule}", dp._LOCALE_RULE.get(locale, dp._LOCALE_RULE["zh-CN"]))
-    )
+def _ask_scores(candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str) -> list[dict]:
+    system = _SCORE_SYSTEM.replace("{locale_rule}", dp._LOCALE_RULE.get(locale, dp._LOCALE_RULE["zh-CN"]))
     listing = "\n\n".join(
         f"[{i}] 标题：{c.title}\n简介：{c.description[:600]}" for i, c in enumerate(candidates)
     )
@@ -252,47 +269,74 @@ def _ask_pick(candidates: list[Candidate], *, concern: str, child_age_context: s
         (f"{child_age_context}\n" if child_age_context else "")
         + f"家长的问题：{concern}\n\n候选视频：\n{listing}"
     )
-    return _model_json(
+    data = _model_json(
         "feed.daily_video_pick", MODEL,
         [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        _PICK_FORMAT,
+        _SCORE_FORMAT,
+    )
+    return list(data.get("scores") or [])
+
+
+def _clamp(value, low: int = 0, high: int = 5) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return low
+
+
+def video_lang(candidate: Candidate) -> str:
+    return "zh" if re.search(r"[一-鿿]", candidate.title) else "en"
+
+
+def weighted_score(relevance: int, expertise: int, same_language: bool) -> float:
+    return (
+        RELEVANCE_WEIGHT * relevance + EXPERTISE_WEIGHT * expertise
+        + (LANGUAGE_BONUS if same_language else 0.0)
     )
 
 
-def validate_pick(data: dict, candidates: list[Candidate]) -> Optional[dict]:
-    try:
-        choice = int(data.get("choice", -1))
-    except (TypeError, ValueError):
+def choose_video(scores: list[dict], candidates: list[Candidate], locale: str) -> Optional[dict]:
+    """The highest weighted score among videos that are for parents, safe, on
+    the parent's question (MIN_RELEVANCE), and readable: an English-reading
+    parent never gets a Chinese video."""
+    want = "en" if locale == "en" else "zh"
+    best: Optional[tuple[float, int, dict]] = None
+    for row in scores:
+        i = row.get("index")
+        if not isinstance(i, int) or not 0 <= i < len(candidates):
+            continue
+        if not row.get("for_parents") or not row.get("safe"):
+            continue
+        relevance, expertise = _clamp(row.get("relevance")), _clamp(row.get("expertise"))
+        if relevance < MIN_RELEVANCE or expertise < 2:
+            continue
+        lang = video_lang(candidates[i])
+        if locale == "en" and lang != "en":
+            continue
+        score = weighted_score(relevance, expertise, lang == want)
+        # Ties go to the earlier (higher-ranked) search result.
+        if best is None or score > best[0]:
+            best = (score, i, {**row, "relevance": relevance, "expertise": expertise})
+    if not best:
         return None
-    if choice < 0 or choice >= len(candidates) or data.get("fit") not in dp.ACCEPTED_FITS:
-        return None
-    candidate = candidates[choice]
+    score, i, row = best
+    candidate = candidates[i]
     return {
         "candidate": candidate,
-        "video_topic": dp._trim(data.get("video_topic"), 40),
-        "display_title": dp._trim(data.get("display_title"), 90) or candidate.title[:90],
-        "channel": dp._trim(data.get("channel"), 60),
-        "speaker_kind": data.get("speaker_kind") or "creator",
+        "display_title": dp._trim(row.get("display_title"), 90) or candidate.title[:90],
+        "channel": dp._trim(row.get("channel"), 60),
+        "speaker_kind": row.get("speaker_kind") or "creator",
+        "relevance": row["relevance"],
+        "expertise": row["expertise"],
+        "score": round(score, 2),
     }
 
 
 def pick_video(candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str) -> Optional[dict]:
-    remaining = list(candidates)
-    for _ in range(dp.PICK_ATTEMPTS):
-        if not remaining:
-            return None
-        data = _ask_pick(remaining, concern=concern, child_age_context=child_age_context, locale=locale)
-        picked = validate_pick(data, remaining)
-        if picked:
-            return picked
-        try:
-            choice = int(data.get("choice", -1))
-        except (TypeError, ValueError):
-            choice = -1
-        if choice < 0 or choice >= len(remaining):
-            return None
-        remaining.pop(choice)
-    return None
+    if not candidates:
+        return None
+    scores = _ask_scores(candidates, concern=concern, child_age_context=child_age_context, locale=locale)
+    return choose_video(scores, candidates, locale)
 
 
 # ── The card ─────────────────────────────────────────────────────────────────
@@ -308,11 +352,17 @@ def build_card(pick: dict, plan: dp.Plan, *, locale: str) -> dict:
         "display_title": pick["display_title"],
         "channel": pick["channel"],
         "speaker_kind": pick["speaker_kind"],
-        "video_topic": pick["video_topic"],
-        "video_lang": "zh" if re.search(r"[一-鿿]", c.title) else "en",
+        "video_lang": video_lang(c),
+        # Why this one won (see choose_video), kept for tuning the weights.
+        "relevance": pick.get("relevance"),
+        "expertise": pick.get("expertise"),
+        "score": pick.get("score"),
         # What the summary is written from; never shown as is.
         "description": c.description,
         "summary": "",
+        # One or two sentences on what in the video answers this parent's
+        # question, in their language; filled right after the pick.
+        "key_points": "",
         "concern": plan.concern,
         "basis": plan.basis,
         "locale": locale,
@@ -361,13 +411,61 @@ def chat_context(card: dict) -> str:
     ]
     if card.get("channel"):
         lines.append(f"讲者/频道：{card['channel']}")
+    if card.get("key_points"):
+        lines.append(f"和这位家长相关的要点：{card['key_points']}")
     if card.get("summary"):
-        lines.append(f"根据标题和简介整理的要点：{card['summary']}")
+        lines.append(f"根据标题和简介整理的简介：{card['summary']}")
     lines.append(
         "你没有看过视频本身，只知道标题和简介。结合这位家长自己孩子的情况讨论，"
         "不确定视频里具体说了什么时直接说明，不要编造。"
     )
     return "\n".join(lines)
+
+
+# ── Key points ───────────────────────────────────────────────────────────────
+
+_POINTS_SYSTEM = """你为 NURI 的视频卡片写"和你相关的要点"，给一位家长看。
+你看不到视频本身，只有标题和 YouTube 上的简介文字。
+规则：
+- 1 到 2 句短句，合计不超过 {chars}，宁短勿长：挑最关键的一两个做法，其余省略。
+- 只写视频里和这位家长的问题直接相关的观点或具体做法（例如"孩子发脾气时先保证安全、等情绪过去再讲道理"），让家长一眼知道看了能得到什么。
+- 只根据标题和简介写，简介里没有的内容不能补充。简介太少、看不出具体观点时，就写这个视频是谁讲的、讲什么问题。
+- 直接说内容，不写"视频中""本视频""讲者认为"这类开头，不加引号，不评价视频，不承诺效果。
+- 不写孩子名字、家长的个人情况。
+- 不管标题和简介是什么语言，都按这个要求写：{locale_rule}"""
+
+
+_POINTS_LANGUAGE = {
+    "zh-CN": "只用简体中文写，原文是繁体或英文也要写成简体中文。",
+    "zh-TW": "只用繁體中文寫，原文是簡體或英文也要寫成繁體中文。",
+    "en": "Write only in English, even if the source is in Chinese.",
+}
+
+
+def write_key_points(card: dict, concern: str, locale: str) -> str:
+    """One or two sentences: what in this video answers the parent's question."""
+    system = (
+        _POINTS_SYSTEM.replace(
+            "{chars}", f"{POINTS_CHARS} 个字" if locale != "en" else "150 characters (two short sentences at most)",
+        )
+        .replace("{locale_rule}", dp._LOCALE_RULE.get(locale, dp._LOCALE_RULE["zh-CN"]))
+    )
+    prompt = (
+        f"家长的问题：{concern or '（没有具体问题，按孩子现在的阶段推荐）'}\n"
+        f"标题：{card.get('title')}\n"
+        + (f"频道：{card['channel']}\n" if card.get("channel") else "")
+        + f"简介：{card.get('description') or '（没有简介）'}\n\n"
+        # Last, where a small model listens hardest: it otherwise answers in
+        # the video's language (Traditional for a Taiwanese talk).
+        + _POINTS_LANGUAGE.get(locale, _POINTS_LANGUAGE["zh-CN"])
+    )
+    text = _model_json(
+        "feed.daily_video_points", POINTS_MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        None,
+    )
+    limit = POINTS_CHARS + 35 if locale != "en" else 280
+    return dp._trim(str(text or "").strip().strip("「」“”\"'"), limit)
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -508,7 +606,14 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
         ))
         if pick:
-            return build_card(pick, plan, locale=locale), plan
+            card = build_card(pick, plan, locale=locale)
+            try:
+                card["key_points"] = await anyio.to_thread.run_sync(
+                    lambda: write_key_points(card, plan.concern, locale)
+                )
+            except Exception as exc:  # the card is still worth showing without them
+                print(f"[warn] daily video key points failed: {type(exc).__name__}")
+            return card, plan
     return None, (plans[0] if plans else None)
 
 

@@ -184,6 +184,7 @@ export const zhTW: Record<string, string> = {
   "上次聊到 · {topic}": "上次聊到 · {topic}",
   "精选文章": "精選文章",
   "精选视频": "精選影片",
+  "和你相关的要点": "和你相關的重點",
   "点击在 YouTube 中播放": "點擊在 YouTube 中播放",
   "和你聊过的「{concern}」有关": "和你聊過的「{concern}」有關",
   "适合 {concern}": "適合 {concern}",

@@ -302,6 +302,9 @@ export type DailyVideoCard = {
   video_lang: "zh" | "en";
   /** "" until the detail page asks for it (GET /feed/daily-video/{id}/summary). */
   summary: string;
+  /** One or two sentences on what in the video answers this parent's
+   *  question, in their language. "" on cards made before 2026-10-05. */
+  key_points?: string;
   concern: string;
   basis: "conversation" | "profile";
   locale: string;

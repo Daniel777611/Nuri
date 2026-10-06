@@ -6799,6 +6799,7 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
                 "title": video.get("display_title") or video.get("title") or "",
                 "thumbnail_url": video.get("thumbnail_url") or "",
                 "channel": video.get("channel") or "",
+                "key_points": video.get("key_points") or "",
             },
         }
 

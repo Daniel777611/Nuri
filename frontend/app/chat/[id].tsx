@@ -77,6 +77,7 @@ type DailyPostOnMessage = {
 type DailyVideoOnMessage = {
   id: string;
   title: string;
+  key_points?: string;
   thumbnail_url?: string;
   channel?: string;
 };
@@ -1148,6 +1149,9 @@ function MessageBubble({
             ) : null}
             <Text style={styles.postCardEyebrow}>{t("精选视频")}</Text>
             <Text style={styles.postCardTitle}>{video.title}</Text>
+            {video.key_points ? (
+              <Text style={styles.postCardLine} numberOfLines={3}>{video.key_points}</Text>
+            ) : null}
             {video.channel ? <Text style={styles.postCardLine} numberOfLines={1}>{video.channel}</Text> : null}
             <View style={styles.postCardCta}>
               <Text style={styles.postCardCtaText}>{t("点击观看")}</Text>

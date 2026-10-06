@@ -460,6 +460,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
         thumbnail_url: "https://i.ytimg.com/vi/vIULng1QDpo/hqdefault.jpg",
         title: "What to Do When Your Child Has a Tantrum | Ask-a-Doc | Cook Children's",
         display_title: "孩子发脾气时，家长该怎么做",
+        key_points: "孩子发脾气时先保证安全、不吼不罚，等情绪过去再讲道理；打人踢人时说不可以，让他暂停一下。",
         channel: "Cook Children's Health Care System",
         speaker_kind: "institution",
         video_lang: "en",
@@ -517,7 +518,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
           kind: "card_opened",
           card_id: video.card_id,
           title: video.display_title,
-          video: { id: video.id, title: video.display_title, thumbnail_url: video.thumbnail_url, channel: video.channel },
+          video: { id: video.id, title: video.display_title, thumbnail_url: video.thumbnail_url, channel: video.channel, key_points: video.key_points },
         },
       }];
       return { session_id: session.id, kind: "daily_video" };

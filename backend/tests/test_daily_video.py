@@ -49,16 +49,50 @@ def test_video_searches_ask_for_experts_not_mom_groups():
     assert not en.endswith("moms") and "pediatrician" in en
 
 
-def _pick(**over):
-    data = {"choice": 0, "video_topic": "发脾气", "fit": "strong", "display_title": "孩子发脾气怎么办",
-            "channel": "Cook Children's", "speaker_kind": "institution"}
-    data.update(over)
-    return data
+def _score(index=0, **over):
+    row = {"index": index, "for_parents": True, "safe": True, "relevance": 5, "expertise": 4,
+           "speaker_kind": "pediatrician", "channel": "Cook Children's", "display_title": "孩子发脾气怎么办"}
+    row.update(over)
+    return row
 
 
-@pytest.mark.parametrize("override", [{"choice": -1}, {"choice": 3}, {"fit": "weak"}, {"fit": ""}])
-def test_unfit_picks_are_refused(override):
-    assert dv.validate_pick(_pick(**override), dv.to_candidates([_result()], exclude_urls=set())) is None
+def _cands(*titles):
+    ids = ["vIULng1QDpo", "GXAyoxpqMag", "uJnQ5NLKn_c"]
+    return dv.to_candidates(
+        [_result(url=f"https://www.youtube.com/watch?v={ids[i]}", title=t) for i, t in enumerate(titles)],
+        exclude_urls=set(),
+    )
+
+
+def test_relevance_outweighs_fame():
+    # A pediatric society's general talk vs a focused drop-off video by a creator.
+    cands = _cands("Your 11-Month Old | AAP", "4 Tips To Stop Toddler Crying At Drop-Off")
+    scores = [_score(0, relevance=2, expertise=5), _score(1, relevance=5, expertise=3)]
+    assert dv.choose_video(scores, cands, "zh-CN")["candidate"].video_id == "GXAyoxpqMag"
+
+
+def test_among_on_topic_videos_the_expert_wins_even_in_english():
+    cands = _cands("孩子发脾气怎么办？宝妈分享", "What to Do When Your Child Has a Tantrum")
+    scores = [_score(0, relevance=5, expertise=2), _score(1, relevance=5, expertise=5)]
+    assert dv.choose_video(scores, cands, "zh-CN")["candidate"].video_id == "GXAyoxpqMag"
+
+
+def test_language_only_breaks_a_near_tie():
+    cands = _cands("Toddler tantrum tips from a pediatrician", "儿科医生讲幼儿发脾气")
+    scores = [_score(0), _score(1)]
+    assert dv.choose_video(scores, cands, "zh-CN")["candidate"].video_id == "GXAyoxpqMag"
+    assert dv.choose_video(scores, cands, "en")["candidate"].video_id == "vIULng1QDpo"
+
+
+@pytest.mark.parametrize("override", [
+    {"relevance": 2}, {"for_parents": False}, {"safe": False}, {"expertise": 1}, {"index": 7},
+])
+def test_off_topic_kids_unsafe_or_junk_videos_are_never_chosen(override):
+    assert dv.choose_video([{**_score(0), **override}], _cands("Tantrum tips"), "zh-CN") is None
+
+
+def test_an_english_reader_never_gets_a_chinese_video():
+    assert dv.choose_video([_score(0)], _cands("儿科医生讲幼儿发脾气"), "en") is None
 
 
 def test_the_intro_only_claims_a_conversation_that_happened():
@@ -73,6 +107,8 @@ def test_the_intro_only_claims_a_conversation_that_happened():
 def test_the_lock_screen_shows_the_video_not_the_parents_words():
     title, body = care.video_message({"display_title": "孩子发脾气怎么办", "concern": "躺地哭闹"})
     assert "躺地哭闹" not in title + body and "孩子发脾气怎么办" in body
+    _t, with_points = care.video_message({"display_title": "孩子发脾气怎么办", "key_points": "先保证安全。"})
+    assert with_points == "孩子发脾气怎么办：先保证安全。"
 
 
 @pytest.mark.parametrize("utc_hour, expected", [
@@ -107,7 +143,7 @@ def world(monkeypatch):
 
     def fake_pick(candidates, **_k):
         state.picks += 1
-        return dv.validate_pick(_pick(), candidates)
+        return dv.choose_video([_score(0)], candidates, "zh-CN")
 
     def fake_summary(card, locale):
         state.summaries += 1
@@ -120,6 +156,7 @@ def world(monkeypatch):
     monkeypatch.setattr(dv, "find_candidates", fake_find)
     monkeypatch.setattr(dv, "pick_video", fake_pick)
     monkeypatch.setattr(dv, "write_summary", fake_summary)
+    monkeypatch.setattr(dv, "write_key_points", lambda card, concern, locale: "先保证安全，等情绪过去再讲道理。")
     return state
 
 
@@ -133,6 +170,7 @@ def test_the_days_video_is_built_once_and_its_summary_written_once(world):
     card = first["card"]
     assert card["video_id"] == VID and card["card_id"].startswith(dv.CARD_ID_PREFIX)
     assert "躺地哭闹" in card["intro"] and "description" not in card
+    assert card["key_points"] == "先保证安全，等情绪过去再讲道理。"
     assert _get(now=NOW + timedelta(hours=3))["card"]["id"] == card["id"] and world.picks == 1
 
     summary = asyncio.run(dv.get_summary("mom-1", card["id"]))

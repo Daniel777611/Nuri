@@ -95,7 +95,7 @@ export default function DailyVideoCard({
         onPress={() => onPress(card)}
         style={{ width }}
         accessibilityRole="button"
-        accessibilityLabel={`${t("精选视频")}。${title}。${dailyVideoReason(t, card)}`}
+        accessibilityLabel={`${t("精选视频")}。${title}。${card.key_points || ""}${dailyVideoReason(t, card)}`}
         testID="home-daily-video-card"
       >
         <ImageBackground
@@ -119,6 +119,11 @@ export default function DailyVideoCard({
             <Text style={styles.title} numberOfLines={2} testID="home-daily-video-title">
               {title}
             </Text>
+            {card.key_points ? (
+              <Text style={styles.points} numberOfLines={2} testID="home-daily-video-points">
+                {card.key_points}
+              </Text>
+            ) : null}
             <View style={{ flex: 1 }} />
             <View style={styles.footer}>
               <Text style={styles.reason} numberOfLines={2}>{dailyVideoReason(t, card)}</Text>
@@ -166,6 +171,13 @@ const styles = StyleSheet.create({
     fontFamily: "NotoSansSC_700Bold",
     fontSize: 20,
     lineHeight: 28,
+  },
+  points: {
+    marginTop: 6,
+    color: "rgba(255,255,255,0.9)",
+    fontFamily: "NotoSansSC_400Regular",
+    fontSize: 13,
+    lineHeight: 19,
   },
   footer: { minHeight: 55, flexDirection: "row", alignItems: "center", gap: 12 },
   reason: {
