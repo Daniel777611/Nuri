@@ -11,11 +11,15 @@ import org.json.JSONObject
 class ShellBridge(
     private val isTrustedPage: () -> Boolean,
     private val onTokenRequested: () -> Unit,
+    private val onGoogleSignIn: () -> Unit,
 ) {
     @JavascriptInterface
     fun postMessage(message: String?) {
         if (!isTrustedPage()) return
-        val type = runCatching { JSONObject(message ?: "").optString("type") }.getOrNull()
-        if (type == "nuri:request-apns-token") onTokenRequested()
+        when (runCatching { JSONObject(message ?: "").optString("type") }.getOrNull()) {
+            "nuri:request-apns-token" -> onTokenRequested()
+            // The page's "Continue with Google" button (see GoogleSignIn.kt).
+            "nuri:google-sign-in" -> onGoogleSignIn()
+        }
     }
 }

@@ -23,6 +23,13 @@ val keystoreProps = Properties().apply {
 // ./gradlew assembleDebug -PnuriOrigin=https://example.vercel.app
 val webOrigin = (project.findProperty("nuriOrigin") as String?) ?: "https://nurifam.app"
 
+// NURI's Google *web* OAuth client: Credential Manager issues the ID token to
+// it, and the backend's GOOGLE_CLIENT_IDS already accepts it. Public, not a
+// secret. An Android OAuth client (package + signing SHA-1) must also exist in
+// the same Google Cloud project, or Google refuses the request.
+val googleWebClientId = (project.findProperty("googleWebClientId") as String?)
+    ?: "22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com"
+
 android {
     namespace = "com.ordashtech.nuri"
     compileSdk = 35
@@ -31,9 +38,11 @@ android {
         applicationId = "com.ordashtech.nuri"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        // The web page shows "Continue with Google" from NuriAndroid/0.2.0 on.
+        versionName = "0.2.0"
         buildConfigField("String", "WEB_ORIGIN", "\"$webOrigin\"")
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
     }
 
     signingConfigs {
@@ -74,6 +83,11 @@ dependencies {
     // Firebase pulls in Fragment 1.1, whose result handling breaks the
     // permission and file-picker callbacks registered in MainActivity.
     implementation("androidx.fragment:fragment-ktx:1.8.5")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    // Sign in with Google through the system account sheet (GoogleSignIn.kt).
+    implementation("androidx.credentials:credentials:1.3.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-messaging")
 }

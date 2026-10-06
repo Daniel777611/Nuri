@@ -36,6 +36,16 @@ function atLeast(version: number[] | null, wanted: number[]): boolean {
 }
 
 /**
+ * Whether this shell signs in with Google natively. Google refuses sign-in
+ * inside a WebView, so the page asks the shell instead (`nuri:google-sign-in`,
+ * answered by `nuri:google-credential`). The Android shell does from 0.2.0;
+ * the iOS shell doesn't yet.
+ */
+export function shellSignsInWithGoogle(): boolean {
+  return shellKind() === "android" && atLeast(shellVersion(), [0, 2, 0]);
+}
+
+/**
  * Whether a YouTube player embedded in the page can play here.
  *
  * Up to 0.2.9 the iOS shell sent every non-NURI address — the player's frame

@@ -22,6 +22,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 /**
  * NURI for Android: the production web app in a WebView, plus the three things
@@ -103,9 +105,11 @@ class MainActivity : ComponentActivity() {
             userAgentString = "$userAgentString NuriAndroid/${BuildConfig.VERSION_NAME}"
         }
         webView.addJavascriptInterface(
-            ShellBridge(isTrustedPage = { isTrusted(currentUrl) }, onTokenRequested = {
-                runOnUiThread { sendTokenToPage() }
-            }),
+            ShellBridge(
+                isTrustedPage = { isTrusted(currentUrl) },
+                onTokenRequested = { runOnUiThread { sendTokenToPage() } },
+                onGoogleSignIn = { runOnUiThread { signInWithGoogle() } },
+            ),
             "ReactNativeWebView",
         )
         webView.webViewClient = ShellWebViewClient()
@@ -180,6 +184,34 @@ class MainActivity : ComponentActivity() {
             uri.scheme == "https" &&
             uri.host in EMBED_FRAME_HOSTS &&
             (uri.path ?: "").startsWith("/embed/")
+    }
+
+    private var googleSignInRunning = false
+
+    /**
+     * Show the system's Google account sheet and hand the result to the page
+     * as `nuri:google-credential` — `{credential}` on success, `{error}`
+     * otherwise. The page then signs in with POST /api/auth/google.
+     */
+    private fun signInWithGoogle() {
+        if (googleSignInRunning) return
+        googleSignInRunning = true
+        lifecycleScope.launch {
+            val detail = org.json.JSONObject()
+            when (val result = GoogleSignIn.request(this@MainActivity)) {
+                is GoogleSignIn.Result.Token -> detail.put("credential", result.idToken)
+                GoogleSignIn.Result.Cancelled -> detail.put("error", "cancelled")
+                is GoogleSignIn.Result.Failed -> detail.put("error", result.reason)
+            }
+            googleSignInRunning = false
+            // Only to our own page: the token signs into NURI.
+            if (isTrusted(currentUrl)) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('nuri:google-credential',{detail:$detail}));",
+                    null,
+                )
+            }
+        }
     }
 
     /** Hand the page this phone's token, if there is one and the page is ours. */
