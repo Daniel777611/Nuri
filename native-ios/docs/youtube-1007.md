@@ -1,6 +1,6 @@
 # Nuri YouTube TestFlight iteration 1007
 
-Candidate on 2026-10-06: **0.3.0 (1007)**. The YouTube navigation and metadata fixes pass the final offline regression checks. Device archive verification, Apple upload and TestFlight availability are still pending; the source changes and passing tests do not establish that a phone can update yet.
+Candidate on 2026-10-06: **0.3.0 (1007)**. The YouTube navigation and metadata fixes pass the final offline regression checks. The production archive has succeeded and passed identity/signature verification. Apple upload is blocked by this Mac's login-Keychain authorization; **1007 has not been uploaded and is not available in TestFlight yet**.
 
 ## Scope and identity
 
@@ -27,6 +27,14 @@ All **25 `test:*` package commands** pass after the final chat and player change
 The navigation tests exercise normal and new-window YouTube links, clicked advertisement links, secure URL rejection, related embeds, browser dispatch failure and retry, background/unmount/video-change races, thumbnail presentation and original-title versus AI-guide presentation. Offline fixtures do not prove live WKWebView playback, the installed YouTube app handoff or Apple distribution eligibility.
 
 ## Release gates
+
+Upload authorization gate observed at 13:11 CDT: both recommended and explicit/manual existing-certificate/profile Xcode upload paths fail while re-signing `React.framework` with `errSecInternalComponent`. A command-line re-sign probe on the failed temporary export also fails with the same existing company identity. `security show-keychain-info` reports authentication failure, and Keychain Access reports that the current Keychain cannot be used because administrator authorization failed. No certificate, private key, APNs key or profile was created/revoked/deleted. User must unlock the existing login Keychain locally; never send a password in chat. Then repeat distribution of the already verified archive and finish the existing testing-group gates below.
+
+Production archive verification completed: `ARCHIVE SUCCEEDED`, strict/deep code signature validation passed, bundle `com.ordashtech.nuri.nativelab`, version `0.3.0`, build `1007`, phone label `Nuri`, team `6PL6HQYU7P`, production APNs, `get-task-allow=false`. The generated production JavaScript explicitly has `isPreviewMode=false`, retains `https://nurifam.app/api`, and includes the new link-retry/chat-guide/uncropped-thumbnail paths. Archived Hermes bundle SHA-256: `68538b11d4f76f606876e6f555e1d7cfe23485791ccafbc91dd858160f37d748`.
+
+Implementation commit `3a9005f` was pushed successfully to `origin/iOS-native-test`; no other branch was pushed.
+
+Live Simulator verification is not claimed: the reused unsigned native Simulator baseline could not persist its private Keychain fixture session. A temporary local-only signing experiment was rejected by AMFI and was reverted. This did not alter the signed production archive, app data or backend; actual installed-device playback and YouTube-app handoff remain tester verification steps.
 
 1. Verify the exact signed production archive contains build `1007`, the unchanged Lab bundle/team/profile, APNs production, the production API and preview mode disabled.
 2. Upload through the existing authorized Apple/Xcode workflow; confirm Apple receives and processes `1007`.
