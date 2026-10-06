@@ -4,7 +4,7 @@
 // thumbnail is the card, so it reads as "a video" before a word is read; the
 // title says what it is about and the keyword line says why it is here.
 // Tapping opens the detail screen (app/daily-video.tsx), which plays it.
-import { ImageBackground, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -93,7 +93,7 @@ export default function DailyVideoCard({
     );
   }
 
-  const title = card.display_title || card.title;
+  const title = card.title;
   return (
     <View style={styles.wrap}>
       <Pressable
@@ -103,36 +103,26 @@ export default function DailyVideoCard({
         accessibilityLabel={`${t("精选视频")}。${title}。${dailyVideoReason(t, card)}`}
         testID="home-daily-video-card"
       >
-        <ImageBackground
-          source={{ uri: card.thumbnail_url }}
-          style={styles.card}
-          imageStyle={styles.image}
-          resizeMode="cover"
-        >
-          {/* Dark at the top and bottom so white text stays legible on any thumbnail. */}
-          <LinearGradient
-            colors={["rgba(20,14,40,0.78)", "rgba(20,14,40,0.25)", "rgba(20,14,40,0.88)"]}
-            locations={[0, 0.45, 1]}
-            style={[StyleSheet.absoluteFill, styles.padded]}
-          >
+        <View style={[styles.card, styles.readyCard]}>
+          {/* Show the complete source thumbnail with no crop, tint, text or
+              decoration over it. Recommendation copy is separate below. */}
+          <Image source={{ uri: card.thumbnail_url }} style={styles.image} resizeMode="contain" testID="home-daily-video-thumbnail" />
+          <View style={styles.videoInfo}>
             <View style={styles.tagRow}>
-              <View style={styles.tagPill}>
                 <Ionicons name="logo-youtube" size={13} color="#FF3B30" />
-                <Text style={styles.tagText}>{t("精选视频")}</Text>
-              </View>
+                <Text style={styles.sourceText} numberOfLines={1}>YouTube · {card.channel}</Text>
             </View>
-            <Text style={styles.title} numberOfLines={2} testID="home-daily-video-title">
+            <Text style={styles.originalTitle} numberOfLines={2} testID="home-daily-video-title">
               {title}
             </Text>
-            <View style={{ flex: 1 }} />
             <View style={styles.footer}>
               <Text style={styles.reason} numberOfLines={2}>{dailyVideoReason(t, card)}</Text>
-              <View style={styles.play}>
-                <Ionicons name="play" size={22} color="#3A2F5A" style={{ marginLeft: 3 }} />
+              <View style={styles.open}>
+                <Ionicons name="arrow-forward" size={20} color="#3A2F5A" />
               </View>
             </View>
-          </LinearGradient>
-        </ImageBackground>
+          </View>
+        </View>
       </Pressable>
     </View>
   );
@@ -151,9 +141,12 @@ const styles = StyleSheet.create({
     shadowRadius: 5,
     elevation: 2,
   },
-  image: { borderRadius: 36 },
+  readyCard: { height: "auto", minHeight: 236, backgroundColor: "#FFF9F3", borderWidth: 1, borderColor: "#E6DEEF" },
+  image: { width: "100%", height: 112, backgroundColor: "#000000" },
+  videoInfo: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 12 },
   padded: { paddingHorizontal: 24, paddingTop: 20, paddingBottom: 10 },
-  tagRow: { flexDirection: "row" },
+  tagRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  sourceText: { flex: 1, color: "#5B5272", fontSize: 11, lineHeight: 16 },
   tagPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -172,18 +165,19 @@ const styles = StyleSheet.create({
     fontSize: 20,
     lineHeight: 28,
   },
-  footer: { minHeight: 55, flexDirection: "row", alignItems: "center", gap: 12 },
+  originalTitle: { color: "#261B45", fontFamily: "NotoSansSC_700Bold", fontSize: 16, lineHeight: 23, marginTop: 6 },
+  footer: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 },
   reason: {
     flex: 1,
-    color: "rgba(255,255,255,0.92)",
+    color: "#5B5272",
     fontFamily: "NotoSansSC_700Bold",
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 12,
+    lineHeight: 18,
   },
-  play: {
-    width: 55,
-    height: 55,
-    borderRadius: 28,
+  open: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#FFFFFF",
@@ -191,4 +185,3 @@ const styles = StyleSheet.create({
   skeleton: { borderRadius: 999, backgroundColor: "rgba(255,255,255,0.25)" },
   waitText: { color: "rgba(255,255,255,0.85)", fontFamily: "NotoSansSC_600SemiBold", fontSize: 13, paddingBottom: 12 },
 });
-

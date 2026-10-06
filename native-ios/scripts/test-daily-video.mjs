@@ -131,6 +131,49 @@ test("explicit source uses validated video ID, ignores poisoned source URL", asy
     p.find("daily-video-source").props.onPress(); await tick(); assert.deepEqual(p.external, ["https://www.youtube.com/watch?v=ScMzIvxBSi4"]);
   } finally { p?.unmount(); f.restore(); }
 });
+test("official player links and related videos leave via OS HTTPS links without replacing the embed", async () => {
+  const f = fixture(); let p;
+  try {
+    await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
+    const player = p.find("daily-video-webview");
+    const related = "https://www.youtube.com/watch?v=BaW_jenozKc";
+    assert.equal(player.props.onShouldStartLoadWithRequest({ url: related, isTopFrame: true, navigationType: "click" }), false);
+    await tick(); assert.deepEqual(p.external, [related]);
+    assert.equal(p.find("daily-video-webview").props.source.uri, player.props.source.uri);
+    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube.com/@YouTube" } });
+    await tick(); assert.deepEqual(p.external, [related, "https://www.youtube.com/@YouTube"]);
+    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube-nocookie.com/embed/BaW_jenozKc" } });
+    await tick(); assert.equal(p.external.at(-1), related);
+    // Standard player ad/terms links also work, but arbitrary automatic top
+    // frame redirects and unsafe schemes cannot trigger native dispatch.
+    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://advertiser.example/offer", isTopFrame: true, navigationType: "click" }), false);
+    await tick(); assert.equal(p.external.at(-1), "https://advertiser.example/offer");
+    const count = p.external.length;
+    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://evil.invalid", isTopFrame: true, navigationType: "other" }), false);
+    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "javascript:alert(1)", isTopFrame: false, navigationType: "click" }), false);
+    player.props.onOpenWindow({ nativeEvent: { targetUrl: "file:///private/secret" } });
+    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://secret@www.youtube.com/watch?v=BaW_jenozKc" } });
+    await tick(); assert.equal(p.external.length, count);
+    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://googleads.g.doubleclick.net/pagead/frame", isTopFrame: false, navigationType: "other" }), true);
+    assert.equal(player.props.setSupportMultipleWindows, true);
+    assert.equal(player.props.javaScriptCanOpenWindowsAutomatically, false);
+  } finally { p?.unmount(); f.restore(); }
+});
+test("actual home/video screens preserve source title and thumbnail, put AI wording separately", async () => {
+  const f = fixture(); let home, video;
+  try {
+    await f.login("A"); await f.permit(); home = page(f, "home"); home.render(); await tick(); home.render();
+    assert.equal(home.find("home-daily-video-title").props.children, videoCard("A").title);
+    const thumbnail = home.find("home-daily-video-thumbnail");
+    assert.equal(thumbnail.type, "Image"); assert.equal(thumbnail.props.resizeMode, "contain");
+    assert.deepEqual(thumbnail.props.source, { uri: videoCard("A").thumbnail_url });
+    assert.equal(thumbnail.props.children, undefined, "no overlays are placed on the thumbnail");
+    video = page(f, "video", { id: "video-A" }); video.render(); await tick(); video.render();
+    assert.equal(video.find("daily-video-title").props.children, videoCard("A").title);
+    assert.equal(video.find("daily-video-guide-title").props.children, videoCard("A").display_title);
+    assert.ok(video.find("daily-video-summary")); assert.ok(video.find("daily-video-webview"));
+  } finally { home?.unmount(); video?.unmount(); f.restore(); }
+});
 test("Home ready checkin opens server session, never ordinary session POST", async () => {
   const f = fixture(); let p;
   try {
@@ -170,6 +213,63 @@ test("actual player validators reject schemes, hosts, credentials, IDs and inval
   for (const url of ["http://www.youtube-nocookie.com/embed/ScMzIvxBSi4", "https://www.youtube-nocookie.com.evil.invalid/embed/ScMzIvxBSi4", "https://user:password@www.youtube-nocookie.com/embed/ScMzIvxBSi4", "https://www.youtube-nocookie.com/watch?v=ScMzIvxBSi4", "javascript:alert(1)", "https://www.youtube-nocookie.com/embed/anotherID00", "https://www.youtube-nocookie.com:444/embed/ScMzIvxBSi4"]) assert.equal(player.allowYouTubeNavigation(url, "ScMzIvxBSi4"), false);
   assert.equal(player.youtubeAppReferer("COM.OrdashTech.Nuri.NativeLab"), "https://com.ordashtech.nuri.nativelab");
   assert.equal(player.youtubeAppReferer(undefined), null); assert.equal(player.youtubeAppReferer("https://evil.invalid"), null);
+  for (const url of ["http://www.youtube.com/watch?v=ScMzIvxBSi4", "javascript:alert(1)", "file:///private/secret", "data:text/html,hi", "nuri://login", "youtube://watch?v=ScMzIvxBSi4", "https://user:password@www.youtube.com/watch?v=ScMzIvxBSi4", "https://www.youtube.com:444/watch?v=ScMzIvxBSi4", "https://www.youtube.com\\@evil.invalid", "https://localhost/private", "https://host.local/private", "https://sub.localhost/private", "https://host.internal/private", "https://127.0.0.1/private", "https://127.1/private", "https://0x7f000001/private", "https://10.0.0.1/private", "https://169.254.169.254/private", "https://8.8.8.8/private", "https://[::1]/private", "https://[::ffff:127.0.0.1]/private", "https://www.youtube.com/\nwatch"]) assert.equal(player.youtubeExternalUrl(url), null);
+  assert.equal(player.isYouTubeServiceUrl("https://www.youtube.com.evil.invalid/watch"), false);
+  assert.equal(player.isYouTubeServiceUrl("https://www.youtube.com/watch?v=ScMzIvxBSi4"), true);
+  assert.equal(player.isYouTubeServiceUrl("https://policies.google.com/privacy"), true);
+  assert.equal(player.youtubeExternalUrl("https://www.youtube-nocookie.com/embed/BaW_jenozKc"), "https://www.youtube.com/watch?v=BaW_jenozKc");
+});
+
+test("link dispatch failure is observable and retryable without marking video playback failed", async () => {
+  const r = runner(), jsx = (type, props) => ({ type, props }), calls = [];
+  let rejectLink = true, tree;
+  const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
+  const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx },
+    "react-native": { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: (x) => x },
+      AppState: { currentState: "active", addEventListener: () => ({ remove() {} }) },
+      Linking: { openURL: async (url) => { calls.push(url); if (rejectLink) throw new Error("OS unavailable"); } } },
+    "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } },
+    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": { useT: () => ({ t: (text) => text }) } });
+  const render = () => tree = r.render(() => player.default({ videoId: "ScMzIvxBSi4", width: 350, active: true }));
+  const find = (id) => nodes(tree).find((node) => node.props?.testID === id);
+  try {
+    render(); const view = find("daily-video-webview");
+    view.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube.com/watch?v=BaW_jenozKc" } });
+    await tick(); render(); assert.ok(find("daily-video-link-retry")); assert.ok(find("daily-video-webview"));
+    assert.equal(find("daily-video-player-retry"), undefined);
+    rejectLink = false; find("daily-video-link-retry").props.onPress(); await tick(); render();
+    assert.equal(find("daily-video-link-retry"), undefined); assert.equal(calls.length, 2);
+    assert.equal(await player.openYouTubeLink("javascript:alert(1)"), false); assert.equal(calls.length, 2);
+  } finally { r.unmount(); }
+});
+
+for (const change of ["blur", "background", "unmount", "video change"]) test("held link dispatch cannot restore failure after " + change, async () => {
+  const r = runner(), jsx = (type, props) => ({ type, props }), calls = [], held = deferred();
+  const listeners = new Set(); let tree, active = true, videoId = "ScMzIvxBSi4";
+  const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
+  const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx },
+    "react-native": { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: (x) => x },
+      AppState: { currentState: "active", addEventListener: (_event, listener) => { listeners.add(listener); return { remove: () => listeners.delete(listener) }; } },
+      Linking: { openURL: async (url) => { calls.push(url); if (!(await held.promise)) throw new Error("late OS failure"); } } },
+    "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } },
+    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": { useT: () => ({ t: (text) => text }) } });
+  const render = () => tree = r.render(() => player.default({ videoId, width: 350, active }));
+  const find = (id) => nodes(tree).find((node) => node.props?.testID === id);
+  try {
+    render(); const view = find("daily-video-webview"), url = "https://www.youtube.com/watch?v=BaW_jenozKc";
+    view.props.onShouldStartLoadWithRequest({ url, navigationType: "click", isTopFrame: true });
+    view.props.onOpenWindow({ nativeEvent: { targetUrl: url } });
+    assert.equal(calls.length, 1, "duplicate native callbacks dispatch only once while pending");
+    if (change === "blur") { active = false; render(); }
+    else if (change === "background") { listeners.forEach((listener) => listener("background")); render(); }
+    else if (change === "video change") { videoId = "BaW_jenozKc"; render(); }
+    else r.unmount();
+    view.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube.com/@YouTube" } });
+    assert.equal(calls.length, 1, "a saved callback from a hidden or replaced player cannot dispatch");
+    held.resolve(false); await tick();
+    if (change !== "unmount") { render(); assert.equal(find("daily-video-link-retry"), undefined); }
+    if (change === "video change") assert.ok(find("daily-video-webview").props.source.uri.includes(videoId));
+  } finally { held.resolve(false); r.unmount(); }
 });
 
 for (const change of ["B", "blur"]) test("video chat held POST cannot navigate after " + change, async () => {
@@ -217,7 +317,12 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     assert.equal(nodes(tree).some((node) => node.props?.testID === "chat-card-divider"), false);
     card.props.onPress(); assert.deepEqual(routes, [{ pathname: "/daily-video", params: { id: "video-A" } }]);
     await f.login("B"); card.props.onPress(); assert.equal(routes.length, 1);
-    const thumbnail = nodes(tree).find((node) => node.type === "Image"); assert.equal(thumbnail.props.contentFit, "cover");
+    const thumbnail = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-thumbnail");
+    assert.equal(thumbnail.props.contentFit, "contain"); assert.equal(thumbnail.props.children, undefined);
+    assert.deepEqual(thumbnail.props.source, { uri: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg" });
+    assert.ok(JSON.stringify(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-source").props.children).includes("YouTube"));
+    assert.equal(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-guide-label").props.children, "NURI 内容导读", "backend-packed recommendation wording is identified as NURI's guide, not the original title");
+    assert.equal(nodes(tree).some((node) => node.type === "Icon" && node.props.name === "play"), false);
   } finally { r.unmount(); f.restore(); }
 });
 

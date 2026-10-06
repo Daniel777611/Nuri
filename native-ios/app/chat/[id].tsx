@@ -1248,13 +1248,13 @@ function MessageBubble({
           onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
           accessibilityRole="button" testID="chat-daily-video-card">
           {video.thumbnail_url && /^https:\/\//i.test(video.thumbnail_url) ? <View style={styles.videoThumbWrap}>
-            <Image source={{ uri: video.thumbnail_url }} style={styles.videoThumb} contentFit="cover" />
-            <View style={styles.videoPlay}><Ionicons name="play" size={22} color="#FFFFFF" /></View>
+            <Image source={{ uri: video.thumbnail_url }} style={styles.videoThumb} contentFit="contain" testID="chat-daily-video-thumbnail" />
           </View> : null}
-          <Text style={styles.postCardEyebrow}>{t("精选视频")}</Text>
+          <Text style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</Text>
+          <Text style={styles.postCardLine} testID="chat-daily-video-guide-label">{t("NURI 内容导读")}</Text>
           <Text style={styles.postCardTitle}>{video.title}</Text>
           {video.channel ? <Text style={styles.postCardLine}>{video.channel}</Text> : null}
-          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("点击观看")}</Text><Ionicons name="play-outline" size={14} color={colors.brand} /></View>
+          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("点击观看")}</Text><Ionicons name="arrow-forward" size={14} color={colors.brand} /></View>
         </Pressable> : null}
         {isAI && actionsEnabled && msg.text ? (
           <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
@@ -1485,7 +1485,6 @@ const styles = StyleSheet.create({
   postCardCtaText: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
   videoThumbWrap: { borderRadius: 12, overflow: "hidden", aspectRatio: 16 / 9, backgroundColor: "#000000", marginBottom: 4 },
   videoThumb: { width: "100%", height: "100%" },
-  videoPlay: { position: "absolute", left: "50%", top: "50%", marginLeft: -22, marginTop: -22, width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center" },
   cardDividerLabel: {
     flexDirection: "row",
     alignItems: "center",
