@@ -37,7 +37,7 @@ PAGE_SIZE = 500
 TABLES = (
     "users", "children", "chat_sessions", "chat_messages",
     "user_memories", "normalized_inputs", "follow_ups",
-    "tasks", "collections", "favorites",
+    "collections", "favorites",
     "recommendation_events", "email_logs", "user_visits", "daily_post_cards",
     "app_settings", "feed_cards", "nuri_style_rules", "nuri_directives",
     "source_domains", "books", "fix_reviewers",

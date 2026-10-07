@@ -40,7 +40,6 @@ class SafetyVerdict:
     #: other context block is noise in front of "call 911", so the assembler
     #: drops them.
     minimal_context: bool = False
-    allow_task_cards: bool = True
     #: Medical turns may not answer from the model's own impression.
     require_sources: bool = False
     directives: Sequence[Directive] = ()
@@ -178,7 +177,6 @@ def assess(
             tier="crisis",
             reason="crisis_pattern",
             minimal_context=True,
-            allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
@@ -200,7 +198,6 @@ def assess(
             tier="emergency",
             reason=f"emergency_handoff:{open_emergency}",
             minimal_context=True,
-            allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
@@ -224,7 +221,6 @@ def assess(
             tier="emergency",
             reason=f"urgent_pattern:{category}",
             minimal_context=True,
-            allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
@@ -245,7 +241,6 @@ def assess(
             tier="emergency",
             reason=f"emergency_open:{open_emergency}",
             minimal_context=True,
-            allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
@@ -263,7 +258,6 @@ def assess(
             tier="caregiver_harm",
             reason="caregiver_harm_pattern",
             minimal_context=True,
-            allow_task_cards=False,
             require_sources=False,
             directives=(
                 Directive(
@@ -322,7 +316,6 @@ def assess(
             else "referral_scope" if tier == "referral"
             else "constraints" if directives else ""
         ),
-        allow_task_cards=True,
         require_sources=is_medical,
         directives=tuple(directives),
     )
@@ -354,7 +347,6 @@ def reassess(verdict: SafetyVerdict, *, is_medical: bool) -> SafetyVerdict:
         tier=escalate(verdict.tier, "medical"),
         reason=verdict.reason or "medical_route",
         minimal_context=verdict.minimal_context,
-        allow_task_cards=verdict.allow_task_cards,
         require_sources=True,
         directives=tuple(merged),
     )

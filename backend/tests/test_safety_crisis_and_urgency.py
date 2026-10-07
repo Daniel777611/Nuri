@@ -87,7 +87,6 @@ def test_parent_crisis_gets_its_own_tier(text):
     result = verdict(text)
     assert result.tier == "crisis"
     assert result.minimal_context is True
-    assert result.allow_task_cards is False
 
 
 def test_crisis_directive_names_the_line_and_refuses_the_opt_out():
@@ -137,7 +136,6 @@ def test_caregiver_harm_gets_its_own_tier(text):
     result = verdict(text)
     assert result.tier == "caregiver_harm"
     assert result.minimal_context is True
-    assert result.allow_task_cards is False
 
 
 @pytest.mark.parametrize("text", [
@@ -225,10 +223,8 @@ def test_authority_questions_are_routed_rather_than_answered(text):
     result = verdict(text)
     assert result.tier == "referral"
     assert any(d.id == "safety.referral" for d in result.directives)
-    # Additive, not a gate. The rest of the reply is still worth writing, and
-    # a task card for "call and ask X" is exactly the right output here.
+    # Additive, not a gate. The rest of the reply is still worth writing.
     assert result.minimal_context is False
-    assert result.allow_task_cards is True
 
 
 @pytest.mark.parametrize("text", [

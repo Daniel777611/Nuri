@@ -192,7 +192,7 @@ def main() -> int:
                 insert_rows(tc, "user_memories", keep)
 
         # remaining user-scoped tables -----------------------------------------
-        for table in ("normalized_inputs", "tasks", "follow_ups", "collections", "favorites"):
+        for table in ("normalized_inputs", "follow_ups", "collections", "favorites"):
             rows = sc.table(table).select("*").eq("user_id", su["id"]).execute().data
             if not rows:
                 continue

@@ -40,7 +40,6 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
-from dataclasses import replace
 import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
@@ -72,8 +71,6 @@ from backend.nuri_core import outcome as core_outcome
 from backend.nuri_core import outcome_store as core_outcome_store
 from backend.nuri_core import provenance as core_provenance
 from backend.nuri_core import state_store as core_state_store
-from backend.nuri_core import task_card as core_task_card
-from backend.nuri_core import task_card_store as core_task_card_store
 from backend.nuri_core import temporal as core_temporal
 from backend.router import NO_ROUTE, TurnRoute, route_metrics, route_turn
 from backend.websearch import (
@@ -707,23 +704,6 @@ def _chat_feedback_table_missing(exc: Exception) -> bool:
         or ("chat_message_feedback" in message and "does not exist" in message)
     )
 
-class TaskCreate(BaseModel):
-    title:       str
-    description: Optional[str] = ""
-    steps:       Optional[list[str]] = None
-    task_type:   Optional[str] = "interaction"
-    scope:       Literal["today", "week"] = "today"
-    due_date:    Optional[str] = None
-    source_message_id: Optional[str] = Field(None, max_length=128)
-    suggestion_index: Optional[int] = Field(None, ge=0, le=20)
-
-class TaskUpdate(BaseModel):
-    done: Optional[bool] = None
-    mood: Optional[str]  = None
-    note: Optional[str]  = None
-    is_favorited: Optional[bool] = None
-    backfilled: Optional[bool] = None
-
 class PrivacySettings(BaseModel):
     allow_history_training:   bool = True
     allow_external_content_research: bool = False
@@ -803,104 +783,16 @@ def _require_admin(x_admin_key: str = Header(default="")):
     if not ADMIN_KEY or x_admin_key != ADMIN_KEY:
         raise HTTPException(403, "Invalid or missing admin key")
 
-# ── Static feed data ──────────────────────────────────────────────────────────
-FEED_CARDS = [
-    {"id":"card_food_picky",     "type":"tip",     "type_label":"科普", "cta":"问问AI →",
-     "title":"18个月宝宝突然只吃3种食物，正常吗？",
-     "summary":"\"食物新恐惧期\"是18–36个月最常见的发育阶段。我们梳理了3个最关键的应对原则。",
-     "image_url":"https://images.unsplash.com/photo-1604908554027-93fc287e8ba3?w=600"},
-    {"id":"card_bilingual_school","type":"news",    "type_label":"热点", "cta":"问问AI →",
-     "title":"是否该让孩子上双语学校？华人家长吵翻了",
-     "summary":"湾区一所私立双语小学的招生政策引爆了华人妈妈群，正反两派各执一词。",
-     "image_url":"https://images.unsplash.com/photo-1503676260728-1c00da094a0b?w=600"},
-    {"id":"card_baby_monitor",   "type":"product", "type_label":"推荐", "cta":"问问AI →",
-     "title":"这款婴儿监视器值得买吗？",
-     "summary":"对比3款北美热销监视器的隐私政策、夜视清晰度和延迟，附我们的实测建议。",
-     "image_url":"https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=600"},
-    {"id":"card_sleep_routine",  "type":"tip",     "type_label":"科普", "cta":"问问AI →",
-     "title":"2岁前后建立入睡仪式，到底有多重要？",
-     "summary":"睡前30分钟固定的\"仪式\"比哄睡时长更影响夜醒次数。今晚就可以做的3件事。",
-     "image_url":"https://images.unsplash.com/photo-1566004100631-35d015d6a491?w=600"},
-    {"id":"card_screen_time",    "type":"news",    "type_label":"热点", "cta":"问问AI →",
-     "title":"AAP 更新屏幕时间指南，多伦多妈妈群炸了",
-     "summary":"新版指南把\"互动性\"作为关键标准——和爷爷视频不算屏幕时间？看看大家怎么吵。",
-     "image_url":"https://images.unsplash.com/photo-1503602642458-232111445657?w=600"},
-    {"id":"card_thermometer",    "type":"product", "type_label":"推荐", "cta":"问问AI →",
-     "title":"额温枪 vs 耳温枪，新手家长怎么选？",
-     "summary":"北美儿科医生最常推荐的3款，覆盖0–5岁不同月龄，附AI辨别异常体温的方法。",
-     "image_url":"https://images.unsplash.com/photo-1584555613483-1c5f3ce97b9b?w=600"},
-]
-
-ALT_FEED_CARDS = [
-    {"id":"alt_tantrum",  "type":"tip",     "type_label":"科普", "cta":"问问AI →",
-     "title":"2岁宝宝当众尖叫怎么办？6步冷静法",
-     "summary":"terrible twos 不是病——但你可以提前练好这套话术，关键时刻不慌。",
-     "image_url":"https://images.unsplash.com/photo-1602030638412-bb8dcc0bc8b0?w=600"},
-    {"id":"alt_daycare",  "type":"news",    "type_label":"热点", "cta":"问问AI →",
-     "title":"纽约 daycare 学费再涨15%，华人妈妈群讨论留职还是辞职",
-     "summary":"月费 $2800+ 已是常态。这一波算账，可能让你重新思考一年内的职业规划。",
-     "image_url":"https://images.unsplash.com/photo-1587653263995-422546a7a569?w=600"},
-    {"id":"alt_carseat",  "type":"product", "type_label":"推荐", "cta":"问问AI →",
-     "title":"0-4岁安全座椅，到底要不要买 Nuna？",
-     "summary":"对比 Nuna / Britax / Graco 在北美的真实事故评分和长期使用反馈。",
-     "image_url":"https://images.unsplash.com/photo-1581952976147-5a2d15560349?w=600"},
-    {"id":"alt_potty",    "type":"tip",     "type_label":"科普", "cta":"问问AI →",
-     "title":"如厕训练，到底什么时候开始最合适？",
-     "summary":"北美儿科和国内传统经验有不少分歧，先看孩子准备好的5个信号。",
-     "image_url":"https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=600"},
-    {"id":"alt_winter",   "type":"news",    "type_label":"热点", "cta":"问问AI →",
-     "title":"加拿大冬天到底要不要带娃出门玩雪？",
-     "summary":"-15°C 的多伦多家长群因为这个话题分裂了，背后其实是两种育儿文化。",
-     "image_url":"https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=600"},
-]
-
-CARD_DETAILS: dict = {
-    "card_food_picky":      {"body":"上周我在妈妈群看到一位姐姐发的求助：她家18个月的宝宝突然只肯吃白米饭、面条和酸奶。其实这阶段在儿科里有专门的名字，叫 food neophobia——食物新恐惧期。研究显示，18到36个月几乎是每个孩子都会经历的发育节点。\n\n三件最关键的小事：\n1. 每餐桌上放一样新食物，但不要强迫吃。\n2. 新食物搭配老熟悉，混搭比单独上更容易接受。\n3. 一次只引入一种新食物，连续7–10天。重复曝光比丰富度更重要。","tags":["#18月龄","#挑食","#辅食"],"hook_line":"看完想知道你家宝宝是不是也这样？"},
-    "card_bilingual_school":{"body":"湾区一所私立双语小学最近改了招生政策，要求父母至少一方流利中文。妈妈群直接炸了。\n\n支持的一派说：中文环境是稀缺的，错过6岁前的语言敏感期，以后再想补就难了。\n\n反对的一派说：学术深度永远是英语的天花板，双语学校的英语阅读进度往往慢于主流学校。\n\n与其问「该不该上」，不如先问自己：你最在意的3件事是什么？","tags":["#双语教育","#择校","#华人家长"],"hook_line":"你家也在纠结这个选择吗？"},
-    "card_baby_monitor":    {"body":"选婴儿监视器，华人家长在北美有一个特别的痛点：隐私。大部分热销监视器都是云端方案——视频先传到厂商服务器，再分发给你的手机。\n\n对比3款：\n• Nanit：画面最清晰，AI睡眠分析很强，但数据全部上云。\n• Owlet：主打「袜子+摄像头」二合一，能监测心率血氧。\n• VTech：传统点对点信号，完全不联网，隐私感最强。\n\n选哪个，本质上是在「功能感」和「安全感」之间做取舍。","tags":["#婴儿监视器","#选品","#隐私"],"hook_line":"想结合你家情况，听听我的建议？"},
-    "card_sleep_routine":   {"body":"如果让我只推荐一件事帮你的孩子睡得更好，我会说：入睡仪式。\n\n2岁前后的宝宝，对「接下来要发生什么」特别敏感。如果每天晚上都是「洗澡→换睡衣→关大灯→读绘本→拥抱→上床」，他的大脑会在第一步就开始分泌褪黑素。\n\n几个关键诀窍：\n1. 从洗澡开始倒计时，水温降下来本身就触发睡意。\n2. 绘本永远是同一类——温柔、低饱和、句子短。\n3. 最后5分钟不再说话，只是身体接触。","tags":["#睡眠","#入睡仪式","#幼儿"],"hook_line":"想为你家做一个本周睡眠计划吗？"},
-    "card_screen_time":     {"body":"AAP今年更新了屏幕时间指南，把「互动性」作为关键标准——和爷爷视频通话，不再算「屏幕时间」。这让很多华人家庭松了口气。\n\n但群里也有不同声音：新标准是不是给了家长偷懒的借口？\n\n真正该问自己的3个问题：\n1. 屏幕之后，孩子是更躁动还是更平静？\n2. 屏幕之外，他还在做哪些事？\n3. 你和孩子在一起的时间，是不是有相当一部分被设备打断了？","tags":["#屏幕时间","#AAP","#育儿争议"],"hook_line":"想聊聊你家的屏幕规则吗？"},
-    "card_thermometer":     {"body":"额温枪 vs 耳温枪，常见的3款：\n• Braun Thermoscan 7：耳温枪经典款，年龄校准准确，缺点是耳道太小时偏差大。\n• iHealth 额温枪：非接触、几秒出数，适合睡着的宝宝；但环境温度变化会影响读数。\n• Frida Baby 3-in-1：耳额双用，价位中等，适合「什么都想试」的家庭。\n\n比型号更重要的是：每次测3次取中间值，记录趋势，而不是只看绝对值。","tags":["#温度计","#发烧","#新手家长"],"hook_line":"拍张读数发给我，AI 可以帮你判断？"},
-}
-
-CARD_TO_SCRIPT = {
-    "card_food_picky":      "tip_food",
-    "card_bilingual_school":"news_bilingual",
-    "card_baby_monitor":    "product_monitor",
-    "card_sleep_routine":   "tip_food",
-    "card_screen_time":     "news_bilingual",
-    "card_thermometer":     "product_monitor",
-}
-
 # ── Daily email push helpers ──────────────────────────────────────────────────
 
 # Moved to backend/mailer.py, which verification codes send through too.
 _send_email_smtp = mailer.send_smtp
 
-# Fallback scripts (used when OpenAI is not configured)
+# Fallback script (used when OpenAI is not configured)
 SCRIPTS: dict = {
-    "tip_food": [
-        {"role":"ai","text":"你刚刚看到的这条「18个月宝宝突然只吃3种食物，正常吗」——我看到你点进来了。想具体聊聊你家宝宝的情况吗？","quick_replies":["我家也是这样","这是真的吗","随便看看"]},
-        {"role":"ai","text":"嗯，这其实非常常见，专业上叫 food neophobia（食物新恐惧期）。先问你两件事：宝宝现在主要只吃哪3种？最近有没有体重下降？","quick_replies":["白米饭/面条/牛奶","没有体重下降","有一点下降"]},
-        {"role":"ai","text":"好的，体重稳定就先不用焦虑。核心策略是\"反复轻量曝光\"+ 减少压力：\n\n• 每餐桌上至少放1样新食物，但不强迫吃\n• 把新食物和孩子已经接受的食物放在一起\n• 一次只引入一种新食物，连续7–10天\n\n要不要我帮你做一个本周的小计划？","quick_replies":["要，帮我做计划","我再想想"]},
-        {"role":"ai","text":"好嘞，已为你生成3个本周任务，包含每日记录和一个轻量挑战。","transition":{"kind":"tasks_generated","count":3}},
-    ],
-    "news_bilingual": [
-        {"role":"ai","text":"你点的这条「是否该让孩子上双语学校？华人家长吵翻了」最近确实很热。你是已经在做决定，还是想先听听双方观点？","quick_replies":["我在做决定","想听双方观点","随便看看"]},
-        {"role":"ai","text":"北美华人圈里这个话题有3个真实的分歧点：\n\n1) 英文学术深度 vs 中文文化认同\n2) 同伴语言环境的影响\n3) 转学回主流学校的难度\n\n你最担心的是哪一个？","quick_replies":["英文学术深度","中文文化认同","转学难度"]},
-        {"role":"ai","text":"嗯，这是最多家长卡住的点。我可以给你一个\"决策清单\"——5个你这周可以做的小动作，帮你更有底气地做决定。要不要？","quick_replies":["好，生成清单","先不用"]},
-        {"role":"ai","text":"已为你生成5个本周任务，帮你结构化收集信息。","transition":{"kind":"tasks_generated","count":5}},
-    ],
-    "product_monitor": [
-        {"role":"ai","text":"你点的「婴儿监视器值得买吗」——华人家长在北美选这类产品，隐私政策其实比清晰度更重要。你家是新生儿还是已经会爬了？","quick_replies":["新生儿","会爬了","随便看看"]},
-        {"role":"ai","text":"好的。基于这个阶段，我建议你重点对比3款：Nanit / Owlet / VTech。要不要我帮你列一个对比清单？","quick_replies":["要","先不用"]},
-        {"role":"ai","text":"已为你生成2个本周任务，帮你做出更安心的购买决定。","transition":{"kind":"tasks_generated","count":2}},
-    ],
     "free": [
-        {"role":"ai","text":"Hi，我是你的育儿助手 NURI。你今天想聊点什么？可以是吃饭、睡觉、情绪、或者你刚刚看到的任何一条内容。","quick_replies":["睡眠问题","吃饭挑食","随便聊聊"]},
+        {"role":"ai","text":"Hi，我是你的育儿助手 NURI。你今天想聊点什么？可以是吃饭、睡觉、情绪，或者最近让你操心的任何事。","quick_replies":["睡眠问题","吃饭挑食","情绪管理"]},
         {"role":"ai","text":"好的，再多告诉我一点情况，比如孩子月龄、最近一周观察到的具体变化，我才能给你更具体的建议。"},
-        {"role":"ai","text":"明白了。要不要我帮你把这周可以做的几件事整理成一个简单清单？","quick_replies":["好的","先不用"]},
-        {"role":"ai","text":"好嘞，已为你生成3个本周任务。","transition":{"kind":"tasks_generated","count":3}},
     ],
 }
 
@@ -926,10 +818,9 @@ def _remember_marker_context(card_id: str, context: str) -> None:
 def _card_ctx(card_id: str, gen_cards: list[dict] | None = None) -> str:
     if card_id in _MARKER_CARD_CONTEXT:
         return _MARKER_CARD_CONTEXT[card_id]
-    for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
+    for c in LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
-            d = CARD_DETAILS.get(card_id, {})
-            body = d.get("body") or c.get("body", "")
+            body = c.get("body", "")
             resources = c.get("resources") or []
             resource_ctx = ""
             if resources:
@@ -2370,8 +2261,7 @@ async def prepare_feed_research(
 
 @api.get("/feed")
 async def get_feed(shuffle: bool = False):
-    gen_cards = await stores.get_gen_cards()
-    cards = list(FEED_CARDS) + gen_cards
+    cards = await stores.get_gen_cards()
     if shuffle:
         random.shuffle(cards)
     return cards
@@ -2380,27 +2270,29 @@ async def get_feed(shuffle: bool = False):
 async def get_alt_card(exclude: str = ""):
     gen_cards = await stores.get_gen_cards()
     exclude_ids = {e for e in exclude.split(",") if e}
-    pool = [c for c in (FEED_CARDS + ALT_FEED_CARDS + gen_cards) if c["id"] not in exclude_ids]
+    pool = [c for c in gen_cards if c["id"] not in exclude_ids]
     if not pool:
-        pool = list(ALT_FEED_CARDS)
+        raise HTTPException(404, "no card available")
     return random.choice(pool)
 
 @api.get("/feed/search")
 async def search_feed(q: str = "", type: Optional[str] = None):
     gen_cards = await stores.get_gen_cards()
     q_lower = q.lower().strip()
-    all_cards = FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
+    # The library is the generated cards alone. The phase-one demo cards that
+    # used to sit in front of them are gone, and the reviewed learning cards
+    # belong to the recommendation pipeline, not to this list.
+    all_cards = gen_cards
     if not q_lower:
         results = all_cards
     else:
         results = []
         for c in all_cards:
-            detail = CARD_DETAILS.get(c["id"], {})
             haystack = " ".join([
                 c.get("title", ""),
                 c.get("summary", ""),
-                c.get("body", detail.get("body", "")),
-                " ".join(c.get("tags", detail.get("tags", []))),
+                c.get("body", ""),
+                " ".join(c.get("tags", [])),
                 " ".join(c.get("keywords", [])),
             ]).lower()
             if q_lower in haystack:
@@ -2412,14 +2304,11 @@ async def search_feed(q: str = "", type: Optional[str] = None):
 @api.post("/feed/generate")
 async def generate_feed_cards(body: GenerateCardsRequest, uid: str = Depends(_req_uid)):
     feed_mode = await stores.get_feed_mode()
-    # The curated pool is also what a paused card generator serves. Answering
-    # with it rather than an empty list keeps the home screen populated, and
-    # returns before the keyword extraction call — which costs tokens even
-    # when the generation it feeds is switched off.
+    # A paused generator answers with nothing, and returns before the keyword
+    # extraction call — which costs tokens even when the generation it feeds
+    # is switched off.
     if feed_mode == "alt" or not runtime.KNOWLEDGE_CARDS_ENABLED:
-        pool = list(FEED_CARDS + ALT_FEED_CARDS)
-        random.shuffle(pool)
-        return pool[:body.count]
+        return []
     keywords = list(body.keywords or [])
     # Generated cards go into a pool every account sees, so the words they are
     # built from may only come from the caller's own conversation.
@@ -2713,16 +2602,13 @@ async def get_card_detail(
         return card
 
     gen_cards = await stores.get_gen_cards()
-    for c in FEED_CARDS + ALT_FEED_CARDS + gen_cards:
+    for c in gen_cards:
         if c["id"] == card_id:
-            if card_id in CARD_DETAILS:
-                extra = CARD_DETAILS[card_id]
-            else:
-                extra = {
-                    "body": c.get("body", c["summary"]),
-                    "tags": c.get("tags", []),
-                    "hook_line": c.get("hook_line", "想了解更多？"),
-                }
+            extra = {
+                "body": c.get("body", c["summary"]),
+                "tags": c.get("tags", []),
+                "hook_line": c.get("hook_line", "想了解更多？"),
+            }
             return {**c, **extra}
     raise HTTPException(404, "card not found")
 
@@ -3193,7 +3079,7 @@ async def list_favorites(uid: str = Depends(_req_uid)):
     gen_cards = await stores.get_gen_cards()
     by_id = {
         c["id"]: c
-        for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + gen_cards
+        for c in LEARNING_CONTENT_CARDS + gen_cards
     }
     return [{**by_id[cid], "collection_id": col_map.get(cid)} for cid in ids if cid in by_id]
 
@@ -3670,7 +3556,7 @@ def _card_marker_message(
     session_id: str, card_id: str, gen_cards: list[dict], extra: Optional[dict] = None,
 ) -> dict:
     title = ""
-    for c in FEED_CARDS + ALT_FEED_CARDS + LEARNING_CONTENT_CARDS + (gen_cards or []):
+    for c in LEARNING_CONTENT_CARDS + (gen_cards or []):
         if c["id"] == card_id:
             title = c.get("title") or ""
             break
@@ -4488,8 +4374,7 @@ async def _ensure_initial_greeting(
             first_text = reply["text"]
             quick_replies = reply.get("quick_replies", [])
         else:
-            script_key = session.get("script_key") or "free"
-            first_step = SCRIPTS.get(script_key, SCRIPTS["free"])[0]
+            first_step = SCRIPTS["free"][0]
             first_text = first_step["text"]
             quick_replies = first_step.get("quick_replies", [])
 
@@ -4560,7 +4445,7 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
     card_id = body.card_id
     title = body.title or "和NURI聊天"
     if card_id:
-        for c in FEED_CARDS + LEARNING_CONTENT_CARDS:
+        for c in LEARNING_CONTENT_CARDS:
             if c["id"] == card_id:
                 title = c["title"]
                 break
@@ -4568,7 +4453,7 @@ async def start_session(body: StartChatRequest, uid: str = Depends(_req_uid)):
     session = {
         "id": str(uuid.uuid4()), "title": title,
         "source_card_id": card_id, "step": 1,
-        "script_key": CARD_TO_SCRIPT.get(card_id or "", "free"),
+        "script_key": "free",
         "created_at": _now(),
     }
     session["user_id"] = uid
@@ -5045,8 +4930,7 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
     forever. The caller now records the intended transition inside the claimed
     reply, completes that row, and only then advances the cursor idempotently.
     """
-    script_key = session.get("script_key", "free")
-    script = SCRIPTS.get(script_key, SCRIPTS["free"])
+    script = SCRIPTS["free"]
     step = session.get("step", 0)
     transition = None
     quick_replies: list = []
@@ -5060,8 +4944,6 @@ async def _scripted_reply(session: dict, session_id: str) -> tuple:
     else:
         ai_text = "嗯，我先记下了。你随时回来继续，我会保持上下文。"
         new_step = step
-    if transition and transition.get("kind") == "tasks_generated":
-        transition = None
     return ai_text, quick_replies, transition, step, new_step
 
 
@@ -5575,157 +5457,8 @@ def _version_info(rules_fingerprint: str = "", model: str = "") -> dict:
     }
 
 
-async def _orchestrate_card(
-    turn: "_Turn", body: "UserMessageIn", reply: dict, ai_text: str,
-    session_id: str, message_id: str, rc: Optional["_ReplyContext"],
-) -> tuple[Optional[dict], Optional[dict]]:
-    """Run the Task/Card gate for this turn. Returns (transition, event).
-
-    Ordered the way the spec orders it (§3): the safety layer's verdict first,
-    the parent's own words for acceptance second, the model's reading of the
-    conversation last. A model asked "did they agree?" finds agreement — so it
-    is asked what the turn was *about*, and 「嗯」 is classified here.
-
-    Never raises. A failure anywhere costs the turn its card and leaves the
-    reply exactly as it was, which is the same trade `_after_turn` makes.
-    """
-    if not turn.owner_uid:
-        return None, None
-    task_ids: list[str] = []
-    try:
-        state = await core_task_card_store.load_state(session_id)
-        state = core_task_card.from_model(state, reply.get("orchestration") or {})
-        state = replace(state, safety_state=_safety_state(rc))
-        # 1-based, and the parent's message is the one before the reply.
-        user_index = max(1, len(turn.msgs))
-        state = state.with_turn(body.text or "", user_index)
-
-        existing = await core_task_card_store.open_cards(turn.owner_uid, session_id)
-        decision = core_task_card.decide(state, existing, conversation_id=session_id)
-
-        card_id = decision.card_id
-        replaces = None
-        if decision.writes and state.plan_candidate is not None:
-            if decision.action in ("update", "merge"):
-                replaces = await core_task_card_store.last_event_for_goal(
-                    session_id, decision.goal_id,
-                )
-            card_id = await core_task_card_store.write_card(
-                decision, state.plan_candidate,
-                user_id=turn.owner_uid, session_id=session_id,
-                message_id=message_id, message_index=user_index,
-            )
-            if card_id and decision.action == "create":
-                task_ids = await _save_card_tasks(
-                    state.plan_candidate, card_id, message_id, turn.owner_uid,
-                )
-        event = core_task_card_store.event_payload(
-            decision, state.plan_candidate, card_id=card_id,
-            message_index=user_index + 1, replaces_event_id=replaces,
-            prompt_version=core_dialogue_reply.style_rules_fingerprint_cached(),
-            pipeline_version=PIPELINE_VERSION,
-            status="succeeded" if (card_id or not decision.writes) else "failed",
-        )
-        event = await core_task_card_store.record(
-            event, user_id=turn.owner_uid, session_id=session_id,
-        )
-        await core_task_card_store.save_state(
-            session_id, replace(state, existing_card_id=card_id or state.existing_card_id),
-        )
-    except Exception as e:
-        print(f"[warn] task card orchestration failed: {type(e).__name__}: {e}")
-        return None, None
-
-    if decision.action in ("create", "update", "merge") and card_id:
-        plan = state.plan_candidate
-        transition = {
-            "kind": "task_card",
-            "action": decision.action,
-            "card_id": card_id,
-            "goal_id": decision.goal_id,
-            "task_ids": task_ids,
-            "title": plan.title or plan.core_goal,
-            "core_goal": plan.core_goal,
-            "tasks": [
-                {
-                    "action": t.action, "owner": t.owner, "timing": t.timing,
-                    "trigger": t.trigger,
-                    "completion_criterion": t.completion_criterion,
-                    "fallback": t.fallback,
-                }
-                for t in plan.tasks
-            ],
-            "completion_criteria": list(plan.completion_criteria),
-            "fallback": list(plan.fallback),
-            "review_at": plan.review_at or None,
-        }
-        return transition, event
-    return None, event
-
-
-#: Risk tiers, in the vocabulary the orchestration state speaks. `elevated` maps
-#: to `monitor` rather than to a block: watching a situation is not being in
-#: one, and a turn that merely mentioned a fever still gets to keep its plan.
-_SAFETY_STATE_BY_TIER = {
-    "none": "none",
-    "elevated": "monitor",
-    "medical": "suggest_professional",
-    "caregiver_harm": "caregiver_harm",
-    "crisis": "crisis",
-    "emergency": "emergency",
-}
-
-
-def _safety_state(rc: Optional["_ReplyContext"]) -> str:
-    """The safety layer's verdict, translated for `task_card`.
-
-    `allow_task_cards` is honoured as an outright block even when the tier
-    would not be one. That flag is the safety layer's own decision about this
-    turn, and the spec is explicit that safety outranks the card flow rather
-    than negotiating with it (§12).
-    """
-    plan = getattr(rc, "plan", None)
-    if plan is not None and getattr(plan, "allow_task_cards", True) is False:
-        return "urgent"
-    tier = str(getattr(getattr(rc, "evidence", None), "risk_tier", "") or "none")
-    return _SAFETY_STATE_BY_TIER.get(tier, "none")
-
-
-async def _save_card_tasks(
-    plan, card_id: str, message_id: str, uid: str,
-) -> list[str]:
-    """Write the card's tasks into the tasks tab as well.
-
-    A card the parent cannot tick off is a plan the product forgot to give
-    them. Ids are a uuid5 of the message and the index, same as every other
-    suggestion, so the client saving the same task is a no-op rather than a
-    duplicate row.
-    """
-    saved: list[str] = []
-    for draft in core_task_card_store.tasks_for_card(plan, card_id, message_id):
-        draft.pop("card_id", None)
-        try:
-            row = await create_task(TaskCreate(**draft), uid)
-            saved.append(str(row.get("id") or ""))
-        except Exception as e:
-            print(f"[warn] card task write failed: {type(e).__name__}: {e}")
-    return [task_id for task_id in saved if task_id]
-
-
-def _turn_events(
-    rc: Optional["_ReplyContext"],
-    transition: Optional[dict],
-    session: dict,
-    card_event: Optional[dict] = None,
-) -> dict:
-    """Machine-readable product outcomes for one turn.
-
-    The aggregate task keys stay where they were — the runner and months of
-    stored results read them — and `task_card_events` carries what they cannot
-    say: which decision this was, which goal it belonged to, and which earlier
-    event an update supersedes. A suppression is in the list too, because
-    `task_created=false` is the row that could never be diagnosed.
-    """
+def _turn_events(rc: Optional["_ReplyContext"], session: dict) -> dict:
+    """Machine-readable product outcomes for one turn."""
     evidence = getattr(rc, "evidence", None)
     tier = str(getattr(evidence, "risk_tier", "") or "none")
     reason = None
@@ -5735,19 +5468,8 @@ def _turn_events(
             reason = directive_id
             break
     feed_card_id = str(session.get("source_card_id") or "") or None
-    written = (transition or {}).get("kind") == "task_card"
-    proposed = written or (card_event or {}).get("spec_event_type") == "task_card.proposed"
-    task_card_id = (transition or {}).get("card_id")
     return {
-        # `task_created` is a card that now exists; `task_proposed` includes the
-        # turn that put a plan in front of the parent without saving it, which
-        # is the state most turns are supposed to end in.
-        "task_created": bool(written),
-        "task_ids": list((transition or {}).get("task_ids") or []),
-        "task_proposed": bool(proposed),
-        "task_proposal_count": len((transition or {}).get("tasks") or []),
-        "card_ids": [c for c in (feed_card_id, task_card_id) if c],
-        "task_card_events": [card_event] if card_event else [],
+        "card_ids": [feed_card_id] if feed_card_id else [],
         "escalation_level": _ESCALATION_BY_TIER.get(tier, "none"),
         "escalation_reason_code": reason,
         #: Unmapped tier, for graders that want the full resolution.
@@ -5758,7 +5480,6 @@ def _turn_events(
 def _turn_envelope(
     turn: "_Turn", ai_messages: list, rc: Optional["_ReplyContext"],
     transition: Optional[dict], metrics: Optional["_TurnMetrics"] = None,
-    card_event: Optional[dict] = None,
 ) -> dict:
     """The chat response body, shared by the blocking and streaming paths."""
     # Not `rc.style`. That is the subset of rules this turn matched, and hashing
@@ -5769,7 +5490,7 @@ def _turn_envelope(
         "user_message": turn.user_msg,
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
-        "events": _turn_events(rc, transition, turn.session, card_event),
+        "events": _turn_events(rc, turn.session),
         "version": _version_info(
             core_dialogue_reply.style_rules_fingerprint_cached(), model,
         ),
@@ -5854,11 +5575,6 @@ async def post_message(
     rc: Optional[_ReplyContext] = None
     script_step: Optional[tuple[int, int]] = None
     claim_completed = False
-    # The model's reply, when there was one. The #fix and scripted branches
-    # produce text without a conversation state to fold in, and a card decided
-    # from a state nobody updated is a card decided from the previous turn.
-    orchestrated: Optional[dict] = None
-    card_event: Optional[dict] = None
     sb = _require_chat_storage()
 
     try:
@@ -5881,21 +5597,12 @@ async def post_message(
             )
             quick_replies = reply.get("quick_replies", [])
             ai_text = _strip_citation_markers(reply["text"])
-            orchestrated = reply
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
             ) = await _scripted_reply(turn.session, session_id)
             script_step = (step_from, step_to)
 
-        # The card decision runs before the reply is persisted, because its
-        # transition is part of the message: a card that arrives in a later
-        # write would show up under the wrong turn in the transcript.
-        if orchestrated is not None:
-            transition, card_event = await _orchestrate_card(
-                turn, body, orchestrated, ai_text, session_id,
-                _ai_message_id(session_id, turn.user_msg["id"]), rc,
-            )
         ai_msg = await _persist_ai_turn(
             session_id, turn, ai_text, quick_replies, transition, sources,
             script_step=script_step,
@@ -5931,7 +5638,7 @@ async def post_message(
             temporal_context=turn.temporal,
         )
 
-    return _turn_envelope(turn, [ai_msg], rc, transition, metrics, card_event)
+    return _turn_envelope(turn, [ai_msg], rc, transition, metrics)
 
 
 def _sse(payload: dict) -> str:
@@ -5961,8 +5668,6 @@ async def post_message_stream(
         rc: Optional[_ReplyContext] = None
         script_step: Optional[tuple[int, int]] = None
         claim_completed = False
-        orchestrated: Optional[dict] = None
-        card_event: Optional[dict] = None
         sb = _require_chat_storage()
         try:
             if turn.replayed_ai_message is not None:
@@ -6001,7 +5706,6 @@ async def post_message_stream(
                 # The streamed deltas already carried the raw marker; this
                 # is what gets persisted and what the transcript shows.
                 ai_text = _strip_citation_markers(reply["text"])
-                orchestrated = reply
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,
@@ -6009,14 +5713,6 @@ async def post_message_stream(
                 script_step = (step_from, step_to)
                 yield _sse({"type": "delta", "text": ai_text})
 
-            # After the text is on screen, before the message is written: the
-            # card is part of the turn's record, and the parent has already
-            # read the reply by the time this runs.
-            if orchestrated is not None:
-                transition, card_event = await _orchestrate_card(
-                    turn, body, orchestrated, ai_text, session_id,
-                    _ai_message_id(session_id, turn.user_msg["id"]), rc,
-                )
             ai_msg = await _persist_ai_turn(
                 session_id, turn, ai_text, quick_replies, transition, sources,
                 script_step=script_step,
@@ -6028,7 +5724,7 @@ async def post_message_stream(
             claim_completed = True
             yield _sse({
                 "type": "done",
-                **_turn_envelope(turn, [ai_msg], rc, transition, metrics, card_event),
+                **_turn_envelope(turn, [ai_msg], rc, transition, metrics),
             })
 
             ai_message_created = getattr(ai_msg, "created", True)
@@ -6098,247 +5794,6 @@ async def post_message_stream(
         },
     )
 
-# ── Tasks ─────────────────────────────────────────────────────────────────────
-@api.get("/tasks")
-async def list_tasks(scope: Optional[str] = None, uid: str = Depends(_req_uid)):
-    sb = _get_supabase()
-    if sb and uid:
-        try:
-            q = sb.table("tasks").select("*").eq("user_id", uid)
-            if scope in ("today", "week"):
-                q = q.eq("scope", scope)
-            res = await anyio.to_thread.run_sync(
-                lambda: q.order("created_at", desc=True).execute()
-            )
-            return res.data or []
-        except Exception as e:
-            print(f"[warn] list_tasks error: {e}")
-    tasks = [t for t in memstore.tasks if t.get("user_id") == uid]
-    if scope in ("today", "week"):
-        tasks = [t for t in tasks if t["scope"] == scope]
-    return sorted(tasks, key=lambda t: t["created_at"], reverse=True)
-
-def _task_row(body: TaskCreate, uid: str) -> tuple[dict, bool]:
-    """The row a proposal becomes, and whether it came from a chat turn.
-
-    Shared by `POST /api/tasks` and by the chat turn that now writes its own
-    proposals, so a task saved by the client and the same task saved by the
-    server are the same row rather than two rows that drift. The id is what
-    makes that safe: for a chat suggestion it is a uuid5 of the message id and
-    the proposal's index, so both paths land on it and the second one is a
-    no-op.
-    """
-    due = date.today() + timedelta(days=0 if body.scope == "today" else 7)
-    is_suggestion = (
-        body.source_message_id is not None and body.suggestion_index is not None
-    )
-    source = (
-        f"NURI 对话:{body.source_message_id}:{body.suggestion_index}"
-        if is_suggestion else "手动添加"
-    )
-    task_id = (
-        str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri-task:{uid}:{source}"))
-        if is_suggestion else str(uuid.uuid4())
-    )
-    return {
-        "id": task_id, "title": body.title, "scope": body.scope,
-        "source": source, "done": False, "progress_done": 0,
-        "progress_total": 7 if body.scope == "week" else 1,
-        "reflection": None, "created_at": _now(), "completed_at": None,
-        "task_type": body.task_type or "interaction",
-        "description": body.description or "",
-        "steps": body.steps or [],
-        "due_date": body.due_date or due.isoformat(),
-        "is_favorited": False,
-        "backfilled": False,
-        "user_id": uid,
-    }, is_suggestion
-
-
-@api.post("/tasks", status_code=201)
-async def create_task(body: TaskCreate, uid: str = Depends(_req_uid)):
-    task, is_suggestion = _task_row(body, uid)
-    task_id = task["id"]
-    sb = _get_supabase()
-    if sb:
-        def find_existing():
-            return (
-                sb.table("tasks").select("*")
-                .eq("id", task_id).eq("user_id", uid).limit(1).execute()
-            )
-
-        if is_suggestion:
-            try:
-                existing = await anyio.to_thread.run_sync(find_existing)
-                if existing.data:
-                    return existing.data[0]
-            except Exception as e:
-                print(f"[warn] create_task idempotency lookup error: {e}")
-        try:
-            await anyio.to_thread.run_sync(lambda: sb.table("tasks").insert(task).execute())
-            return task
-        except Exception as e:
-            # A concurrent retry can lose the insert race against the same
-            # deterministic proposal ID. Return the winning row, not an error.
-            if is_suggestion:
-                try:
-                    existing = await anyio.to_thread.run_sync(find_existing)
-                    if existing.data:
-                        return existing.data[0]
-                except Exception as lookup_error:
-                    print(f"[warn] create_task retry lookup error: {lookup_error}")
-            print(f"[warn] create_task insert error: {e}")
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Task could not be saved",
-            ) from e
-    if is_suggestion:
-        existing = next((item for item in memstore.tasks if item["id"] == task_id), None)
-        if existing:
-            return existing
-    memstore.tasks.append(task)
-    return task
-
-@api.patch("/tasks/{task_id}")
-async def update_task(
-    task_id: str, body: TaskUpdate, background_tasks: BackgroundTasks,
-    uid: str = Depends(_req_uid),
-):
-    sb = _get_supabase()
-    if sb:
-        try:
-            tr = await anyio.to_thread.run_sync(
-                lambda: sb.table("tasks").select("*").eq("id", task_id).eq("user_id", uid).execute()
-            )
-            if not tr.data:
-                raise HTTPException(404, "task not found")
-            t = tr.data[0]
-            updates: dict = {}
-            if body.done is not None:
-                updates["done"] = body.done
-                updates["completed_at"] = _now() if body.done else None
-                if body.done and t.get("scope") == "week":
-                    updates["progress_done"] = min(t.get("progress_total", 7), t.get("progress_done", 0) + 1)
-            if body.mood is not None or body.note is not None:
-                prev = t.get("reflection") or {}
-                updates["reflection"] = {
-                    "mood": body.mood or prev.get("mood"),
-                    "note": body.note or prev.get("note", ""),
-                }
-            if body.is_favorited is not None:
-                updates["is_favorited"] = body.is_favorited
-            if body.backfilled is not None:
-                updates["backfilled"] = body.backfilled
-            if updates:
-                res = await anyio.to_thread.run_sync(
-                    lambda: sb.table("tasks").update(updates)
-                    .eq("id", task_id).eq("user_id", uid).execute()
-                )
-                result = res.data[0] if res.data else {**t, **updates}
-                if oai and body.note:
-                    reflection_text = f"任务「{t.get('title', '')}」的反馈：{body.note}"
-                    background_tasks.add_task(
-                        core_family.extract_and_upsert_memories,
-                        [{"role": "user", "text": reflection_text}], uid, task_id, "task_reflection",
-                    )
-                return result
-            return t
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"[warn] update_task error: {e}")
-    for t in memstore.tasks:
-        if t["id"] != task_id or t.get("user_id") != uid:
-            continue
-        if body.done is not None:
-            t["done"] = body.done
-            if body.done:
-                t["completed_at"] = _now()
-                if t["scope"] == "week":
-                    t["progress_done"] = min(t["progress_total"], t["progress_done"] + 1)
-            else:
-                t["completed_at"] = None
-        if body.mood is not None or body.note is not None:
-            prev = t.get("reflection") or {}
-            t["reflection"] = {"mood": body.mood or prev.get("mood"), "note": body.note or prev.get("note", "")}
-        if body.is_favorited is not None:
-            t["is_favorited"] = body.is_favorited
-        if body.backfilled is not None:
-            t["backfilled"] = body.backfilled
-        return t
-    raise HTTPException(404, "task not found")
-
-@api.delete("/tasks/{task_id}", status_code=204)
-async def delete_task(task_id: str, uid: str = Depends(_req_uid)):
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("tasks").delete().eq("id", task_id).eq("user_id", uid).execute()
-            )
-            return
-        except Exception as e:
-            print(f"[warn] delete_task error: {e}")
-    memstore.tasks[:] = [
-        t for t in memstore.tasks
-        if not (t["id"] == task_id and t.get("user_id") == uid)
-    ]
-
-@api.post("/tasks/clear-completed")
-async def clear_completed_tasks(uid: str = Depends(_req_uid)):
-    """Delete completed, non-favorited tasks. Favorited tasks are kept."""
-    sb = _get_supabase()
-    if sb:
-        try:
-            await anyio.to_thread.run_sync(
-                lambda: sb.table("tasks").delete()
-                .eq("user_id", uid).eq("done", True).eq("is_favorited", False)
-                .execute()
-            )
-            return {"ok": True}
-        except Exception as e:
-            print(f"[warn] clear_completed_tasks error: {e}")
-    memstore.tasks[:] = [
-        t for t in memstore.tasks
-        if not (t.get("user_id") == uid and t.get("done") and not t.get("is_favorited"))
-    ]
-    return {"ok": True}
-
-@api.get("/tasks/insights")
-async def task_insights(uid: str = Depends(_req_uid)):
-    sb = _get_supabase()
-    # Only this account's tasks — the fallback used to count every account's.
-    source: list = [t for t in memstore.tasks if t.get("user_id") == uid]
-    if sb:
-        try:
-            res = await anyio.to_thread.run_sync(
-                lambda: sb.table("tasks").select("done,scope,progress_done,completed_at").eq("user_id", uid).execute()
-            )
-            source = res.data or []
-        except Exception as e:
-            print(f"[warn] task_insights error: {e}")
-    completed = [t for t in source if t.get("done")]
-    today = datetime.now(timezone.utc).date()
-    done_dates: set = set()
-    for t in completed:
-        ts = t.get("completed_at")
-        if ts:
-            try:
-                done_dates.add(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).date())
-            except Exception:
-                pass
-    streak = 0
-    for i in range(7):
-        if (today - timedelta(days=i)) in done_dates:
-            streak += 1
-        elif i > 0:
-            break
-    return {
-        "total_completed": len(completed),
-        "streak_days": streak,
-        "weekly_progress": sum(t.get("progress_done", 0) for t in source if t.get("scope") == "week"),
-    }
-
 # ── Privacy ───────────────────────────────────────────────────────────────────
 # Privacy settings and the wipe are per account. Without a token they used to
 # read and write one shared default — and the wipe, with no token at all,
@@ -6382,11 +5837,10 @@ _PRIVACY_WIPE_USER_TABLES = (
     # Removing the session first cascades through chat_messages and all
     # normalized inputs linked to that conversation, including chat photos.
     "chat_sessions",
-    # Inputs can also come from uploads or task reflections without a session.
+    # Inputs can also come from uploads without a session.
     "normalized_inputs",
     "user_memories",
     "follow_ups",
-    "tasks",
     "children",
     "favorites",
     "collections",
@@ -6461,7 +5915,6 @@ async def wipe_all(uid: str = Depends(_req_uid)):
     await core_outcome_store.delete_events(uid)
     await _delete_persistent_user_history(uid)
     memstore.children[:] = [c for c in memstore.children if c.get("user_id") != uid]
-    memstore.tasks[:]    = [t for t in memstore.tasks    if t.get("user_id") != uid]
     for sid in [s for s, d in memstore.sessions.items() if d.get("user_id") == uid]:
         memstore.sessions.pop(sid, None); memstore.messages.pop(sid, None)
     memstore.favorites.pop(uid, None)

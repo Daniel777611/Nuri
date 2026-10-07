@@ -68,12 +68,6 @@ DATASET_VERSION = "NURI_Track_D_AI_Eval_Red_Team_Template"
 GRADER_MODEL = os.getenv("TRACK_D_GRADER_MODEL", "gpt-5.4-mini")
 GRADER_VERSION = "track-d-grader-v1"
 
-#: Whether a run also produces task cards. Off measures the conversation alone:
-#: `_task_suggestion` is skipped, so `chat.tasks_fallback` is never billed and
-#: the router's card decision buys nothing. Set from --task-cards and recorded
-#: on every row, because it moves the rubric's denominator — see main_cli.
-TASK_CARDS_ENABLED = True
-
 #: Replicates per risk tier, from the workbook's "推荐运行策略" sheet. Repeats
 #: are the point at Critical: a safety gate that holds two times in three is not
 #: a gate, and a single run cannot tell that apart from one that always holds.
@@ -243,7 +237,9 @@ async def run_case(case: dict, replicate: int) -> dict:
         "Model": "gpt-5.5",
         "Prompt_Version": getattr(runtime, "NURI_PIPELINE", ""),
         "Temperature_or_Effort": os.getenv("REPLY_REASONING_EFFORT", "low"),
-        "Task_Cards_Mode": "on" if TASK_CARDS_ENABLED else "off",
+        # Task cards are gone from the product. Still recorded, as "off", so a
+        # new run reads against the old runs that were made with them off.
+        "Task_Cards_Mode": "off",
     }
     # Wraps the whole attempt, including the failure path: a turn that died
     # after the router had already been billed still cost what the router cost.
@@ -259,18 +255,10 @@ async def run_case(case: dict, replicate: int) -> dict:
             )
             ai_text = reply.get("text") or ""
             sources = main._cited_sources(reply.get("cited"), rc.search_results, metrics)
-            transition = None
-            if TASK_CARDS_ENABLED:
-                transition = await main._task_suggestion(
-                    reply, turn.msgs, user_text, ai_text, metrics,
-                    allow=rc.plan.allow_task_cards if rc.plan else True,
-                )
             record.update({
                 "API_Status": "200",
                 "Response_Text": ai_text,
-                "Task_JSON": json.dumps(
-                    (transition or {}).get("tasks") or [], ensure_ascii=False,
-                ),
+                "Task_JSON": "[]",
                 # "Card" in this product is what the reply attaches: the cited
                 # sources, plus the conversation's source card when one seeded it.
                 "Card_JSON": json.dumps(
@@ -283,7 +271,6 @@ async def run_case(case: dict, replicate: int) -> dict:
                 "Execution_Error": "",
                 "Observed_Risk_Tier": getattr(rc.evidence, "risk_tier", "") or "",
                 "Observed_Topic": getattr(rc.evidence, "topic", "") or "",
-                "Task_Cards_Allowed": bool(rc.plan.allow_task_cards) if rc.plan else True,
                 "Search_Hits": len(rc.search_results),
             })
         except Exception as exc:            # noqa: BLE001 - recorded, not raised
@@ -788,18 +775,7 @@ def main_cli() -> int:
                              "check a fix without paying for the whole sweep")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--version", default="v1", help="goes in the output filename")
-    parser.add_argument(
-        "--task-cards", choices=("on", "off"), default="on",
-        help="off measures the conversation alone: _task_suggestion is skipped "
-             "so chat.tasks_fallback is never billed. It also drops "
-             "Task_Faithfulness and Card_Relevance_Source from the weighted "
-             "score's denominator, so an 'off' run does not compare with an "
-             "'on' run. Keep it identical across branches you mean to compare.",
-    )
     args = parser.parse_args()
-
-    global TASK_CARDS_ENABLED
-    TASK_CARDS_ENABLED = args.task_cards == "on"
 
     if not args.calibrate and not args.full:
         parser.error("choose --calibrate or --full")
@@ -823,7 +799,7 @@ def main_cli() -> int:
     summary["wall_clock_s"] = int(time.time() - started)
     summary["phase"] = "calibration" if args.calibrate else "full"
     summary["grader_model"] = GRADER_MODEL
-    summary["task_cards"] = args.task_cards
+    summary["task_cards"] = "off"
 
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

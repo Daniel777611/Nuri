@@ -224,11 +224,11 @@ def test_a_changed_profile_defeats_the_cache():
 
 # ── 横切 Safety Layer ────────────────────────────────────────────────────────
 
-def test_emergency_strips_everything_and_blocks_task_cards():
+def test_emergency_strips_everything():
     state = family.core(HINTS, _ports(), uid="u1")
     v = safety.assess("孩子不呼吸了", family=state, is_urgent=_ports().is_urgent)
     assert v.tier == "emergency"
-    assert v.minimal_context and not v.allow_task_cards
+    assert v.minimal_context
 
 
 def test_allergies_become_a_constraint_directive():
@@ -411,7 +411,6 @@ def test_the_proactive_channel_closes_as_soon_as_the_turn_carries_risk():
 def test_an_emergency_plan_is_one_instruction_long():
     verdict = safety.assess("孩子不呼吸了", family=FamilyState(), is_urgent=lambda *_a: True)
     plan = _plan(verdict=verdict)
-    assert not plan.allow_task_cards
     # One section, and it is the safety gate. Asserted structurally rather than
     # by substring: the emergency directive itself says "不要列来源", so a
     # naive `"来源" not in rendered` would pass for the wrong reason.

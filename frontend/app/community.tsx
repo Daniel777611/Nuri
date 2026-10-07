@@ -6,29 +6,11 @@ import { useRouter } from "expo-router";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 
-const POSTS = [
-  {
-    name: "Sarah · 妈妈",
-    meta: "2岁宝宝 · 湾区",
-    body:
-      "也经历过挑食期。我做的就是不强迫，每天饭桌上摆个新颜色蔬菜，2周后他自己开始尝。心态放松最关键。",
-    likes: 42,
-  },
-  {
-    name: "L妈",
-    meta: "20m + 4y · 多伦多",
-    body:
-      "我家老大当年也是只吃3样，半年后自动好转。儿科医生说只要生长曲线稳定就不用慌。",
-    likes: 28,
-  },
-  {
-    name: "Anonymous",
-    meta: "18m · 西雅图",
-    body:
-      "我们一开始太焦虑反而越喂越糟。后来跟AI聊了下，按建议每天只放一样新食物，慢慢就接受了。",
-    likes: 15,
-  },
-];
+type Post = { name: string; meta: string; body: string; likes: number };
+
+// No posts yet. The three that used to sit here were phase-one placeholders
+// written about a feed card that no longer exists.
+const POSTS: Post[] = [];
 
 export default function Community() {
   const { t } = useT();
@@ -53,6 +35,12 @@ export default function Community() {
             {t("这是社群的预览版本，仅展示其他家长匿名分享的经验，暂不开放互动。")}
           </Text>
         </View>
+        {POSTS.length === 0 ? (
+          <View style={styles.empty} testID="community-empty">
+            <Ionicons name="people-outline" size={28} color={colors.muted} />
+            <Text style={styles.emptyText}>{t("还没有家长分享经验")}</Text>
+          </View>
+        ) : null}
         {POSTS.map((p, i) => (
           <View key={i} style={styles.card} testID={`community-post-${i}`}>
             <View style={styles.cardTop}>
@@ -106,6 +94,8 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   noteText: { flex: 1, color: colors.muted, fontSize: type.sm, lineHeight: 18 },
+  empty: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.xl },
+  emptyText: { color: colors.muted, fontSize: type.base },
   card: {
     backgroundColor: "#fff",
     borderRadius: radius.md,

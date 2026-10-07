@@ -217,7 +217,6 @@ class DialoguePlan:
     #: by design — a digest of five open topics is a to-do list, not someone
     #: remembering to ask after you.
     proactive: str = ""
-    allow_task_cards: bool = True
     #: Recent messages this turn is allowed to replay. Defaults to the shared
     #: budget rather than a literal, so a plan and the assembler cannot disagree
     #: about what "the window" is.

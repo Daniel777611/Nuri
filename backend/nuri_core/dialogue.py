@@ -289,7 +289,6 @@ def plan(
             sections=((HEADINGS["safety"], _render(safety_directives)),),
             directives=tuple(safety_directives),
             proactive="",
-            allow_task_cards=False,
             history_window=min(history_window, 6),
         )
 
@@ -333,7 +332,6 @@ def plan(
         sections=tuple((h, b) for h, b in sections if b),
         directives=tuple(always + conditional + advisory + safety_directives),
         proactive=proactive,
-        allow_task_cards=verdict.allow_task_cards,
         history_window=history_window,
         # always + profile + state: everything above `memory` in the list.
         stable_sections=3,

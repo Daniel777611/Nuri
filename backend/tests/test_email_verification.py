@@ -419,10 +419,6 @@ def test_admin_test_accounts_are_verified_and_need_the_key(env, monkeypatch):
     ("post", "/api/collections", {"name": "睡眠"}),
     ("put", "/api/collections/c1", {"name": "x"}),
     ("delete", "/api/collections/c1", None),
-    ("patch", "/api/tasks/t1", {"done": True}),
-    ("delete", "/api/tasks/t1", None),
-    ("post", "/api/tasks/clear-completed", None),
-    ("get", "/api/tasks/insights", None),
     ("get", "/api/privacy", None),
     ("put", "/api/privacy", {}),
     ("post", "/api/privacy/wipe", None),
@@ -435,23 +431,9 @@ def test_account_data_routes_need_a_token(env, method, path, body):
 
 
 def test_a_signed_out_wipe_no_longer_clears_everyone(env, monkeypatch):
-    monkeypatch.setattr(memstore, "tasks", [{"id": "t", "user_id": "someone", "done": False}])
+    monkeypatch.setattr(memstore, "children", [{"id": "c", "user_id": "someone"}])
     env.client.post("/api/privacy/wipe")
-    assert memstore.tasks == [{"id": "t", "user_id": "someone", "done": False}]
-
-
-def test_one_account_cannot_touch_anothers_in_memory_task(env, monkeypatch):
-    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
-    monkeypatch.setattr(memstore, "tasks", [{
-        "id": "t1", "user_id": "owner", "done": False, "scope": "today",
-        "progress_done": 0, "progress_total": 1,
-    }])
-    intruder = {"Authorization": f"Bearer {main._make_token('intruder')}"}
-    assert env.client.patch("/api/tasks/t1", json={"done": True}, headers=intruder).status_code == 404
-    env.client.delete("/api/tasks/t1", headers=intruder)
-    assert memstore.tasks[0]["done"] is False
-    insights = env.client.get("/api/tasks/insights", headers=intruder).json()
-    assert insights["total_completed"] == 0
+    assert memstore.children == [{"id": "c", "user_id": "someone"}]
 
 
 def test_a_favorite_cannot_be_filed_in_another_accounts_collection(env):

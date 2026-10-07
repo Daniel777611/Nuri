@@ -10,8 +10,8 @@ other's data. That is fine for the purpose — this is a development and
 degraded-mode fallback, not a cache and not a database.
 
 **Never rebind these names.** Other modules hold references to the objects, so
-`tasks = [t for t in tasks if ...]` updates only the rebinding module's view and
-silently leaves everyone else on the old list. Mutate in place — `tasks[:] =
+`children = [c for c in children if ...]` updates only the rebinding module's view and
+silently leaves everyone else on the old list. Mutate in place — `children[:] =
 [...]`, `.clear()`, `.pop()`. Four sites in main.py used `global` to rebind and
 had to be converted when this module was split out.
 
@@ -30,7 +30,6 @@ users_id:    dict[str, dict] = {}     # id    -> user doc
 children:    list[dict]      = []
 sessions:    dict[str, dict] = {}     # session_id -> session doc
 messages:    dict[str, list] = {}     # session_id -> [msg, ...]
-tasks:       list[dict]      = []
 favorites:   dict[str, set]  = {}     # uid_or_anon -> {card_id, ...}
 collections: dict[str, list] = {}     # uid_or_anon -> [{id, name, created_at}]
 fav_cols:    dict[str, dict] = {}     # uid_or_anon -> {card_id: collection_id|None}
@@ -55,5 +54,4 @@ def clear_all() -> None:
     ):
         container.clear()
     children.clear()
-    tasks.clear()
     analytics.clear()

@@ -121,8 +121,7 @@ def test_follow_through_is_one_clause_and_not_two_halves():
 
     It sits in the default band because the dialogue spec names the per-turn
     version of it as its own failure (§16.6, 模板化完成度) and says where
-    completeness belongs: 完整性跨多轮实现. What a *saved plan* needs is
-    enforced at the gate instead — see `task_card.plan_gaps`."""
+    completeness belongs: 完整性跨多轮实现."""
     ids = {rule.id for rule in register.REGISTER_RULES}
     assert "done_looks_like" not in ids and "if_it_fails" not in ids
     rule = _rule("follow_through")

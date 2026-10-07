@@ -503,9 +503,7 @@ REGISTER_RULES: tuple[RegisterRule, ...] = (
     # Demoted to the default band by NURI_Dialogue_Behavior_Spec_v1 §16.6,
     # which names 模板化完成度 — 每个回复都固定出现总结、原因、步骤、fallback
     # 和复查 — as a failure of its own, and says where completeness belongs:
-    # 完整性跨多轮实现，单轮只呈现当下必要内容. The four parts are still what a
-    # plan needs before it can be saved; `task_card.plan_gaps` enforces that at
-    # the gate, which is the right place for it. Asking for all four in every
+    # 完整性跨多轮实现，单轮只呈现当下必要内容. Asking for all four in every
     # reply is what made replies read assembled, and it is also what filled the
     # 150-character budget.
     RegisterRule(

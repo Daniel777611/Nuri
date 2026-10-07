@@ -862,16 +862,6 @@ export const api = {
       45000,
     ),
 
-  // ── Tasks ─────────────────────────────────────────────────────────────────
-  listTasks: (scope?: "today" | "week") =>
-    req(`/tasks${scope ? `?scope=${scope}` : ""}`),
-  createTask: (b: any) => req("/tasks", { method: "POST", body: JSON.stringify(b) }),
-  updateTask: (id: string, b: any) =>
-    req(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
-  deleteTask: (id: string) => req(`/tasks/${id}`, { method: "DELETE" }),
-  clearCompletedTasks: () => req(`/tasks/clear-completed`, { method: "POST" }),
-  taskInsights: () => req(`/tasks/insights`),
-
   // ── Privacy ───────────────────────────────────────────────────────────────
   getPrivacy: () => req(`/privacy`),
   setPrivacy: (b: any) => req(`/privacy`, { method: "PUT", body: JSON.stringify(b) }),

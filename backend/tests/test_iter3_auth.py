@@ -153,18 +153,12 @@ class TestSoftScoping:
         assert r.status_code == 200
         # No assertion on specific data (legacy DB state varies); just confirms endpoint open
 
-    def test_tasks_scoped(self, user_a):
-        h = {"Authorization": f"Bearer {user_a['token']}"}
-        r = requests.get(f"{BASE_URL}/api/tasks", headers=h, timeout=20)
-        assert r.status_code == 200
-        assert isinstance(r.json(), list)
-
     def test_favorites_scoped(self, user_a, user_b):
         ha = {"Authorization": f"Bearer {user_a['token']}"}
         hb = {"Authorization": f"Bearer {user_b['token']}"}
-        # A favorites card_food_picky
+        # A favorites learn_picky_eating
         r1 = requests.post(f"{BASE_URL}/api/favorites/toggle", headers=ha,
-                           json={"card_id": "card_food_picky"}, timeout=20)
+                           json={"card_id": "learn_picky_eating"}, timeout=20)
         assert r1.status_code == 200
         # B should NOT see A's favorite (assuming B has none); B's list should not contain it
         fav_b = requests.get(f"{BASE_URL}/api/favorites", headers=hb, timeout=20).json()
@@ -173,7 +167,7 @@ class TestSoftScoping:
         # We can verify by toggling off A's fav and confirming B's list unchanged
         fav_a = requests.get(f"{BASE_URL}/api/favorites", headers=ha, timeout=20).json()
         a_ids = {c["id"] for c in fav_a}
-        assert "card_food_picky" in a_ids
+        assert "learn_picky_eating" in a_ids
         # cleanup: toggle off
         requests.post(f"{BASE_URL}/api/favorites/toggle", headers=ha,
-                      json={"card_id": "card_food_picky"}, timeout=20)
+                      json={"card_id": "learn_picky_eating"}, timeout=20)

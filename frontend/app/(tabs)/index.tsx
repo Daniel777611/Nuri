@@ -62,7 +62,7 @@ const conversationExcerpt = (text: string, maxLength = 18) => {
     : normalized;
 };
 
-type HomeNavigationIconName = "knowledge" | "chat" | "tasks" | "community";
+type HomeNavigationIconName = "knowledge" | "chat" | "community";
 
 const HOME_NAVIGATION_ICONS: Record<
   HomeNavigationIconName,
@@ -70,7 +70,6 @@ const HOME_NAVIGATION_ICONS: Record<
 > = {
   knowledge: { asset: "navigation-knowledge.svg", fallback: "library-outline" },
   chat: { asset: "navigation-chat.svg", fallback: "sparkles-outline" },
-  tasks: { asset: "navigation-tasks.svg", fallback: "calendar-outline" },
   community: { asset: "navigation-community.svg", fallback: "people-outline" },
 };
 
@@ -603,14 +602,6 @@ export default function Home() {
             accessibilityLabel={t("对话")}
           >
             <HomeNavigationIcon name="chat" />
-          </Pressable>
-          <Pressable
-            style={styles.navigationItem}
-            onPress={() => router.push("/(tabs)/tasks")}
-            accessibilityRole="button"
-            accessibilityLabel={t("任务")}
-          >
-            <HomeNavigationIcon name="tasks" />
           </Pressable>
           <Pressable
             style={styles.navigationItem}

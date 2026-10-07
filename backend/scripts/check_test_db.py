@@ -34,7 +34,7 @@ REQUIRED = (
     "chat_sessions", "chat_messages",
     "nuri_style_rules", "nuri_directives",
     "rag_chunks",
-    "tasks", "favorites", "collections",
+    "favorites", "collections",
     "app_settings",
 )
 

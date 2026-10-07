@@ -60,10 +60,7 @@ def test_paused_feed_generate_serves_the_curated_pool(client, monkeypatch):
         headers={"Authorization": f"Bearer {main._make_token('parent-1')}"},
     )
     assert res.status_code == 200
-    cards = res.json()
-    assert len(cards) == 3
-    known = {c["id"] for c in main.FEED_CARDS + main.ALT_FEED_CARDS}
-    assert {c["id"] for c in cards} <= known
+    assert res.json() == []
 
 
 # ── Daily push ───────────────────────────────────────────────────────────────

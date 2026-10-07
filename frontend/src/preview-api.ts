@@ -36,27 +36,6 @@ let children = [
   { id: "child-1", nickname: "小满", birth_date: "2024-03-01", gender: "other", allergies: [], notes: "" },
 ];
 
-let tasks = [
-  {
-    id: "task-1", title: "今天给自己留30分钟独处", task_type: "selfcare", scope: "today",
-    progress_done: 0, progress_total: 1, completed_at: null, due_date: "2026-07-15",
-    description: "给自己一点不被打扰的时间，充电后再继续照顾家人。", steps: ["找一个舒服的角落", "做一件能让你放松的小事"],
-    source: "NURI 建议", created_at: "2026-07-15T09:00:00.000Z", is_favorited: false,
-  },
-  {
-    id: "task-2", title: "每日户外活动20分钟", task_type: "interaction", scope: "week",
-    progress_done: 2, progress_total: 5, completed_at: null, due_date: "2026-07-19",
-    description: "一起出门走走，观察身边的新鲜事物。", steps: ["选择安全的步行路线", "让孩子选一个想看的东西"],
-    source: "NURI 建议", created_at: "2026-07-14T09:00:00.000Z", is_favorited: false,
-  },
-  {
-    id: "task-3", title: "记录一次孩子的新表达", task_type: "observation", scope: "today",
-    progress_done: 1, progress_total: 1, completed_at: "2026-07-14T18:30:00.000Z", due_date: "2026-07-14",
-    description: "写下一句让你印象深刻的话。", steps: ["记录原话", "记下当时的情境"],
-    source: "NURI 建议", created_at: "2026-07-14T09:00:00.000Z", is_favorited: false,
-  },
-];
-
 const card = {
   id: "card-1", type: "tip", type_label: "育儿小贴士", title: "如何帮孩子建立稳定的睡前仪式？",
   body: "固定而温柔的睡前步骤，能让孩子知道一天即将结束。可以从洗漱、读一本书、说一句晚安开始，不需要复杂，关键是每天大致一致。",
@@ -557,30 +536,6 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     const childId = path.split("/").pop()!; children = children.map((c) => c.id === childId ? { ...c, ...body } : c); return children.find((c) => c.id === childId);
   }
   if (path.startsWith("/children/") && method === "DELETE") { children = children.filter((c) => c.id !== path.split("/").pop()); return {}; }
-
-  if (path.startsWith("/tasks") && method === "GET") return tasks;
-  if (path === "/tasks" && method === "POST") {
-    const source = body.source_message_id != null && body.suggestion_index != null
-      ? `NURI 对话:${body.source_message_id}:${body.suggestion_index}`
-      : "手动添加";
-    const existing = tasks.find((task) => task.source === source && source !== "手动添加");
-    if (existing) return existing;
-    const next = { id: id("task"), title: body.title || "NURI 建议任务", task_type: body.task_type || "observation", scope: body.scope || "today", progress_done: 0, progress_total: body.progress_total || 1, completed_at: null, due_date: body.due_date || new Date().toISOString().slice(0, 10), description: body.description || "", steps: body.steps || [], source, created_at: new Date().toISOString(), is_favorited: false };
-    tasks = [next, ...tasks]; return next;
-  }
-  if (path.startsWith("/tasks/") && method === "PATCH") {
-    const taskId = path.split("/").pop()!;
-    tasks = tasks.map((t) => t.id === taskId ? {
-      ...t, ...body,
-      progress_done: body.done ? Math.min(t.progress_total, t.progress_done + 1) : t.progress_done,
-      completed_at: body.done && (!t.scope || t.scope === "today" || t.progress_done + 1 >= t.progress_total) ? new Date().toISOString() : t.completed_at,
-      reflection: body.mood ? { mood: body.mood } : (t as any).reflection,
-    } : t);
-    return tasks.find((t) => t.id === taskId);
-  }
-  if (path.startsWith("/tasks/") && method === "DELETE") { tasks = tasks.filter((t) => t.id !== path.split("/").pop()); return {}; }
-  if (path === "/tasks/clear-completed") { tasks = tasks.filter((t) => !t.completed_at); return {}; }
-  if (path === "/tasks/insights") return { streak_days: 17 };
 
   if (path.startsWith("/feed/personalized") && method === "GET") {
     const useConversation = privacy.allow_history_training;

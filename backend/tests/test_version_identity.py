@@ -42,7 +42,7 @@ def events_for(text: str) -> dict:
             risk_tier=result.tier, directives=result.directives,
         )
 
-    return main._turn_events(_RC(), {"tasks": []}, {})
+    return main._turn_events(_RC(), {})
 
 
 # ── prompt_version: stable unless the prompt actually changed ────────────────
@@ -228,47 +228,15 @@ def test_the_reply_path_resolves_no_source_list():
     assert not hasattr(main, "_cited_sources")
 
 
-# ── the task-card keys outlive the feature ───────────────────────────────────
+# ── task cards are gone ──────────────────────────────────────────────────────
 
-def test_a_turn_reports_no_task_cards_and_still_reports_the_keys():
-    """A chat turn no longer proposes or creates task cards. The keys stay in
-    the envelope because an external runner asserts on it, and a key that
-    vanishes reads as a broken build rather than as a removed feature."""
+def test_a_turn_reports_no_task_keys():
+    """Task cards were removed with the tasks tab. The envelope says nothing
+    about them rather than reporting a feature that no longer exists."""
     class _RC:
         evidence = EvidenceDecision(risk_tier="none")
 
-    events = main._turn_events(_RC(), None, {})
-    assert events["task_proposed"] is False
-    assert events["task_created"] is False
-    assert events["task_proposal_count"] == 0
-    assert events["task_ids"] == []
-
-
-def test_two_writes_of_one_proposal_are_one_task():
-    """The client posting a proposal and the turn saving it must not make two
-    rows. The id is a uuid5 of the message id and the proposal's index, so both
-    land on the same one."""
-    body = main.TaskCreate(
-        title="问 Daycare 四个问题", scope="today",
-        source_message_id="msg-1", suggestion_index=0,
-    )
-    first, is_suggestion = main._task_row(body, "user-1")
-    second, _ = main._task_row(body, "user-1")
-    assert is_suggestion is True
-    assert first["id"] == second["id"]
-    # A different proposal on the same message is still its own task.
-    other, _ = main._task_row(
-        main.TaskCreate(
-            title="另一件", scope="today",
-            source_message_id="msg-1", suggestion_index=1,
-        ),
-        "user-1",
-    )
-    assert other["id"] != first["id"]
-
-
-def test_a_harm_turn_proposes_no_task_cards():
-    """"先安全分开" is not a task card, and round one scored task_proposed=true
-    on all five turns of a dialogue whose last two were about a parent leaving
-    the room to avoid hitting a three-year-old."""
-    assert verdict("我真的差点打下去").allow_task_cards is False
+    events = main._turn_events(_RC(), {})
+    assert not any(key.startswith("task") for key in events)
+    assert events["card_ids"] == []
+    assert not hasattr(main, "TaskCreate")
