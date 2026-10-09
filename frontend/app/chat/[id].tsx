@@ -24,7 +24,8 @@ import * as WebBrowser from "expo-web-browser";
 import * as ImagePicker from "expo-image-picker";
 import Toast from "@/src/components/Toast";
 import VoiceWaveform from "@/src/components/VoiceWaveform";
-import { ApiError, api, isStreamUnsupported } from "@/src/api";
+import { ApiError, api, apiErrorDetail, isStreamUnsupported } from "@/src/api";
+import { usePurchaseAllowed } from "@/src/nativeShell";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
   ChatImageInputError,
@@ -287,6 +288,10 @@ export default function ChatDetail() {
   // otherwise Home's NURI preview can read the conversation before it lands.
   const pendingHomeReturnRef = useRef(false);
   const [typing, setTyping] = useState(false);
+  // Set when the server refuses a turn because today's allowance is spent
+  // (backend/quota.py). Cleared by the next send that goes through.
+  const [quotaReached, setQuotaReached] = useState(false);
+  const purchaseAllowed = usePurchaseAllowed();
   // Reply text accumulated from the SSE stream, rendered as a live bubble until
   // the persisted message arrives and replaces it.
   const [streamingText, setStreamingText] = useState("");
@@ -436,11 +441,22 @@ export default function ChatDetail() {
         ...res.ai_messages,
       ]);
       failedSendRef.current = null;
+      setQuotaReached(false);
       if (pendingHomeReturnRef.current) {
         pendingHomeReturnRef.current = false;
         returnHome();
       }
-    } catch {
+    } catch (err) {
+      if (apiErrorDetail(err) === "DAILY_QUOTA_REACHED") {
+        // Refused before anything was saved: keep the draft for later, and
+        // say why instead of "send failed, retry" — a retry would fail too.
+        if (text) setInput(text);
+        if (selectedImage) setPendingImage(selectedImage);
+        setMessages((p) => p.filter((m) => m.id !== optimistic.id));
+        pendingHomeReturnRef.current = false;
+        setQuotaReached(true);
+        return;
+      }
       // Mid-stream failures may have already persisted the user message, so
       // preserve both the draft and its stable key. An unchanged retry then
       // asks the backend to replay the same durable turn rather than generating
@@ -763,6 +779,25 @@ export default function ChatDetail() {
           </ScrollView>
 
           <View style={styles.composer} testID="chat-composer">
+            {quotaReached ? (
+              <View style={styles.quotaNotice} testID="chat-quota-reached">
+                <Ionicons name="hourglass-outline" size={18} color={colors.brand} />
+                <Text style={styles.quotaNoticeText}>
+                  {purchaseAllowed
+                    ? t("今天的对话额度用完了，明天会自动恢复；升级会员可以马上继续聊。")
+                    : t("今天的对话额度用完了，明天会自动恢复。")}
+                </Text>
+                {purchaseAllowed ? (
+                  <Pressable
+                    style={styles.quotaNoticeBtn}
+                    onPress={() => router.push("/billing")}
+                    testID="chat-quota-upgrade"
+                  >
+                    <Text style={styles.quotaNoticeBtnText}>{t("升级")}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
             {processingImage ? (
               <View style={styles.imageProcessing} testID="chat-image-processing">
                 <ActivityIndicator size="small" color={colors.brand} />
@@ -1482,6 +1517,23 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     gap: spacing.sm,
   },
+  quotaNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.brandTertiary,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  quotaNoticeText: { flex: 1, fontSize: type.sm, color: colors.onBrandTertiary, lineHeight: 18 },
+  quotaNoticeBtn: {
+    backgroundColor: "#3A2F5A",
+    borderRadius: radius.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 2,
+  },
+  quotaNoticeBtnText: { color: "#fff", fontWeight: "700", fontSize: type.sm },
   imageProcessing: {
     alignSelf: "flex-start",
     flexDirection: "row",

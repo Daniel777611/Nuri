@@ -58,7 +58,7 @@ from backend.nuri_core import image_input as core_image_input
 from backend import google_auth
 from backend import (
     billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
-    push_fcm, push_service, runtime, stores, usage_dashboard,
+    push_fcm, push_service, quota, runtime, stores, usage_dashboard,
 )
 from backend.feed import checkin as feed_checkin
 from backend.feed import daily_post as feed_daily_post
@@ -5550,6 +5550,34 @@ async def transcribe_audio(body: TranscribeIn, uid: str = Depends(_req_uid)):
     return {"text": (getattr(result, "text", "") or "").strip()}
 
 
+async def _require_chat_allowance(session_id: str, body: "UserMessageIn", uid: str) -> None:
+    """Refuse a new turn once today's allowance is spent (backend/quota.py).
+
+    Runs before the parent's message is saved, so a refused turn leaves no
+    unanswered message behind. A retry of a turn that was already accepted is
+    let through: the reply exists, and the client is only asking to see it.
+    """
+    sb = _get_supabase()
+    if not sb or not quota.enforced():
+        return
+    tz = body.client_context.timezone if body.client_context else None
+    over = await anyio.to_thread.run_sync(lambda: quota.blocks(sb, uid, tz))
+    if not over:
+        return
+    if body.client_message_id:
+        message_id = _user_message_id(session_id, body.client_message_id)
+        try:
+            existing = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages").select("id")
+                .eq("id", message_id).limit(1).execute().data or []
+            )
+        except Exception:  # noqa: BLE001 - unknown means not a retry
+            existing = []
+        if existing:
+            return
+    raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "DAILY_QUOTA_REACHED")
+
+
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(
     session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
@@ -5557,6 +5585,7 @@ async def post_message(
 ):
     """Non-streaming turn. Kept as the fallback for clients that can't consume
     the SSE endpoint below (and for hosts that buffer streamed responses)."""
+    await _require_chat_allowance(session_id, body, uid)
     metrics = _TurnMetrics(streamed=False)
     turn = await _prepare_turn(session_id, body, uid)
     if turn.replayed_ai_message is not None:
@@ -5656,6 +5685,7 @@ async def post_message_stream(
     before the response starts so a bad session can still 404 normally; once
     streaming begins, failures arrive as an error event.
     """
+    await _require_chat_allowance(session_id, body, uid)
     metrics = _TurnMetrics(streamed=True)
     turn = await _prepare_turn(session_id, body, uid)
     # Filled in once the turn is complete; read by the background task below.
@@ -6294,6 +6324,9 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
 
 class CheckoutIn(BaseModel):
     interval: Literal["month", "year"]
+    # Defaults to the tier the single pre-tier membership was, so an older
+    # client that sends only an interval still buys what its page advertised.
+    tier: Literal["plus", "unlimited"] = "unlimited"
     # "app" when the page runs inside the iOS/Android shell: Stripe then opens
     # in the phone's browser and should send the parent back to the app.
     return_to: Literal["web", "app"] = "web"
@@ -6301,6 +6334,11 @@ class CheckoutIn(BaseModel):
 
 class PortalIn(BaseModel):
     return_to: Literal["web", "app"] = "web"
+
+
+class PlanChangeIn(BaseModel):
+    tier: Literal["plus", "unlimited"]
+    interval: Literal["month", "year"]
 
 
 def _require_billing_storage():
@@ -6327,7 +6365,7 @@ def _billing_return_base(request: Request) -> str:
 
 
 @api.get("/billing/status")
-async def billing_status(uid: str = Depends(_req_uid)):
+async def billing_status(uid: str = Depends(_req_uid), tz: Optional[str] = None):
     sb = _require_billing_storage()
     result = await anyio.to_thread.run_sync(lambda: billing.status_for(sb, uid))
     try:
@@ -6335,6 +6373,14 @@ async def billing_status(uid: str = Depends(_req_uid)):
     except Exception as exc:  # noqa: BLE001 - a Stripe outage must not hide the status
         logging.getLogger("nuri.billing").warning("plans unavailable: %s", type(exc).__name__)
         result["plans"] = []
+    result["allowances"] = {tier: quota.daily_limit(tier) for tier in billing.TIERS}
+    try:
+        result["usage"] = await anyio.to_thread.run_sync(
+            lambda: quota.snapshot(sb, uid, tz, tier=result["tier"])
+        )
+    except Exception as exc:  # noqa: BLE001 - usage is informational here
+        logging.getLogger("nuri.billing").warning("usage unavailable: %s", type(exc).__name__)
+        result["usage"] = None
     return result
 
 
@@ -6357,11 +6403,33 @@ async def billing_checkout(body: CheckoutIn, request: Request, uid: str = Depend
         url = await anyio.to_thread.run_sync(
             lambda: billing.create_checkout(
                 sb, uid, email, body.interval, base, from_app=body.return_to == "app",
+                tier=body.tier,
             )
         )
     except billing.BillingNotConfigured as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED") from exc
     return {"url": url}
+
+
+@api.post("/billing/change")
+async def billing_change(body: PlanChangeIn, uid: str = Depends(_req_uid)):
+    """Move an existing member to another paid tier or interval."""
+    if not billing.configured():
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED")
+    sb = _require_billing_storage()
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: billing.change_plan(sb, uid, body.tier, body.interval)
+        )
+    except billing.BillingNotConfigured as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "BILLING_DISABLED") from exc
+    except billing.PlanChangeError as exc:
+        code = {
+            "NOT_SUBSCRIBED": status.HTTP_409_CONFLICT,
+            "PAYMENT_FAILED": status.HTTP_402_PAYMENT_REQUIRED,
+        }.get(exc.code, status.HTTP_400_BAD_REQUEST)
+        raise HTTPException(code, exc.code) from exc
+    return await anyio.to_thread.run_sync(lambda: billing.status_for(sb, uid))
 
 
 @api.post("/billing/portal")

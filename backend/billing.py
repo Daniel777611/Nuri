@@ -8,12 +8,28 @@ that over the local row. Events arrive out of order and get retried, and
 Card details never reach this server: Checkout and the Portal are Stripe-hosted
 pages, so the app only ever hands the browser a URL.
 
-Configuration (all optional; with any missing, /billing/status reports
+Membership is tiered by how much a parent can talk to NURI each day (see
+backend/quota.py): `basic` is what every account has without paying, `plus`
+is a larger daily allowance, `unlimited` has none. Each paid tier is one
+Stripe price per billing interval, named by environment variables, and the
+tier a subscription buys is read off its price — so the Stripe price a parent
+pays and the allowance they get cannot drift apart.
+
+Configuration (all optional; with no key or no price, /billing/status reports
 `enabled: false` and the page hides the buy buttons):
-    STRIPE_SECRET_KEY       sk_test_... / sk_live_...
-    STRIPE_WEBHOOK_SECRET   whsec_...  (per webhook endpoint)
-    STRIPE_PRICE_MONTHLY    price_...  recurring, interval=month
-    STRIPE_PRICE_YEARLY     price_...  recurring, interval=year
+    STRIPE_SECRET_KEY                sk_test_... / sk_live_...
+    STRIPE_WEBHOOK_SECRET            whsec_...  (per webhook endpoint)
+    STRIPE_PRICE_PLUS_MONTHLY        price_...  recurring, interval=month
+    STRIPE_PRICE_PLUS_YEARLY         price_...  recurring, interval=year
+    STRIPE_PRICE_UNLIMITED_MONTHLY   price_...  recurring, interval=month
+    STRIPE_PRICE_UNLIMITED_YEARLY    price_...  recurring, interval=year
+    STRIPE_PRICE_MONTHLY / _YEARLY   the single membership sold before tiers;
+                                     read as `unlimited` when the
+                                     UNLIMITED variables are unset, because
+                                     that is what it was sold as
+A price can also carry `metadata.nuri_tier` (plus / unlimited) in Stripe. That
+is only consulted for a subscription whose price is no longer in the variables
+above — a parent keeps what they bought after a price is rotated.
 """
 
 from __future__ import annotations
@@ -29,6 +45,12 @@ import stripe
 log = logging.getLogger("nuri.billing")
 
 INTERVALS = ("month", "year")
+
+#: Cheapest first. `basic` has no price: it is every account without an
+#: entitled subscription.
+TIERS = ("basic", "plus", "unlimited")
+PAID_TIERS = ("plus", "unlimited")
+TIER_RANK = {tier: rank for rank, tier in enumerate(TIERS)}
 
 # Statuses that keep paid features on. past_due is included on purpose: Stripe
 # is still retrying the card, and cutting a parent off mid-retry for a bank's
@@ -53,15 +75,37 @@ class BillingNotConfigured(RuntimeError):
     pass
 
 
-def _price_ids() -> dict[str, str]:
-    return {
-        "month": os.getenv("STRIPE_PRICE_MONTHLY", "").strip(),
-        "year": os.getenv("STRIPE_PRICE_YEARLY", "").strip(),
-    }
+_INTERVAL_SUFFIX = {"month": "MONTHLY", "year": "YEARLY"}
+
+
+def _env(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _price_ids() -> dict[tuple[str, str], str]:
+    """(tier, interval) -> Stripe price id, for every slot that is configured."""
+    out: dict[tuple[str, str], str] = {}
+    for tier in PAID_TIERS:
+        for interval, suffix in _INTERVAL_SUFFIX.items():
+            price_id = _env(f"STRIPE_PRICE_{tier.upper()}_{suffix}")
+            if not price_id and tier == "unlimited":
+                price_id = _env(f"STRIPE_PRICE_{suffix}")
+            if price_id:
+                out[(tier, interval)] = price_id
+    return out
+
+
+def tier_for_price(price_id: Optional[str]) -> Optional[str]:
+    if not price_id:
+        return None
+    for (tier, _interval), configured_id in _price_ids().items():
+        if configured_id == price_id:
+            return tier
+    return None
 
 
 def configured() -> bool:
-    return bool(os.getenv("STRIPE_SECRET_KEY", "").strip()) and any(_price_ids().values())
+    return bool(_env("STRIPE_SECRET_KEY")) and bool(_price_ids())
 
 
 def webhook_secret() -> str:
@@ -104,9 +148,7 @@ def plans() -> list[dict]:
         return _PLAN_CACHE["plans"]
     client = _client()
     out = []
-    for interval, price_id in _price_ids().items():
-        if not price_id:
-            continue
+    for (tier, interval), price_id in _price_ids().items():
         price = _plain(client.v1.prices.retrieve(price_id))
         recurring = price.get("recurring") or {}
         if recurring.get("interval") != interval:
@@ -115,6 +157,7 @@ def plans() -> list[dict]:
             log.error("price %s is %s, expected %s", price_id, recurring.get("interval"), interval)
             continue
         out.append({
+            "tier": tier,
             "interval": interval,
             "price_id": price_id,
             "unit_amount": price.get("unit_amount"),
@@ -152,14 +195,37 @@ def current_subscription(sb, uid: str) -> Optional[dict]:
     return rows[0] if rows else None
 
 
+def subscription_tier(sub: Optional[dict]) -> str:
+    """The tier an account is on right now."""
+    if not sub or sub.get("status") not in ENTITLED_STATUSES:
+        return "basic"
+    tier = sub.get("tier") or tier_for_price(sub.get("price_id"))
+    if tier in PAID_TIERS:
+        return tier
+    # Paid, but for a price nothing maps to any more and that carried no
+    # nuri_tier metadata. Every such subscription was sold before tiers, as
+    # the unlimited membership; giving a paying parent less than they bought
+    # is the worse mistake.
+    log.error("subscription %s has no tier (price %s)", sub.get("id"), sub.get("price_id"))
+    return "unlimited"
+
+
+def tier_for(sb, uid: str) -> str:
+    return subscription_tier(current_subscription(sb, uid))
+
+
 def status_for(sb, uid: str) -> dict:
     sub = current_subscription(sb, uid)
     entitled = bool(sub and sub.get("status") in ENTITLED_STATUSES)
     return {
         "enabled": configured(),
         "entitled": entitled,
+        "tier": subscription_tier(sub),
         "subscription": None if not sub else {
             "status": sub.get("status"),
+            "tier": subscription_tier(sub) if entitled else (
+                sub.get("tier") or tier_for_price(sub.get("price_id"))
+            ),
             "interval": sub.get("plan_interval"),
             "current_period_end": sub.get("current_period_end"),
             "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
@@ -196,12 +262,14 @@ def _return_query(from_app: bool) -> str:
 
 
 def create_checkout(sb, uid: str, email: Optional[str], interval: str, return_base: str,
-                    from_app: bool = False) -> str:
+                    from_app: bool = False, tier: str = "unlimited") -> str:
     if interval not in INTERVALS:
         raise ValueError(f"unknown interval {interval!r}")
-    price_id = _price_ids()[interval]
+    if tier not in PAID_TIERS:
+        raise ValueError(f"unknown tier {tier!r}")
+    price_id = _price_ids().get((tier, interval))
     if not configured() or not price_id:
-        raise BillingNotConfigured(f"no price configured for {interval}")
+        raise BillingNotConfigured(f"no price configured for {tier}/{interval}")
     customer_id = ensure_customer(sb, uid, email)
     base = return_base.rstrip("/")
     session = _plain(_client().v1.checkout.sessions.create(params={
@@ -218,6 +286,68 @@ def create_checkout(sb, uid: str, email: Optional[str], interval: str, return_ba
         "cancel_url": f"{base}/billing?checkout=cancel{_return_query(from_app)}",
     }))
     return session["url"]
+
+
+# ── Changing tier ─────────────────────────────────────────────────────────────
+# A member moves between paid tiers by changing the price on the subscription
+# they already have. A second Checkout would start a second subscription,
+# billed independently of the first.
+
+class PlanChangeError(RuntimeError):
+    """`code` is the stable string the route returns as its detail."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def _monthly_amount(price: dict) -> float:
+    amount = price.get("unit_amount") or 0
+    interval = (price.get("recurring") or {}).get("interval")
+    return amount / 12 if interval == "year" else float(amount)
+
+
+def change_plan(sb, uid: str, tier: str, interval: str) -> dict:
+    """Move the current subscription onto another tier/interval's price.
+
+    Raising the monthly cost bills the prorated difference now, and refuses
+    the change outright if that payment fails — otherwise a parent could step
+    up to unlimited, use it, and leave before any invoice. Lowering it credits
+    the unused part against the next invoice, Stripe's default.
+    """
+    if tier not in PAID_TIERS or interval not in INTERVALS:
+        raise PlanChangeError("UNKNOWN_PLAN")
+    price_id = _price_ids().get((tier, interval))
+    if not configured() or not price_id:
+        raise BillingNotConfigured(f"no price configured for {tier}/{interval}")
+    current = current_subscription(sb, uid)
+    if not current or current.get("status") not in ENTITLED_STATUSES:
+        raise PlanChangeError("NOT_SUBSCRIBED")
+    client = _client()
+    sub = _plain(client.v1.subscriptions.retrieve(current["id"]))
+    items = ((sub.get("items") or {}).get("data")) or []
+    if not items:
+        raise PlanChangeError("NOT_SUBSCRIBED")
+    item = items[0]
+    old_price = item.get("price") or {}
+    if old_price.get("id") == price_id:
+        return sync_subscription(sb, current["id"]) or current
+    if old_price.get("unit_amount") is None and old_price.get("id"):
+        old_price = _plain(client.v1.prices.retrieve(old_price["id"]))
+    new_price = _plain(client.v1.prices.retrieve(price_id))
+    upgrade = _monthly_amount(new_price) > _monthly_amount(old_price)
+    params: dict[str, Any] = {
+        "items": [{"id": item["id"], "price": price_id}],
+        "proration_behavior": "always_invoice" if upgrade else "create_prorations",
+        "metadata": {"user_id": uid},
+    }
+    if upgrade:
+        params["payment_behavior"] = "error_if_incomplete"
+    try:
+        client.v1.subscriptions.update(current["id"], params=params)
+    except stripe.CardError as exc:
+        raise PlanChangeError("PAYMENT_FAILED") from exc
+    return sync_subscription(sb, current["id"]) or current
 
 
 def create_portal(sb, uid: str, return_base: str, from_app: bool = False) -> Optional[str]:
@@ -248,6 +378,9 @@ def _subscription_row(sub: dict, uid: str) -> dict:
     first = items[0] if items else {}
     price = first.get("price") or {}
     interval = (price.get("recurring") or {}).get("interval")
+    # Written down at sync time so a parent keeps the tier they bought when a
+    # price variable is later pointed somewhere else.
+    tier = tier_for_price(price.get("id")) or (price.get("metadata") or {}).get("nuri_tier")
     # Since API version 2025-03-31 the period lives on the item, not the
     # subscription; read both so an older pinned account version still works.
     period_end = first.get("current_period_end") or sub.get("current_period_end")
@@ -257,6 +390,7 @@ def _subscription_row(sub: dict, uid: str) -> dict:
         "stripe_customer_id": sub.get("customer"),
         "status": sub.get("status"),
         "price_id": price.get("id"),
+        "tier": tier if tier in PAID_TIERS else None,
         "plan_interval": interval if interval in INTERVALS else None,
         "current_period_end": _ts(period_end),
         "cancel_at_period_end": bool(sub.get("cancel_at_period_end") or sub.get("cancel_at")),
@@ -282,7 +416,18 @@ def sync_subscription(sb, subscription_id: str) -> Optional[dict]:
             {"user_id": uid, "stripe_customer_id": customer_id}, on_conflict="user_id",
         ).execute()
     row = _subscription_row(sub, uid)
-    sb.table("billing_subscriptions").upsert(row, on_conflict="id").execute()
+    try:
+        sb.table("billing_subscriptions").upsert(row, on_conflict="id").execute()
+    except Exception as exc:  # noqa: BLE001
+        # Before 20261009010000_billing_tiers.sql runs there is no `tier`
+        # column. Writing the rest keeps webhooks succeeding in that window;
+        # the tier is still derived from price_id until the column exists.
+        if "tier" not in str(exc):
+            raise
+        log.warning("billing_subscriptions.tier missing; run the billing_tiers migration")
+        sb.table("billing_subscriptions").upsert(
+            {k: v for k, v in row.items() if k != "tier"}, on_conflict="id",
+        ).execute()
     return row
 
 

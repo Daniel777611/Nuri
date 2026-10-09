@@ -1,5 +1,9 @@
-// Membership page: pick a plan → Stripe Checkout; already a member → Stripe
-// Customer Portal. Both are Stripe-hosted, so no card field ever renders here.
+// Membership page. Tiers are sized by how much a parent can talk to NURI each
+// day: basic (free, ~10 turns), plus (more), unlimited. Today's usage is shown
+// first. Not a member → pick a plan → Stripe Checkout. A member switches plan
+// in place (POST /billing/change, after a confirm step, since an upgrade is
+// charged at once) and manages payment details in the Stripe Customer Portal.
+// Both Stripe pages are hosted by Stripe, so no card field ever renders here.
 //
 // Inside the iOS/Android shells it shows the same buttons only where a link
 // out to another payment method is allowed (see usePurchaseAllowed): the
@@ -25,7 +29,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
-import { api, apiErrorDetail, type BillingInterval, type BillingPlan, type BillingStatus } from "@/src/api";
+import {
+  api,
+  apiErrorDetail,
+  type BillingInterval,
+  type BillingPlan,
+  type BillingStatus,
+  type BillingTier,
+  type BillingUsage,
+  type PaidTier,
+} from "@/src/api";
 import { useT } from "@/src/i18n";
 import { isNativeShell, useOnReturnToApp, usePurchaseAllowed } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -80,8 +93,11 @@ function BillingPage({ checkout }: { checkout?: string }) {
 
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [busy, setBusy] = useState<BillingInterval | "portal" | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [intervalChoice, setIntervalChoice] = useState<BillingInterval>("month");
+  const [pendingChange, setPendingChange] = useState<BillingPlan | null>(null);
   const inShell = isNativeShell();
   const purchaseAllowed = usePurchaseAllowed();
   const returnTo = inShell ? "app" : "web";
@@ -103,6 +119,12 @@ function BillingPage({ checkout }: { checkout?: string }) {
       load();
     }, [load])
   );
+
+  // A member sees their own interval first.
+  const subInterval = status?.subscription?.interval;
+  useEffect(() => {
+    if (status?.entitled && subInterval) setIntervalChoice(subInterval);
+  }, [status?.entitled, subInterval]);
 
   // Returning from Checkout can beat the webhook here by a few seconds; keep
   // re-reading briefly so the page doesn't tell a parent who just paid that
@@ -145,11 +167,12 @@ function BillingPage({ checkout }: { checkout?: string }) {
     }
   }, [load, pollUntilMember]));
 
-  const subscribe = async (interval: BillingInterval) => {
-    setBusy(interval);
+  const subscribe = async (plan: BillingPlan) => {
+    setBusy(planKey(plan));
     setActionError("");
+    setNotice("");
     try {
-      const { url } = await api.billingCheckout(interval, returnTo);
+      const { url } = await api.billingCheckout(plan.tier, plan.interval, returnTo);
       leftToPay.current = inShell;
       openExternal(url);
       // In the app this page stays put while the browser opens; don't leave
@@ -162,6 +185,28 @@ function BillingPage({ checkout }: { checkout?: string }) {
           : t("暂时无法打开支付页面，请稍后再试。")
       );
       load();
+      setBusy(null);
+    }
+  };
+
+  const change = async (plan: BillingPlan) => {
+    setBusy(planKey(plan));
+    setActionError("");
+    setNotice("");
+    try {
+      const next = await api.billingChange(plan.tier, plan.interval);
+      setStatus((prev) => ({ ...(prev || next), ...next }));
+      setPendingChange(null);
+      setNotice(t("方案已更新为「{plan}」。", { plan: tierName(plan.tier, t) }));
+      load();
+    } catch (err) {
+      const code = apiErrorDetail(err);
+      setActionError(
+        code === "PAYMENT_FAILED"
+          ? t("扣款没有成功，方案没有变化。请在“管理订阅”里更新付款方式后再试。")
+          : t("暂时无法更换方案，请稍后再试。")
+      );
+    } finally {
       setBusy(null);
     }
   };
@@ -180,8 +225,42 @@ function BillingPage({ checkout }: { checkout?: string }) {
   };
 
   const sub = status?.subscription;
-  const planLabel = (interval: BillingInterval | null | undefined) =>
-    interval === "year" ? t("年付") : interval === "month" ? t("月付") : "";
+  const currentTier: BillingTier = status?.tier || "basic";
+  const plans = status?.plans || [];
+  const intervals = INTERVALS.filter((i) => plans.some((p) => p.interval === i));
+  const shownInterval = intervals.includes(intervalChoice) ? intervalChoice : intervals[0];
+  const currentPlan = status?.entitled
+    ? plans.find((p) => p.tier === currentTier && p.interval === sub?.interval) || null
+    : null;
+  const perTurn = turnSize(status);
+  const canBuy = !inShell || purchaseAllowed;
+
+  const intervalLabel = (i: BillingInterval | null | undefined) =>
+    i === "year" ? t("年付") : i === "month" ? t("月付") : "";
+
+  const allowanceText = (tier: BillingTier) => {
+    const limit = status?.allowances?.[tier];
+    if (limit === null) return t("不限对话次数");
+    if (limit == null || !perTurn) return "";
+    return t("每天约 {n} 轮对话", { n: Math.max(1, Math.round(limit / perTurn)) });
+  };
+
+  const isUpgrade = (plan: BillingPlan) =>
+    !currentPlan || monthlyAmount(plan) > monthlyAmount(currentPlan);
+
+  const planAction = (plan: BillingPlan) => {
+    if (!status?.entitled) return { label: t("订阅"), onPress: () => subscribe(plan) };
+    if (currentPlan && planKey(plan) === planKey(currentPlan)) return null;
+    return {
+      label: TIER_RANK[plan.tier] > TIER_RANK[currentTier] ? t("升级") : t("切换"),
+      onPress: () => {
+        setActionError("");
+        setPendingChange(plan);
+      },
+    };
+  };
+
+  const loading = (!status && !loadFailed) || (syncing && !status?.entitled);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -202,7 +281,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
               <Ionicons name="sparkles-outline" size={26} color={colors.brand} />
             </View>
             <Text style={styles.title}>{t("NURI 会员")}</Text>
-            <Text style={styles.subtitle}>{t("解锁完整的 NURI 育儿陪伴。")}</Text>
+            <Text style={styles.subtitle}>{t("按每天想和 NURI 聊多少，选择适合你的方案。")}</Text>
           </View>
 
           {checkoutResult === "success" ? (
@@ -217,79 +296,174 @@ function BillingPage({ checkout }: { checkout?: string }) {
             <Banner tone="muted" testID="billing-banner-cancel">{t("已取消支付，没有产生扣款。")}</Banner>
           ) : null}
 
-          {inShell && !purchaseAllowed ? (
-            <Banner tone="muted" testID="billing-shell-notice">{t("App 内暂不支持开通会员。")}</Banner>
-          ) : (!status && !loadFailed) || (syncing && !status?.entitled) ? (
+          {loading ? (
             <ActivityIndicator style={{ marginTop: spacing.xxl }} color={colors.brand} />
-          ) : loadFailed ? (
+          ) : loadFailed || !status ? (
             <Banner tone="error" testID="billing-load-failed">
               {t("会员信息暂时无法读取，请稍后再试。")}
             </Banner>
-          ) : status?.entitled && sub ? (
-            <View style={[styles.card, { marginHorizontal: spacing.lg }]} testID="billing-member-card">
-              <View style={styles.memberRow}>
-                <Ionicons name="checkmark-circle" size={20} color={colors.brand} />
-                <Text style={styles.memberTitle}>{t("你已是 NURI 会员")}</Text>
-                {planLabel(sub.interval) ? <Text style={styles.chip}>{planLabel(sub.interval)}</Text> : null}
-              </View>
-              {sub.status === "past_due" ? (
-                <Text style={[styles.meta, { color: colors.error }]}>
-                  {t("上次扣款没有成功，请更新付款方式以免会员中断。")}
-                </Text>
-              ) : sub.current_period_end ? (
-                <Text style={styles.meta}>
-                  {sub.cancel_at_period_end
-                    ? t("会员将于 {date} 到期，不再续费", { date: formatDate(sub.current_period_end, locale) })
-                    : t("下次续费日期：{date}", { date: formatDate(sub.current_period_end, locale) })}
-                </Text>
-              ) : null}
-              <Pressable
-                style={[styles.secondaryBtn, busy === "portal" && styles.disabled]}
-                onPress={manage}
-                disabled={busy !== null}
-                testID="billing-manage-btn"
-              >
-                {busy === "portal" ? (
-                  <ActivityIndicator color={colors.brand} />
-                ) : (
-                  <Text style={styles.secondaryBtnText}>{t("管理订阅")}</Text>
-                )}
-              </Pressable>
-            </View>
-          ) : !status?.enabled || !status.plans.length ? (
-            <Banner tone="muted" testID="billing-disabled">{t("会员订阅暂未开放，敬请期待。")}</Banner>
           ) : (
             <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
-              {sortPlans(status.plans).map((plan) => (
-                <PlanCard
-                  key={plan.interval}
-                  plan={plan}
-                  price={formatPrice(plan, locale)}
-                  label={planLabel(plan.interval)}
-                  per={plan.interval === "year" ? t("每年") : t("每月")}
-                  cta={t("订阅")}
-                  busy={busy === plan.interval}
-                  disabled={busy !== null}
-                  onPress={() => subscribe(plan.interval)}
+              {status.usage ? (
+                <UsageCard
+                  usage={status.usage}
+                  perTurn={perTurn}
+                  tierLabel={tierName(status.usage.tier, t)}
+                  locale={locale}
                 />
-              ))}
-              {status.has_customer ? (
-                <Pressable onPress={manage} disabled={busy !== null} testID="billing-history-btn">
-                  <Text style={styles.link}>{t("查看付款记录")}</Text>
-                </Pressable>
               ) : null}
-              <Text style={styles.fineprint}>
-                {t("付款由 Stripe 安全处理，NURI 不会保存你的银行卡信息。订阅会自动续费，可随时取消。")}
-              </Text>
-              {inShell ? (
-                // Said before the parent leaves the app, not after.
-                <Text style={styles.fineprint} testID="billing-external-notice">
-                  {t("点击订阅后，会在手机浏览器中打开 Stripe 付款页面；付款完成后回到 NURI App 即可。")}
-                </Text>
+
+              {status.entitled && sub ? (
+                <View style={styles.card} testID="billing-member-card">
+                  <View style={styles.memberRow}>
+                    <Ionicons name="checkmark-circle" size={20} color={colors.brand} />
+                    <Text style={styles.memberTitle}>
+                      {t("你是「{plan}」会员", { plan: tierName(currentTier, t) })}
+                    </Text>
+                    {intervalLabel(sub.interval) ? <Text style={styles.chip}>{intervalLabel(sub.interval)}</Text> : null}
+                  </View>
+                  {sub.status === "past_due" ? (
+                    <Text style={[styles.meta, { color: colors.error }]}>
+                      {t("上次扣款没有成功，请更新付款方式以免会员中断。")}
+                    </Text>
+                  ) : sub.current_period_end ? (
+                    <Text style={styles.meta}>
+                      {sub.cancel_at_period_end
+                        ? t("会员将于 {date} 到期，不再续费", { date: formatDate(sub.current_period_end, locale) })
+                        : t("下次续费日期：{date}", { date: formatDate(sub.current_period_end, locale) })}
+                    </Text>
+                  ) : null}
+                  <Pressable
+                    style={[styles.secondaryBtn, busy === "portal" && styles.disabled]}
+                    onPress={manage}
+                    disabled={busy !== null}
+                    testID="billing-manage-btn"
+                  >
+                    {busy === "portal" ? (
+                      <ActivityIndicator color={colors.brand} />
+                    ) : (
+                      <Text style={styles.secondaryBtnText}>{t("管理订阅")}</Text>
+                    )}
+                  </Pressable>
+                </View>
               ) : null}
+
+              {!canBuy ? (
+                <Banner tone="muted" testID="billing-shell-notice" inset={false}>
+                  {t("App 内暂不支持开通会员。")}
+                </Banner>
+              ) : !status.enabled || !plans.length ? (
+                <Banner tone="muted" testID="billing-disabled" inset={false}>
+                  {t("会员订阅暂未开放，敬请期待。")}
+                </Banner>
+              ) : (
+                <>
+                  {intervals.length > 1 ? (
+                    <View style={styles.toggle} testID="billing-interval-toggle">
+                      {intervals.map((i) => (
+                        <Pressable
+                          key={i}
+                          style={[styles.toggleItem, shownInterval === i && styles.toggleItemOn]}
+                          onPress={() => setIntervalChoice(i)}
+                          testID={`billing-interval-${i}`}
+                        >
+                          <Text style={[styles.toggleText, shownInterval === i && styles.toggleTextOn]}>
+                            {intervalLabel(i)}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  <TierCard
+                    testID="billing-tier-basic"
+                    name={tierName("basic", t)}
+                    price={t("免费")}
+                    allowance={allowanceText("basic")}
+                    current={currentTier === "basic"}
+                    currentLabel={t("当前方案")}
+                  />
+                  {PAID_TIERS.map((tier) => {
+                    const plan = plans.find((p) => p.tier === tier && p.interval === shownInterval);
+                    if (!plan) return null;
+                    const action = planAction(plan);
+                    return (
+                      <TierCard
+                        key={tier}
+                        testID={`billing-tier-${tier}`}
+                        name={tierName(tier, t)}
+                        price={formatPrice(plan, locale)}
+                        per={plan.interval === "year" ? t("每年") : t("每月")}
+                        allowance={allowanceText(tier)}
+                        featured={tier === "unlimited"}
+                        current={!!currentPlan && planKey(plan) === planKey(currentPlan)}
+                        currentLabel={t("当前方案")}
+                        action={action?.label}
+                        busy={busy === planKey(plan)}
+                        disabled={busy !== null || syncing}
+                        onPress={action?.onPress}
+                      />
+                    );
+                  })}
+
+                  {pendingChange ? (
+                    <View style={[styles.card, styles.confirmCard]} testID="billing-change-confirm">
+                      <Text style={styles.confirmTitle}>
+                        {t("切换到「{plan}」（{interval}）？", {
+                          plan: tierName(pendingChange.tier, t),
+                          interval: intervalLabel(pendingChange.interval),
+                        })}
+                      </Text>
+                      <Text style={styles.meta}>
+                        {isUpgrade(pendingChange)
+                          ? t("会立即按本期剩余天数补差价，新额度马上生效。")
+                          : t("立即生效，本期多付的部分会抵扣下一次账单。")}
+                      </Text>
+                      <View style={styles.confirmRow}>
+                        <Pressable
+                          style={[styles.secondaryBtn, styles.confirmBtn]}
+                          onPress={() => setPendingChange(null)}
+                          disabled={busy !== null}
+                          testID="billing-change-cancel"
+                        >
+                          <Text style={styles.secondaryBtnText}>{t("取消")}</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.primaryBtn, styles.confirmBtn, busy !== null && styles.disabled]}
+                          onPress={() => change(pendingChange)}
+                          disabled={busy !== null}
+                          testID="billing-change-confirm-btn"
+                        >
+                          {busy === planKey(pendingChange) ? (
+                            <ActivityIndicator color="#fff" />
+                          ) : (
+                            <Text style={styles.primaryBtnText}>{t("确认")}</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+
+                  {status.has_customer && !status.entitled ? (
+                    <Pressable onPress={manage} disabled={busy !== null} testID="billing-history-btn">
+                      <Text style={styles.link}>{t("查看付款记录")}</Text>
+                    </Pressable>
+                  ) : null}
+                  <Text style={styles.fineprint}>
+                    {t("付款由 Stripe 安全处理，NURI 不会保存你的银行卡信息。订阅会自动续费，可随时取消。")}
+                  </Text>
+                  {inShell && !status.entitled ? (
+                    // Said before the parent leaves the app, not after.
+                    <Text style={styles.fineprint} testID="billing-external-notice">
+                      {t("点击订阅后，会在手机浏览器中打开 Stripe 付款页面；付款完成后回到 NURI App 即可。")}
+                    </Text>
+                  ) : null}
+                </>
+              )}
             </View>
           )}
 
+          {notice ? <Banner tone="success" testID="billing-change-done">{notice}</Banner> : null}
           {actionError ? <Banner tone="error" testID="billing-action-error">{actionError}</Banner> : null}
         </ScrollView>
       </View>
@@ -334,49 +508,141 @@ function BackToApp({ checkout }: { checkout?: string }) {
   );
 }
 
-function sortPlans(plans: BillingPlan[]): BillingPlan[] {
-  // Yearly first: it's the one we'd rather a parent notice.
-  const rank = (p: BillingPlan) => (p.interval === "year" ? 0 : 1);
-  return [...plans].sort((a, b) => rank(a) - rank(b));
+const INTERVALS: BillingInterval[] = ["month", "year"];
+const PAID_TIERS: PaidTier[] = ["plus", "unlimited"];
+const TIER_RANK: Record<BillingTier, number> = { basic: 0, plus: 1, unlimited: 2 };
+
+type Translate = ReturnType<typeof useT>["t"];
+
+function tierName(tier: BillingTier, t: Translate): string {
+  return tier === "unlimited" ? t("无限") : tier === "plus" ? t("进阶") : t("基础");
 }
 
-function PlanCard({
-  plan,
+function planKey(plan: BillingPlan): string {
+  return `${plan.tier}:${plan.interval}`;
+}
+
+function monthlyAmount(plan: BillingPlan): number {
+  const amount = plan.unit_amount || 0;
+  return plan.interval === "year" ? amount / 12 : amount;
+}
+
+/** Tokens in one conversation turn, for turning allowances into something a
+ *  parent can picture. `basic` is sized as ten turns (backend/quota.py). */
+function turnSize(status: BillingStatus | null): number {
+  const basic = status?.allowances?.basic;
+  return basic ? basic / 10 : 0;
+}
+
+function formatTime(iso: string, locale: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+}
+
+function UsageCard({
+  usage,
+  perTurn,
+  tierLabel,
+  locale,
+}: {
+  usage: BillingUsage;
+  perTurn: number;
+  tierLabel: string;
+  locale: string;
+}) {
+  const { t } = useT();
+  const unlimited = usage.limit == null;
+  const share = unlimited || !usage.limit ? 0 : Math.min(1, usage.used / usage.limit);
+  const turnsLeft =
+    !unlimited && perTurn ? Math.max(0, Math.floor((usage.remaining || 0) / perTurn)) : null;
+  return (
+    <View style={styles.card} testID="billing-usage-card">
+      <View style={styles.memberRow}>
+        <Text style={[styles.memberTitle, { fontSize: type.base }]}>{t("今日对话额度")}</Text>
+        <Text style={styles.chip}>{tierLabel}</Text>
+      </View>
+      {unlimited ? (
+        <Text style={styles.meta}>{t("不限对话次数，畅聊无忧。")}</Text>
+      ) : (
+        <>
+          <View style={styles.meter}>
+            <View
+              style={[
+                styles.meterFill,
+                { width: `${Math.round(share * 100)}%` },
+                usage.exhausted && { backgroundColor: colors.error },
+              ]}
+            />
+          </View>
+          <Text style={styles.meta} testID="billing-usage-text">
+            {usage.exhausted
+              ? t("今天的额度已用完，{time} 恢复。", { time: formatTime(usage.resets_at, locale) })
+              : turnsLeft != null
+                ? t("今天还能聊约 {n} 轮，{time} 重置。", {
+                    n: turnsLeft,
+                    time: formatTime(usage.resets_at, locale),
+                  })
+                : t("已用 {pct}%", { pct: Math.round(share * 100) })}
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
+function TierCard({
+  name,
   price,
-  label,
   per,
-  cta,
+  allowance,
+  featured,
+  current,
+  currentLabel,
+  action,
   busy,
   disabled,
   onPress,
+  testID,
 }: {
-  plan: BillingPlan;
+  name: string;
   price: string;
-  label: string;
-  per: string;
-  cta: string;
-  busy: boolean;
-  disabled: boolean;
-  onPress: () => void;
+  per?: string;
+  allowance: string;
+  featured?: boolean;
+  current?: boolean;
+  currentLabel: string;
+  action?: string;
+  busy?: boolean;
+  disabled?: boolean;
+  onPress?: () => void;
+  testID: string;
 }) {
-  const featured = plan.interval === "year";
   return (
-    <View style={[styles.card, styles.planCard, featured && styles.planFeatured]} testID={`billing-plan-${plan.interval}`}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.planLabel}>{label}</Text>
+    <View
+      style={[styles.card, styles.planCard, featured && styles.planFeatured, current && styles.planCurrent]}
+      testID={testID}
+    >
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={styles.planLabel}>{name}</Text>
         <Text style={styles.planPrice}>
           {price}
-          <Text style={styles.planPer}> / {per}</Text>
+          {per ? <Text style={styles.planPer}> / {per}</Text> : null}
         </Text>
+        {allowance ? <Text style={styles.meta}>{allowance}</Text> : null}
       </View>
-      <Pressable
-        style={[styles.primaryBtn, disabled && !busy && styles.disabled]}
-        onPress={onPress}
-        disabled={disabled}
-        testID={`billing-subscribe-${plan.interval}`}
-      >
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>{cta}</Text>}
-      </Pressable>
+      {current ? (
+        <Text style={styles.chip} testID={`${testID}-current`}>{currentLabel}</Text>
+      ) : action && onPress ? (
+        <Pressable
+          style={[styles.primaryBtn, disabled && !busy && styles.disabled]}
+          onPress={onPress}
+          disabled={disabled}
+          testID={`${testID}-action`}
+        >
+          {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>{action}</Text>}
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -385,10 +651,13 @@ function Banner({
   tone,
   children,
   testID,
+  inset = true,
 }: {
   tone: "success" | "muted" | "error";
   children: React.ReactNode;
   testID: string;
+  /** False inside a container that already pads its children. */
+  inset?: boolean;
 }) {
   const palette = {
     success: { bg: colors.brandTertiary, fg: colors.onBrandTertiary },
@@ -396,7 +665,10 @@ function Banner({
     error: { bg: "#FFF4F2", fg: colors.error },
   }[tone];
   return (
-    <View style={[styles.banner, { backgroundColor: palette.bg }]} testID={testID}>
+    <View
+      style={[styles.banner, !inset && { marginHorizontal: 0, marginBottom: 0 }, { backgroundColor: palette.bg }]}
+      testID={testID}
+    >
       <Text style={{ color: palette.fg, fontSize: type.base, lineHeight: 20 }}>{children}</Text>
     </View>
   );
@@ -429,6 +701,29 @@ const styles = StyleSheet.create({
   },
   planCard: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   planFeatured: { borderColor: colors.brand, borderWidth: 2 },
+  planCurrent: { backgroundColor: colors.brandTertiary },
+  toggle: {
+    flexDirection: "row",
+    alignSelf: "center",
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.pill,
+    padding: 3,
+  },
+  toggleItem: { paddingHorizontal: spacing.lg, paddingVertical: spacing.xs + 2, borderRadius: radius.pill },
+  toggleItemOn: { backgroundColor: "#fff" },
+  toggleText: { fontSize: type.base, color: colors.muted, fontWeight: "600" },
+  toggleTextOn: { color: colors.onSurface },
+  meter: {
+    height: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceTertiary,
+    overflow: "hidden",
+  },
+  meterFill: { height: 8, borderRadius: radius.pill, backgroundColor: colors.brand },
+  confirmCard: { borderColor: colors.brand },
+  confirmTitle: { fontSize: type.base, fontWeight: "700", color: colors.onSurface },
+  confirmRow: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
+  confirmBtn: { flex: 1, marginTop: 0, minWidth: 0 },
   planLabel: { fontSize: type.base, color: colors.muted, fontWeight: "600" },
   planPrice: { fontSize: type.xl, color: colors.onSurface, fontWeight: "700", marginTop: 2 },
   planPer: { fontSize: type.sm, color: colors.muted, fontWeight: "400" },
