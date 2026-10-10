@@ -982,13 +982,18 @@ export type BillingPlan = {
   currency: string | null;
 };
 
-/** Today's chat allowance, in tokens (backend/quota.py). `limit` null = none. */
+/** Today's chat allowance (backend/quota.py). Spent in tokens, set in
+ *  conversation turns of `tokens_per_turn` each. `limit` null = none. */
 export type BillingUsage = {
   tier: BillingTier;
   limit: number | null;
   used: number;
   remaining: number | null;
   exhausted: boolean;
+  limit_turns: number | null;
+  tokens_per_turn: number;
+  /** This account has its own allowance (e.g. a sponsored account). */
+  override: boolean;
   resets_at: string;
   enforced: boolean;
 };
@@ -999,7 +1004,7 @@ export type BillingStatus = {
   tier: BillingTier;
   has_customer: boolean;
   plans: BillingPlan[];
-  /** Daily token allowance per tier; null = unlimited. */
+  /** Conversation turns a day per tier; null = unlimited. */
   allowances?: Partial<Record<BillingTier, number | null>>;
   usage?: BillingUsage | null;
   subscription: null | {

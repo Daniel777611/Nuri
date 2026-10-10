@@ -23,9 +23,10 @@ let billingPreview: any = (() => {
       { tier: "unlimited", interval: "month", price_id: "price_preview_um", unit_amount: 1499, currency: "usd" },
       { tier: "unlimited", interval: "year", price_id: "price_preview_uy", unit_amount: 19900, currency: "usd" },
     ],
-    allowances: { basic: 130000, plus: 650000, unlimited: null },
+    allowances: { basic: 10, plus: 25, unlimited: null },
     usage: {
       tier: "basic", limit: 130000, used: 52000, remaining: 78000, exhausted: false,
+      limit_turns: 10, tokens_per_turn: 13000, override: false,
       resets_at: new Date(new Date().setHours(24, 0, 0, 0)).toISOString(), enforced: false,
     },
   };
@@ -765,7 +766,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     const interval = body?.interval === "year" ? "year" : "month";
     const tier = body?.tier === "plus" ? "plus" : "unlimited";
     const end = new Date(Date.now() + (interval === "year" ? 365 : 30) * 86400000).toISOString();
-    const limit = tier === "plus" ? 650000 : null;
+    const limit = tier === "plus" ? 25 * 13000 : null;
     billingPreview = {
       ...billingPreview,
       entitled: true,
@@ -773,7 +774,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       has_customer: true,
       subscription: { status: "active", tier, interval, current_period_end: end, cancel_at_period_end: false },
       usage: {
-        ...billingPreview.usage, tier, limit,
+        ...billingPreview.usage, tier, limit, limit_turns: tier === "plus" ? 25 : null,
         remaining: limit == null ? null : limit - billingPreview.usage.used,
         exhausted: false,
       },

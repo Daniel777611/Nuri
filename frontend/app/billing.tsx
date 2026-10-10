@@ -232,17 +232,16 @@ function BillingPage({ checkout }: { checkout?: string }) {
   const currentPlan = status?.entitled
     ? plans.find((p) => p.tier === currentTier && p.interval === sub?.interval) || null
     : null;
-  const perTurn = turnSize(status);
   const canBuy = !inShell || purchaseAllowed;
 
   const intervalLabel = (i: BillingInterval | null | undefined) =>
     i === "year" ? t("年付") : i === "month" ? t("月付") : "";
 
   const allowanceText = (tier: BillingTier) => {
-    const limit = status?.allowances?.[tier];
-    if (limit === null) return t("不限对话次数");
-    if (limit == null || !perTurn) return "";
-    return t("每天约 {n} 轮对话", { n: Math.max(1, Math.round(limit / perTurn)) });
+    const turns = status?.allowances?.[tier];
+    if (turns === null) return t("不限对话次数");
+    if (turns == null) return "";
+    return t("每天 {n} 轮对话", { n: turns });
   };
 
   const isUpgrade = (plan: BillingPlan) =>
@@ -307,8 +306,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
               {status.usage ? (
                 <UsageCard
                   usage={status.usage}
-                  perTurn={perTurn}
-                  tierLabel={tierName(status.usage.tier, t)}
+                  tierLabel={status.usage.override ? t("专属额度") : tierName(status.usage.tier, t)}
                   locale={locale}
                 />
               ) : null}
@@ -527,13 +525,6 @@ function monthlyAmount(plan: BillingPlan): number {
   return plan.interval === "year" ? amount / 12 : amount;
 }
 
-/** Tokens in one conversation turn, for turning allowances into something a
- *  parent can picture. `basic` is sized as ten turns (backend/quota.py). */
-function turnSize(status: BillingStatus | null): number {
-  const basic = status?.allowances?.basic;
-  return basic ? basic / 10 : 0;
-}
-
 function formatTime(iso: string, locale: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -542,18 +533,17 @@ function formatTime(iso: string, locale: string): string {
 
 function UsageCard({
   usage,
-  perTurn,
   tierLabel,
   locale,
 }: {
   usage: BillingUsage;
-  perTurn: number;
   tierLabel: string;
   locale: string;
 }) {
   const { t } = useT();
   const unlimited = usage.limit == null;
   const share = unlimited || !usage.limit ? 0 : Math.min(1, usage.used / usage.limit);
+  const perTurn = usage.tokens_per_turn;
   const turnsLeft =
     !unlimited && perTurn ? Math.max(0, Math.floor((usage.remaining || 0) / perTurn)) : null;
   return (

@@ -27,6 +27,11 @@ def _gte(self, key, value):
     return self
 
 
+def _in(self, key, values):
+    self.filters.append(lambda row: row.get(key) in values)
+    return self
+
+
 PRICES = {
     "price_plus_m": ("plus", "month", 900),
     "price_plus_y": ("plus", "year", 9000),
@@ -39,8 +44,12 @@ PRICES = {
 def env(monkeypatch):
     monkeypatch.setattr(Query, "like", _like, raising=False)
     monkeypatch.setattr(Query, "gte", _gte, raising=False)
+    monkeypatch.setattr(Query, "in_", _in, raising=False)
     db = Database()
     db.tables["llm_call_logs"] = []
+    db.tables["app_settings"] = []
+    db.tables[quota.OVERRIDE_TABLE] = []
+    quota._config_cache.update(at=0.0, value=None)
     fake = FakeStripe()
     fake.prices_by_id = {
         pid: {"id": pid, "unit_amount": amount, "currency": "usd",
@@ -63,8 +72,7 @@ def env(monkeypatch):
     fake.v1.subscriptions.update = update
     fake.updates = updates
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
-    for name in ("STRIPE_PRICE_MONTHLY", "STRIPE_PRICE_YEARLY", "QUOTA_ENFORCED",
-                 "QUOTA_BASIC_DAILY_TOKENS", "QUOTA_PLUS_DAILY_TOKENS"):
+    for name in ("STRIPE_PRICE_MONTHLY", "STRIPE_PRICE_YEARLY", "QUOTA_ENFORCED"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("STRIPE_PRICE_PLUS_MONTHLY", "price_plus_m")
     monkeypatch.setenv("STRIPE_PRICE_PLUS_YEARLY", "price_plus_y")
@@ -213,15 +221,28 @@ def test_choosing_the_current_plan_changes_nothing(env):
 NOON_UTC = datetime(2026, 10, 9, 17, 0, tzinfo=timezone.utc)
 
 
-def test_basic_allowance_is_about_ten_turns(env):
-    assert quota.daily_limit("basic") == 130_000
-    assert quota.daily_limit("plus") == 650_000
-    assert quota.daily_limit("unlimited") is None
+def test_default_allowances_are_ten_and_twenty_five_turns(env):
+    config = quota.load_config(env.db)
+    assert quota.tier_turns(config, "basic") == 10
+    assert quota.tier_turns(config, "plus") == 25
+    assert quota.tier_turns(config, "unlimited") is None
+    assert config["tokens_per_turn"] == 13_000
 
 
-def test_allowance_can_be_tuned_per_deployment(env, monkeypatch):
-    monkeypatch.setenv("QUOTA_BASIC_DAILY_TOKENS", "50000")
-    assert quota.daily_limit("basic") == 50_000
+def test_allowances_are_changed_from_the_admin_page(env):
+    asyncio.run(main.admin_set_quota_config(
+        main.QuotaConfigUpdate(basic_turns=8, plus_turns=30, tokens_per_turn=12_000)))
+    quota._config_cache.update(at=0.0, value=None)   # another instance reads the row
+    config = quota.load_config(env.db)
+    assert config["turns"] == {"basic": 8, "plus": 30, "unlimited": None}
+    snap = quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)
+    assert snap["limit"] == 8 * 12_000
+    assert snap["limit_turns"] == 8
+
+
+def test_a_garbled_config_row_falls_back_to_defaults(env):
+    env.db.tables["app_settings"].append({"key": quota.CONFIG_KEY, "value": '{"turns": {"basic": -3}}'})
+    assert quota.tier_turns(quota.load_config(env.db, fresh=True), "basic") == 10
 
 
 def test_only_the_parents_own_chat_spending_counts(env):
@@ -232,7 +253,7 @@ def test_only_the_parents_own_chat_spending_counts(env):
     _spend(env, 80_000, at="2026-10-08T15:00:00+00:00")  # yesterday
     snap = quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)
     assert snap["used"] == 49_000
-    assert snap["remaining"] == 81_000
+    assert snap["remaining"] == 130_000 - 49_000
     assert snap["exhausted"] is False
 
 
@@ -290,4 +311,63 @@ def test_status_reports_tier_usage_and_allowances(env):
     assert result["tier"] == "basic"
     assert result["usage"]["used"] == 1_000
     assert result["usage"]["limit"] == 130_000
-    assert result["allowances"] == {"basic": 130_000, "plus": 650_000, "unlimited": None}
+    assert result["allowances"] == {"basic": 10, "plus": 25, "unlimited": None}
+
+
+# ── Per-account overrides ─────────────────────────────────────────────────────
+
+def _override(env, **body):
+    return asyncio.run(main.admin_set_quota_override(main.QuotaOverrideUpdate(**body)))
+
+
+def test_a_sponsored_account_gets_its_own_allowance(env):
+    _override(env, email="Parent@Example.test", daily_turns=100, note="赞助")
+    snap = quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)
+    assert snap["limit_turns"] == 100
+    assert snap["limit"] == 100 * 13_000
+    assert snap["override"] is True
+
+
+def test_an_override_can_be_unlimited(env):
+    _override(env, user_id="u1", daily_turns=None)
+    snap = quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)
+    assert snap["limit"] is None and snap["exhausted"] is False
+
+
+def test_an_override_never_lowers_a_paid_tier(env):
+    _subscribe(env, "price_plus_m")
+    _override(env, user_id="u1", daily_turns=12)
+    assert quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)["limit_turns"] == 25
+
+
+def test_an_expired_override_stops_applying(env):
+    _override(env, user_id="u1", daily_turns=100,
+              expires_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
+    snap = quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)
+    assert snap["limit_turns"] == 10 and snap["override"] is False
+
+
+def test_an_override_for_an_unknown_email_is_refused(env):
+    with pytest.raises(HTTPException) as exc:
+        _override(env, email="nobody@example.test", daily_turns=50)
+    assert exc.value.status_code == 404
+
+
+def test_the_admin_list_names_each_overridden_account(env):
+    _override(env, user_id="u1", daily_turns=40, note="赞助")
+    result = asyncio.run(main.admin_get_quota())
+    assert result["config"]["turns"]["plus"] == 25
+    assert result["overrides"][0]["email"] == "parent@example.test"
+    assert result["overrides"][0]["daily_turns"] == 40
+
+
+def test_overrides_fail_open_without_the_table(env):
+    del env.db.tables[quota.OVERRIDE_TABLE]
+
+    def broken(name):
+        if name == quota.OVERRIDE_TABLE:
+            raise RuntimeError("relation user_quota_overrides does not exist")
+        return Query(env.db, name)
+
+    env.db.table = broken
+    assert quota.snapshot(env.db, "u1", "UTC", now=NOON_UTC)["limit_turns"] == 10

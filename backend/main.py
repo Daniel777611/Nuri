@@ -6373,7 +6373,9 @@ async def billing_status(uid: str = Depends(_req_uid), tz: Optional[str] = None)
     except Exception as exc:  # noqa: BLE001 - a Stripe outage must not hide the status
         logging.getLogger("nuri.billing").warning("plans unavailable: %s", type(exc).__name__)
         result["plans"] = []
-    result["allowances"] = {tier: quota.daily_limit(tier) for tier in billing.TIERS}
+    config = await anyio.to_thread.run_sync(lambda: quota.load_config(sb))
+    # Conversation turns a day per tier; null = unlimited.
+    result["allowances"] = {tier: quota.tier_turns(config, tier) for tier in billing.TIERS}
     try:
         result["usage"] = await anyio.to_thread.run_sync(
             lambda: quota.snapshot(sb, uid, tz, tier=result["tier"])
@@ -7313,6 +7315,114 @@ async def admin_create_test_account(body: TestAccountCreate, _: None = Depends(_
 
 class AccountFlagsUpdate(BaseModel):
     is_internal: bool
+
+
+# ── Chat allowance (backend/quota.py) ────────────────────────────────────────
+
+class QuotaConfigUpdate(BaseModel):
+    basic_turns: int = Field(ge=1, le=10_000)
+    plus_turns: int = Field(ge=1, le=10_000)
+    tokens_per_turn: int = Field(ge=1_000, le=1_000_000)
+
+
+class QuotaOverrideUpdate(BaseModel):
+    # One of the two names the account; email is what an operator has to hand.
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    # Turns per day; null = unlimited.
+    daily_turns: Optional[int] = Field(default=None, ge=1, le=100_000)
+    note: str = Field(default="", max_length=500)
+    expires_at: Optional[datetime] = None
+
+
+def _quota_overrides_missing(exc: Exception) -> bool:
+    return quota.OVERRIDE_TABLE in str(exc)
+
+
+@app.get("/admin/quota")
+async def admin_get_quota(_: None = Depends(_require_admin)):
+    """The tier allowances and every per-account override, with who it is."""
+    sb = _require_auth_storage()
+    config = await anyio.to_thread.run_sync(lambda: quota.load_config(sb, fresh=True))
+    try:
+        rows = await anyio.to_thread.run_sync(
+            lambda: sb.table(quota.OVERRIDE_TABLE).select("*")
+            .order("updated_at", desc=True).limit(500).execute().data or []
+        )
+    except Exception as e:
+        if _quota_overrides_missing(e):
+            raise HTTPException(503, "user_quota_overrides 不存在 —— 先跑 20261009020000_quota_overrides.sql")
+        raise HTTPException(503, f"overrides unavailable: {type(e).__name__}")
+    ids = [r["user_id"] for r in rows]
+    people = {}
+    if ids:
+        users = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("id,email,nickname").in_("id", ids).execute().data or []
+        )
+        people = {u["id"]: u for u in users}
+    for row in rows:
+        person = people.get(row["user_id"]) or {}
+        row["email"] = person.get("email")
+        row["nickname"] = person.get("nickname")
+    return {"config": config, "enforced": quota.enforced(), "overrides": rows}
+
+
+@app.put("/admin/quota/config")
+async def admin_set_quota_config(body: QuotaConfigUpdate, _: None = Depends(_require_admin)):
+    sb = _require_auth_storage()
+    config = await anyio.to_thread.run_sync(lambda: quota.save_config(sb, {
+        "tokens_per_turn": body.tokens_per_turn,
+        "turns": {"basic": body.basic_turns, "plus": body.plus_turns},
+    }))
+    return {"config": config}
+
+
+@app.put("/admin/quota/overrides")
+async def admin_set_quota_override(body: QuotaOverrideUpdate, _: None = Depends(_require_admin)):
+    """Give one account its own daily allowance (sponsored accounts and the
+    like). The account gets this or its tier's allowance, whichever is more."""
+    sb = _require_auth_storage()
+    if body.user_id:
+        users = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("id,email").eq("id", body.user_id)
+            .limit(1).execute().data or []
+        )
+    elif body.email:
+        email = body.email.strip().lower()
+        users = await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("id,email").eq("email", email)
+            .limit(1).execute().data or []
+        )
+    else:
+        raise HTTPException(400, "user_id 或 email 至少填一个")
+    if not users:
+        raise HTTPException(404, "找不到这个账号")
+    uid = users[0]["id"]
+    row = {
+        "user_id": uid,
+        "daily_turns": body.daily_turns,
+        "note": body.note.strip(),
+        "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+        "updated_at": _now(),
+    }
+    try:
+        await anyio.to_thread.run_sync(
+            lambda: sb.table(quota.OVERRIDE_TABLE).upsert(row, on_conflict="user_id").execute()
+        )
+    except Exception as e:
+        if _quota_overrides_missing(e):
+            raise HTTPException(503, "user_quota_overrides 不存在 —— 先跑 20261009020000_quota_overrides.sql")
+        raise HTTPException(503, f"save failed: {type(e).__name__}")
+    return {"override": {**row, "email": users[0].get("email")}}
+
+
+@app.delete("/admin/quota/overrides/{user_id}")
+async def admin_delete_quota_override(user_id: str, _: None = Depends(_require_admin)):
+    sb = _require_auth_storage()
+    await anyio.to_thread.run_sync(
+        lambda: sb.table(quota.OVERRIDE_TABLE).delete().eq("user_id", user_id).execute()
+    )
+    return {"deleted": user_id}
 
 
 @app.patch("/admin/accounts/{user_id}")
