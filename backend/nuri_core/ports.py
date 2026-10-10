@@ -68,6 +68,8 @@ class CorePorts:
     #: the number; the label is only for the prompt.
     age_months: Callable[[str], Optional[int]] = lambda _birth_date: None
     memory_context: Callable[[Optional[str]], Awaitable[str]] = _empty_str_async
+    #: The standing memories (constraints) block, read whole every turn.
+    standing_context: Callable[[Optional[str]], Awaitable[str]] = _empty_str_async
     follow_up_context: Callable[[Optional[str]], Awaitable[str]] = _empty_str_async
 
     # ── 2 知识与决策模型 ──────────────────────────────────────────────────

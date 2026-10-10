@@ -142,6 +142,9 @@ class FamilyState:
     #: Hard limits the reply must respect — allergies, diagnoses, stated
     #: refusals. Promoted out of free-text memory so safety can see them.
     constraints: Sequence[str] = ()
+    #: Standing memories — the constraint rows from user_memories, rendered
+    #: whole on every turn rather than ranked against the question.
+    standing_block: str = ""           # 常驻约束
     memory_block: str = ""             # 长期信息
     follow_up_block: str = ""          # 到期的主动关心
     #: Changes whenever anything above changes. The cache key, and what makes a

@@ -166,15 +166,20 @@ async def enrich(
         # switch or any other per-turn field still takes effect.
         return replace(
             state,
+            standing_block=hit.standing_block,
             memory_block=hit.memory_block,
             follow_up_block=hit.follow_up_block,
             enriched=True,
             cache_hit=True,
         )
 
-    memory_block, follow_up_block = await asyncio.gather(
+    standing_block, memory_block, follow_up_block = await asyncio.gather(
+        ports.standing_context(uid),
         ports.memory_context(uid),
         ports.follow_up_context(uid),
+    )
+    standing_block = family_store.reconcile_context_with_child_profile(
+        standing_block, list(state.child_profiles),
     )
     memory_block = family_store.reconcile_context_with_child_profile(
         memory_block, list(state.child_profiles),
@@ -184,6 +189,7 @@ async def enrich(
     )
     enriched = replace(
         state,
+        standing_block=standing_block or "",
         memory_block=memory_block or "",
         follow_up_block=follow_up_block or "",
         enriched=True,
@@ -211,10 +217,20 @@ async def extract_and_upsert_memories(
     if not family_store.worth_extracting(history):
         return
     try:
+        # What is already remembered goes in with the conversation, so the
+        # extractor can update a fact under its old key and retire one the
+        # parent has overturned ("不训睡了") instead of storing both.
+        known = await family_store.load_known_memories(user_id)
         extracted = await anyio.to_thread.run_sync(
-            lambda: family_store.extract_memories_sync(history, temporal_context)
+            lambda: family_store.extract_memories_sync(history, temporal_context, known)
         )
         memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
+        if isinstance(extracted, dict):
+            # Before the upsert: a retired key written again in the same
+            # extraction comes back active with its new value.
+            await family_store.retire_memories(
+                extracted.get("retire", []), user_id=user_id,
+            )
         await family_store.upsert_memories(
             memories, user_id=user_id, child_id=None,
             source_type=source_type, source_id=source_id,

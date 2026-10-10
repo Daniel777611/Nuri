@@ -479,13 +479,28 @@ async def save_normalized_input(
     except Exception as e:
         print(f"[warn] save_normalized_input: {e}")
 
+def _known_memories_block(known: Optional[list[dict]]) -> str:
+    """What NURI already remembers, shown to the extractor so it can reuse a
+    key for the same fact and retire one the conversation has overturned."""
+    lines = []
+    for m in (known or [])[:KNOWN_MEMORIES_FOR_EXTRACTION]:
+        key, value = (m.get("key") or "").strip(), (m.get("value") or "").strip()
+        if key and value:
+            lines.append(f"- [{m.get('category') or 'fact'}] {key}：{value[:80]}")
+    if not lines:
+        return ""
+    return "已经记住的信息（category / key：value）：\n" + "\n".join(lines)
+
+
 def extract_memories_sync(
     history: list[dict],
     temporal_context: Optional[temporal.TemporalContext] = None,
+    known: Optional[list[dict]] = None,
 ) -> dict:
-    """Ask a small model whether this conversation contains stable, reusable facts."""
+    """Ask a small model whether this conversation contains stable, reusable
+    facts, and which remembered ones it has overturned."""
     if not oai:
-        return {"memories": [], "follow_ups": []}
+        return {"memories": [], "follow_ups": [], "retire": []}
     recent = history[-8:]
     if temporal_context is not None:
         recent = temporal.annotate_history(recent, temporal_context)
@@ -494,12 +509,21 @@ def extract_memories_sync(
         for m in recent if m.get("text")
     )
     if not convo.strip():
-        return {"memories": [], "follow_ups": []}
+        return {"memories": [], "follow_ups": [], "retire": []}
     system = (
-        "从下面这段育儿助手对话里提取两种东西。两者都没有就都返回空数组，不要勉强凑数。\n\n"
+        "从下面这段育儿助手对话里提取三种东西。都没有就都返回空数组，不要勉强凑数。\n\n"
         "memories：值得长期记住的、稳定的事实——长期偏好、过敏史、育儿理念上的坚持、"
         "孩子的持续性状态。不要提取一次性的、当下情绪化的、或还不确定的内容。"
-        "如果 value 中必须保留时间，把相对时间改成绝对日期或明确持续时长；无法确定就写具体日期未确认。\n\n"
+        "如果 value 中必须保留时间，把相对时间改成绝对日期或明确持续时长；无法确定就写具体日期未确认。\n"
+        "- category=constraint 只用于以后每一次回复、每一张推荐内容都必须遵守的事实："
+        "孩子的诊断、身体或行动上的限制、过敏，家长明确拒绝或已经停止的做法"
+        "（例如「不再训睡了」「不想用配方奶」），以及会让一般育儿建议不适用的家庭处境。"
+        "constraint 的 value 写成一句能直接拿来检查推荐的话，不超过 40 字，"
+        "例如「已决定不做睡眠训练，不要再推荐训睡方法」「孩子下肢瘫痪，不能建议跑跳类活动」。\n"
+        "- 同一件事有了新情况，沿用已记住的那条 key 写新的 value。\n\n"
+        "retire：已经记住的信息里，被这段对话明确推翻、不再成立的条目"
+        "（例如以前记着在训睡，现在家长说不训了），填它原来的 category 和 key。"
+        "只是没提到的不算推翻；拿不准就不要填。\n\n"
         "follow_ups：过一段时间值得回头关心一次的事。包括家长提到的有日期的安排"
         "（几号开始托婴、哪天回诊、下周满两岁），也包括正在进行、需要一段时间才看得出结果的事"
         "（在戒尿布、刚换睡眠作息、在试新食材），以及 NURI 自己刚承诺过要之后再看的事。\n"
@@ -517,6 +541,9 @@ def extract_memories_sync(
             "\n- 提取 memories.value、follow_up.note 和 due_date 时，将相对日期规范化为用户当地的绝对日期。"
             "无法从时间标注确定的日期不要猜，due_date 留空。"
         )
+    known_block = _known_memories_block(known)
+    if known_block:
+        convo = f"{known_block}\n\n对话：\n{convo}"
     try:
         resp = oai.chat.completions.create(
             model="gpt-5.4-mini",
@@ -562,8 +589,20 @@ def extract_memories_sync(
                                     "additionalProperties": False,
                                 },
                             },
+                            "retire": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {"type": "string"},
+                                        "key": {"type": "string"},
+                                    },
+                                    "required": ["category", "key"],
+                                    "additionalProperties": False,
+                                },
+                            },
                         },
-                        "required": ["memories", "follow_ups"],
+                        "required": ["memories", "follow_ups", "retire"],
                         "additionalProperties": False,
                     },
                 },
@@ -576,10 +615,11 @@ def extract_memories_sync(
         return {
             "memories": data.get("memories", [])[:5],
             "follow_ups": data.get("follow_ups", [])[:3],
+            "retire": data.get("retire", [])[:5],
         }
     except Exception as e:
         print(f"[error] extract_memories_sync failed: {type(e).__name__}: {e}")
-        return {"memories": [], "follow_ups": []}
+        return {"memories": [], "follow_ups": [], "retire": []}
 
 async def upsert_memories(
     memories: list[dict], *, user_id: str, child_id: Optional[str],
@@ -600,7 +640,7 @@ async def upsert_memories(
         if not key or not value:
             continue
         try:
-            q = sb.table("user_memories").select("id,confidence").eq("user_id", user_id).eq("category", category).eq("key", key)
+            q = sb.table("user_memories").select("id,confidence,status").eq("user_id", user_id).eq("category", category).eq("key", key)
             q = q.is_("child_id", "null") if child_id is None else q.eq("child_id", child_id)
             existing = await anyio.to_thread.run_sync(lambda: q.execute())
             if existing.data:
@@ -610,8 +650,13 @@ async def upsert_memories(
                     "source_id": source_id,
                     "last_confirmed_at": now_iso,
                     "updated_at": now_iso,
+                    # Said again after being retired: it is true again.
+                    "status": "active",
                 }
-                if confidence >= old_confidence:
+                # A retired row's confidence described a fact that is no
+                # longer true; it gives no reason to keep the old wording.
+                retired = (existing.data[0].get("status") or "active") != "active"
+                if confidence >= old_confidence or retired:
                     updates["value"] = value
                     updates["confidence"] = confidence
                 await anyio.to_thread.run_sync(lambda: sb.table("user_memories").update(updates).eq("id", row_id).execute())
@@ -849,6 +894,7 @@ MEMORY_FETCH_LIMIT = 40
 
 async def get_memory_context(
     user_id: Optional[str], query: str = "", limit: int = MEMORY_FETCH_LIMIT,
+    *, include_standing: bool = True,
 ) -> str:
     """The few long-term memories that bear on this question.
 
@@ -861,6 +907,11 @@ async def get_memory_context(
     Now: fetch a wider set, rank against the parent's current message, keep the
     top three, cap each. Grouping by category is kept — it reads as a profile
     rather than a list of overheard remarks — but only over what survives.
+
+    `include_standing=False` leaves the constraint rows out of the ranking:
+    the four-model pipeline renders them every turn through
+    `get_standing_context`, and ranking them here as well would spend one of
+    the three slots on a fact the prompt already carries.
     """
     if not user_id:
         return ""
@@ -885,6 +936,7 @@ async def get_memory_context(
              "updated_at": r.get("updated_at") or ""}
             for r in rows
             if (r.get("value") or "").strip()
+            and (include_standing or r.get("category") != STANDING_CATEGORY)
         ],
         query,
     )
@@ -893,3 +945,123 @@ async def get_memory_context(
         label = MEMORY_CATEGORY_LABELS.get(m["category"], "其他信息")
         grouped.setdefault(label, []).append(m["text"])
     return "\n".join(f"{label}：{'；'.join(values)}" for label, values in grouped.items())
+
+
+# ── Standing memories ────────────────────────────────────────────────────────
+#
+# The few facts every reply and every recommendation must respect: a diagnosis,
+# a mobility limit, an allergy, a practice the parent has said they stopped or
+# refuse. Ranking memories by overlap with the current message is right for
+# everything else and wrong for these — "孩子下肢瘫痪" shares no characters with
+# "周末带他去哪里玩", which is exactly the turn where it matters. So they skip
+# the ranking and ride along whole, and the home feed reads them too, which
+# before this read no long-term memory at all.
+#
+# Stored as ordinary `user_memories` rows with category='constraint', so no
+# migration is involved; retiring one sets status='archived'.
+
+STANDING_CATEGORY = "constraint"
+#: A ceiling, not a target. A family with more than this many standing facts
+#: has had preferences misfiled as constraints; the newest win.
+STANDING_LIMIT = int(os.getenv("STANDING_MEMORY_LIMIT", "8"))
+STANDING_TOKEN_LIMIT = int(os.getenv("STANDING_MEMORY_TOKEN_LIMIT", "40"))
+#: How much of what is already remembered the extractor sees. Enough to cover a
+#: typical family; the extractor only needs it to reuse and retire keys.
+KNOWN_MEMORIES_FOR_EXTRACTION = 30
+
+
+async def load_standing_memories(
+    user_id: Optional[str], children: Optional[list] = None,
+) -> list[str]:
+    """The active constraint values, newest first, each clipped.
+
+    With `children`, child names and birthdays are redacted, for callers whose
+    text crosses into a search or a recommendation model. Never raises: a
+    missing constraint is worse than a slow one, but a failed turn is worse
+    than both.
+    """
+    if not user_id:
+        return []
+    sb = runtime.get_supabase()
+    if not sb:
+        return []
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("user_memories").select("value,updated_at")
+            .eq("user_id", user_id).eq("status", "active").eq("category", STANDING_CATEGORY)
+            .order("updated_at", desc=True).limit(STANDING_LIMIT).execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        print(f"[warn] load_standing_memories: {e}")
+        return []
+    out: list[str] = []
+    for r in rows:
+        value = context_budget.clip(str(r.get("value") or ""), STANDING_TOKEN_LIMIT)
+        if children is not None:
+            value = redact_child_profile_text(value, children)
+        if value and value not in out:
+            out.append(value)
+    return out
+
+
+async def get_recalled_memory_context(user_id: Optional[str], query: str = "") -> str:
+    """The ranked memories without the standing ones, for a pipeline that
+    renders those separately (see `get_standing_context`)."""
+    return await get_memory_context(user_id, query, include_standing=False)
+
+
+def render_standing(values: list[str]) -> str:
+    return "\n".join(f"- {v}" for v in values if v)
+
+
+async def get_standing_context(user_id: Optional[str]) -> str:
+    """The standing memories as a prompt block. Rendered newest first so a
+    fact that changed reads in its current form at the top."""
+    return render_standing(await load_standing_memories(user_id))
+
+
+async def load_known_memories(user_id: Optional[str]) -> list[dict]:
+    """Active memories for the extractor's reference, newest first."""
+    if not user_id:
+        return []
+    sb = runtime.get_supabase()
+    if not sb:
+        return []
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("user_memories").select("category,key,value")
+            .eq("user_id", user_id).eq("status", "active")
+            .order("updated_at", desc=True).limit(KNOWN_MEMORIES_FOR_EXTRACTION).execute()
+        )
+        return res.data or []
+    except Exception as e:
+        print(f"[warn] load_known_memories: {e}")
+        return []
+
+
+async def retire_memories(retire: list[dict], *, user_id: str) -> int:
+    """Archive memories the conversation overturned. Only keys the user
+    actually has are touched, by (user_id, category, key). Returns how many
+    requests were sent."""
+    sb = runtime.get_supabase()
+    if not sb or not retire:
+        return 0
+    sent = 0
+    now_iso = now()
+    for item in retire:
+        key = (item.get("key") or "").strip()
+        category = (item.get("category") or "").strip()
+        if not key or not category:
+            continue
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: sb.table("user_memories")
+                .update({"status": "archived", "updated_at": now_iso})
+                .eq("user_id", user_id).eq("category", category).eq("key", key)
+                .eq("status", "active").execute()
+            )
+            sent += 1
+        except Exception as e:
+            print(f"[warn] retire_memories key={key}: {e}")
+    return sent

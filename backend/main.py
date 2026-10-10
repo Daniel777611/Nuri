@@ -5112,7 +5112,8 @@ def _core_ports() -> CorePorts:
             profile_ctx=core_family_store.profile_ctx,
             age_label=core_family_store.age_label,
             age_months=core_family_store.age_in_months,
-            memory_context=core_family_store.get_memory_context,
+            memory_context=core_family_store.get_recalled_memory_context,
+            standing_context=core_family_store.get_standing_context,
             follow_up_context=core_family_store.get_follow_up_context,
             # 2 知识与决策模型
             internal_rules=core_knowledge_store.internal_rules_ctx,

@@ -30,13 +30,14 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 from zoneinfo import ZoneInfo
 
 import anyio
 
 from backend import llm_usage, locales, runtime
+from backend.feed import standing as standing_guard
 from backend.nuri_core import family_store
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -499,6 +500,7 @@ def _scrub(text: str, children: list[dict]) -> str:
 
 def conversation_plan(
     user_messages: list[str], child_age_context: str, children: list[dict], locale: str = "zh-CN",
+    standing: Sequence[str] = (),
 ) -> Optional[Plan]:
     """Search words from what the parent has actually been saying. None when
     the recent messages hold no parenting question to search for."""
@@ -507,8 +509,10 @@ def conversation_plan(
     lines = [redact_conversation_text(text, 300) for text in user_messages if text.strip()]
     if not lines:
         return None
+    rules_out = standing_guard.prompt_block(standing)
     prompt = (
         (f"{child_age_context}\n" if child_age_context else "")
+        + (f"{rules_out}\n检索词要避开这些内容。\n" if rules_out else "")
         + "家长最近说的话（从旧到新）：\n"
         + "\n".join(f"- {line}" for line in lines[-8:])
     )
@@ -695,7 +699,7 @@ PICK_ATTEMPTS = 3
 
 def pick_post(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
-    basis: str = "conversation",
+    basis: str = "conversation", standing: Sequence[str] = (),
 ) -> Optional[dict]:
     remaining = list(candidates)
     for _ in range(PICK_ATTEMPTS):
@@ -703,8 +707,16 @@ def pick_post(
             return None
         data = _ask_pick(
             remaining, concern=concern, child_age_context=child_age_context, locale=locale, basis=basis,
+            standing=standing,
         )
         picked = validate_pick(data, remaining)
+        if picked and standing and standing_guard.conflicts(
+            pick_text(picked), standing, call_site="feed.daily_post_standing_check",
+        ):
+            # Struck like any other rejected choice: the next-best post may be
+            # on the same question without the part the family ruled out.
+            remaining.remove(picked["candidate"])
+            continue
         if picked:
             return picked
         try:
@@ -725,9 +737,19 @@ _PROFILE_BASIS_NOTE = (
 )
 
 
+def pick_text(picked: dict) -> str:
+    """The parts of a picked post a parent reads, for the standing check."""
+    return "\n".join(p for p in (
+        picked.get("question") or "",
+        picked.get("situation") or "",
+        picked.get("headline") or "",
+        *(picked.get("takeaways") or []),
+    ) if p)
+
+
 def _ask_pick(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
-    basis: str = "conversation",
+    basis: str = "conversation", standing: Sequence[str] = (),
 ) -> dict:
     blocks = []
     for index, c in enumerate(candidates):
@@ -736,9 +758,11 @@ def _ask_pick(
             + ("；注意：这段是 Facebook 的 AI 摘要，不是原文" if c.ai_summary else "")
             + f"\n标题：{c.title}\n文本：{c.text[:900]}"
         )
+    rules_out = standing_guard.prompt_block(standing)
     prompt = (
         (f"{_PROFILE_BASIS_NOTE}\n关注方向：{concern}\n" if basis == "profile" else f"这位家长的问题：{concern}\n")
         + (f"{child_age_context}\n" if child_age_context else "")
+        + (f"{rules_out}\n" if rules_out else "")
         + "\n候选帖子：\n\n" + "\n\n".join(blocks)
     )
     system = _PICK_SYSTEM.replace("{locale_rule}", _LOCALE_RULE.get(locale, _LOCALE_RULE["zh-CN"]))
@@ -1082,6 +1106,7 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
     exclude = await anyio.to_thread.run_sync(lambda: store.recent_urls(user_id, now))
+    standing = await family_store.load_standing_memories(user_id, children)
 
     plans: list[Plan] = []
     if context.get("external_research_allowed"):
@@ -1092,7 +1117,7 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             str(m.get("text") or "") for m in messages if m.get("role") == "user"
         ]
         plan = await anyio.to_thread.run_sync(
-            lambda: conversation_plan(user_texts, child_age_context, children, locale)
+            lambda: conversation_plan(user_texts, child_age_context, children, locale, standing)
         )
         if plan:
             plans.append(plan)
@@ -1111,7 +1136,7 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_post(
             candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
-            basis=plan.basis,
+            basis=plan.basis, standing=standing,
         ))
         if pick:
             return build_card(pick, plan, locale=locale), plan

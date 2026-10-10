@@ -370,7 +370,7 @@ def world(monkeypatch):
             "messages": [{"role": "user", "text": "小满最近只吃白米饭"}],
         }
 
-    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN"):
+    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN", _standing=()):
         state.conversation_calls += 1
         return dp.Plan(basis="conversation", concern="挑食", query_zh="18个月 挑食", query_en="picky")
 

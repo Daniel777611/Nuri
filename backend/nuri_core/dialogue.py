@@ -67,9 +67,17 @@ _cache: tuple[list[Directive], float] | None = None
 ALWAYS_ADVISORY_LIMIT = 3
 CONDITIONAL_ADVISORY_LIMIT = 3
 
+#: How many of the leading sections hold still while one family talks: the
+#: operator rules, the profile, the standing memories, the summary.
+STABLE_SECTION_COUNT = 4
+
 HEADINGS = {
     "always": "运营团队根据实际反馈提炼的回复规则，必须遵守：",
     "profile": "这位家长的基本情况（来自注册信息）：",
+    "standing": (
+        "这个家庭现在的状况和限制（家长在之前的对话里说过，长期有效）。"
+        "每一条建议、每一个推荐都不能与之冲突；与注册信息或更早的记忆不一致时，以这里为准："
+    ),
     "state": "这次对话到目前为止（摘要）：",
     "memory": "关于这位家长的长期信息（已确认，可直接使用，不用重新确认）：",
     "card": "本次对话相关内容：",
@@ -313,6 +321,9 @@ def plan(
     sections: list[tuple[str, str]] = [
         (HEADINGS["always"], _render(always)),
         (HEADINGS["profile"], family.profile_block),
+        # Changes only when a memory extraction writes a constraint, so it sits
+        # inside the cached prefix with the profile.
+        (HEADINGS["standing"], family.standing_block),
         (HEADINGS["state"], state_block),
         (HEADINGS["memory"], memory),
         (HEADINGS["card"], card_block),
@@ -333,8 +344,9 @@ def plan(
         directives=tuple(always + conditional + advisory + safety_directives),
         proactive=proactive,
         history_window=history_window,
-        # always + profile + state: everything above `memory` in the list.
-        stable_sections=3,
+        # always + profile + standing + state: everything above `memory` in
+        # the list, counted after empty sections drop out of `sections`.
+        stable_sections=sum(1 for _, b in sections[:STABLE_SECTION_COUNT] if b),
     )
 
 

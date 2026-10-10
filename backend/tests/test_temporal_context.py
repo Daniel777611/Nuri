@@ -646,7 +646,7 @@ def test_memory_pipeline_forwards_the_same_temporal_context_to_follow_up(monkeyp
     )
     captured = {}
 
-    def fake_extract(history, temporal_context=None):
+    def fake_extract(history, temporal_context=None, known=None):
         captured["extract_context"] = temporal_context
         return {
             "memories": [],

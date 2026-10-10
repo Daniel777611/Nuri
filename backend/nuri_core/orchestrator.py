@@ -153,7 +153,9 @@ async def run_turn_context(
     # Attributed by owning subsystem rather than by prompt section: "the family
     # model contributed 900 characters" is the number that decides whether a
     # layer is earning its place, and two sections share the empty heading.
-    trace.contributed("family", enriched.profile_block + enriched.memory_block)
+    trace.contributed(
+        "family", enriched.profile_block + enriched.standing_block + enriched.memory_block,
+    )
     trace.contributed("knowledge", evidence.internal_block + evidence.sources_block)
     trace.contributed("dialogue", _rendered_directives(plan))
     trace.contributed("card", card_block)

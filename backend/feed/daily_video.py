@@ -31,13 +31,14 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import anyio
 
 from backend import llm_usage, locales, runtime
 from backend.feed import daily_post as dp
+from backend.feed import standing as standing_guard
 from backend.nuri_core import family_store
 
 TABLE = "daily_video_cards"
@@ -260,14 +261,22 @@ def _model_json(call_site: str, model: str, messages: list[dict], response_forma
     return json.loads(content or "{}") if response_format else content
 
 
-def _ask_scores(candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str) -> list[dict]:
+def _ask_scores(
+    candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    standing: Sequence[str] = (),
+) -> list[dict]:
     system = _SCORE_SYSTEM.replace("{locale_rule}", dp._LOCALE_RULE.get(locale, dp._LOCALE_RULE["zh-CN"]))
     listing = "\n\n".join(
         f"[{i}] 标题：{c.title}\n简介：{c.description[:600]}" for i, c in enumerate(candidates)
     )
+    rules_out = standing_guard.prompt_block(standing)
     prompt = (
         (f"{child_age_context}\n" if child_age_context else "")
-        + f"家长的问题：{concern}\n\n候选视频：\n{listing}"
+        + f"家长的问题：{concern}\n"
+        # Phrased as a reason to mark safe=false, which choose_video already
+        # drops, rather than as one more thing for relevance to weigh.
+        + (f"{rules_out}\n与之冲突的视频，safe 填 false。\n" if rules_out else "")
+        + f"\n候选视频：\n{listing}"
     )
     data = _model_json(
         "feed.daily_video_pick", MODEL,
@@ -332,11 +341,39 @@ def choose_video(scores: list[dict], candidates: list[Candidate], locale: str) -
     }
 
 
-def pick_video(candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str) -> Optional[dict]:
+#: How many top-scored videos the standing check may strike before giving up
+#: on this plan. The scores are already in hand, so a strike costs only the
+#: check itself.
+STANDING_ATTEMPTS = 3
+
+
+def video_text(pick: dict) -> str:
+    """What a parent would take from the card, for the standing check."""
+    c: Candidate = pick["candidate"]
+    return f"{pick.get('display_title') or c.title}\n{c.description[:600]}"
+
+
+def pick_video(
+    candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    standing: Sequence[str] = (),
+) -> Optional[dict]:
     if not candidates:
         return None
-    scores = _ask_scores(candidates, concern=concern, child_age_context=child_age_context, locale=locale)
-    return choose_video(scores, candidates, locale)
+    scores = _ask_scores(
+        candidates, concern=concern, child_age_context=child_age_context, locale=locale,
+        standing=standing,
+    )
+    for _ in range(STANDING_ATTEMPTS):
+        pick = choose_video(scores, candidates, locale)
+        if not pick or not standing:
+            return pick
+        if not standing_guard.conflicts(
+            video_text(pick), standing, call_site="feed.daily_video_standing_check",
+        ):
+            return pick
+        struck = candidates.index(pick["candidate"])
+        scores = [row for row in scores if row.get("index") != struck]
+    return None
 
 
 # ── The card ─────────────────────────────────────────────────────────────────
@@ -722,13 +759,14 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
     exclude = await anyio.to_thread.run_sync(lambda: store.recent_urls(user_id, now))
+    standing = await family_store.load_standing_memories(user_id, children)
 
     plans: list[dp.Plan] = []
     if context.get("external_research_allowed"):
         messages = family_store.redact_child_profile_history(list(context.get("messages") or []), children)
         user_texts = [str(m.get("text") or "") for m in messages if m.get("role") == "user"]
         plan = await anyio.to_thread.run_sync(
-            lambda: dp.conversation_plan(user_texts, child_age_context, children, locale)
+            lambda: dp.conversation_plan(user_texts, child_age_context, children, locale, standing)
         )
         if plan:
             plans.append(plan)
@@ -743,6 +781,7 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_video(
             candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
+            standing=standing,
         ))
         if pick:
             card = build_card(pick, plan, locale=locale)
