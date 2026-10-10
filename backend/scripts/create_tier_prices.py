@@ -1,9 +1,10 @@
 """Create the Stripe products and prices for the membership tiers.
 
     python -m backend.scripts.create_tier_prices \
-        --plus-monthly 6.99 --plus-yearly 69 \
-        --unlimited-monthly 14.99 --unlimited-yearly 199 \
-        [--currency usd] [--apply]
+        --plus-monthly 7.9 --unlimited-monthly 15.9 --unlimited-yearly 199 \
+        [--plus-yearly 79] [--currency usd] [--apply]
+
+Any price left out is simply not offered (the billing page hides that card).
 
 Without --apply it only prints what it would create. With --apply it creates
 one product per tier ("NURI 进阶" / "NURI 无限") and a monthly and yearly
@@ -45,9 +46,9 @@ def main() -> int:
     load_dotenv(find_dotenv(usecwd=True))
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--plus-monthly", type=_cents, required=True)
-    parser.add_argument("--plus-yearly", type=_cents, required=True)
+    parser.add_argument("--plus-yearly", type=_cents)
     parser.add_argument("--unlimited-monthly", type=_cents, required=True)
-    parser.add_argument("--unlimited-yearly", type=_cents, required=True)
+    parser.add_argument("--unlimited-yearly", type=_cents)
     parser.add_argument("--currency", default="usd")
     parser.add_argument("--apply", action="store_true", help="actually create them")
     parser.add_argument("--live", action="store_true", help="allow a live-mode key")
@@ -62,10 +63,12 @@ def main() -> int:
         return 2
 
     amounts = {
-        ("plus", "month"): args.plus_monthly,
-        ("plus", "year"): args.plus_yearly,
-        ("unlimited", "month"): args.unlimited_monthly,
-        ("unlimited", "year"): args.unlimited_yearly,
+        slot: cents for slot, cents in {
+            ("plus", "month"): args.plus_monthly,
+            ("plus", "year"): args.plus_yearly,
+            ("unlimited", "month"): args.unlimited_monthly,
+            ("unlimited", "year"): args.unlimited_yearly,
+        }.items() if cents
     }
     mode = "LIVE" if key.startswith(("sk_live_", "rk_live_")) else "sandbox"
     print(f"Stripe {mode}; {'creating' if args.apply else 'dry run, nothing created'}:")
@@ -85,6 +88,8 @@ def main() -> int:
             "metadata": {"nuri_tier": tier},
         })
         for interval in ("month", "year"):
+            if (tier, interval) not in amounts:
+                continue
             price = client.v1.prices.create(params={
                 "product": product.id,
                 "currency": args.currency,
