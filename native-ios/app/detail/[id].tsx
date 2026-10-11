@@ -16,8 +16,6 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
-import { Image } from "expo-image";
-import * as WebBrowser from "expo-web-browser";
 import * as Clipboard from "expo-clipboard";
 import { firstShareableResource } from "@/src/components/taskCardExport";
 import { Ionicons } from "@expo/vector-icons";
@@ -39,16 +37,14 @@ import {
 } from "@/src/recommendationDetailHandoff";
 import {
   deliveryCategoryMeta,
-  recommendationActionSteps,
-  recommendationLanguageLabel,
-  resourceLanguageLabel,
-  recommendationSourceLabel,
   recommendationStageLabel,
   recommendationTimeLabel,
 } from "@/src/recommendationPresentation";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
-import { cardReason, cardText } from "@/src/cardText";
+import { externalSourceHost, externalSourceUrl } from "@/src/externalContent";
+import { nuriResourceGuide } from "@/src/nuriResourceGuide";
+import { shortResourceSummary } from "@/src/resourceSummary";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
@@ -161,13 +157,6 @@ function resourceContentCategory(resource: LearningResource): ResourceContentCat
   return resourceSourceTier(resource) === "curated" ? "featured" : "authority";
 }
 
-function resourceCategoryLabel(resource: LearningResource): string {
-  const category = resourceContentCategory(resource);
-  if (category === "featured") return "精选内容";
-  if (category === "case") return "真实案例";
-  return "权威来源";
-}
-
 function resourceKindLabel(resource: LearningResource): string {
   return resource.kind === "video" ? "视频" : "文章";
 }
@@ -229,20 +218,10 @@ function preparedAlternatePairs(
         (resource) =>
           resource.kind === kind &&
           resource.content_category === category &&
-          typeof resource.url === "string" &&
-          /^https:\/\//i.test(resource.url),
+          Boolean(externalSourceUrl(resource.url)),
       ),
     );
   });
-}
-
-function resourceUpdateLabel(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.trim();
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-    date.getDate(),
-  ).padStart(2, "0")} 更新`;
 }
 
 function resourcePairPresentation(resources: LearningResource[]) {
@@ -308,7 +287,7 @@ function guideFromHandoff(
 
 export default function Detail() {
   const { generation, capture, current: scopeCurrent } = useAccountScope();
-  const { t, locale } = useT();
+  const { t } = useT();
   const router = useRouter();
   const { width: viewportWidth } = useWindowDimensions();
   const {
@@ -667,7 +646,7 @@ export default function Detail() {
         router.push(`/chat/${card.related_session_id}`);
         return;
       }
-      const session = await api.startSession({ card_id: card.id, title: card.title });
+      const session = await api.startSession({ card_id: card.id, title: t("外部内容") });
       if (!scopeCurrent(ticket)) return;
       router.push(`/chat/${session.id}`);
     } catch (error) {
@@ -683,7 +662,8 @@ export default function Detail() {
   const openResource = async (resource: LearningResource, position: number) => {
     const ticket = capture();
     if (ticket === null) return;
-    if (!/^https:\/\//i.test(resource.url || "")) {
+    const sourceUrl = externalSourceUrl(resource.url);
+    if (!sourceUrl) {
       showToast(t("这个外部链接暂时不可用"));
       return;
     }
@@ -698,11 +678,7 @@ export default function Detail() {
       })
       .catch(() => {});
     try {
-      if (Platform.OS === "web") {
-        await Linking.openURL(resource.url);
-      } else {
-        await WebBrowser.openBrowserAsync(resource.url);
-      }
+      await Linking.openURL(sourceUrl);
     } catch {
       if (!scopeCurrent(ticket)) return;
       showToast(t("外部内容暂时无法打开，请稍后再试"));
@@ -713,19 +689,23 @@ export default function Detail() {
     const ticket = capture();
     if (ticket === null) return;
     if (sharingRef.current) return;
-    const resource = firstShareableResource(card?.resources);
+    const resource = firstShareableResource(Array.isArray(card?.resources)
+      ? card.resources.filter((item: LearningResource) => externalSourceUrl(item.url)) : []);
     if (!resource) { showToast(t("暂无可分享的来源链接")); return; }
+    const sourceUrl = externalSourceUrl(resource.url);
+    if (!sourceUrl) { showToast(t("这个外部链接暂时不可用")); return; }
+    const shareLabel = `${t("外部内容")} · ${externalSourceHost(sourceUrl)}`;
     sharingRef.current = true;
     try {
       if (copyOnly) {
-        const copied = await Clipboard.setStringAsync(resource.url);
+        const copied = await Clipboard.setStringAsync(sourceUrl);
         if (!scopeCurrent(ticket)) return;
         if (!copied) throw new Error("copy unavailable");
         showToast(t("已复制链接"));
       } else {
         const result = await Share.share(Platform.OS === "ios"
-          ? { title: resource.title, message: resource.title, url: resource.url }
-          : { title: resource.title, message: `${resource.title}\n${resource.url}` });
+          ? { title: shareLabel, message: shareLabel, url: sourceUrl }
+          : { title: shareLabel, message: `${shareLabel}\n${sourceUrl}` });
         if (!scopeCurrent(ticket)) return;
         if (result.action !== Share.sharedAction) return;
       }
@@ -1024,7 +1004,9 @@ export default function Detail() {
       );
     }
 
-    const resources: LearningResource[] = Array.isArray(card.resources) ? card.resources : [];
+    const resources: LearningResource[] = Array.isArray(card.resources)
+      ? card.resources.filter((resource: LearningResource) => externalSourceUrl(resource.url))
+      : [];
     const activeCategory: ResourceContentCategory =
       card.content_category === "featured" ||
       card.content_category === "case" ||
@@ -1049,16 +1031,12 @@ export default function Detail() {
         card.resource_readiness === "retryable");
     const activeResourceLocaleLabel =
       t(RESOURCE_LOCALE_LABELS[card.preferred_locale] || "你的偏好语言");
-    const hasNuriGuidedOriginal = visibleResources.some(
-      (resource) => resource.translation_type === "nuri_guide",
-    );
     const deliveryMeta = deliveryCategoryMeta(activeCategory);
-    const sourceLabel = t(recommendationSourceLabel(card));
-    const languageLabel = recommendationLanguageLabel(card, t);
+    const sourceLabel = [...new Set(visibleResources.map((resource) => externalSourceHost(resource.url)))].join(" · ");
+    const languageLabel = t("外部内容");
     const estimatedTimeLabel = recommendationTimeLabel(card, t);
     const stageLabel = t(recommendationStageLabel(card));
-    const actionSteps = recommendationActionSteps(card);
-    const guideText = card.guide || card.body;
+    const guide = nuriResourceGuide({ concern: card.topic_label || card.topic, stage: stageLabel }, t);
     return (
       <ScrollView
         contentContainerStyle={styles.scroll}
@@ -1082,13 +1060,13 @@ export default function Detail() {
           </Text>
         </View>
         <Text style={styles.title}>
-          {cardText(card, "delivery_title", locale) || card.title}
+          {t("推荐给你的文章与视频")}
         </Text>
         <View style={styles.deliverySummary} testID="detail-delivery-summary">
           <View style={styles.deliverySourceRow}>
             <Ionicons name={deliveryMeta.icon} size={16} color="#4F4B9C" />
             <Text style={styles.deliverySourceText} numberOfLines={2}>
-              {t("来源：{source}", { source: sourceLabel })}
+              {sourceLabel ? t("来源：{source}", { source: sourceLabel }) : t("外部内容")}
             </Text>
           </View>
           <View style={styles.deliveryMetaChips}>
@@ -1100,52 +1078,15 @@ export default function Detail() {
           </View>
         </View>
 
-        {card.personalization_reason ? (
-          <View style={styles.reasonCard} testID="detail-personalization-reason">
-            <View style={styles.reasonIcon}>
-              <Ionicons name="sparkles" size={17} color="#4F4B9C" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.reasonLabel}>{t("为什么推荐给你")}</Text>
-              <Text style={styles.reasonText}>{cardReason(card, locale)}</Text>
-            </View>
-          </View>
-        ) : null}
-
-        {card.image_url ? (
-          <Image
-            source={{ uri: card.image_url }}
-            style={styles.hero}
-            contentFit="cover"
-            transition={200}
-          />
-        ) : null}
-
-        {card.summary ? <Text style={styles.lead}>{card.summary}</Text> : null}
-        {guideText ? (
-          <>
-            <Text style={styles.sectionTitle}>{t("NURI 内容导读")}</Text>
-            <Text style={styles.body}>
-              {t(cardText(card, "guide", locale) || guideText)}
-            </Text>
-          </>
-        ) : null}
-
-        {actionSteps.length > 0 ? (
-          <View style={styles.actionsSection} testID="detail-action-steps">
-            <Text style={styles.sectionTitle}>{t("今天可以先做")}</Text>
-            <View style={styles.actionsCard}>
-              {actionSteps.map((action, index) => (
-                <View key={`${index}:${action}`} style={styles.actionRow}>
-                  <View style={styles.actionNumber}>
-                    <Text style={styles.actionNumberText}>{index + 1}</Text>
-                  </View>
-                  <Text style={styles.actionText}>{t(action)}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        ) : null}
+        <View style={styles.deliverySummary} testID="detail-nuri-guide">
+          <Text style={styles.sectionTitle}>{t("NURI 导读")}</Text>
+          <Text style={styles.lead} testID="detail-nuri-guide-headline">{guide.headline}</Text>
+          <Text style={styles.lead} testID="detail-nuri-guide-intro">{guide.intro}</Text>
+          {guide.actions.map((action, index) => (
+            <Text key={`${index}:${action}`} style={styles.lead} testID={`detail-nuri-guide-action-${index}`}>{index + 1}. {action}</Text>
+          ))}
+          <Text style={styles.lead} testID="detail-external-link-notice">{guide.disclosure}</Text>
+        </View>
 
         {resources.length || card.research_status || resourcePreparationPending ? (
           <View style={styles.resourcesSection} testID="detail-learning-resources">
@@ -1241,8 +1182,8 @@ export default function Detail() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.researchStatusLabel}>
                     {card.resource_readiness === "preparing"
-                      ? t("导读已可阅读，正在准备文章和视频")
-                      : t("导读已可阅读，文章和视频需要重试")}
+                      ? t("正在准备文章和视频的外部链接")
+                      : t("文章和视频的外部链接需要重试")}
                   </Text>
                   <Text style={styles.researchStatusText}>
                     {t("NURI 只会在一篇文章和一个视频都通过主题、语言与来源核验后显示外部链接。")}
@@ -1277,8 +1218,7 @@ export default function Detail() {
                   <Text style={styles.researchStatusText}>
                     {card.research_status === "hybrid"
                       ? t("实时检索与人工审核资料共同组成这次推荐；不合格链接没有展示。")
-                      : card.research_editor_note ||
-                        t("NURI 已结合你们刚聊到的情境，从公开网络中核验这一篇文章和一个视频。")}
+                      : t("NURI 已结合你们刚聊到的情境，从公开网络中核验这一篇文章和一个视频。")}
                   </Text>
                 </View>
               </View>
@@ -1324,9 +1264,7 @@ export default function Detail() {
             ) : null}
             {resourcePairComplete ? (
               <Text style={styles.resourcesIntro}>
-                {hasNuriGuidedOriginal
-                  ? `已按你的${activeResourceLocaleLabel}偏好整理：英文原文保留原始链接，并附 NURI 中文导读。`
-                  : `已自动使用最适合你的${activeResourceLocaleLabel}资源：1 篇文章和 1 个视频。`}
+                {t("这里提供资源短简介，完整文章和视频请在原站查看。")}
                 {t("点击具体条目后才会打开外部内容。")}
               </Text>
             ) : null}
@@ -1339,7 +1277,7 @@ export default function Detail() {
                       pressed && styles.resourceCardPressed,
                     ]}
                     accessibilityRole="link"
-                    accessibilityLabel={`${t(resourceCategoryLabel(resource))}，${resource.language ? `${resource.language}，` : ""}${t(resourceKindLabel(resource))}：${resource.title}，${t("来源：")}${resource.publisher}`}
+                    accessibilityLabel={`${t(resourceKindLabel(resource))}，${t("来源：")}${externalSourceHost(resource.url)}`}
                     accessibilityHint={t("将在新标签页打开外部{kind}", { kind: t(resourceKindLabel(resource)) })}
                     testID={`detail-resource-${resource.id}`}
                   >
@@ -1389,79 +1327,22 @@ export default function Detail() {
                             {t(resourceBadgeLabel(resource))}
                           </Text>
                         </View>
-                        {resourceLanguageLabel(resource) ? (
-                          <Text style={styles.resourceLanguage}>
-                            {t(resourceLanguageLabel(resource))}
-                          </Text>
-                        ) : null}
                         {resource.estimated_minutes ? (
                           <Text style={styles.resourceLanguage}>
                             约 {Math.ceil(resource.estimated_minutes)} 分钟
                           </Text>
                         ) : null}
                       </View>
-                      <Text style={styles.resourceTitle}>{resource.title}</Text>
-                      <Text style={styles.resourcePublisher}>{resource.publisher}</Text>
-                      {resource.author || resource.updated_at ? (
-                        <Text style={styles.resourceByline}>
-                          {[resource.author, resourceUpdateLabel(resource.updated_at)]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </Text>
-                      ) : null}
-                      {resource.description ? (
-                        <Text style={styles.resourceDescription}>{resource.description}</Text>
-                      ) : null}
-                      {resource.translation_type === "nuri_guide" && resource.chinese_guide ? (
-                        <View style={styles.resourceChineseGuide}>
-                          <Text style={styles.resourceChineseGuideTitle}>{t("NURI 中文导读")}</Text>
-                          <Text style={styles.resourceChineseGuideText}>
-                            {resource.chinese_guide}
-                          </Text>
-                          <Text style={styles.resourceChineseGuideDisclaimer}>
-                            {resource.translation_disclaimer ||
-                              t("这是 NURI 对英文原文的中文导读，不是发布机构的官方翻译；重要结论请以原文为准。")}
-                          </Text>
-                        </View>
-                      ) : null}
-                      {resource.kind === "video" && resource.spoken_language_evidence ? (
-                        <Text style={styles.resourceLanguageEvidence}>
-                          <Text style={styles.resourceTrustNoteLabel}>{t("口语核验：")}</Text>
-                          {resource.spoken_language_evidence}
-                        </Text>
-                      ) : null}
-                      {resource.recognition ? (
-                        <View style={styles.resourceEvidenceRow}>
-                          <Ionicons
-                            name={
-                              resourceSourceTier(resource) === "authority"
-                                ? "shield-checkmark-outline"
-                                : "people-outline"
-                            }
-                            size={15}
-                            color={
-                              resourceSourceTier(resource) === "authority" ? "#4F4B9C" : "#9A4D63"
-                            }
-                          />
-                          <Text style={styles.resourceEvidenceText}>
-                            {[resource.recognition, resource.audience_note]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </Text>
-                        </View>
-                      ) : null}
-                      {resource.trust_note ? (
-                        <Text style={styles.resourceTrustNote}>
-                          <Text style={styles.resourceTrustNoteLabel}>{t("可信依据：")}</Text>
-                          {resource.trust_note}
-                        </Text>
-                      ) : null}
-                      {resource.selection_reason ? (
-                        <Text style={styles.resourceSelectionReason}>
-                          <Text style={styles.resourceSelectionReasonLabel}>{t("入选理由：")}</Text>
-                          {resource.selection_reason}
-                        </Text>
-                      ) : null}
+                      <Text style={styles.resourceTitle}>{shortResourceSummary(resource.title, 140) || t(resourceKindLabel(resource))}</Text>
+                      <Text style={styles.resourcePublisher}>{shortResourceSummary(resource.publisher, 100) || externalSourceHost(resource.url)} · {externalSourceHost(resource.url)}</Text>
+                      {externalSourceUrl(resource.url) && shortResourceSummary(resource.description, 360) ? <>
+                        <Text style={styles.resourceSummaryLabel}>{t("资源短简介")}</Text>
+                        <Text style={styles.resourceDescription} testID={`detail-resource-summary-${resource.id}`}>{shortResourceSummary(resource.description, 360)}</Text>
+                        <Text style={styles.resourceSummaryDisclosure}>{t("这是资源短简介，不是原文或完整视频转录；请到原站核对细节。")}</Text>
+                      </> : null}
+                      {externalSourceUrl(resource.url) && shortResourceSummary(resource.selection_reason, 200) ? <Text style={styles.resourceDescription} testID={`detail-resource-reason-${resource.id}`}>
+                        {t("推荐理由：{reason}", { reason: shortResourceSummary(resource.selection_reason, 200)! })}
+                      </Text> : null}
                       <View style={styles.resourceOpenRow}>
                         <Text style={styles.resourceOpenText}>
                           {resource.kind === "video" ? t("打开外部视频") : t("打开外部文章")}
@@ -1474,7 +1355,7 @@ export default function Detail() {
                 <View style={styles.emptyResourceGroup}>
                   <Text style={styles.emptyResourceGroupText}>
                     {resourcePreparationPending
-                      ? t("文章和视频仍在核验中；你可以先阅读上面的导读。")
+                      ? t("文章和视频的外部链接仍在核验中，请稍后重试。")
                       : t("暂时没有找到同时通过类别、语言与可信度核验的一篇文章和一个视频。")}
                   </Text>
                 </View>
@@ -1586,18 +1467,6 @@ export default function Detail() {
           </View>
         ) : null}
 
-        <View style={styles.tags}>
-          {(card.tags || []).map((tag: string) => (
-            <View key={tag} style={styles.tagChip}>
-              <Text style={styles.tagText}>{tag}</Text>
-            </View>
-          ))}
-        </View>
-        {card.hook_line ? (
-          <Text style={styles.hook} testID="detail-hook-line">
-            {card.hook_line}
-          </Text>
-        ) : null}
         <View style={{ height: Math.max(104, askBarHeight + spacing.xl * 2) }} />
       </ScrollView>
     );
@@ -2125,6 +1994,8 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   resourcePublisher: { fontSize: type.sm, color: colors.muted, marginTop: 3 },
+  resourceSummaryLabel: { fontSize: type.sm, color: "#4F4B9C", fontWeight: "700", marginTop: spacing.md },
+  resourceSummaryDisclosure: { fontSize: 11, lineHeight: 17, color: colors.muted, marginTop: spacing.sm },
   resourceByline: {
     fontSize: 11,
     lineHeight: 17,

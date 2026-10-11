@@ -126,7 +126,7 @@ assert.equal(safeNotificationRoute(notification), notification);
   assert.match(delegate, /"com\.ordashtech\.nuri\.nativelab\.reminders-initialized"/);
   assert.match(swift, /Notification\.Name\("NuriNativeLabPushStateDidChange"\)/);
   assert.match(swift, /Notification\.Name\("NuriNativeLabNotificationRouteDidOpen"\)/);
-  assert.match(swift, /实验版远程 APNs 尚待后端支持/);
+  assert.match(swift, /content\.title = "Nuri 本机测试提醒"\s+content\.body = "仅用于验证本机提醒频率；远程 APNs 尚待后端支持。"/);
 }
 
 // A backend which only allowlists the original bundle rejects Native Lab with

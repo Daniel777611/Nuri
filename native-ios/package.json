@@ -3,6 +3,8 @@
   "main": "expo-router/entry",
   "version": "0.3.0",
   "scripts": {
+    "test:resource-summary": "node scripts/test-resource-summary.mjs && node scripts/test-youtube-nuri-guide.mjs && node scripts/test-daily-post-nuri-guide.mjs",
+    "test:nuri-resource-guide": "node scripts/test-nuri-resource-guide.mjs && node scripts/test-youtube-nuri-guide.mjs && node scripts/test-daily-post-nuri-guide.mjs",
     "start": "expo start",
     "preview": "EXPO_PUBLIC_PREVIEW_MODE=1 PATH=\"$PWD/.tools/node20/bin:$PATH\" expo start --web --port 8081",
     "preview:clear": "EXPO_PUBLIC_PREVIEW_MODE=1 PATH=\"$PWD/.tools/node20/bin:$PATH\" expo start --web --clear --port 8081",
@@ -17,6 +19,8 @@
     "test:chat-entry": "node ./scripts/test-chat-entry.mjs",
     "test:daily-home-failure": "node ./scripts/test-daily-home-failure.mjs",
     "test:daily-video": "node ./scripts/test-daily-video.mjs",
+    "test:external-content": "node ./scripts/test-external-content.mjs",
+    "test:youtube-external": "node ./scripts/test-youtube-external-links.mjs",
     "test:main-sync": "node ./scripts/test-main-sync-api.mjs",
     "test:native-push": "node ./scripts/test-native-push.mjs",
     "test:native-voice": "node ./scripts/test-native-voice-and-platform.mjs",

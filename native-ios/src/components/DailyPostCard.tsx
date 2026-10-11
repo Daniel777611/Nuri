@@ -1,15 +1,13 @@
-// Home's daily card: one real post from another parent, fixed for the day.
-//
-// The home card keeps the Figma hierarchy: source tag, today's headline, then
-// one clear action. The personal greeting remains in the accessible label and
-// in the detail screen, so the compact card stays readable without losing its
-// parent-specific context. Tapping opens the full card (app/daily-post.tsx).
+// Home's daily resource with a NURI-authored reading guide.
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 
 import type { DailyPostCard as Card } from "@/src/api";
 import { useT } from "@/src/i18n";
+import { nuriResourceGuide } from "@/src/nuriResourceGuide";
+import { shortResourceSummary } from "@/src/resourceSummary";
+import { externalSourceUrl } from "@/src/externalContent";
 
 export type DailyPostStatus = "loading" | "pending" | "ready" | "empty" | "error" | "disabled";
 
@@ -26,14 +24,11 @@ export function dailyPostGreeting(
   audience: Card["audience"] | undefined,
 ): string {
   const name = nickname.trim();
-  if (audience === "mom") {
-    return name
-      ? t("{nickname}你好呀，其他妈妈可能会这么处理", { nickname: name })
-      : t("你好呀，其他妈妈可能会这么处理");
-  }
+  // Do not attribute our reading prompts to a parent whose post we haven't read.
+  void audience;
   return name
-    ? t("{nickname}你好呀，其他家长可能会这么处理", { nickname: name })
-    : t("你好呀，其他家长可能会这么处理");
+    ? t("{nickname}你好呀，一起看看这个育儿话题", { nickname: name })
+    : t("你好呀，一起看看这个育儿话题");
 }
 
 /** "Facebook 家长群讨论" / "Instagram 家长分享" */
@@ -47,14 +42,16 @@ export function dailyPostTag(
     : t("{platform} 家长分享", { platform });
 }
 
+export function dailyPostPreview(card: Card): string | null {
+  // These are the backend's AI-written search previews, not a verbatim quote.
+  return externalSourceUrl(card.source_url)
+    ? shortResourceSummary(card.question, 110) || shortResourceSummary(card.headline, 110)
+    : null;
+}
+
 export function dailyPostQuestion(t: (s: string, v?: Record<string, string | number>) => string, card: Card): string {
-  const question = (card.question || "").trim();
-  if (question) return question;
-  const topic = (card.post_topic || card.concern || "").trim();
-  if (!topic) return card.headline;
-  return card.audience === "mom"
-    ? t("关于「{topic}」，其他妈妈是怎么做的？", { topic })
-    : t("关于「{topic}」，其他家长是怎么做的？", { topic });
+  const preview = dailyPostPreview(card);
+  return preview || nuriResourceGuide({ concern: card.concern }, t).headline;
 }
 
 export function dailyPostAsker(t: (s: string) => string, card: Card): string {
@@ -146,17 +143,16 @@ export default function DailyPostCard({
 
   const greeting = dailyPostGreeting(t, card.nickname || nickname, card.audience);
   const sourceTag = dailyPostTag(t, card);
-  // Figma defines this compact home tag by material type. Platform provenance
-  // remains available in the accessible label and the detail screen.
-  const tag = dailyPostAsker(t, card);
+  const tag = sourceTag;
   const question = dailyPostQuestion(t, card);
+  const summaryLabel = dailyPostPreview(card) ? t("AI 检索摘要") : t("NURI 导读");
   return (
     <View style={styles.wrap}>
       <Pressable
         onPress={() => onPress(card)}
         style={{ width }}
         accessibilityRole="button"
-        accessibilityLabel={`${sourceTag}。${greeting}。${question}`}
+        accessibilityLabel={`${sourceTag}。${greeting}。${summaryLabel}。${question}`}
         testID="home-daily-post-card"
       >
         <LinearGradient
@@ -174,7 +170,10 @@ export default function DailyPostCard({
           </Text>
           <View style={{ flex: 1 }} />
           <View style={styles.footer}>
-            <Text style={styles.cta}>{card.author_kind === "parent_group_answers" ? t("看看大家怎么做") : t("看看这位家长怎么做")}</Text>
+            <View style={styles.footerText}>
+              <Text style={styles.summaryLabel} testID="home-daily-post-summary-label">{summaryLabel}</Text>
+              <Text style={styles.cta}>{t("查看摘要与来源")}</Text>
+            </View>
             <View style={styles.arrow}>
               <Ionicons name="arrow-forward" size={22} color="#3A2F5A" />
             </View>
@@ -186,6 +185,8 @@ export default function DailyPostCard({
 }
 
 const styles = StyleSheet.create({
+  summaryLabel: { color: "#5B5272", fontFamily: "NotoSansSC_400Regular", fontSize: 11, lineHeight: 18, marginBottom: 4 },
+  footerText: { flex: 1 },
   wrap: { paddingLeft: 17 },
   card: {
     height: 236,
@@ -229,7 +230,6 @@ const styles = StyleSheet.create({
   question: { marginTop: 12, color: "#261B45", fontFamily: "NotoSansSC_700Bold", fontSize: 20, lineHeight: 29 },
   footer: { minHeight: 55, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   cta: {
-    flex: 1,
     color: "#3A2F5A",
     fontFamily: "NotoSansSC_700Bold",
     fontSize: 14,

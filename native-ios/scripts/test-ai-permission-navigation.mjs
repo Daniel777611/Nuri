@@ -10,7 +10,7 @@ const module = { exports: {} };
 new Function("require", "module", "exports", output)((name) => { throw new Error(`unexpected dependency ${name}`); }, module, module.exports);
 const { aiPermissionReturnPath, aiPermissionHref } = module.exports;
 
-const safe = ["/(tabs)", "/(tabs)/chats", "/(tabs)/profile", "/(tabs)/tasks", "/knowledge", "/daily-post", "/chat/session_1-A", "/detail/card_1-A"];
+const safe = ["/(tabs)", "/(tabs)/chats", "/(tabs)/profile", "/(tabs)/tasks", "/knowledge", "/daily-post", "/chat/session_1-A", "/detail/card_1-A", "/daily-video", "/daily-video?id=video_1-A"];
 
 test("only known app-local routes are retained and the home alias is normalized", () => {
   assert.equal(aiPermissionReturnPath("/"), "/(tabs)");
@@ -19,12 +19,16 @@ test("only known app-local routes are retained and the home alias is normalized"
     assert.equal(aiPermissionReturnPath(prefix + "a".repeat(128)), prefix + "a".repeat(128));
     assert.equal(aiPermissionReturnPath(prefix + "a".repeat(129)), null);
   }
+  assert.equal(aiPermissionReturnPath("/daily-video?id=" + "a".repeat(128)), "/daily-video?id=" + "a".repeat(128));
+  assert.equal(aiPermissionReturnPath("/daily-video?id=" + "a".repeat(129)), null);
 });
 
 const unsafe = [
   "https://outside.invalid/", "http://outside.invalid/", "//outside.invalid/", "nuri-native-lab://chat/a", "javascript:alert(1)", "data:text/html,mock",
   "/\\outside.invalid", "/%2f%2foutside.invalid", "/chat/a/../b", "/chat/a/b", "/chat/", "/detail/", "/chat/a?redirect=https://outside.invalid", "/detail/a#outside",
   "/chat/%61", "/chat/a\\b", "/chat/a\n", " /(tabs)", "/knowledge?x=1", "/login", "/ai-permission", "", null, undefined, 42, ["/knowledge"], { returnTo: "/knowledge" },
+  "/daily-video?id=", "/daily-video?id=a&redirect=https://outside.invalid", "/daily-video?id=a&id=b", "/daily-video?id=a#outside",
+  "/daily-video?id=%61", "/daily-video?id=a/b", "/daily-video?id=../b", "/daily-video?id=a\\b", "/daily-video?id=a\n", "/daily-video?locale=en&id=a",
 ];
 
 test("external URLs, schemes, traversal, extra parameters and non-string router params fail closed", () => {

@@ -29,8 +29,8 @@ const dailyCard = (owner) => ({ id: "daily-" + owner, card_id: "source-" + owner
   excerpt_lang: "en", source_label: "Fixture source", source_url: "https://source.invalid/" + owner });
 const readyDetail = () => ({ id: "stored-card", title: "Stored guide", summary: "Stored summary", body: "Stored body",
   type: "tip", content_category: "authority", resource_readiness: "ready", resource_pair_complete: true, resources: [
-    { id: "stored-article", kind: "article", title: "Stored article", publisher: "Fixture publisher", content_category: "authority", url: "https://resource.invalid/article", language: "English" },
-    { id: "stored-video", kind: "video", title: "Stored video", publisher: "Fixture publisher", content_category: "authority", url: "https://resource.invalid/video", language: "English" },
+    { id: "stored-article", kind: "article", title: "Stored article", publisher: "Fixture publisher", description: "AI_RESOURCE_SEARCH_SUMMARY.", selection_reason: "AI_RESOURCE_SELECTION_REASON.", content_category: "authority", url: "https://resource.invalid/article", language: "English" },
+    { id: "stored-video", kind: "video", title: "Stored video", publisher: "Fixture publisher", description: "AI_VIDEO_SEARCH_SUMMARY.", content_category: "authority", url: "https://resource.invalid/video", language: "English" },
   ] });
 
 // Actual modules, memory-only storage, and invalid-domain transport. No
@@ -64,7 +64,7 @@ export function fixture() {
     if (path === "/auth/me") return response({ id: "user-" + owner, nickname: owner });
     if (path.startsWith("/feed/daily-post") && init.method !== "POST") return response({ state: "ready", card: dailyCard(owner) });
     if (path.startsWith("/feed/daily-video") && !path.endsWith("/summary") && init.method !== "POST") return response({ state: "ready", card: videoCard(owner) });
-    if (path.endsWith("/summary")) return response({ summary: owner + " summary from title and description" });
+    if (path.endsWith("/summary")) return response({ summary: owner + " generated AI search summary." });
     if (path === "/chat/main/checkin") return response({ state: "none" });
     if (path === "/chat/main/preview") return response({ has_conversation: true, session_id: "existing-" + owner, last_user_message: { text: owner + " private preview" } });
     if (path === "/chat/sessions") return response({ id: "created-" + owner });
@@ -105,7 +105,7 @@ export function page(f, kind = "daily", params = {}) {
   const appStateListeners = new Set();
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ImageBackground: "ImageBackground",
     ScrollView: "ScrollView", Image: "Image", Modal: "Modal", Platform: { OS: "ios" },
-    Linking: { openURL: async (url) => external.push(url) }, StyleSheet: { create: (value) => value, absoluteFill: {} },
+    Linking: { openURL: async (url) => { external.push(url); await f.externalOpen?.(url); } }, StyleSheet: { create: (value) => value, absoluteFill: {} },
     AppState: { currentState: "active", addEventListener: (_event, callback) => { appStateListeners.add(callback); return { remove: () => appStateListeners.delete(callback) }; } }, useWindowDimensions: () => ({ width: 390 }),
     Share: { share: async () => ({ action: "shared" }), sharedAction: "shared" },
     Animated: { Value: class {}, View: "AnimatedView", sequence: () => animation, timing: () => animation, delay: () => animation } };
@@ -113,18 +113,26 @@ export function page(f, kind = "daily", params = {}) {
   const theme = { colors: {}, spacing: {}, radius: {}, type: {} };
   const failure = load("../src/requestFailure.ts");
   const runtime = { jsx, jsxs: jsx };
+  const guide = load("../src/nuriResourceGuide.ts");
+  const summary = load("../src/resourceSummary.ts");
+  const externalContent = load("../src/externalContent.ts");
   const notice = load("../src/components/RequestFailureNotice.tsx", { "react/jsx-runtime": runtime, "react-native": native,
     "@/src/i18n": i18n, "@/src/theme": theme, "@/src/requestFailure": failure });
   const daily = load("../src/components/DailyPostCard.tsx", { "react/jsx-runtime": runtime, "react-native": native,
-    "@/src/i18n": i18n, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
+    "@/src/i18n": i18n, "@/src/nuriResourceGuide": guide, "@/src/resourceSummary": summary, "@/src/externalContent": externalContent,
+    "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
   const video = load("../src/components/DailyVideoCard.tsx", { "react/jsx-runtime": runtime, "react-native": native,
-    "@/src/i18n": i18n, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
+    "@/src/i18n": i18n, "@/src/nuriResourceGuide": guide, "@/src/resourceSummary": summary,
+    "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" } });
   const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": runtime, "react-native": native,
     "@/src/i18n": i18n, "react-native-webview": { WebView: "WebView" }, "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } } });
   const handoffs = load("../src/recommendationDetailHandoff.ts", { "./sessionBoundary": f.boundary });
   const dependencies = {
     react: r.react, "react/jsx-runtime": runtime, "react-native": native,
     "@/src/api": f, "@/src/theme": theme, "@/src/i18n": i18n,
+    "@/src/nuriResourceGuide": guide,
+    "@/src/resourceSummary": summary,
+    "@/src/useAIConsent": load("../src/useAIConsent.ts", { react: r.react, "./api": f }),
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": notice, "@/src/components/DailyPostCard": daily,
     "@/src/components/DailyVideoCard": video, "@/src/components/YouTubePlayer": player,
@@ -140,6 +148,7 @@ export function page(f, kind = "daily", params = {}) {
     "@/src/recommendationDetailHandoff": handoffs,
     "@/src/recommendationPresentation": load("../src/recommendationPresentation.ts"),
     "@/src/cardText": load("../src/cardText.ts"),
+    "@/src/externalContent": load("../src/externalContent.ts"),
     "expo-router": { useLocalSearchParams: () => params,
       useRouter: () => ({ push: (href) => routes.push(href), replace: (href) => routes.push(href), canGoBack: () => false }),
       useFocusEffect: (fn) => {
@@ -176,6 +185,84 @@ export const videoCard = (owner) => ({ id: "video-" + owner, card_id: "dailyvide
   title: owner + " video title", display_title: owner + " private video", channel: "Fixture pediatrician", speaker_kind: "pediatrician", video_lang: "en",
   summary: "Saved description summary", concern: "Fixture sleep", basis: "conversation", locale: "en", nickname: owner, intro: owner + " intro" });
 
+test("Home and post page display brief AI search previews with disclosure, not verbatim excerpts or pictures", async () => {
+  const f = fixture(); let home, post;
+  try {
+    await f.login("A"); await f.permit();
+    const card = { ...dailyCard("A"), headline: "AI_SEARCH_HEADLINE.", question: "AI_SEARCH_QUESTION?", situation: "AI_SEARCH_SITUATION.",
+      why_this: "AI_RECOMMENDATION_REASON.", excerpt: "copied-excerpt-sentinel", takeaways: ["AI_SEARCH_POINT."], source_label: "copied-author-sentinel",
+      image_url: "https://source.invalid/copied-picture-sentinel.png" };
+    f.responder = (path) => path.startsWith("/feed/daily-post") ? response({ state: "ready", card }) : null;
+    home = page(f, "home"); home.render(); await tick(); home.render();
+    assert.ok(home.find("home-daily-post-card"));
+    const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: card.concern });
+    assert.equal(home.find("home-daily-post-question").props.children, "AI_SEARCH_QUESTION?");
+    assert.doesNotMatch(home.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
+    post = page(f); post.render(); await tick(); post.render();
+    assert.ok(post.find("daily-post-question")); assert.ok(post.find("daily-post-source"));
+    assert.equal(post.find("daily-post-source").props.accessibilityRole, "link");
+    assert.equal(post.find("daily-post-headline"), undefined);
+    assert.equal(post.find("daily-post-guide-headline").props.children, guide.headline);
+    assert.equal(post.find("daily-post-guide-intro").props.children, guide.intro);
+    assert.equal(post.find("daily-post-guide-disclosure").props.children, guide.disclosure);
+    guide.actions.forEach((_action, index) => assert.ok(post.find(`daily-post-guide-action-${index}`)));
+    assert.equal(post.find("daily-post-summary-question").props.children, "AI_SEARCH_QUESTION?");
+    assert.equal(post.find("daily-post-summary-situation").props.children, "AI_SEARCH_SITUATION.");
+    assert.ok(post.find("daily-post-summary-point-0")); assert.ok(post.find("daily-post-recommendation-reason"));
+    assert.match(post.find("daily-post-summary-disclosure").props.children, /部分内容.*有误.*原站核对/);
+    assert.doesNotMatch(post.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
+    post.find("daily-post-source").props.onPress(); await tick(); post.render();
+    assert.deepEqual(post.external, ["https://source.invalid/A"]);
+    assert.ok(f.calls.some((call) => call.path === "/feed/daily-post/daily-A/events" && JSON.parse(call.init.body).event === "source_click"));
+  } finally { home?.unmount(); post?.unmount(); f.restore(); }
+});
+
+test("external post links reject unsafe URL shapes without dispatching or recording a source click", async () => {
+  const f = fixture(); let post;
+  try {
+    await f.login("A"); await f.permit();
+    const unsafe = ["http://source.invalid/A", "javascript:alert(1)", "file:///private/secret", "https://password@source.invalid/A",
+      "https://source.invalid:444/A", "https://localhost/A", "https://127.0.0.1/A", "https://host.internal/A",
+      "https://source.invalid/A?access_token=private", "https://source.invalid\\@evil.invalid/A"];
+    for (const source_url of unsafe) {
+      f.responder = (path) => path.startsWith("/feed/daily-post") ? response({ state: "ready", card: { ...dailyCard("A"), source_url } }) : null;
+      post = page(f); post.render(); await tick(); post.render();
+      const events = f.calls.filter((call) => call.path.endsWith("/events")).length;
+      post.find("daily-post-source").props.onPress(); await tick(); post.render();
+      assert.deepEqual(post.external, [], source_url);
+      assert.ok(post.find("daily-post-source-error"), source_url);
+      assert.equal(f.calls.filter((call) => call.path.endsWith("/events")).length, events, source_url);
+      post.unmount(); post = null;
+    }
+  } finally { post?.unmount(); f.restore(); }
+});
+
+test("post OS-link failure stays visible and can be retried without reloading its source card", async () => {
+  const f = fixture(); let post;
+  try {
+    await f.login("A"); await f.permit(); post = page(f); post.render(); await tick(); post.render();
+    const reads = f.calls.filter((call) => call.path.startsWith("/feed/daily-post") && call.init.method !== "POST").length;
+    f.externalOpen = async () => { throw new Error("OS link unavailable"); };
+    post.find("daily-post-source").props.onPress(); await tick(); post.render();
+    assert.ok(post.find("daily-post-source-error")); assert.ok(post.find("daily-post-question"));
+    f.externalOpen = null; post.find("daily-post-source").props.onPress(); await tick(); post.render();
+    assert.equal(post.find("daily-post-source-error"), undefined);
+    assert.equal(post.external.length, 2);
+    assert.equal(f.calls.filter((call) => call.path.startsWith("/feed/daily-post") && call.init.method !== "POST").length, reads);
+  } finally { post?.unmount(); f.restore(); }
+});
+
+for (const change of ["B", "blur", "unmount"]) test("saved post source callback cannot dispatch after " + change, async () => {
+  const f = fixture(); let post;
+  try {
+    await f.login("A"); await f.permit(); post = page(f); post.render(); await tick(); post.render();
+    const sourceAction = post.find("daily-post-source").props.onPress;
+    if (change === "B") { await f.login("B"); post.render(); } else post[change]();
+    const before = post.external.length;
+    sourceAction(); await tick(); assert.equal(post.external.length, before);
+  } finally { post?.unmount(); f.restore(); }
+});
+
 test("daily-post denied permission offers CTA, then grant/refocus loads without permanent spinner", async () => {
   const f = fixture(); let p;
   try {
@@ -184,7 +271,7 @@ test("daily-post denied permission offers CTA, then grant/refocus loads without 
     assert.equal(f.calls.filter((call) => call.path.startsWith("/feed/daily-post")).length, 0);
     p.find("request-failure-action").props.onPress(); assert.deepEqual(p.routes, [{ pathname: "/ai-permission", params: { returnTo: "/daily-post" } }]);
     p.blur(); await f.permit(); p.focus(); await tick(); p.render();
-    assert.ok(p.find("daily-post-headline")); assert.equal(p.find("request-failure-permission"), undefined);
+    assert.ok(p.find("daily-post-question")); assert.equal(p.find("request-failure-permission"), undefined);
     assert.ok(f.calls.some((call) => call.path.startsWith("/feed/daily-post")));
   } finally { p?.unmount(); f.restore(); }
 });
@@ -197,7 +284,7 @@ for (const [status, kind] of [[401, "session"], [503, "service"]]) test("daily-p
     assert.equal(p.kind("ActivityIndicator"), undefined); assert.equal(await f.auth.getToken(), "account-A");
     f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
     if (status === 401) assert.deepEqual(p.routes, ["/login"]);
-    else assert.ok(p.find("daily-post-headline"));
+    else assert.ok(p.find("daily-post-question"));
     assert.doesNotMatch(p.visible(), /private failure/);
   } finally { p?.unmount(); f.restore(); }
 });
@@ -207,7 +294,7 @@ test("daily-post chat permission failure keeps the saved card and routes to perm
   try {
     await f.login("A"); await f.permit(); p = page(f); p.render(); await tick(); p.render();
     await f.aiConsent.setAllowed(false, f.aiConsent.getState()); await p.find("daily-post-chat").props.onPress(); p.render();
-    assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-post-headline"));
+    assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-post-question"));
     assert.equal(p.find("daily-post-chat").props.disabled, false);
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
     p.find("request-failure-action").props.onPress(); assert.deepEqual(p.routes, [{ pathname: "/ai-permission", params: { returnTo: "/daily-post" } }]);
@@ -220,7 +307,7 @@ test("daily-post chat service retry repeats the failed chat action, not just the
     await f.login("A"); await f.permit(); p = page(f); p.render(); await tick(); p.render();
     f.responder = (path) => path === "/chat/sessions" ? response({ detail: "busy" }, 503) : null;
     await p.find("daily-post-chat").props.onPress(); p.render(); assert.ok(p.find("request-failure-service"));
-    assert.ok(p.find("daily-post-headline")); const before = f.calls.filter((call) => call.path === "/chat/sessions").length;
+    assert.ok(p.find("daily-post-question")); const before = f.calls.filter((call) => call.path === "/chat/sessions").length;
     f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, before + 1);
     assert.deepEqual(p.routes, ["/chat/created-A"]);
@@ -240,7 +327,7 @@ test("daily-post chat failure followed by refocus GET failure retries the GET, n
     f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, chats);
     assert.equal(f.calls.filter((call) => call.path.startsWith("/feed/daily-post")).length, reads + 1);
-    assert.ok(p.find("daily-post-headline")); assert.deepEqual(p.routes, []);
+    assert.ok(p.find("daily-post-question")); assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
 
@@ -253,7 +340,7 @@ for (const change of ["B", "logout", "ABA"]) test("daily-post held response for 
     else { await f.login("B"); if (change === "ABA") await f.login("A"); }
     f.responder = (path) => path.startsWith("/feed/daily-post") ? response({ detail: "offline" }, 503) : null;
     p.render(); held.resolve({ state: "ready", card: dailyCard("private-old-A") }); await tick(); p.render();
-    assert.doesNotMatch(p.visible(), /private-old-A/); assert.equal(p.find("daily-post-headline"), undefined); assert.deepEqual(p.routes, []);
+    assert.doesNotMatch(p.visible(), /private-old-A/); assert.equal(p.find("daily-post-question"), undefined); assert.equal(p.find("daily-post-source"), undefined); assert.deepEqual(p.routes, []);
   } finally { held.resolve({ state: "empty" }); p?.unmount(); f.restore(); }
 });
 
@@ -262,8 +349,8 @@ test("daily-post GET result after blur is ignored, while refocus accepts a fresh
   try {
     await f.login("A"); await f.permit(); f.responder = (path) => path.startsWith("/feed/daily-post") ? { ...response(null), json: () => held.promise } : null;
     p = page(f); p.render(); await tick(); p.blur(); held.resolve({ state: "ready", card: dailyCard("blurred-A") }); await tick(); p.render();
-    assert.equal(p.find("daily-post-headline"), undefined); f.responder = null; p.focus(); await tick(); p.render();
-    assert.ok(p.find("daily-post-headline")); assert.doesNotMatch(p.visible(), /blurred-A/);
+    assert.equal(p.find("daily-post-question"), undefined); f.responder = null; p.focus(); await tick(); p.render();
+    assert.ok(p.find("daily-post-question")); assert.doesNotMatch(p.visible(), /blurred-A/);
   } finally { held.resolve({ state: "empty" }); p?.unmount(); f.restore(); }
 });
 
@@ -334,9 +421,15 @@ test("ready detail resources survive warm service failure instead of being repla
     await f.login("A"); await f.permit(); const params = { id: "stored-card", handoff_key: "handoff" };
     p = page(f, "detail", params); params.handoff_key = p.handoffs.storeRecommendationDetailHandoff(readyDetail(), [{ card_id: "stored-card", recommendation_id: "rec" }]);
     p.render(); await tick(); p.render(); assert.ok(p.find("detail-resource-stored-article")); assert.ok(p.find("detail-resource-stored-video"));
+    assert.equal(p.find("detail-resource-summary-stored-article").props.children, "AI_RESOURCE_SEARCH_SUMMARY.");
+    assert.equal(p.find("detail-resource-summary-stored-video").props.children, "AI_VIDEO_SEARCH_SUMMARY.");
+    assert.ok(p.find("detail-resource-reason-stored-article"));
+    assert.doesNotMatch(p.visible(), /Stored summary|Stored body/, "resource briefs must not expose the legacy full card body or top-level summary");
+    assert.equal(p.kind("ExpoImage"), undefined, "restoring a short brief must not restore source images");
     f.responder = (path) => path.startsWith("/feed/stored-card/detail") ? response({ detail: "busy" }, 503) : null;
     p.blur(); p.focus(); await tick(); p.render();
     assert.ok(p.find("request-failure-service")); assert.ok(p.find("detail-resource-stored-article")); assert.ok(p.find("detail-resource-stored-video"));
+    assert.equal(p.find("detail-resource-summary-stored-article").props.children, "AI_RESOURCE_SEARCH_SUMMARY.", "warm service failure must preserve the ready brief as well as its source action");
     assert.equal(f.calls.filter((call) => call.path === "/feed/research/prepare").length, 0);
   } finally { p?.unmount(); f.restore(); }
 });

@@ -484,8 +484,8 @@ final class NuriReminderScheduler {
     dueDate: Date?
   ) -> UNMutableNotificationContent {
     let content = UNMutableNotificationContent()
-    content.title = "NURI Native Lab 测试提醒"
-    content.body = "仅用于验证本机提醒频率；实验版远程 APNs 尚待后端支持。"
+    content.title = "Nuri 本机测试提醒"
+    content.body = "仅用于验证本机提醒频率；远程 APNs 尚待后端支持。"
     content.sound = .default
 
     var userInfo: [String: Any] = [

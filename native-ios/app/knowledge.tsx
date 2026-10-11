@@ -11,6 +11,7 @@ import { useT } from "@/src/i18n";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 import { colors } from "@/src/theme";
 import { useAccountScope, useAccountState } from "@/src/useAccountState";
+import { shortResourceSummary } from "@/src/resourceSummary";
 
 type LibraryCard = Record<string, unknown> & { id: string; title: string };
 
@@ -133,8 +134,8 @@ export default function KnowledgeLibrary() {
           </Text>}
           renderItem={({ item }) => {
             const title = cardText(item, "title", locale);
-            const summary = cardText(item, "summary", locale);
             const label = cardText(item, "type_label", locale);
+            const summary = shortResourceSummary(cardText(item, "summary", locale), locale === "en" ? 600 : 220);
             return <Pressable style={styles.card} testID={`knowledge-card-${item.id}`}
               accessibilityRole="button" accessibilityLabel={`${words.open}: ${title}`}
               onPress={() => {
@@ -144,7 +145,7 @@ export default function KnowledgeLibrary() {
               <View style={styles.cardText}>
                 {label ? <Text style={styles.cardLabel}>{t(label)}</Text> : null}
                 <Text style={styles.cardTitle}>{title}</Text>
-                {summary ? <Text style={styles.cardSummary} numberOfLines={3}>{summary}</Text> : null}
+                {summary ? <Text style={styles.cardSummary} numberOfLines={3} testID={`knowledge-summary-${item.id}`}>{summary}</Text> : null}
               </View>
               <Ionicons name="chevron-forward" size={20} color={colors.muted} />
             </Pressable>;

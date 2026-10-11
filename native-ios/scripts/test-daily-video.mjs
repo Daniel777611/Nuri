@@ -52,37 +52,38 @@ test("Home video permission CTA and grant/refocus recovery", async () => {
     p.blur(); await f.permit(); p.focus(); await tick(); p.render(); assert.ok(p.find("home-daily-video-card"));
   } finally { p?.unmount(); f.restore(); }
 });
-test("stored video is readable without AI permission; controlled in-app player stops on background/blur", async () => {
+test("stored AI video summary and source link are readable without generation permission or embedded playback", async () => {
   const f = fixture(); let p;
   try {
-    await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
-    assert.ok(p.find("daily-video-webview")); assert.ok(p.find("daily-video-summary"));
+    await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render(); await tick(); p.render();
+    assert.ok(p.find("daily-video-external-title")); assert.ok(p.find("daily-video-source"));
+    assert.equal(p.find("daily-video-source").props.accessibilityRole, "link");
+    assert.equal(p.find("daily-video-webview"), undefined); assert.equal(p.find("daily-video-summary").props.children, "Saved description summary");
+    assert.equal(p.kind("WebView"), undefined);
+    const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: videoCard("A").concern });
+    assert.equal(p.find("daily-video-guide-headline").props.children, guide.headline);
+    assert.equal(p.find("daily-video-guide-intro").props.children, guide.intro);
+    assert.equal(p.find("daily-video-guide-disclosure").props.children, guide.disclosure);
+    assert.match(p.visible(), /Fixture sleep/, "own family topic is allowed in NURI's original reading prompts");
+    assert.match(p.find("daily-video-summary-disclosure").props.children, /未观看完整视频或获取字幕/);
+    assert.doesNotMatch(p.visible(), /Fixture pediatrician|A video title|A private video|ytimg\.com|youtube-nocookie/);
     assert.equal(f.calls.filter((call) => call.path.endsWith("/summary") || call.path === "/chat/sessions").length, 0);
-    const player = p.find("daily-video-webview");
-    assert.equal(player.props.source.uri, "https://www.youtube-nocookie.com/embed/ScMzIvxBSi4?playsinline=1&rel=0&autoplay=0");
-    assert.deepEqual(player.props.source.headers, { Referer: "https://com.ordashtech.nuri.nativelab" });
-    assert.equal(player.props.sharedCookiesEnabled, false); assert.equal(player.props.incognito, true);
-    assert.deepEqual(player.props.originWhitelist, ["*"], "custom policy must run before WebView's automatic external-Linking fallback");
-    assert.equal(player.props.allowsInlineMediaPlayback, true); assert.equal(player.props.mediaPlaybackRequiresUserAction, true);
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://evil.invalid/?token=A" }), false);
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "nuri://login" }), false);
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: player.props.source.uri }), true);
-    assert.doesNotMatch(JSON.stringify(player.props.source), /Bearer|account-A/);
-    p.appState("background"); p.render(); assert.equal(p.find("daily-video-webview"), undefined);
-    p.appState("active"); p.render(); assert.ok(p.find("daily-video-webview"));
-    p.blur(); p.render(); assert.equal(p.find("daily-video-webview"), undefined);
+    assert.deepEqual(p.external, [], "reading the card must never automatically launch an external site");
+    p.appState("background"); p.render(); assert.equal(p.kind("WebView"), undefined);
+    p.appState("active"); p.render(); assert.equal(p.kind("WebView"), undefined);
   } finally { p?.unmount(); f.restore(); }
 });
-test("missing summary needs consent, retains player, grant/refocus retries real summary", async () => {
+test("missing AI summary waits for permission and grant/refocus uses only existing summary endpoint", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); f.responder = (path) => path === "/feed/daily-video/video-A" ? response({ state: "ready", card: { ...videoCard("A"), summary: "" } }) : null;
-    p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
-    assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-video-webview"));
+    p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render(); await tick(); p.render();
+    assert.ok(p.find("daily-video-summary-error")); assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-video-source"));
     assert.equal(f.calls.filter((call) => call.path.endsWith("/summary")).length, 0);
-    p.find("request-failure-action").props.onPress(); assert.deepEqual(p.routes, [{ pathname: "/ai-permission", params: { returnTo: "/daily-video" } }]);
-    p.blur(); await f.permit(); p.focus(); await tick(); p.render();
-    assert.match(p.find("daily-video-summary").props.children, /summary from title and description/);
+    p.blur(); await f.permit(); p.focus(); await tick(); p.render(); await tick(); p.render();
+    assert.ok(p.find("daily-video-source")); assert.equal(p.find("daily-video-summary").props.children, "A generated AI search summary.");
+    assert.equal(f.calls.filter((call) => call.path.endsWith("/summary")).length, 1);
+    assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
 for (const [status, failure] of [[401, "session"], [503, "service"]]) test("video load " + status + " selects accurate action, not permanent spinner", async () => {
@@ -92,7 +93,7 @@ for (const [status, failure] of [[401, "session"], [503, "service"]]) test("vide
     p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
     assert.ok(p.find("request-failure-" + failure)); assert.equal(p.kind("ActivityIndicator"), undefined);
     f.responder = null; p.find("request-failure-action").props.onPress(); p.render(); await tick(); p.render();
-    if (status === 401) assert.deepEqual(p.routes, ["/login"]); else assert.ok(p.find("daily-video-title"));
+    if (status === 401) assert.deepEqual(p.routes, ["/login"]); else assert.ok(p.find("daily-video-external-title"));
   } finally { p?.unmount(); f.restore(); }
 });
 test("video chat denial retains card; service retry repeats original POST", async () => {
@@ -100,7 +101,7 @@ test("video chat denial retains card; service retry repeats original POST", asyn
   try {
     await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
     p.find("daily-video-chat").props.onPress(); await tick(); p.render();
-    assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-video-title"));
+    assert.ok(p.find("request-failure-permission")); assert.ok(p.find("daily-video-external-title"));
     await f.permit(); f.responder = (path) => path === "/chat/sessions" ? response({}, 503) : null;
     p.find("daily-video-chat").props.onPress(); await tick(); p.render(); assert.ok(p.find("request-failure-service"));
     const before = f.calls.filter((call) => call.path === "/chat/sessions").length;
@@ -120,7 +121,11 @@ for (const change of ["B", "logout", "ABA", "blur", "unmount"]) test("held video
     else { await f.login("B"); if (change === "ABA") await f.login("A"); }
     f.responder = () => response({}, 503); if (change !== "unmount") p.render();
     held.resolve({ state: "ready", card: { ...videoCard("A"), title: "stale-private-video", display_title: "stale-private-video" } }); await tick();
-    if (change !== "unmount") p.render(); assert.doesNotMatch(p.visible(), /stale-private-video/); assert.deepEqual(p.routes, []);
+    if (change !== "unmount") p.render();
+    assert.equal(p.find("daily-video-external-title"), undefined, "the generic link UI must not hide a stale-card restoration");
+    assert.equal(p.find("daily-video-source"), undefined);
+    assert.equal(p.find("daily-video-nuri-guide"), undefined, "a late account A result must not restore the topic guide either");
+    assert.doesNotMatch(p.visible(), /stale-private-video/); assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
 test("explicit source uses validated video ID, ignores poisoned source URL", async () => {
@@ -131,47 +136,36 @@ test("explicit source uses validated video ID, ignores poisoned source URL", asy
     p.find("daily-video-source").props.onPress(); await tick(); assert.deepEqual(p.external, ["https://www.youtube.com/watch?v=ScMzIvxBSi4"]);
   } finally { p?.unmount(); f.restore(); }
 });
-test("official player links and related videos leave via OS HTTPS links without replacing the embed", async () => {
+test("explicit YouTube source launch records its source event and never dispatches account credentials", async () => {
   const f = fixture(); let p;
   try {
-    await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
-    const player = p.find("daily-video-webview");
-    const related = "https://www.youtube.com/watch?v=BaW_jenozKc";
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: related, isTopFrame: true, navigationType: "click" }), false);
-    await tick(); assert.deepEqual(p.external, [related]);
-    assert.equal(p.find("daily-video-webview").props.source.uri, player.props.source.uri);
-    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube.com/@YouTube" } });
-    await tick(); assert.deepEqual(p.external, [related, "https://www.youtube.com/@YouTube"]);
-    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://www.youtube-nocookie.com/embed/BaW_jenozKc" } });
-    await tick(); assert.equal(p.external.at(-1), related);
-    // Standard player ad/terms links also work, but arbitrary automatic top
-    // frame redirects and unsafe schemes cannot trigger native dispatch.
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://advertiser.example/offer", isTopFrame: true, navigationType: "click" }), false);
-    await tick(); assert.equal(p.external.at(-1), "https://advertiser.example/offer");
-    const count = p.external.length;
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://evil.invalid", isTopFrame: true, navigationType: "other" }), false);
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "javascript:alert(1)", isTopFrame: false, navigationType: "click" }), false);
-    player.props.onOpenWindow({ nativeEvent: { targetUrl: "file:///private/secret" } });
-    player.props.onOpenWindow({ nativeEvent: { targetUrl: "https://secret@www.youtube.com/watch?v=BaW_jenozKc" } });
-    await tick(); assert.equal(p.external.length, count);
-    assert.equal(player.props.onShouldStartLoadWithRequest({ url: "https://googleads.g.doubleclick.net/pagead/frame", isTopFrame: false, navigationType: "other" }), true);
-    assert.equal(player.props.setSupportMultipleWindows, true);
-    assert.equal(player.props.javaScriptCanOpenWindowsAutomatically, false);
+    await f.login("A"); await f.permit(); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
+    p.find("daily-video-source").props.onPress(); await tick(); p.render();
+    assert.deepEqual(p.external, ["https://www.youtube.com/watch?v=ScMzIvxBSi4"]);
+    assert.doesNotMatch(JSON.stringify(p.external), /Bearer|account-A|token|authorization/i);
+    assert.ok(f.calls.some((call) => call.path === "/feed/daily-video/video-A/events" && JSON.parse(call.init.body).event === "source_click"));
+    assert.equal(p.kind("WebView"), undefined); assert.ok(p.find("daily-video-summary-section"));
   } finally { p?.unmount(); f.restore(); }
 });
-test("actual home/video screens preserve source title and thumbnail, put AI wording separately", async () => {
+test("actual Home and video screens restore brief AI summaries, never video titles, thumbnails or channel", async () => {
   const f = fixture(); let home, video;
   try {
     await f.login("A"); await f.permit(); home = page(f, "home"); home.render(); await tick(); home.render();
-    assert.equal(home.find("home-daily-video-title").props.children, videoCard("A").title);
-    const thumbnail = home.find("home-daily-video-thumbnail");
-    assert.equal(thumbnail.type, "Image"); assert.equal(thumbnail.props.resizeMode, "contain");
-    assert.deepEqual(thumbnail.props.source, { uri: videoCard("A").thumbnail_url });
-    assert.equal(thumbnail.props.children, undefined, "no overlays are placed on the thumbnail");
-    video = page(f, "video", { id: "video-A" }); video.render(); await tick(); video.render();
-    assert.equal(video.find("daily-video-title").props.children, videoCard("A").title);
-    assert.equal(video.find("daily-video-guide-title").props.children, videoCard("A").display_title);
-    assert.ok(video.find("daily-video-summary")); assert.ok(video.find("daily-video-webview"));
+    const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: videoCard("A").concern });
+    assert.equal(home.find("home-daily-video-external-title").props.children, guide.headline);
+    assert.ok(home.find("home-daily-video-external-notice"));
+    assert.equal(home.find("home-daily-video-thumbnail"), undefined); assert.equal(home.find("home-daily-video-title"), undefined);
+    assert.equal(home.find("home-daily-video-external-notice").props.children, "Saved description summary");
+    assert.doesNotMatch(home.visible(), /A video title|A private video|Fixture pediatrician|i\.ytimg\.com/);
+    video = page(f, "video", { id: "video-A" }); video.render(); await tick(); video.render(); await tick(); video.render();
+    assert.equal(video.find("daily-video-external-title").props.children, "YouTube 育儿资源链接");
+    assert.ok(video.find("daily-video-external-notice"));
+    assert.equal(video.find("daily-video-title"), undefined); assert.equal(video.find("daily-video-guide-title"), undefined);
+    assert.equal(video.find("daily-video-guide-headline").props.children, guide.headline);
+    assert.equal(video.find("daily-video-guide-disclosure").props.children, guide.disclosure);
+    guide.actions.forEach((_action, index) => assert.ok(video.find(`daily-video-guide-action-${index}`)));
+    assert.equal(video.find("daily-video-summary").props.children, "Saved description summary"); assert.equal(video.find("daily-video-webview"), undefined);
+    assert.doesNotMatch(video.visible(), /A video title|A private video|Fixture pediatrician|i\.ytimg\.com/);
   } finally { home?.unmount(); video?.unmount(); f.restore(); }
 });
 test("Home ready checkin opens server session, never ordinary session POST", async () => {
@@ -308,20 +302,40 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     const code = ts.transpileModule(`${component.getText(ast)}\n${styles.getText(ast)}\nmodule.exports = MessageBubble;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     const scope = load("../src/useAccountState.ts", { react: r.react, "./api": f });
     const module = { exports: {} };
-    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", code)(
+    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary", code)(
       () => ({ jsx, jsxs: jsx }), module, module.exports, () => ({ t: (value) => value }), () => ({ push: (href) => routes.push(href) }), scope.useAccountScope,
-      "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" });
-    const tree = r.render(() => module.exports({ msg: { id: "marker", role: "ai", text: "", transition: { kind: "card_opened", video: { id: "video-A", title: "Stored video", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg", channel: "Fixture channel" } } } }));
+      "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" },
+      load("../src/resourceSummary.ts").shortResourceSummary);
+    const tree = r.render(() => module.exports({ msg: { id: "marker", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: { id: "video-A", title: "Stored video", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg", channel: "Fixture channel", key_points: ["AI_SEARCH_VIDEO_POINT."], summary: "AI_SEARCH_VIDEO_SUMMARY.", transcript: "PRIVATE_SOURCE_TRANSCRIPT" } } } }));
     const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
     const card = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-card"); assert.ok(card);
     assert.equal(nodes(tree).some((node) => node.props?.testID === "chat-card-divider"), false);
     card.props.onPress(); assert.deepEqual(routes, [{ pathname: "/daily-video", params: { id: "video-A" } }]);
+    const summaryFallbackTree = r.render(() => module.exports({ msg: { id: "video-fallback", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: {
+      id: "video-A", key_points: [], summary: "AI_CACHED_SUMMARY_WITHOUT_POINTS.", title: "PRIVATE_SOURCE_TITLE", thumbnail_url: "https://private.invalid/thumbnail.jpg",
+    } } } }));
+    assert.equal(nodes(summaryFallbackTree).find((node) => node.props?.testID === "chat-daily-video-summary").props.children, "AI_CACHED_SUMMARY_WITHOUT_POINTS.",
+      "an empty saved key_points array must not hide the usable saved summary");
+    assert.doesNotMatch(JSON.stringify(summaryFallbackTree), /PRIVATE_|private\.invalid/);
+    const postTree = r.render(() => module.exports({ msg: { id: "post-marker", role: "ai", text: "PRIVATE_RAW_POST_TRANSITION_TEXT", transition: { kind: "card_opened", post: {
+      id: "post-A", headline: "AI_SEARCH_POST_HEADLINE.", takeaways: ["AI_SEARCH_POST_POINT_ONE.", "AI_SEARCH_POST_POINT_TWO.", "UNSELECTED_THIRD_POINT."],
+      excerpt: "PRIVATE_SOURCE_EXCERPT", body: "PRIVATE_SOURCE_BODY", image_url: "https://private.invalid/image.jpg",
+    } } } }));
+    assert.ok(nodes(postTree).find((node) => node.props?.testID === "chat-daily-post-card"));
+    assert.equal(nodes(postTree).find((node) => node.props?.testID === "chat-daily-post-summary").props.children, "AI_SEARCH_POST_POINT_ONE.\nAI_SEARCH_POST_POINT_TWO.");
+    assert.match(JSON.stringify(postTree), /AI_SEARCH_POST_HEADLINE/);
+    assert.doesNotMatch(JSON.stringify(postTree), /PRIVATE_|private\.invalid|UNSELECTED_THIRD_POINT/);
+    const ownTree = r.render(() => module.exports({ msg: { id: "my-photo", role: "user", text: "OWN_FAMILY_MESSAGE", image_base64: "data:image/png;base64,OWN_IMAGE" } }));
+    assert.match(JSON.stringify(ownTree), /OWN_FAMILY_MESSAGE/);
+    assert.equal(nodes(ownTree).find((node) => node.type === "Image").props.source.uri, "data:image/png;base64,OWN_IMAGE",
+      "resource preview boundaries do not suppress a user's own photo and message");
     await f.login("B"); card.props.onPress(); assert.equal(routes.length, 1);
     const thumbnail = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-thumbnail");
-    assert.equal(thumbnail.props.contentFit, "contain"); assert.equal(thumbnail.props.children, undefined);
-    assert.deepEqual(thumbnail.props.source, { uri: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg" });
+    assert.equal(thumbnail, undefined, "chat does not copy the video's thumbnail");
     assert.ok(JSON.stringify(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-source").props.children).includes("YouTube"));
-    assert.equal(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-guide-label").props.children, "NURI 内容导读", "backend-packed recommendation wording is identified as NURI's guide, not the original title");
+    assert.equal(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-guide-label"), undefined);
+    assert.equal(nodes(tree).find((node) => node.props?.testID === "chat-daily-video-summary").props.children, "AI_SEARCH_VIDEO_POINT.");
+    assert.doesNotMatch(JSON.stringify(tree), /Stored video|Fixture channel|ytimg\.com|PRIVATE_/);
     assert.equal(nodes(tree).some((node) => node.type === "Icon" && node.props.name === "play"), false);
   } finally { r.unmount(); f.restore(); }
 });
@@ -365,14 +379,47 @@ test("an in-flight pending poll finishing after blur cannot re-arm its timer", a
   } finally { held.resolve({}); p?.unmount(); clock.restore(); f.restore(); }
 });
 
-test("WK process termination shows visible manual retry and never auto-reloads in a loop", async () => {
+test("external YouTube launch failure is visible and retryable without a player or extra content fetch", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
-    p.find("daily-video-webview").props.onContentProcessDidTerminate({ nativeEvent: {} }); p.render();
-    assert.ok(p.find("daily-video-player-retry")); assert.equal(p.find("daily-video-webview"), undefined);
-    p.render(); assert.ok(p.find("daily-video-player-retry")); assert.equal(p.find("daily-video-webview"), undefined);
-    p.find("daily-video-player-retry").props.onPress(); p.render(); assert.ok(p.find("daily-video-webview"));
-    assert.equal(p.find("daily-video-player-retry"), undefined);
+    const reads = f.calls.filter((call) => call.path === "/feed/daily-video/video-A").length;
+    f.externalOpen = async () => { throw new Error("OS cannot open YouTube"); };
+    p.find("daily-video-source").props.onPress(); await tick(); p.render();
+    assert.ok(p.find("daily-video-source-error")); assert.ok(p.find("daily-video-external-title"));
+    assert.equal(p.find("daily-video-source").props.disabled, false);
+    assert.equal(p.kind("WebView"), undefined); assert.equal(p.find("daily-video-player-retry"), undefined);
+    f.externalOpen = null; p.find("daily-video-source").props.onPress(); await tick(); p.render();
+    assert.equal(p.find("daily-video-source-error"), undefined); assert.equal(p.external.length, 2);
+    assert.equal(f.calls.filter((call) => call.path === "/feed/daily-video/video-A").length, reads);
+    assert.equal(f.calls.filter((call) => call.path.endsWith("/summary")).length, 0);
+  } finally { p?.unmount(); f.restore(); }
+});
+
+for (const change of ["B", "blur", "unmount"]) test("held source launch cannot restore failure or dispatch a saved callback after " + change, async () => {
+  const f = fixture(), held = deferred(); let p;
+  try {
+    await f.login("A"); p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
+    f.externalOpen = async () => { if (!(await held.promise)) throw new Error("late OS failure"); };
+    const action = p.find("daily-video-source").props.onPress;
+    action(); action(); await tick(); p.render();
+    assert.equal(p.external.length, 1, "sourceBusy guards duplicate presses even before rerender");
+    assert.equal(p.find("daily-video-source").props.disabled, true);
+    if (change === "B") { await f.login("B"); p.render(); } else p[change]();
+    action(); assert.equal(p.external.length, 1, "old callback must not dispatch for another account or hidden page");
+    held.resolve(false); await tick();
+    if (change !== "unmount") p.render();
+    assert.equal(p.find("daily-video-source-error"), undefined);
+  } finally { held.resolve(false); p?.unmount(); f.restore(); }
+});
+
+for (const video_id of ["../private", "javascript:alert(1)", "ScMzIvxBSi4?token=secret", "", "not-an-id"]) test("link screen rejects backend video ID " + JSON.stringify(video_id), async () => {
+  const f = fixture(); let p;
+  try {
+    await f.login("A");
+    f.responder = (path) => path === "/feed/daily-video/video-A" ? response({ state: "ready", card: { ...videoCard("A"), video_id } }) : null;
+    p = page(f, "video", { id: "video-A" }); p.render(); await tick(); p.render();
+    assert.equal(p.find("daily-video-source"), undefined); assert.ok(p.find("daily-video-load-retry"));
+    assert.deepEqual(p.external, []); assert.equal(p.kind("WebView"), undefined);
   } finally { p?.unmount(); f.restore(); }
 });

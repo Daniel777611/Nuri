@@ -83,10 +83,10 @@ function BillingPage({ checkout }: { checkout?: string }) {
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const nativeLabReadOnly = Platform.OS === "ios";
   const readOnlyNotice = locale === "en"
-    ? "NURI Native Lab shows membership status only. Payment return links are not yet isolated from the original app, so subscriptions, subscription management, and payment history are unavailable in this iOS test app."
+    ? "Nuri shows membership status only. Payment return links are not yet configured for this app, so starting subscriptions, managing subscriptions and viewing payment history are unavailable in this iOS app."
     : locale === "zh-TW"
-      ? "NURI Native Lab 僅供查看會員狀態。付款返回連結尚未適配獨立實驗版，此 iOS 實驗版暫不支援開通、管理訂閱或查看付款紀錄。"
-      : "NURI Native Lab 仅供查看会员状态。支付返回链接尚未适配独立实验版，此 iOS 实验版暂不支持开通、管理订阅或查看付款记录。";
+      ? "Nuri 僅供查看會員狀態。付款返回連結尚未適配此應用程式，因此此 iOS 應用程式暫不支援開通或管理訂閱，也不支援查看付款紀錄。"
+      : "Nuri 仅供查看会员状态。支付返回链接尚未适配此应用，因此此 iOS 应用暂不支持开通或管理订阅，也不支持查看付款记录。";
   const checkoutResult = !nativeLabReadOnly && (checkout === "success" || checkout === "cancel") ? checkout : null;
 
   const [status, setStatus] = useAccountState<BillingStatus | null>(null);

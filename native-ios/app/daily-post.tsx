@@ -1,9 +1,4 @@
-// Today's daily card, in full: what another parent did, in their own words
-// where we could verify them, why it was picked for this family, and two ways
-// on — the original post, or talking it through with NURI.
-//
-// Reads the same GET /feed/daily-post as Home; by the time a parent gets here
-// the card exists, so this is a row read, not a second generation.
+// Short AI search previews are distinct from NURI's own reading prompts.
 import { useCallback, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -20,10 +15,12 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
-import * as WebBrowser from "expo-web-browser";
 
 import { api, type DailyPostCard } from "@/src/api";
-import { dailyPostGreeting, dailyPostTag, dailyPostQuestion, dailyPostAsker } from "@/src/components/DailyPostCard";
+import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
+import { externalSourceUrl, externalSourceHost } from "@/src/externalContent";
+import { nuriResourceGuide } from "@/src/nuriResourceGuide";
+import { shortResourceSummary, RESOURCE_SUMMARY_DISCLOSURE } from "@/src/resourceSummary";
 import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
@@ -41,7 +38,7 @@ const C = {
 
 export default function DailyPostScreen() {
   const { capture, current } = useAccountScope();
-  const { t, locale } = useT();
+  const { t } = useT();
   const router = useRouter();
   const { width } = useWindowDimensions();
   const pageWidth = Math.min(width, 402);
@@ -51,6 +48,7 @@ export default function DailyPostScreen() {
   const [failure, setFailure] = useState<RequestFailureKind | null>(null);
   const [failureSource, setFailureSource] = useState<"load" | "chat">("load");
   const [retry, setRetry] = useState(0);
+  const [sourceFailure, setSourceFailure] = useState(false);
   const focused = useRef(false);
   const chatOperation = useRef(0);
   const chatBusy = useRef(false);
@@ -65,6 +63,7 @@ export default function DailyPostScreen() {
     chatOperation.current++;
     chatBusy.current = false;
     setFailure(null);
+    setSourceFailure(false);
     setOpeningChat(false);
     setState((previous) => previous === "ready" && retry === 0 ? previous : "loading");
     (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
@@ -90,20 +89,20 @@ export default function DailyPostScreen() {
       chatOperation.current++;
       chatBusy.current = false;
     };
-  }, [id, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setFailureSource]));
+  }, [id, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setFailureSource, setSourceFailure]));
 
   const goBack = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
 
-  const openSource = useCallback(() => {
-    if (capture() === null) return;
-    if (!card || !/^https:\/\//i.test(card.source_url)) return;
+  const openSource = useCallback(async () => {
+    const ticket = capture();
+    if (ticket === null || !focused.current || !card) return;
+    const source = externalSourceUrl(card.source_url);
+    if (!source) { setSourceFailure(true); return; }
+    setSourceFailure(false);
     void api.dailyPostEvent(card.id, "source_click").catch(() => {});
-    // Opened inside the tap's own call stack so browsers don't treat the new
-    // tab as an unsolicited popup.
-    const opening =
-      Platform.OS === "web" ? Linking.openURL(card.source_url) : WebBrowser.openBrowserAsync(card.source_url);
-    void opening.catch(() => {});
-  }, [card, capture]);
+    try { await Linking.openURL(source); }
+    catch { if (current(ticket) && focused.current) setSourceFailure(true); }
+  }, [card, capture, current, setSourceFailure]);
 
   const talkItThrough = useCallback(async () => {
     const ticket = capture();
@@ -153,20 +152,17 @@ export default function DailyPostScreen() {
     );
   }
 
-  const quoteNote =
-    card.excerpt_lang === "en" && locale !== "en"
-      ? t("原帖摘录（英文原文）")
-      : card.excerpt_lang === "zh" && locale === "en"
-        ? t("原帖摘录（中文原文）")
-        : t("原帖摘录");
-  const basisNote =
-    card.basis === "conversation"
-      ? locale === "en"
-        ? t("根据你最近和NURI聊的内容找到")
-        : t("根据你最近和NURI聊的「{concern}」找到", { concern: card.concern })
-      : locale === "en"
-        ? t("根据孩子现在的阶段找到")
-        : t("根据孩子现在的阶段（{concern}）找到", { concern: card.concern });
+  const basisNote = card.basis === "conversation"
+    ? t("根据你最近和NURI聊的内容找到") : t("根据孩子现在的阶段找到");
+  const guide = nuriResourceGuide({ concern: card.concern }, t);
+  const sourceAvailable = Boolean(externalSourceUrl(card.source_url));
+  const question = sourceAvailable ? shortResourceSummary(card.question, 110) || shortResourceSummary(card.headline, 110) : null;
+  const situation = sourceAvailable ? shortResourceSummary(card.situation, 240) : null;
+  const takeaways = sourceAvailable && Array.isArray(card.takeaways)
+    ? card.takeaways.slice(0, 2).map((value) => shortResourceSummary(value, 120)).filter((value): value is string => Boolean(value)) : [];
+  const reason = sourceAvailable ? shortResourceSummary(card.why_this, 200) : null;
+  const caution = sourceAvailable ? shortResourceSummary(card.caution, 240) : null;
+  const hasSummary = Boolean(question || situation || takeaways.length);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -185,75 +181,59 @@ export default function DailyPostScreen() {
             <Text style={styles.basis} numberOfLines={2}>{basisNote}</Text>
           </View>
 
+          <View style={styles.askBox} testID="daily-post-ai-summary">
+            <Text style={styles.guideLabel}>{t("AI 检索摘要")}</Text>
+            {hasSummary ? <>
+              {question ? <Text style={styles.question} testID="daily-post-summary-question">{question}</Text> : null}
+              {situation ? <Text style={styles.situation} testID="daily-post-summary-situation">{situation}</Text> : null}
+              {takeaways.map((value, index) => <View key={`${index}:${value}`} style={styles.guideAction} testID={`daily-post-summary-point-${index}`}>
+                <Text style={styles.guideNumber}>{index + 1}</Text><Text style={styles.body}>{value}</Text>
+              </View>)}
+            </> : <Text style={styles.body} testID="daily-post-summary-empty">{t("这条资源暂时没有可用摘要，请打开原站查看。")}</Text>}
+            <Text style={styles.small} testID="daily-post-summary-disclosure">{t(RESOURCE_SUMMARY_DISCLOSURE)}</Text>
+            {card.summary_source === "facebook_ai_summary" ? <Text style={styles.small} testID="daily-post-summary-basis">{t("此摘要根据检索到的 Facebook AI 摘要再整理，不是原帖逐字引用。")}</Text> : null}
+          </View>
+          {reason ? <View testID="daily-post-recommendation-reason"><Text style={styles.sectionLabel}>{t("为什么推荐给你")}</Text><Text style={styles.body}>{reason}</Text></View> : null}
+          {caution ? <Text style={styles.small} testID="daily-post-summary-caution">{caution}</Text> : null}
+
           <View style={styles.askBox} testID="daily-post-question">
-            <Text style={styles.asker}>{dailyPostAsker(t, card)}</Text>
-            <Text style={styles.question}>{dailyPostQuestion(t, card)}</Text>
-            {card.situation ? <Text style={styles.situation}>{card.situation}</Text> : null}
+            <Text style={styles.guideLabel}>{t("NURI 导读")}</Text>
+            <Text style={styles.question} testID="daily-post-guide-headline">{guide.headline}</Text>
+            <Text style={[styles.body, styles.guideIntro]} testID="daily-post-guide-intro">{guide.intro}</Text>
+            {guide.actions.map((action, index) => (
+              <View key={`${index}:${action}`} style={styles.guideAction} testID={`daily-post-guide-action-${index}`}>
+                <Text style={styles.guideNumber}>{index + 1}</Text>
+                <Text style={styles.body}>{action}</Text>
+              </View>
+            ))}
+            <Text style={styles.small} testID="daily-post-guide-disclosure">{guide.disclosure}</Text>
           </View>
 
-          <Text style={styles.sectionLabel}>
-            {card.author_kind === "parent_group_answers" ? t("大家的建议") : t("这位家长的做法")}
-          </Text>
-          <Text style={styles.headline} testID="daily-post-headline">{card.headline}</Text>
-          {card.takeaways.map((item, index) => (
-            <View key={`${index}:${item}`} style={styles.bulletRow}>
-              <View style={styles.bulletDot} />
-              <Text style={styles.body}>{item}</Text>
-            </View>
-          ))}
-
-          {card.excerpt ? (
-            <View style={styles.quoteBox} testID="daily-post-excerpt">
-              <Text style={styles.quoteLabel}>{quoteNote}</Text>
-              <Text style={styles.quoteText}>“{card.excerpt}”</Text>
-            </View>
-          ) : null}
-          {card.summary_source === "facebook_ai_summary" ? (
-            <Text style={styles.small}>
-              {t("这条内容来自 Facebook 对这篇讨论的自动摘要，不是发帖人的原话。")}
-            </Text>
-          ) : null}
-
-          {card.why_this ? (
-            <>
-              <Text style={styles.sectionLabel}>{t("为什么推荐给你")}</Text>
-              <Text style={styles.body}>{card.why_this}</Text>
-            </>
-          ) : null}
-
-          {card.caution ? (
-            <View style={styles.cautionBox}>
-              <Ionicons name="alert-circle-outline" size={18} color="#B4541A" />
-              <Text style={[styles.body, { flex: 1 }]}>{card.caution}</Text>
-            </View>
-          ) : null}
-
           <Text style={styles.small}>
-            {t("这是其他家长的个人经验，不是专业建议。每个孩子都不一样，拿不准的地方可以问问NURI或医生。")}
+            {t("原站的家长经验不代替专业建议。每个孩子都不一样，涉及健康或安全的问题请咨询合适的专业人员。")}
           </Text>
           <Text style={styles.source} numberOfLines={2}>
-            {t("来源：{source}", { source: card.source_label })}
+            {t("来源：{source}", { source: externalSourceHost(card.source_url) || dailyPostTag(t, card) })}
           </Text>
+
+          <Pressable onPress={() => void openSource()} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
+            accessibilityRole="link" testID="daily-post-source">
+            <Text style={styles.primaryText}>{t("打开原站链接")}</Text>
+          </Pressable>
+          {sourceFailure ? <Text style={styles.small} accessibilityLiveRegion="polite" testID="daily-post-source-error">
+            {t("外部内容暂时无法打开，请稍后再试")}
+          </Text> : null}
 
           <Pressable
             onPress={talkItThrough}
             disabled={openingChat}
-            style={({ pressed }) => [styles.primary, (pressed || openingChat) && styles.pressed]}
+            style={({ pressed }) => [styles.secondary, (pressed || openingChat) && styles.pressed]}
             accessibilityRole="button"
             testID="daily-post-chat"
           >
-            <Text style={styles.primaryText}>
+            <Text style={styles.secondaryText}>
               {openingChat ? t("正在打开…") : t("和NURI聊聊这个")}
             </Text>
-          </Pressable>
-          <Pressable
-            onPress={openSource}
-            style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
-            accessibilityRole="link"
-            testID="daily-post-source"
-          >
-            <Text style={styles.secondaryText}>{t("查看原帖")}</Text>
-            <Ionicons name="open-outline" size={16} color={C.purple} />
           </Pressable>
         </View>
       </ScrollView>
@@ -286,6 +266,10 @@ const styles = StyleSheet.create({
   tagText: { color: C.text, fontFamily: "NotoSansSC_400Regular", fontSize: 12 },
   basis: { flex: 1, minWidth: 140, color: C.soft, fontFamily: "NotoSansSC_400Regular", fontSize: 12 },
   askBox: { backgroundColor: "#FFFFFF", padding: 18, borderRadius: 20, borderWidth: 1, borderColor: C.line, marginTop: 18 },
+  guideLabel: { color: C.purple, fontFamily: "NotoSansSC_700Bold", fontSize: 13, lineHeight: 20, marginBottom: 8 },
+  guideIntro: { marginTop: 14 },
+  guideAction: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 16 },
+  guideNumber: { color: C.purple, fontFamily: "NotoSansSC_700Bold", fontSize: 14, lineHeight: 23, minWidth: 20 },
   asker: { color: C.soft, fontFamily: "NotoSansSC_600SemiBold", fontSize: 12, marginBottom: 8 },
   question: { color: C.text, fontFamily: "NotoSansSC_700Bold", fontSize: 19, lineHeight: 27 },
   situation: { color: C.soft, fontFamily: "NotoSansSC_400Regular", fontSize: 14, lineHeight: 22, marginTop: 10 },

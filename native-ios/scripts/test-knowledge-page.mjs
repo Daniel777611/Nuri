@@ -101,6 +101,7 @@ function page(f, locale = "en") {
     "@expo/vector-icons": { Ionicons: "Icon" }, "@/src/api": f,
     "@/src/aiPermissionNavigation": load("../src/aiPermissionNavigation.ts"),
     "@/src/cardText": load("../src/cardText.ts"),
+    "@/src/resourceSummary": load("../src/resourceSummary.ts"),
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": notice, "@/src/i18n": i18n,
     "@/src/requestFailure": failure, "@/src/theme": theme,
@@ -134,8 +135,32 @@ test("actual page reads the full existing catalog without AI permission or gener
     assert.equal(f.aiConsent.getState().status, "unknown");
     assert.deepEqual(f.calls.map(({ path, init }) => [path, init.method || "GET"]), [["/feed/search?q=", "GET"]]);
     assert.ok(p.find("knowledge-card-card-A")); assert.equal(p.find("knowledge-loading"), undefined);
+    assert.equal(p.find("knowledge-summary-card-A").props.children, "Existing catalog summary",
+      "the saved brief AI catalog summary is useful content, not the full source body");
+    assert.equal(p.find("knowledge-summary-card-A").props.numberOfLines, 3);
     p.find("knowledge-card-card-A").props.onPress();
     assert.deepEqual(p.routes, [{ pathname: "/detail/[id]", params: { id: "card-A" } }]);
+  } finally { p?.unmount(); f.restore(); }
+});
+
+for (const [locale, cap, firstSentence] of [["en", 600, "A brief AI search overview. "],
+  ["zh-CN", 220, "简短的 AI 检索概览。"]]) test("actual " + locale + " catalog renders a bounded saved AI summary, not raw source content", async () => {
+  const f = fixture(); let p;
+  try {
+    await f.login("A");
+    f.responder = () => response([{ ...card("short-summary"),
+      summary: `<p>${firstSentence}</p><p>${"x".repeat(cap + 50)}</p><script>PRIVATE_SCRIPT_BODY</script> https://private.invalid/source`,
+      body: "PRIVATE_FULL_SOURCE_BODY", excerpt: "PRIVATE_RAW_SOURCE_EXCERPT",
+      transcript: "PRIVATE_VIDEO_TRANSCRIPT", image_url: "https://private.invalid/source-image.jpg",
+    }]);
+    p = page(f, locale); p.render(); await tick(); p.render();
+    assert.equal(p.find("knowledge-summary-short-summary").props.children, firstSentence.trim());
+    assert.ok(p.find("knowledge-summary-short-summary").props.children.length <= cap);
+    // FlatList's input data is not visible copy. Check the actually rendered
+    // row (including accessibility and image props), not its retained dataset.
+    assert.doesNotMatch(JSON.stringify(p.find("knowledge-card-short-summary")), /PRIVATE_|private\.invalid|<p>|<script>|source-image/);
+    assert.equal(f.calls.length, 1, "reading saved brief copy does not generate new content");
+    assert.equal(f.aiConsent.getState().status, "unknown");
   } finally { p?.unmount(); f.restore(); }
 });
 

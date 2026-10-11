@@ -45,6 +45,7 @@ import {
 } from "@/src/chatVoiceInput";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
+import { shortResourceSummary } from "@/src/resourceSummary";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
@@ -70,7 +71,7 @@ type DailyPostOnMessage = {
   takeaways?: string[];
   source_label?: string;
 };
-type DailyVideoOnMessage = { id: string; title: string; thumbnail_url?: string; channel?: string };
+type DailyVideoOnMessage = { id: string; title: string; key_points?: string; summary?: string; thumbnail_url?: string; channel?: string };
 
 async function copyChatText(text: string): Promise<void> {
   if (Platform.OS !== "web") {
@@ -1091,6 +1092,9 @@ function MessageBubble({
     msg.transition?.kind === "card_opened" && msg.transition.post?.id ? msg.transition.post : null;
   const video: DailyVideoOnMessage | null =
     msg.transition?.kind === "card_opened" && msg.transition.video?.id ? msg.transition.video : null;
+  const postHeadline = post ? shortResourceSummary(post.headline, 110) : null;
+  const postPreview = post && Array.isArray(post.takeaways) ? shortResourceSummary(post.takeaways.slice(0, 2), 220) : null;
+  const videoPreview = video ? shortResourceSummary(video.key_points, 220) || shortResourceSummary(video.summary, 220) : null;
 
   if (msg.transition?.kind === "memory_context") {
     return <MemoryContextCard transition={msg.transition as MemoryContextTransition} />;
@@ -1215,7 +1219,7 @@ function MessageBubble({
             contentFit="cover"
           />
         ) : null}
-        {msg.text ? (
+        {msg.text && !post && !video ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
             {isAI ? (
               <RichText text={msg.text} />
@@ -1232,14 +1236,10 @@ function MessageBubble({
             testID="chat-daily-post-card"
           >
             <Text style={styles.postCardEyebrow}>{t("每日精选")}</Text>
-            <Text style={styles.postCardTitle}>{post.headline}</Text>
-            {(post.takeaways || []).slice(0, 2).map((line, i) => (
-              <Text key={i} style={styles.postCardLine} numberOfLines={2}>
-                · {line}
-              </Text>
-            ))}
+            <Text style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</Text>
+            {postPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</Text> : null}
             <View style={styles.postCardCta}>
-              <Text style={styles.postCardCtaText}>{t("点击查看更多")}</Text>
+              <Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text>
               <Ionicons name="arrow-forward" size={14} color={colors.brand} />
             </View>
           </Pressable>
@@ -1247,16 +1247,13 @@ function MessageBubble({
         {video ? <Pressable style={styles.postCard}
           onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
           accessibilityRole="button" testID="chat-daily-video-card">
-          {video.thumbnail_url && /^https:\/\//i.test(video.thumbnail_url) ? <View style={styles.videoThumbWrap}>
-            <Image source={{ uri: video.thumbnail_url }} style={styles.videoThumb} contentFit="contain" testID="chat-daily-video-thumbnail" />
-          </View> : null}
           <Text style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</Text>
-          <Text style={styles.postCardLine} testID="chat-daily-video-guide-label">{t("NURI 内容导读")}</Text>
-          <Text style={styles.postCardTitle}>{video.title}</Text>
-          {video.channel ? <Text style={styles.postCardLine}>{video.channel}</Text> : null}
-          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("点击观看")}</Text><Ionicons name="arrow-forward" size={14} color={colors.brand} /></View>
+          <Text style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</Text>
+          {videoPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</Text> : null}
+          <Text style={styles.postCardCtaText}>{t("AI 检索摘要 · 非完整视频摘要")}</Text>
+          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text><Ionicons name="arrow-forward" size={14} color={colors.brand} /></View>
         </Pressable> : null}
-        {isAI && actionsEnabled && msg.text ? (
+        {isAI && actionsEnabled && msg.text && !post && !video ? (
           <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
             <Pressable
               onPress={() => onCopy?.(msg)}

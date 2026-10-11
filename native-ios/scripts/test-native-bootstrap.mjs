@@ -16,7 +16,7 @@ assert.equal(config.ios.infoPlist.CFBundleDisplayName, 'Nuri', 'the phone label 
 assert.equal(config.ios.bundleIdentifier, 'com.ordashtech.nuri.nativelab');
 assert.equal(config.scheme, 'nuri-native-lab');
 assert.equal(config.version, '0.3.0');
-assert.equal(config.ios.buildNumber, '1007');
+assert.equal(config.ios.buildNumber, '1009');
 assert.equal(config.ios.entitlements['aps-environment'], 'production');
 assert.equal(config.ios.infoPlist.NuriAPNSEnvironment, 'production');
 assert.match(read('../ExportOptions-InternalOnly.plist'), /<key>testFlightInternalTestingOnly<\/key>\s*<true\s*\/>/);
@@ -85,6 +85,46 @@ const dictionary = (path, name) => {
 };
 assert.equal(dictionary('../src/i18n/en.ts', 'en')[notice], 'This information is used to personalise AI suggestions. When you use AI features, relevant information may be processed by third-party AI services. Please refer to the privacy policy for details.');
 assert.equal(dictionary('../src/i18n/zh-TW.ts', 'zhTW')[notice], '這些資料用於個人化 AI 建議。使用 AI 功能時，相關資料可能由第三方 AI 服務處理；詳情請參閱隱私政策。');
+// The original resource guide must remain fully localized, including the
+// disclosure that it is not a copy or full summary of an external resource.
+const guideSource = read('../src/nuriResourceGuide.ts');
+const guideCompiled = ts.transpileModule(guideSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const guideModule = { exports: {} };
+new Function('require', 'module', 'exports', guideCompiled)((name) => {
+  throw new Error(`unexpected authored-guide dependency ${name}`);
+}, guideModule, guideModule.exports);
+const guideKeys = new Set();
+for (const input of [{}, { concern: 'FAMILY_TOPIC' }, { stage: 'FAMILY_STAGE' }, { concern: 'FAMILY_TOPIC', stage: 'FAMILY_STAGE' }]) {
+  guideModule.exports.nuriResourceGuide(input, (key) => { guideKeys.add(key); return key; });
+}
+assert.equal(guideKeys.size, 10, 'all original guide branches and shared actions must be covered');
+for (const [path, name] of [['../src/i18n/en.ts', 'en'], ['../src/i18n/zh-TW.ts', 'zhTW']]) {
+  const values = dictionary(path, name);
+  for (const key of guideKeys) {
+    assert.equal(typeof values[key], 'string', `${path} must translate ${key}`);
+    assert.ok(values[key].trim(), `${path} must not provide an empty guide translation`);
+    for (const variable of key.match(/\{(?:concern|stage)\}/g) || []) {
+      assert.ok(values[key].includes(variable), `${path} must preserve ${variable}`);
+    }
+  }
+}
+const summarySource = read('../src/resourceSummary.ts');
+const summaryCompiled = ts.transpileModule(summarySource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const summaryModule = { exports: {} };
+new Function('require', 'module', 'exports', summaryCompiled)((name) => { throw new Error(`unexpected summary display dependency ${name}`); }, summaryModule, summaryModule.exports);
+for (const [path, name] of [['../src/i18n/en.ts', 'en'], ['../src/i18n/zh-TW.ts', 'zhTW']]) {
+  const values = dictionary(path, name);
+  for (const key of [summaryModule.exports.RESOURCE_SUMMARY_DISCLOSURE,
+    'AI 检索摘要', '资源短简介', '这是资源短简介，不是原文或完整视频转录；请到原站核对细节。',
+    '根据标题和公开检索片段整理，未观看完整视频或获取字幕。请到原站核对。']) {
+    assert.equal(typeof values[key], 'string', `${path} must translate the restored AI preview disclosure: ${key}`);
+    assert.ok(values[key].trim());
+  }
+}
 for (const source of [onboarding, read('../src/i18n/en.ts'), read('../src/i18n/zh-TW.ts')]) {
   assert.doesNotMatch(source, /永远不会分享给第三方|永遠不會分享給第三方|Never shared with third parties/i, 'remove the inaccurate absolute third-party-sharing claim, including obsolete translation keys');
 }

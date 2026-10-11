@@ -19,6 +19,20 @@ function loadHelper(path) {
   new Function("require", "module", "exports", output)((name) => { throw new Error(`unexpected helper dependency ${name}`); }, module, module.exports);
   return module.exports;
 }
+function loadComponent(path) {
+  const output = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const module = { exports: {} };
+  new Function("require", "module", "exports", output)((name) => {
+    if (name === "@/src/externalContent") return loadHelper("../src/externalContent.ts");
+    if (name === "@/src/nuriResourceGuide") return loadHelper("../src/nuriResourceGuide.ts");
+    if (name === "@/src/resourceSummary") return loadHelper("../src/resourceSummary.ts");
+    assert.ok(name in mocks, "unexpected component dependency " + name);
+    return mocks[name];
+  }, module, module.exports);
+  return module.exports.default;
+}
 const jsx = (type, props) => ({ type, props });
 let viewportWidth = 390;
 const mocks = {
@@ -35,7 +49,7 @@ const mocks = {
   "@/src/components/DailyPostCard": { __esModule: true, default: "DailyPostCard" },
   "@/src/components/DailyVideoCard": { __esModule: true, default: "DailyVideoCard" },
   "@/src/components/RequestFailureNotice": { __esModule: true, default: "RequestFailureNotice" },
-  "@/src/i18n": { useT: () => ({ t: (text) => text, locale: "zh-CN" }) },
+  "@/src/i18n": { useT: () => ({ t: (text, variables = {}) => text.replace(/\{(\w+)\}/g, (_all, key) => String(variables[key] ?? key)), locale: "zh-CN" }) },
   "@/src/aiPermissionNavigation": loadHelper("../src/aiPermissionNavigation.ts"),
   "@/src/requestFailure": loadHelper("../src/requestFailure.ts"),
 };
@@ -88,4 +102,75 @@ test("viewport changes recompute width without introducing a fixed mascot height
   viewportWidth = 320; const narrow = nodes(loaded.exports.default()).find((node) => node.type === "DailyPostCard");
   viewportWidth = 430; const wide = nodes(loaded.exports.default()).find((node) => node.type === "DailyPostCard");
   assert.equal(narrow.props.width, 260); assert.equal(wide.props.width, 342);
+});
+
+for (const kind of ["post", "video"]) test(`ready ${kind} card preserves geometry and AI preview without loading source images or verbatim text`, () => {
+  const Component = loadComponent(`../src/components/Daily${kind === "post" ? "Post" : "Video"}Card.tsx`);
+  const thirdPartyText = "THIRD_PARTY_COPY_MUST_STAY_AT_SOURCE";
+  const card = {
+    id: "source-card", card_id: "source-context", platform: kind === "post" ? "facebook" : "youtube",
+    nickname: "Demo Parent", audience: "parent", author_kind: "parent", source_url: "https://example.com/original",
+    question: "AI_SEARCH_QUESTION?", headline: "AI_SEARCH_HEADLINE.", excerpt: thirdPartyText,
+    takeaways: ["AI_SEARCH_POINT."], title: thirdPartyText, display_title: thirdPartyText,
+    summary: "AI_SEARCH_SUMMARY.", channel: thirdPartyText, thumbnail_url: "https://example.com/unverified.jpg",
+    concern: "FAMILY_SLEEP_TOPIC", basis: "profile",
+  };
+  const tree = Component({ width: 330, nickname: "Demo Parent", status: "ready", card, onPress() {}, onRetry() {} });
+  const rendered = nodes(tree);
+  assert.ok(rendered.some((node) => node.type === "Pressable"), "source card must still be actionable");
+  if (kind === "post") {
+    assert.ok(rendered.some((node) => flatten(node.props?.style).height === 236), "the post card retains its established geometry");
+  } else {
+    assert.ok(rendered.some((node) => {
+      const style = flatten(node.props?.style);
+      return style.minHeight === 264 && style.height === undefined;
+    }), "the video card allows its supplied AI preview to grow without a fixed-height crop");
+    assert.equal(rendered.find((node) => node.props?.testID === "home-daily-video-external-title").props.numberOfLines, 2);
+    assert.equal(rendered.find((node) => node.props?.testID === "home-daily-video-external-notice").props.numberOfLines, 2);
+  }
+  assert.ok(rendered.every((node) => node.type !== "Image"), "source thumbnails must not be independently downloaded");
+  assert.doesNotMatch(JSON.stringify(tree), new RegExp(thirdPartyText), "source titles and excerpts must not leak through visible or accessibility copy");
+  const guide = loadHelper("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: card.concern });
+  const headlineID = kind === "post" ? "home-daily-post-question" : "home-daily-video-external-title";
+  assert.equal(rendered.find((node) => node.props?.testID === headlineID).props.children, kind === "post" ? "AI_SEARCH_QUESTION?" : guide.headline,
+    "daily card can use the supplied AI question, not a verbatim excerpt or video source title");
+  if (kind === "video") {
+    assert.equal(rendered.find((node) => node.props?.testID === "home-daily-video-external-notice").props.children, "AI_SEARCH_SUMMARY.");
+    assert.match(JSON.stringify(tree), /FAMILY_SLEEP_TOPIC/);
+  }
+});
+
+test("three-line post preview keeps its summary label inside the existing footer, without adding a 26px vertical row", () => {
+  const Component = loadComponent("../src/components/DailyPostCard.tsx");
+  const card = { id: "layout-post", platform: "threads", nickname: "Demo Parent", audience: "parent", basis: "profile",
+    author_kind: "parent_post", source_url: "https://example.com/original", concern: "睡眠",
+    question: "孩子在一个新的环境中如何慢慢建立起日常的生活节奏？".repeat(3), headline: "AI_SEARCH_HEADLINE." };
+  const tree = Component({ width: 280, nickname: "Demo Parent", status: "ready", card, onPress() {}, onRetry() {} });
+  const rendered = nodes(tree);
+  const frame = rendered.find((node) => node.type === "Gradient"), frameStyle = flatten(frame.props.style);
+  const question = rendered.find((node) => node.props?.testID === "home-daily-post-question");
+  const label = rendered.find((node) => node.props?.testID === "home-daily-post-summary-label");
+  const footer = rendered.find((node) => flatten(node.props?.style).minHeight === 55 && flatten(node.props?.style).flexDirection === "row");
+  assert.ok(footer && nodes(footer).includes(label), "the label shares the already reserved footer height");
+  assert.equal(frame.props.children.includes(label), false, "the label must not be an extra card-level vertical row");
+  assert.equal(flatten(label.props.style).marginTop, undefined, "the old 8px extra row gap must not return");
+  assert.equal(frameStyle.height, 236); assert.equal(question.props.numberOfLines, 3);
+  const cta = nodes(footer).find((node) => node.type === "Text" && node.props.children === "查看摘要与来源");
+  assert.equal(flatten(cta.props.style).flex, undefined, "a flex-filling CTA must not stretch its footer text stack");
+  const footerTextHeight = flatten(label.props.style).lineHeight + (flatten(label.props.style).marginBottom || 0) + flatten(cta.props.style).lineHeight;
+  assert.ok(footerTextHeight <= flatten(footer.props.style).minHeight);
+  const tag = rendered.find((node) => flatten(node.props?.style).height === 32);
+  const requiredHeight = frameStyle.paddingTop + flatten(tag.props.style).height
+    + flatten(question.props.style).marginTop + question.props.numberOfLines * flatten(question.props.style).lineHeight
+    + flatten(footer.props.style).minHeight + frameStyle.paddingBottom + 2 * frameStyle.borderWidth;
+  assert.ok(requiredHeight <= frameStyle.height,
+    `the three-line baseline content (${requiredHeight}px) must fit the ${frameStyle.height}px card without a separate label row`);
+});
+
+test("source-image removal does not remove user chat photos or camera/gallery input", () => {
+  const chat = readFileSync(new URL("../app/chat/[id].tsx", import.meta.url), "utf8");
+  assert.match(chat, /source=\{\{ uri: msg\.image_base64 \}\}/, "user-supplied chat images must remain");
+  assert.match(chat, /source=\{\{ uri: pendingImage\.previewUri \}\}/, "the user's selected-photo preview must remain");
+  assert.match(chat, /ImagePicker\.launchCameraAsync/, "camera capture must remain");
+  assert.match(chat, /ImagePicker\.launchImageLibraryAsync/, "photo library selection must remain");
 });

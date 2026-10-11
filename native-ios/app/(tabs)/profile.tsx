@@ -408,7 +408,7 @@ export default function Profile() {
         <ConfirmDialog
           visible={confirmWipe}
           title={locale === "en" ? "Delete this account's cloud data?" : locale === "zh-TW" ? "刪除此帳號的雲端資料？" : "删除此账号的云端数据？"}
-          message={locale === "en" ? "This deletes child profiles, conversations, tasks and reflections for this account in BOTH Native Lab and the original NURI app. It is not a lab-only reset and cannot be undone." : locale === "zh-TW" ? "這會刪除此帳號的孩子檔案、對話、任務與反思，同時影響 Native Lab 和原版 NURI。不是僅重設實驗版，且不可恢復。" : "这会删除此账号的孩子档案、对话、任务与反思，同时影响 Native Lab 和原版 NURI。不是仅重置实验版，且不可恢复。"}
+          message={locale === "en" ? "This deletes child profiles, conversations, tasks and reflections for this shared cloud account in BOTH this app and the original NURI app. It is not just a reset of this device's app data and cannot be undone." : locale === "zh-TW" ? "這會刪除此共用雲端帳號的孩子檔案、對話、任務與反思，同時影響此應用和原版 NURI。不是僅重設本機應用資料，且不可恢復。" : "这会删除此共用云端账号的孩子档案、对话、任务与反思，同时影响此应用和原版 NURI。不是仅重置本机应用数据，且不可恢复。"}
           confirmText={locale === "en" ? "Delete account data" : locale === "zh-TW" ? "刪除帳號資料" : "删除账号数据"}
           danger
           onConfirm={wipeAll}

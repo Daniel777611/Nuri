@@ -38,6 +38,7 @@ function loadTypescriptModule(relativePath) {
     console,
     Date,
     Map,
+    URL,
   });
   new vm.Script(compiled.outputText, { filename: filename.pathname }).runInContext(
     context,
@@ -45,12 +46,12 @@ function loadTypescriptModule(relativePath) {
   return module.exports;
 }
 
-function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
+function testHandoffPreservesResourceContextWithoutLeakingMutableInput() {
   const handoff = loadTypescriptModule("../src/recommendationDetailHandoff.ts");
   const card = {
     id: "learn_serve_and_return",
     title: "Serve and return",
-    body: "A guide that must render before external resources are ready.",
+    body: "Internal context that must not be republished in the external-link UI.",
     content_category: "authority",
     recommendation_id: "rec_contract_1",
     resource_readiness: "retryable",
@@ -95,8 +96,8 @@ function testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput() {
 }
 
 function testHomeDailyPostCard() {
-  // 每日精选 is one card a day: a real post from another parent on Meta,
-  // previewed with a greeting to the parent. It replaced the topic-driven
+  // 每日精选 is one source link a day, with a greeting to the parent.
+  // Third-party text remains on the original site. It replaced the topic-driven
   // three-card carousel, which Home must no longer drive.
   const home = read("../app/(tabs)/index.tsx");
   assert.doesNotMatch(
@@ -121,22 +122,30 @@ function testHomeDailyPostCard() {
   );
 
   const card = read("../src/components/DailyPostCard.tsx");
-  assert.match(card, /\{nickname\}你好呀，其他妈妈可能会这么处理/, "the preview greets a mom by name");
-  assert.match(card, /\{nickname\}你好呀，其他家长可能会这么处理/, "and any other parent as a parent");
+  assert.match(card, /\{nickname\}你好呀，一起看看这个育儿话题/, "the preview still greets the current parent by name");
+  assert.match(card, /你好呀，一起看看这个育儿话题/, "the greeting also works without a nickname");
+  assert.doesNotMatch(card, /其他妈妈可能会这么处理|其他家长可能会这么处理/, "our guide must not be attributed to an unread parent's source post");
+  assert.match(card, /shortResourceSummary\(card\.question, 110\) \|\| shortResourceSummary\(card\.headline, 110\)/, "the preview restores supplied AI question/headline through plain-text normalization");
+  assert.match(card, /return preview \|\| nuriResourceGuide\(\{ concern: card\.concern \}, t\)\.headline/, "missing AI preview falls back to NURI's own family-topic guide rather than raw excerpts");
   assert.match(card, /testID="home-daily-post-empty"/, "a day without a post needs an explicit state");
 
   const detail = read("../app/daily-post.tsx");
   assert.match(
     detail,
-    /\^https:\\\/\\\//,
-    "the original post may only be opened over HTTPS",
+    /externalSourceUrl\(card\.source_url\)/,
+    "the original post must pass the shared HTTPS source validator",
   );
-  assert.match(detail, /Linking\.openURL\(card\.source_url\)/, "web opens the post directly");
-  assert.match(
-    detail,
-    /WebBrowser\.openBrowserAsync\(card\.source_url\)/,
-    "native opens the post in the system browser",
-  );
+  assert.match(detail, /Linking\.openURL\(source\)/, "native and web hand validated links to the OS/browser");
+  assert.doesNotMatch(detail, /WebBrowser\.openBrowserAsync|<WebView/, "the source must not be republished inside a NURI browser");
+  assert.doesNotMatch(detail, /\{card\.(?:excerpt|body|source_body|transcript)\}/, "verbatim third-party excerpts and full source bodies must not render");
+  assert.match(detail, /shortResourceSummary\(card\.situation, 240\)/, "the supplied AI situation is a bounded plain-text preview");
+  assert.match(detail, /card\.takeaways\.slice\(0, 2\)\.map\(\(value\) => shortResourceSummary\(value, 120\)\)/, "only two bounded AI points may be displayed");
+  assert.match(detail, /shortResourceSummary\(card\.why_this, 200\)/, "the recommendation reason must be normalized rather than replaced with invented generic copy");
+  assert.match(detail, /testID="daily-post-summary-disclosure">\{t\(RESOURCE_SUMMARY_DISCLOSURE\)\}/, "AI search previews must disclose partial-source and accuracy limitations");
+  assert.match(detail, /nuriResourceGuide\(\{ concern: card\.concern \}, t\)/, "the post page's guide must not derive from source excerpts");
+  assert.match(detail, /testID="daily-post-guide-disclosure">\{guide\.disclosure\}/, "the page must disclose that its original prompts are not a source summary");
+  assert.match(detail, /testID="daily-post-guide-headline">\{guide\.headline\}/, "the original guide must actually be displayed");
+  assert.match(detail, /guide\.actions\.map/, "the original reading and discussion prompts must remain useful");
   assert.match(
     detail,
     /dailyPostEvent\(card\.id, "source_click"\)/,
@@ -149,29 +158,24 @@ function testHomeDailyPostCard() {
   );
   assert.match(
     detail,
-    /不是专业建议/,
-    "the card must say it is one parent's experience, not professional advice",
+    /不代替专业建议/,
+    "the card must not present an external parent's experience as professional advice",
   );
 }
 
-function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
+function testDetailKeepsExternalLinksAtomicWithoutRepublishingSources() {
   const detail = read("../app/detail/[id].tsx");
   assert.match(
     detail,
     /const \[card, setCard\] = useState<any>\(null\)/,
     "cross-session initial state must never retain a personalized handoff",
   );
-  assert.match(detail, /const handoff = getRecommendationDetailHandoff\(handoffKey\);[\s\S]*?const guide = guideFromHandoff\(handoff\)/, "the current session still consumes the in-memory guide before remote research");
+  assert.match(detail, /const handoff = getRecommendationDetailHandoff\(handoffKey\);[\s\S]*?const guide = guideFromHandoff\(handoff\)/, "the current session still consumes the in-memory resource context before remote research");
 
   const guideStart = detail.indexOf("function guideFromHandoff(");
   const guideEnd = detail.indexOf("\nexport default function Detail()", guideStart);
   assert.ok(guideStart >= 0 && guideEnd > guideStart, "guide handoff mapper was not found");
   const guideMapper = detail.slice(guideStart, guideEnd);
-  assert.match(
-    guideMapper,
-    /body:\s*ready\s*\?[^:]+:\s*card\.summary\s*\|\|\s*""/,
-    "an unready handoff must still contain readable guide copy",
-  );
   assert.match(
     guideMapper,
     /resources:\s*ready\s*\?\s*card\.resources\s*\|\|\s*\[\]\s*:\s*\[\]/,
@@ -191,7 +195,7 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
   assert.match(
     detail,
     /testID="detail-prepare-retry"/,
-    "a failed background preparation must be retryable from the guide",
+    "a failed background preparation must remain retryable",
   );
   assert.match(
     detail,
@@ -213,11 +217,20 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
     /testID="detail-delivery-summary"/,
     "detail must disclose source, language, time, stage and readiness",
   );
-  assert.match(
-    detail,
-    /testID="detail-action-steps"/,
-    "detail must render the prepared small actions",
-  );
+  assert.match(detail, /testID="detail-external-link-notice"/, "detail must explain that content remains at the source");
+  assert.match(detail, /nuriResourceGuide\(\{ concern: card\.topic_label \|\| card\.topic, stage: stageLabel \}, t\)/, "detail's original guide may use only the family topic and stage, never legacy source summaries");
+  assert.match(detail, /testID="detail-nuri-guide-headline">\{guide\.headline\}/, "detail must restore useful NURI-authored guidance");
+  assert.match(detail, /testID="detail-external-link-notice">\{guide\.disclosure\}/, "the original guide must carry its precise non-summary disclosure");
+  assert.match(detail, /externalSourceUrl\(resource\.url\)/, "every source URL must be validated before external navigation");
+  assert.match(detail, /Linking\.openURL\(sourceUrl\)/, "source content must open through the operating system");
+  assert.match(detail, /externalSourceHost\(resource\.url\)/, "resource provenance must remain visible as a hostname");
+  assert.doesNotMatch(detail, /<Image|WebBrowser\.openBrowserAsync|testID="detail-action-steps"/, "unverified source images and source-derived action guides must not render");
+  assert.doesNotMatch(detail, /\{resource\.(?:body|source_body|transcript|chinese_guide|spoken_language_evidence)\}/, "external resource source bodies, transcripts and legacy translations must not render");
+  assert.match(detail, /shortResourceSummary\(resource\.description, 360\)/, "resource short introductions are normalized, bounded and distinct from full source bodies");
+  assert.match(detail, /shortResourceSummary\(resource\.selection_reason, 200\)/, "source selection reasons remain short and useful");
+  assert.match(detail, /这是资源短简介，不是原文或完整视频转录/, "resource previews must disclose that they do not replace the original content");
+  assert.doesNotMatch(detail, /\{card\.(?:summary|body|guide|hook_line)\}/, "top-level legacy source-derived copy must not bypass the link-only presentation");
+  assert.doesNotMatch(detail, /card\.action_steps\.(?:map|slice)/, "source-derived action steps must not be relabeled as our original guide");
   assert.match(
     detail,
     /const \[nextPreparedPair,[\s\S]{0,1000}setCard\([\s\S]{0,1000}getNextResourcePair\(/,
@@ -232,7 +245,7 @@ function testDetailPaintsTheGuideWhileExternalLinksStayAtomic() {
   assert.match(detail, /too_commercial/, "feedback must include an ad-heavy reason");
 }
 
-function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
+function testLegacyTranslationMetadataRemainsCompatibleButUnpublished() {
   const presentation = loadTypescriptModule(
     "../src/recommendationPresentation.ts",
   );
@@ -277,16 +290,7 @@ function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
   );
 
   const detail = read("../app/detail/[id].tsx");
-  assert.match(
-    detail,
-    /不是发布机构的官方翻译；重要结论请以原文为准。/,
-    "the detail page must disclose that a NURI guide is not an official translation",
-  );
-  assert.match(
-    detail,
-    /translation_type === "nuri_guide" && resource\.chinese_guide/,
-    "the Chinese guide must only render for the explicit nuri_guide contract",
-  );
+  assert.doesNotMatch(detail, /\{resource\.chinese_guide\}/, "legacy translation payloads must not be republished by the link-only detail page");
 
   const api = read("../src/api.ts");
   for (const field of [
@@ -300,8 +304,21 @@ function testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming() {
   }
 }
 
-testHandoffCarriesAnUnreadyGuideWithoutLeakingMutableInput();
+function testExternalSourceValidatorFailsClosed() {
+  const { externalSourceUrl, externalSourceHost } = loadTypescriptModule("../src/externalContent.ts");
+  assert.equal(externalSourceUrl("https://www.facebook.com/groups/example/posts/123"), "https://www.facebook.com/groups/example/posts/123");
+  assert.equal(externalSourceHost("https://www.youtube.com/watch?v=abcdefghijk"), "www.youtube.com");
+  for (const source of [
+    "http://example.com/page", "javascript:alert(1)", "file:///private/file",
+    "https://name:secret@example.com/", "https://localhost/page", "https://127.0.0.1/page",
+    "https://service.internal/page", "https://example.com:8443/page",
+    "https://example.com/?access_token=secret", "https://example.com/ bad", "not a URL", null,
+  ]) assert.equal(externalSourceUrl(source), null, `unsafe source must be rejected: ${source}`);
+}
+
+testHandoffPreservesResourceContextWithoutLeakingMutableInput();
 testHomeDailyPostCard();
-testDetailPaintsTheGuideWhileExternalLinksStayAtomic();
-testTranslatedAuthorityResourcesAreLabeledWithoutOverclaiming();
-console.log("recommendation entry contracts passed");
+testDetailKeepsExternalLinksAtomicWithoutRepublishingSources();
+testLegacyTranslationMetadataRemainsCompatibleButUnpublished();
+testExternalSourceValidatorFailsClosed();
+console.log("5 recommendation entry contract groups passed");

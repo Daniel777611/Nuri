@@ -302,6 +302,9 @@ export type DailyVideoCard = {
   speaker_kind: "pediatrician" | "psychologist" | "institution" | "educator" | "creator";
   video_lang: "zh" | "en";
   video_topic?: string;
+  /** AI-written short preview based on the title and public search snippet,
+   * not a transcript or analysis of the full video. */
+  key_points?: string;
   /** Empty until the detail page explicitly asks for a generated summary. */
   summary: string;
   concern: string;
