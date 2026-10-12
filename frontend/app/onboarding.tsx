@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -21,6 +21,7 @@ import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regula
 import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
+import { CONCERNS, FREQUENCIES, HELP_PREFS, INFO_SOURCES, PARENT_ROLES } from "@/src/profileOptions";
 import { useT } from "@/src/i18n";
 import {
   daysInMonth,
@@ -31,19 +32,6 @@ import {
 
 const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
-
-const CONCERNS = [
-  ["sleep", "睡眠"], ["food", "饮食／副食品"], ["emotion", "情绪与哭闹"],
-  ["development", "发展与学习"], ["parenting", "教养方式"], ["health", "生病与健康"],
-  ["childcare", "托育／幼儿园"], ["family", "家人教养观念不同"], ["unknown", "我不知道从哪开始"], ["other", "其他"],
-] as const;
-// NURI addresses the parent by role, so an unanswered role used to be stored
-// as "mom" for everyone. Asked here rather than at signup to keep signup to
-// just email and password.
-const PARENT_ROLES = [["mom", "妈妈"], ["dad", "爸爸"], ["grandparent", "祖父母／外祖父母"], ["other", "其他照顾者"]] as const;
-const HELP_PREFS = [["research", "专业研究与知识"], ["experience", "真实家长经验分享"], ["analysis", "一步一步分析原因"], ["actionable", "直接给我可执行的方法"]] as const;
-const INFO_SOURCES = [["research", "专业研究／论文"], ["expert", "医师或专家"], ["parents", "其他家长经验"], ["all", "都会参考"]] as const;
-const FREQUENCIES = [["daily", "每天一次"], ["weekly_2_3", "每周 2～3 次"], ["weekly", "每周一次"], ["on_demand", "有需要时再推播"]] as const;
 
 const YEARS = Array.from({ length: 9 }, (_, i) => new Date().getFullYear() - i);
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
@@ -105,7 +93,7 @@ export default function Onboarding() {
     })();
   }, [router, t]);
 
-  const stepNumber = page < 3 ? page + 1 : 4;
+  const PAGE_COUNT = 7;
   const birthDate = birthYear && birthMonth && birthDay
     ? formatDateOnly({ year: birthYear, month: birthMonth, day: birthDay })
     : "";
@@ -157,7 +145,8 @@ export default function Onboarding() {
   };
 
   const next = () => page === 6 ? save() : setPage((p) => p + 1);
-  const skip = () => page === 2 ? setPage(3) : save();
+  // Skips this page only; the last one has nothing after it but saving.
+  const skip = () => page === 6 ? save() : setPage((p) => p + 1);
   const goBack = () => page > 0 && setPage((p) => p - 1);
   const toggleConcern = (key: string) => setConcerns((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
 
@@ -173,7 +162,7 @@ export default function Onboarding() {
               <Ionicons name="arrow-back" size={23} color="#3A2F5A" />
             </Pressable>
             <Pressable onPress={page >= 2 ? skip : undefined} disabled={page < 2} hitSlop={10}>
-              <Text style={styles.progressText}>{stepNumber}/4{page >= 2 ? `  ${t("跳过")}` : ""}</Text>
+              <Text style={styles.progressText}>{page + 1}/{PAGE_COUNT}{page >= 2 ? `  ${t("跳过")}` : ""}</Text>
             </Pressable>
           </View>
 
@@ -229,7 +218,21 @@ function BirthPicker({ year, month, day, close, confirm }: any) {
     setDraftMonth(value);
     if (draftYear) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(draftYear, value)));
   };
-  return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t("选择出生日期")}</Text><Pressable onPress={() => confirm(draftYear, draftMonth, draftDay)}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{YEARS.map((value) => <Pressable key={value} onPress={() => updateYear(value)} style={[styles.pickerItem, draftYear === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 年", { value })}</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{MONTHS.map((value) => <Pressable key={value} onPress={() => updateMonth(value)} style={[styles.pickerItem, draftMonth === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 月", { value })}</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{days.map((value) => <Pressable key={value} onPress={() => setDraftDay(value)} style={[styles.pickerItem, draftDay === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 日", { value })}</Text></Pressable>)}</ScrollView></View></View></View>;
+  return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t("选择出生日期")}</Text><Pressable onPress={() => confirm(draftYear, draftMonth, draftDay)}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><PickerColumn values={YEARS} selected={draftYear} onSelect={updateYear} label={(value) => t("{value} 年", { value })} /><PickerColumn values={MONTHS} selected={draftMonth} onSelect={updateMonth} label={(value) => t("{value} 月", { value })} /><PickerColumn values={days} selected={draftDay} onSelect={setDraftDay} label={(value) => t("{value} 日", { value })} /></View></View></View>;
+}
+
+// Opens scrolled to the chosen value, so reopening the picker shows it.
+function PickerColumn({ values, selected, onSelect, label }: { values: number[]; selected: number | null; onSelect: (value: number) => void; label: (value: number) => string }) {
+  const ref = useRef<ScrollView>(null);
+  // Read through a ref so a later tap does not re-center the column.
+  const initial = useRef(selected);
+  const center = () => {
+    const index = initial.current === null ? -1 : values.indexOf(initial.current);
+    if (index > 0) ref.current?.scrollTo({ y: Math.max(0, (index - 2) * 46), animated: false });
+  };
+  // Once on open, and again once the rows have a size (native lays out later).
+  useEffect(() => { const timer = setTimeout(center, 0); return () => clearTimeout(timer); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return <ScrollView ref={ref} style={styles.pickerColumn} showsVerticalScrollIndicator={false} onContentSizeChange={center}>{values.map((value) => <Pressable key={value} onPress={() => onSelect(value)} style={[styles.pickerItem, selected === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{label(value)}</Text></Pressable>)}</ScrollView>;
 }
 
 const styles = StyleSheet.create({
@@ -239,7 +242,7 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: 16, paddingBottom: 30, flexGrow: 1 }, babyIcon: { alignSelf: "center", width: 44, height: 44, marginTop: 67 }, parentIcon: { alignSelf: "center", width: 37, height: 49, marginTop: 62 },
   choiceIcon: { width: 48, height: 48, alignSelf: "center", marginTop: 62, flexDirection: "row", flexWrap: "wrap", gap: 4 }, iconBlockTall: { width: 22, height: 28, borderRadius: 4, backgroundColor: "#3A2F5A" }, iconBlockShort: { width: 22, height: 16, borderRadius: 4, backgroundColor: "#3A2F5A" },
   form: { marginTop: 159 }, preferenceForm: { marginTop: 132 }, title: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 24 }, subtitle: { color: "#3A2F5A", fontFamily: "NotoSansSC_400Regular", fontSize: 16, lineHeight: 21, marginTop: 4 }, pageBody: { marginTop: 16 },
-  field: { marginTop: 12 }, label: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16, marginBottom: 8 }, input: { height: 48, borderRadius: 12, borderWidth: 1.5, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16 }, inputError: { borderColor: "#C54444" }, errorText: { marginTop: 6, color: "#C54444", fontFamily: "NotoSansSC_400Regular", fontSize: 12 }, inputText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16 }, picker: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, placeholder: { color: "rgba(58,47,90,0.6)" },
+  field: { marginTop: 12 }, label: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16, marginBottom: 8 }, input: { height: 48, borderRadius: 12, borderWidth: 1.5, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, color: "#3A2F5A", fontFamily: "NotoSansSC_500Medium", fontSize: 16 }, inputError: { borderColor: "#C54444" }, errorText: { marginTop: 6, color: "#C54444", fontFamily: "NotoSansSC_400Regular", fontSize: 12 }, inputText: { color: "#3A2F5A", fontFamily: "NotoSansSC_500Medium", fontSize: 16 }, picker: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, placeholder: { color: "rgba(58,47,90,0.6)" },
   syncError: { color: "#C54444", backgroundColor: "#FFF2F0", borderColor: "#C54444", borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 8, fontFamily: "NotoSansSC_400Regular", fontSize: 12, lineHeight: 18 },
   ctaRow: { alignItems: "flex-end", marginTop: 62 }, concernCta: { marginTop: 32 }, cta: { width: 148, height: 48, borderRadius: 12, borderWidth: 1, borderColor: "rgba(60,34,45,0.3)", backgroundColor: "rgba(255,255,255,0.6)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }, ctaReady: { backgroundColor: "rgba(255,255,255,0.9)" }, ctaText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 }, chip: { height: 41, borderRadius: 12, borderWidth: 1, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.2)", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14 }, chipActive: { backgroundColor: "#3A2F5A" }, chipText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, chipTextActive: { color: "#fff" },

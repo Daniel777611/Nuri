@@ -362,6 +362,12 @@ let messages: Record<string, any[]> = {
   ],
 };
 
+let previewMemories = [
+  { id: "mem-1", child_id: null, standing: true, text: "小满对鸡蛋过敏", updated_at: "2026-07-16T08:00:00.000Z" },
+  { id: "mem-2", child_id: "child-1", standing: false, text: "小满最近一晚醒两次", updated_at: "2026-07-17T08:00:00.000Z" },
+  { id: "mem-3", child_id: null, standing: false, text: "妈妈白天上班，晚上自己带", updated_at: "2026-07-12T08:00:00.000Z" },
+];
+
 const bodyOf = (init?: RequestInit): any => {
   try { return init?.body ? JSON.parse(String(init.body)) : {}; } catch { return {}; }
 };
@@ -770,6 +776,12 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   // Billing: sample prices; subscribing flips the preview account to a member
   // instead of leaving for Stripe.
   if (path.split("?")[0] === "/billing/status") return billingPreview;
+  if (routePath === "/billing/usage") return billingPreview.usage;
+  if (routePath === "/memories" && method === "GET") return previewMemories;
+  if (/^\/memories\/[^/]+$/.test(routePath) && method === "DELETE") {
+    previewMemories = previewMemories.filter((m) => m.id !== routePath.split("/")[2]);
+    return undefined;
+  }
   if (path === "/billing/checkout" || path === "/billing/change") {
     const interval = body?.interval === "year" ? "year" : "month";
     const tier = body?.tier === "plus" ? "plus" : "unlimited";

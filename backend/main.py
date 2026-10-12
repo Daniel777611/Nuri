@@ -5956,6 +5956,58 @@ async def _delete_persistent_user_history(uid: str) -> None:
             ) from exc
 
 
+# ── What NURI remembers ───────────────────────────────────────────────────────
+# The parent's own view of user_memories: every active row shapes replies and
+# daily cards, so they can see each one and make NURI forget it.
+
+@api.get("/memories")
+async def list_memories(uid: str = Depends(_req_uid)):
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Memory storage is unavailable")
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("user_memories")
+            .select("id,child_id,category,value,updated_at")
+            .eq("user_id", uid).eq("status", "active")
+            .order("updated_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Memory storage is temporarily unavailable") from exc
+    return [
+        {
+            "id": row.get("id"),
+            "child_id": row.get("child_id"),
+            # Standing facts apply to every reply; the rest are background.
+            "standing": row.get("category") == core_family_store.STANDING_CATEGORY,
+            "text": (row.get("value") or "").strip(),
+            "updated_at": row.get("updated_at"),
+        }
+        for row in (res.data or [])
+        if (row.get("value") or "").strip()
+    ]
+
+
+@api.delete("/memories/{memory_id}", status_code=204)
+async def forget_memory(memory_id: str, uid: str = Depends(_req_uid)):
+    """Delete outright rather than archive: the parent asked NURI to forget."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Memory storage is unavailable")
+    try:
+        res = await anyio.to_thread.run_sync(
+            lambda: sb.table("user_memories").delete()
+            .eq("id", memory_id).eq("user_id", uid).execute()
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Memory storage is temporarily unavailable") from exc
+    if not res.data:
+        raise HTTPException(404, "memory not found")
+    core_family.invalidate(uid)
+    return None
+
+
 @api.post("/privacy/wipe")
 async def wipe_all(uid: str = Depends(_req_uid)):
     # Keep an explicit opt-out tombstone instead of deleting the privacy
@@ -6414,6 +6466,17 @@ async def billing_status(uid: str = Depends(_req_uid), tz: Optional[str] = None)
         logging.getLogger("nuri.billing").warning("usage unavailable: %s", type(exc).__name__)
         result["usage"] = None
     return result
+
+
+@api.get("/billing/usage")
+async def billing_usage(uid: str = Depends(_req_uid), tz: Optional[str] = None):
+    """Just today's allowance, for the chat screen to warn before it runs out.
+    /billing/status also asks Stripe for plans, which is too slow for that."""
+    sb = _require_billing_storage()
+    try:
+        return await anyio.to_thread.run_sync(lambda: quota.snapshot(sb, uid, tz))
+    except Exception as exc:  # noqa: BLE001 - informational; the turn itself decides
+        raise HTTPException(503, "Usage is temporarily unavailable") from exc
 
 
 @api.post("/billing/checkout")

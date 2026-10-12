@@ -6,15 +6,17 @@ import {
   ScrollView,
   Pressable,
   Switch,
+  Image,
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
-import { api, auth } from "@/src/api";
+import { api, auth, turnsLeftOf } from "@/src/api";
 import { completedAgeMonths } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
+import Toast from "@/src/components/Toast";
 import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
 import { usePurchaseAllowed } from "@/src/nativeShell";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -37,16 +39,29 @@ export default function Profile() {
   });
   const [privacyUnavailable, setPrivacyUnavailable] = useState(true);
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [wiping, setWiping] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [me, setMe] = useState<any>(null);
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  // Today's chat allowance, in turns. Null when unlimited or unknown.
+  const [turnsLeft, setTurnsLeft] = useState<{ left: number; total: number } | null>(null);
   const purchaseAllowed = usePurchaseAllowed();
 
   const load = useCallback(async () => {
-    const [childrenResult, privacyResult, favoritesResult] = await Promise.allSettled([
-      api.listChildren(),
-      api.getPrivacy(),
-      api.listFavorites(),
-    ]);
+    const [childrenResult, privacyResult, favoritesResult, meResult, memoriesResult, usageResult] =
+      await Promise.allSettled([
+        api.listChildren(),
+        api.getPrivacy(),
+        api.listFavorites(),
+        api.me(),
+        api.listMemories(),
+        api.billingUsage(),
+      ]);
     if (childrenResult.status === "fulfilled") setChildren(childrenResult.value);
     if (favoritesResult.status === "fulfilled") setFavorites(favoritesResult.value);
+    if (meResult.status === "fulfilled") setMe(meResult.value);
+    if (memoriesResult.status === "fulfilled") setMemoryCount(memoriesResult.value.length);
+    setTurnsLeft(usageResult.status === "fulfilled" ? turnsLeftOf(usageResult.value) : null);
     if (privacyResult.status === "fulfilled") {
       setPrivacy(privacyResult.value);
       setPrivacyUnavailable(false);
@@ -85,11 +100,26 @@ export default function Profile() {
   };
 
   const wipeAll = async () => {
-    await api.wipe();
+    if (wiping) return;
+    setWiping(true);
+    try {
+      await api.wipe();
+    } catch {
+      // Nothing was confirmed deleted, so stay signed in and say so.
+      setWiping(false);
+      setConfirmWipe(false);
+      setToastMsg(t("删除没有完成，请检查网络后重试"));
+      setTimeout(() => setToastMsg(null), 2400);
+      return;
+    }
     await auth.clearToken();
     setConfirmWipe(false);
     router.replace("/login");
   };
+
+  const avatarUrl = [me?.avatar_url, me?.photo_url, me?.picture].find(
+    (u) => typeof u === "string" && /^https:\/\//i.test(u),
+  );
 
   const logout = async () => {
     await auth.clearToken();
@@ -116,12 +146,25 @@ export default function Profile() {
         </Pressable>
         <View style={styles.header}>
           <View style={styles.avatar}>
-            <Ionicons name="person-outline" size={26} color={colors.brand} />
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+            ) : me?.nickname ? (
+              <Text style={styles.avatarText}>{String(me.nickname).slice(0, 1)}</Text>
+            ) : (
+              <Ionicons name="person-outline" size={26} color={colors.brand} />
+            )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{t("家长")}</Text>
-            <Text style={styles.sub}>{t("育儿AI · 北美华人版")}</Text>
+            <Text style={styles.name} numberOfLines={1}>{me?.nickname || t("家长")}</Text>
+            <Text style={styles.sub} numberOfLines={1}>{me?.email || t("育儿AI · 北美华人版")}</Text>
           </View>
+          <Pressable
+            onPress={() => router.push("/profile-edit" as never)}
+            style={styles.editBtn}
+            testID="profile-edit-btn"
+          >
+            <Text style={styles.editBtnText}>{t("编辑资料")}</Text>
+          </Pressable>
         </View>
 
         <Section title={t("孩子信息")}>
@@ -155,15 +198,10 @@ export default function Profile() {
           </Pressable>
         </Section>
 
+        {/* Nothing can be favorited any more; old favorites stay reachable. */}
+        {favorites.length > 0 ? (
         <Section title={t("我的收藏")}>
-          {favorites.length === 0 ? (
-            <View style={{ padding: spacing.md }}>
-              <Text style={{ color: colors.muted, fontSize: 14 }}>
-                {t("还没有收藏。在首页或详情页点击 ★ 即可收藏。")}
-              </Text>
-            </View>
-          ) : (
-            favorites.map((f) => (
+          {favorites.map((f) => (
               <Pressable
                 key={f.id}
                 onPress={() => router.push(`/detail/${f.id}`)}
@@ -181,8 +219,29 @@ export default function Profile() {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={colors.muted} />
               </Pressable>
-            ))
-          )}
+          ))}
+        </Section>
+        ) : null}
+
+        <Section title={t("NURI 记得的事")}>
+          <Pressable
+            onPress={() => router.push("/memories" as never)}
+            style={[styles.child, { borderBottomWidth: 0 }]}
+            testID="profile-memories"
+          >
+            <View style={styles.childAvatar}>
+              <Ionicons name="albums-outline" size={16} color={colors.brand} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.childName}>{t("查看和管理")}</Text>
+              <Text style={styles.childMeta}>
+                {memoryCount == null
+                  ? t("NURI 从对话里记下的家庭情况")
+                  : t("共 {count} 条，会影响 NURI 的回复和每日精选", { count: memoryCount })}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+          </Pressable>
         </Section>
 
         <Section title={t("隐私设置")}>
@@ -236,15 +295,6 @@ export default function Profile() {
             testID="privacy-toggle-push"
             disabled={privacyUnavailable}
           />
-          <Toggle
-            label={t("允许匿名分享我的经验到社群")}
-            value={privacy.anonymous_community_share}
-            onChange={(v) =>
-              updatePrivacy({ anonymous_community_share: v })
-            }
-            testID="privacy-toggle-community"
-            disabled={privacyUnavailable}
-          />
           <Pressable
             style={styles.danger}
             onPress={() => setConfirmWipe(true)}
@@ -267,6 +317,11 @@ export default function Profile() {
                 <Ionicons name="sparkles-outline" size={16} color={colors.brand} />
               </View>
               <Text style={[styles.childName, { flex: 1 }]}>{t("NURI 会员")}</Text>
+              {turnsLeft ? (
+                <Text style={styles.childMeta}>
+                  {t("今天还能聊 {left}/{total} 次", turnsLeft)}
+                </Text>
+              ) : null}
               <Ionicons name="chevron-forward" size={16} color={colors.muted} />
             </Pressable>
           </Section>
@@ -309,12 +364,13 @@ export default function Profile() {
         <ConfirmDialog
           visible={confirmWipe}
           title="确认删除所有数据？"
-          message="包括孩子档案、对话记录、任务和反思。此操作不可恢复。"
-          confirmText="确认删除"
+          message={t("包括孩子档案、对话记录和 NURI 记得的事。此操作不可恢复。")}
+          confirmText={wiping ? "删除中..." : "确认删除"}
           danger
           onConfirm={wipeAll}
           onCancel={() => setConfirmWipe(false)}
         />
+        <Toast message={toastMsg} />
       </View>
     </SafeAreaView>
   );
@@ -388,8 +444,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.brandTertiary,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   name: { fontSize: type.xl, fontWeight: "700", color: colors.onSurface },
+  avatarImage: { width: "100%", height: "100%" },
+  avatarText: { color: colors.brand, fontSize: 22, fontWeight: "700" },
+  editBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  editBtnText: { fontSize: type.sm, fontWeight: "600", color: colors.onSurface },
   sub: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
   sectionTitle: {
     fontSize: type.sm,

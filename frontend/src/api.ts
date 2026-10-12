@@ -953,6 +953,18 @@ export const api = {
 
   // Billing (backend/billing.py). Checkout and the Portal are Stripe-hosted:
   // these only return the URL to send the browser to.
+  /** Just today's allowance; cheap enough to read on every chat turn. */
+  billingUsage: () => {
+    const tz = deviceTimeZone();
+    return req<BillingUsage>(`/billing/usage${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`);
+  },
+  /** What NURI remembers about this family; `standing` rows apply to every reply. */
+  listMemories: () =>
+    req<{ id: string; child_id: string | null; standing: boolean; text: string; updated_at: string }[]>(
+      `/memories`,
+    ),
+  forgetMemory: (memoryId: string) =>
+    req<void>(`/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
   billingStatus: () => {
     const tz = deviceTimeZone();
     return req<BillingStatus>(
@@ -1027,3 +1039,13 @@ export type BillingStatus = {
     cancel_at_period_end: boolean;
   };
 };
+
+/** Turns left today, or null when the allowance is unlimited. */
+export function turnsLeftOf(usage: BillingUsage | null | undefined) {
+  if (!usage?.limit_turns) return null;
+  const total = usage.limit_turns;
+  const left = usage.remaining == null || !usage.tokens_per_turn
+    ? total
+    : Math.ceil(usage.remaining / usage.tokens_per_turn);
+  return { left: Math.max(0, Math.min(left, total)), total };
+}

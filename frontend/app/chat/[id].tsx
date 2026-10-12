@@ -20,11 +20,10 @@ import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
-import * as WebBrowser from "expo-web-browser";
 import * as ImagePicker from "expo-image-picker";
 import Toast from "@/src/components/Toast";
 import VoiceWaveform from "@/src/components/VoiceWaveform";
-import { ApiError, api, apiErrorDetail, isStreamUnsupported } from "@/src/api";
+import { ApiError, api, apiErrorDetail, isStreamUnsupported, turnsLeftOf } from "@/src/api";
 import { usePurchaseAllowed } from "@/src/nativeShell";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
@@ -53,6 +52,41 @@ const responseFeedbackIcons = {
 
 // Messages per history page; older ones load as the parent scrolls up.
 const HISTORY_PAGE_SIZE = 50;
+
+// Offered in an empty conversation; translation keys, sent as the parent's words.
+const STARTER_PROMPTS = [
+  "宝宝晚上总是醒，怎么办？",
+  "孩子挑食，不爱吃饭",
+  "孩子最近情绪特别容易崩溃",
+] as const;
+
+const DATE_LOCALES = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" } as const;
+
+/** A label when `iso` falls on a different local day than `previousIso`. */
+function dayLabel(
+  iso: string | undefined,
+  previousIso: string | undefined,
+  locale: keyof typeof DATE_LOCALES,
+  t: (key: string) => string,
+): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  if (previousIso) {
+    const previous = new Date(previousIso);
+    if (!Number.isNaN(previous.getTime()) && dayKey(previous) === dayKey(date)) return null;
+  }
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (dayKey(date) === dayKey(today)) return t("今天");
+  if (dayKey(date) === dayKey(yesterday)) return t("昨天");
+  return date.toLocaleDateString(DATE_LOCALES[locale] ?? "zh-CN", {
+    month: "long",
+    day: "numeric",
+    ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
@@ -141,7 +175,24 @@ type MemoryContextTransition = {
 // wrapping mid-paragraph.
 const MARKUP_RE = /(\*\*[^*\n]+\*\*)/g;
 
-function RichText({ text }: { text: string }) {
+// Headings ("### 小标题") become a bold line and "- item" / "* item" a bullet,
+// so neither shows up as raw markdown.
+function normalizeMarkdown(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const heading = /^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+      if (heading) {
+        const body = heading[1].replace(/\*\*/g, "");
+        return body ? `**${body}**` : "";
+      }
+      return line.replace(/^(\s*)[-*+]\s+/, "$1• ");
+    })
+    .join("\n");
+}
+
+function RichText({ text: raw }: { text: string }) {
+  const text = normalizeMarkdown(raw);
   const parts: React.ReactNode[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
@@ -294,6 +345,15 @@ export default function ChatDetail() {
   // Set when the server refuses a turn because today's allowance is spent
   // (backend/quota.py). Cleared by the next send that goes through.
   const [quotaReached, setQuotaReached] = useState(false);
+  // Turns left today when the allowance is enforced and nearly spent, so the
+  // parent is warned before a reply is refused rather than after.
+  const [turnsLeft, setTurnsLeft] = useState<number | null>(null);
+  const [viewerImage, setViewerImage] = useState<string | null>(null);
+  // Whether the parent is reading near the newest message. New text only
+  // pulls the view down when they are; otherwise a button offers the jump.
+  const nearBottomRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const forceScrollRef = useRef(true);
   const purchaseAllowed = usePurchaseAllowed();
   // Reply text accumulated from the SSE stream, rendered as a live bubble until
   // the persisted message arrives and replaces it.
@@ -355,6 +415,7 @@ export default function ChatDetail() {
     try {
       const page = await api.getMessagesPage(id, { limit: HISTORY_PAGE_SIZE });
       prependAnchorRef.current = null;
+      forceScrollRef.current = true;
       setMessages(page.messages);
       setHasOlder(page.has_more);
       setOlderLoadState("idle");
@@ -381,6 +442,20 @@ export default function ChatDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const refreshUsage = useCallback(async () => {
+    try {
+      const usage = await api.billingUsage();
+      const turns = usage?.enforced ? turnsLeftOf(usage) : null;
+      setTurnsLeft(turns && turns.left <= 2 ? turns.left : null);
+    } catch {
+      setTurnsLeft(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshUsage();
+  }, [refreshUsage]);
 
   // Older history comes in a page at a time, prepended above what is on screen.
   const loadOlder = useCallback(async () => {
@@ -416,10 +491,22 @@ export default function ChatDetail() {
   }, [id, hasOlder, messages]);
 
   useEffect(() => {
-    // Loading older messages must not yank the view to the bottom.
+    // Loading older messages must not yank the view to the bottom, and nor
+    // must a reply streaming in while the parent reads further up.
     if (prependAnchorRef.current) return;
+    if (!forceScrollRef.current && !nearBottomRef.current) {
+      setShowJumpToLatest(true);
+      return;
+    }
+    forceScrollRef.current = false;
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages, typing, streamingText]);
+
+  const jumpToLatest = () => {
+    nearBottomRef.current = true;
+    setShowJumpToLatest(false);
+    scrollRef.current?.scrollToEnd({ animated: true });
+  };
 
   // Home's daily card is fixed for the day, so a finished turn no longer
   // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
@@ -458,6 +545,10 @@ export default function ChatDetail() {
       created_at: new Date().toISOString(),
       image_base64: normalizedImage,
     };
+    // The parent's own message always brings the view down to it.
+    forceScrollRef.current = true;
+    nearBottomRef.current = true;
+    setShowJumpToLatest(false);
     setMessages((p) => [...p, optimistic]);
 
     setTyping(true);
@@ -490,6 +581,7 @@ export default function ChatDetail() {
       ]);
       failedSendRef.current = null;
       setQuotaReached(false);
+      void refreshUsage();
       if (pendingHomeReturnRef.current) {
         pendingHomeReturnRef.current = false;
         returnHome();
@@ -790,7 +882,11 @@ export default function ChatDetail() {
             testID="chat-scroll"
             scrollEventThrottle={100}
             onScroll={(event) => {
-              const y = event.nativeEvent.contentOffset.y;
+              const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+              const y = contentOffset.y;
+              const nearBottom = contentSize.height - (y + layoutMeasurement.height) < 160;
+              nearBottomRef.current = nearBottom;
+              if (nearBottom) setShowJumpToLatest(false);
               // Only a scroll *up* near the top asks for more; the jump to the
               // newest message on open passes through the top going down.
               const movingUp = y < scrollOffsetRef.current;
@@ -844,16 +940,56 @@ export default function ChatDetail() {
                 </Text>
               </Pressable>
             ) : null}
-            {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                msg={m}
-                actionsEnabled={!m.id.startsWith("tmp-")}
-                feedbackSaving={feedbackSavingIds.has(m.id)}
-                onCopy={copyResponse}
-                onFeedback={rateResponse}
-              />
-            ))}
+            {messages.map((m, index) => {
+              const day = dayLabel(m.created_at, messages[index - 1]?.created_at, locale, t);
+              const isLast = index === messages.length - 1;
+              return (
+                <View key={m.id}>
+                  {day ? (
+                    <View style={styles.dayDivider} testID="chat-day-divider">
+                      <Text style={styles.dayDividerText}>{day}</Text>
+                    </View>
+                  ) : null}
+                  <MessageBubble
+                    msg={m}
+                    actionsEnabled={!m.id.startsWith("tmp-")}
+                    feedbackSaving={feedbackSavingIds.has(m.id)}
+                    onCopy={copyResponse}
+                    onFeedback={rateResponse}
+                    onOpenImage={setViewerImage}
+                  />
+                  {isLast && m.role === "ai" && !sending && m.quick_replies?.length ? (
+                    <View style={styles.quickReplies} testID="chat-quick-replies">
+                      {m.quick_replies.map((reply) => (
+                        <Pressable
+                          key={reply}
+                          onPress={() => void send(reply)}
+                          style={styles.quickReply}
+                        >
+                          <Text style={styles.quickReplyText}>{reply}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+            {historyLoadState === "ready" && !hasOlder && !sending && !messages.some((m) => m.role === "user") ? (
+              <View style={styles.welcome} testID="chat-welcome">
+                <Text style={styles.welcomeTitle}>{t("可以从这些开始聊")}</Text>
+                {STARTER_PROMPTS.map((prompt) => (
+                  <Pressable
+                    key={prompt}
+                    onPress={() => void send(t(prompt))}
+                    disabled={sending}
+                    style={styles.quickReply}
+                    testID="chat-starter"
+                  >
+                    <Text style={styles.quickReplyText}>{t(prompt)}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             {streamingText ? (
               <MessageBubble
                 msg={{ id: "__streaming__", role: "ai", text: streamingText }}
@@ -863,7 +999,37 @@ export default function ChatDetail() {
             {typing ? <TypingDots /> : null}
           </ScrollView>
 
+          {showJumpToLatest ? (
+            <Pressable
+              onPress={jumpToLatest}
+              style={styles.jumpToLatest}
+              accessibilityRole="button"
+              accessibilityLabel={t("回到最新消息")}
+              testID="chat-jump-latest"
+            >
+              <Ionicons name="arrow-down" size={20} color="#3A2F5A" />
+            </Pressable>
+          ) : null}
           <View style={styles.composer} testID="chat-composer">
+            {turnsLeft !== null && !quotaReached ? (
+              <View style={styles.quotaNotice} testID="chat-quota-low">
+                <Ionicons name="hourglass-outline" size={18} color={colors.brand} />
+                <Text style={styles.quotaNoticeText}>
+                  {turnsLeft === 0
+                    ? t("今天的对话额度快用完了，明天会自动恢复。")
+                    : t("今天还能和 NURI 聊 {count} 次，明天会自动恢复。", { count: turnsLeft })}
+                </Text>
+                {purchaseAllowed ? (
+                  <Pressable
+                    style={styles.quotaNoticeBtn}
+                    onPress={() => router.push("/billing")}
+                    testID="chat-quota-low-upgrade"
+                  >
+                    <Text style={styles.quotaNoticeBtnText}>{t("升级")}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
             {quotaReached ? (
               <View style={styles.quotaNotice} testID="chat-quota-reached">
                 <Ionicons name="hourglass-outline" size={18} color={colors.brand} />
@@ -1068,6 +1234,23 @@ export default function ChatDetail() {
             </View>
           </View>
         </Modal>
+        <Modal
+          visible={!!viewerImage}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setViewerImage(null)}
+        >
+          <Pressable
+            style={styles.viewer}
+            onPress={() => setViewerImage(null)}
+            accessibilityLabel={t("关闭图片")}
+            testID="chat-image-viewer"
+          >
+            {viewerImage ? (
+              <Image source={{ uri: viewerImage }} style={styles.viewerImage} contentFit="contain" />
+            ) : null}
+          </Pressable>
+        </Modal>
         <Toast message={toastMsg} />
         </View>
       </SafeAreaView>
@@ -1082,12 +1265,14 @@ function MessageBubble({
   feedbackSaving = false,
   onCopy,
   onFeedback,
+  onOpenImage,
 }: {
   msg: Msg;
   actionsEnabled?: boolean;
   feedbackSaving?: boolean;
   onCopy?: (message: Msg) => void;
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
+  onOpenImage?: (uri: string) => void;
 }) {
   const { t } = useT();
   const router = useRouter();
@@ -1123,34 +1308,6 @@ function MessageBubble({
     );
   }
 
-  if (msg.transition?.kind === "hospital_card") {
-    return (
-      <View style={[styles.row, { justifyContent: "flex-start" }]}>
-        <View style={styles.avatarSlot}>
-          <NuriAvatar size={30} />
-        </View>
-        <View style={styles.hospitalCard} testID="chat-hospital-card">
-          <Text style={styles.hospitalText}>{msg.text}</Text>
-          <View style={styles.hospitalDivider} />
-          <View style={styles.hospitalRow}>
-            <Ionicons name="medkit-outline" size={16} color={colors.error} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.hospitalName}>{"Stanford Children's ER"}</Text>
-              <Text style={styles.hospitalMeta}>2.4 mi · 24h · (650) 555-0911</Text>
-            </View>
-          </View>
-          <View style={styles.hospitalRow}>
-            <Ionicons name="call-outline" size={16} color={colors.brand} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.hospitalName}>Nurse Hotline</Text>
-              <Text style={styles.hospitalMeta}>{t("免费 · 24h · (800) 555-0144")}</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-    );
-  }
-
   return (
     <View
       style={[
@@ -1164,11 +1321,18 @@ function MessageBubble({
       >
         {isAI && <Text style={styles.senderLabel}>NURI</Text>}
         {msg.image_base64 ? (
-          <Image
-            source={{ uri: msg.image_base64 }}
-            style={styles.bubbleImage}
-            contentFit="cover"
-          />
+          <Pressable
+            onPress={() => onOpenImage?.(msg.image_base64!)}
+            accessibilityRole="imagebutton"
+            accessibilityLabel={t("查看大图")}
+            testID="chat-bubble-image"
+          >
+            <Image
+              source={{ uri: msg.image_base64 }}
+              style={styles.bubbleImage}
+              contentFit="cover"
+            />
+          </Pressable>
         ) : null}
         {msg.text ? (
           <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
@@ -1583,30 +1747,53 @@ const styles = StyleSheet.create({
   },
   transitionBtnText: { color: "#fff", fontWeight: "700", fontSize: type.base },
 
-  hospitalCard: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderColor: colors.error,
-    borderWidth: 1,
-    borderRadius: radius.md,
+  dayDivider: {
+    alignSelf: "center",
+    marginVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(255,255,255,0.6)",
+  },
+  dayDividerText: { fontSize: 12, color: colors.onSurfaceTertiary, fontWeight: "600" },
+  welcome: {
     padding: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: "rgba(255,255,255,0.86)",
     gap: spacing.sm,
+    marginBottom: spacing.sm,
   },
-  hospitalText: { fontSize: type.base, color: colors.onSurface, lineHeight: 20 },
-  hospitalDivider: {
-    height: 1,
-    backgroundColor: colors.divider,
-    marginVertical: spacing.xs,
+  welcomeTitle: { fontSize: type.base, fontWeight: "700", color: "#3A2F5A" },
+  quickReplies: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, marginBottom: spacing.sm },
+  quickReply: {
+    alignSelf: "flex-start",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: "rgba(58,47,90,0.35)",
+    backgroundColor: "#fff",
   },
-  hospitalRow: {
-    flexDirection: "row",
-    gap: spacing.sm,
+  quickReplyText: { fontSize: type.base, color: "#3A2F5A" },
+  jumpToLatest: {
+    position: "absolute",
+    right: 18,
+    bottom: 76,
+    zIndex: 5,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
-    paddingVertical: 4,
+    justifyContent: "center",
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  hospitalName: { fontSize: type.base, fontWeight: "600", color: colors.onSurface },
-  hospitalMeta: { fontSize: type.sm, color: colors.muted, marginTop: 2 },
-
+  viewer: { flex: 1, backgroundColor: "rgba(0,0,0,0.92)", alignItems: "center", justifyContent: "center" },
+  viewerImage: { width: "100%", height: "100%" },
   composer: {
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
