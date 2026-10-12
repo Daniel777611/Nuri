@@ -4543,20 +4543,45 @@ async def delete_session(session_id: str, uid: str = Depends(_req_uid)):
         ),
     )
 
+# The conversation never ends, so history is read newest-first. PostgREST caps a
+# response at 1000 rows; reading oldest-first meant a long-running account lost
+# its *latest* messages from the screen.
+CHAT_HISTORY_MAX_ROWS = 1000
+CHAT_HISTORY_PAGE_MAX = 200
+
+
 @api.get("/chat/sessions/{session_id}/messages")
-async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
+async def get_messages(
+    session_id: str,
+    uid: str = Depends(_req_uid),
+    limit: Optional[int] = None,
+    before: Optional[str] = None,
+):
+    """Return the transcript oldest-to-newest.
+
+    Without ``limit`` this is the legacy shape (a bare list, newest 1000 rows).
+    With ``limit`` it is one page — the newest ``limit`` rows older than
+    ``before`` (a ``created_at``) — as ``{"messages": [...], "has_more": bool}``.
+    """
     sb = _require_chat_storage()
     session = await _load_owned_session(session_id, uid, sb)
+    paged = limit is not None
+    page_size = max(1, min(int(limit), CHAT_HISTORY_PAGE_MAX)) if paged else CHAT_HISTORY_MAX_ROWS
+
+    def _read_page():
+        query = sb.table("chat_messages").select("*").eq("session_id", session_id)
+        if before:
+            query = query.lt("created_at", before)
+        # One extra row tells whether anything older is left.
+        return query.order("created_at", desc=True).limit(page_size + 1).execute()
+
     try:
-        res = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_messages")
-            .select("*")
-            .eq("session_id", session_id)
-            .order("created_at", desc=False)
-            .execute()
-        )
+        res = await anyio.to_thread.run_sync(_read_page)
+        raw_rows = list(res.data or [])
+        has_more = len(raw_rows) > page_size
+        raw_rows = list(reversed(raw_rows[:page_size]))
         visible_messages = _bound_chat_history_images(
-            _visible_chat_messages(list(res.data or []))
+            _visible_chat_messages(raw_rows)
         )
     except Exception as e:
         _raise_chat_storage_error("message history load", e)
@@ -4587,9 +4612,10 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
     # legacy memory row or a temporary failure of the memories query must never
     # turn successfully loaded, durable chat_messages into an empty screen.
     # Keep the primary transcript available and log the augmentation failure
-    # without exposing account identifiers or memory contents.
+    # without exposing account identifiers or memory contents. It is about the
+    # whole conversation, so it only rides on a page that holds all of it.
     try:
-        recovery = await _memory_recovery_message(
+        recovery = None if (before or has_more) else await _memory_recovery_message(
             sb,
             uid=uid,
             session=session,
@@ -4610,7 +4636,10 @@ async def get_messages(session_id: str, uid: str = Depends(_req_uid)):
             },
         )
         recovery = None
-    return ([recovery] if recovery else []) + visible_messages
+    messages = ([recovery] if recovery else []) + visible_messages
+    if paged:
+        return {"messages": messages, "has_more": has_more}
+    return messages
 
 
 @api.put("/chat/sessions/{session_id}/messages/{message_id}/feedback")

@@ -87,37 +87,6 @@ function HomeNavigationIcon({ name }: { name: HomeNavigationIconName }) {
   return <Ionicons name={icon.fallback} size={25} color={C.text} />;
 }
 
-// 待开发占位 bottom sheet（统一规范）
-function DevSheet({
-  visible,
-  emoji,
-  name,
-  onClose,
-}: {
-  visible: boolean;
-  emoji: string;
-  name: string;
-  onClose: () => void;
-}) {
-  // Its own hook call: this sheet is a sibling of Home, not a child, so it
-  // cannot borrow the translator from there.
-  const { t } = useT();
-  if (!visible) return null;
-  return (
-    <View style={styles.sheetRoot}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-      <View style={styles.sheet} testID="dev-sheet">
-        <View style={styles.sheetHandle} />
-        <Text style={styles.sheetEmoji}>{emoji}</Text>
-        <Text style={styles.sheetTitle}>{t("{name}即将上线，敬请期待", { name })}</Text>
-        <Pressable onPress={onClose} style={styles.sheetBtn} testID="dev-sheet-close">
-          <Text style={styles.sheetBtnText}>{t("我知道了")}</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
 export default function Home() {
   const { t, locale } = useT();
   const router = useRouter();
@@ -128,9 +97,9 @@ export default function Home() {
   // phone the frame shrinks with the viewport; on desktop it remains centered.
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const dailyCardWidth = Math.max(280, phoneWidth - 60);
-  const [nickname, setNickname] = useState("Momo妈妈");
+  // Empty until /me answers, so no one is greeted by a placeholder name.
+  const [nickname, setNickname] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [nuriPreview, setNuriPreview] = useState<NuriPreview | null>(null);
   const [nuriPreviewStatus, setNuriPreviewStatus] =
@@ -589,7 +558,7 @@ export default function Home() {
         >
           <Pressable
             style={styles.navigationItem}
-            onPress={() => setDevSheet({ emoji: "🌱", name: t("知识图书馆") })}
+            onPress={() => router.push("/coming-soon?feature=knowledge" as never)}
             accessibilityRole="button"
             accessibilityLabel={t("知识图书馆")}
           >
@@ -605,7 +574,7 @@ export default function Home() {
           </Pressable>
           <Pressable
             style={styles.navigationItem}
-            onPress={() => router.push("/community")}
+            onPress={() => router.push("/coming-soon?feature=community" as never)}
             accessibilityRole="button"
             accessibilityLabel={t("社区")}
           >
@@ -614,12 +583,6 @@ export default function Home() {
         </View>
       </View>
 
-      <DevSheet
-        visible={!!devSheet}
-        emoji={devSheet?.emoji || ""}
-        name={devSheet?.name || ""}
-        onClose={() => setDevSheet(null)}
-      />
       <Toast message={toastMsg} />
     </SafeAreaView>
   );
@@ -802,37 +765,4 @@ const styles = StyleSheet.create({
     width: 25,
     height: 26,
   },
-  sheetRoot: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.32)",
-    justifyContent: "flex-end",
-    zIndex: 50,
-  },
-  sheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 24,
-    paddingBottom: 32,
-    alignItems: "center",
-    gap: 10,
-  },
-  sheetHandle: {
-    width: 36,
-    height: 4,
-    backgroundColor: "#E0E0E8",
-    borderRadius: 2,
-    marginBottom: 4,
-  },
-  sheetEmoji: { fontSize: 36 },
-  sheetTitle: { fontSize: 16, fontWeight: "700", color: C.text },
-  sheetBtn: {
-    marginTop: 10,
-    backgroundColor: C.purple,
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignSelf: "stretch",
-    alignItems: "center",
-  },
-  sheetBtnText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
 });

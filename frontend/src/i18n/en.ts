@@ -689,4 +689,13 @@ export const en: Record<string, string> = {
   "订阅设置已更新": "Subscription updated",
   "请回到 NURI App，会员状态会自动更新。": "Head back to the NURI app — your membership will update there.",
   "打开 NURI App": "Open the NURI app",
+  "新功能制作中": "Coming soon",
+  "家长社区": "Parent community",
+  "和 NURI 聊聊": "Chat with NURI",
+  "把专家建议和其他家长的经验，整理成随时能查的小卡片。": "Expert advice and other parents' experience, gathered into short cards you can look up any time.",
+  "和同样在带娃的家长交流经验，互相打打气。": "Swap experience with other parents raising little ones, and cheer each other on.",
+  "上线后会第一时间告诉你。现在有什么想问的，可以先和 NURI 聊聊。": "We'll let you know as soon as it's ready. Anything on your mind now? NURI is here to chat.",
+  "加载更早的消息": "Load earlier messages",
+  "正在加载更早的消息…": "Loading earlier messages…",
+  "更早的消息没能加载，点此重试": "Couldn't load earlier messages. Tap to retry",
 };

@@ -51,6 +51,9 @@ const responseFeedbackIcons = {
   dislike: { uri: "/chat-feedback/dislike.svg" },
 } as const;
 
+// Messages per history page; older ones load as the parent scrolls up.
+const HISTORY_PAGE_SIZE = 50;
+
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
 
@@ -299,6 +302,13 @@ export default function ChatDetail() {
   const [feedbackSavingIds, setFeedbackSavingIds] = useState<Set<string>>(new Set());
   const feedbackSavingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<ScrollView>(null);
+  // Paged history: only the newest page is fetched on open.
+  const [hasOlder, setHasOlder] = useState(false);
+  const [olderLoadState, setOlderLoadState] = useState<"idle" | "loading" | "error">("idle");
+  const olderLoadingRef = useRef(false);
+  const contentHeightRef = useRef(0);
+  const scrollOffsetRef = useRef(0);
+  const prependAnchorRef = useRef<{ height: number; offset: number } | null>(null);
   const showToast = useCallback((message: string) => {
     setToastMsg(message);
     setTimeout(() => setToastMsg(null), 1800);
@@ -343,8 +353,11 @@ export default function ChatDetail() {
     if (!id) return;
     setHistoryLoadState("loading");
     try {
-      const msgs = await api.getMessages(id);
-      setMessages(msgs);
+      const page = await api.getMessagesPage(id, { limit: HISTORY_PAGE_SIZE });
+      prependAnchorRef.current = null;
+      setMessages(page.messages);
+      setHasOlder(page.has_more);
+      setOlderLoadState("idle");
       setHistoryLoadState("ready");
     } catch (error) {
       // Old clients could keep a deleted session URL in navigation history.
@@ -369,7 +382,42 @@ export default function ChatDetail() {
     load();
   }, [load]);
 
+  // Older history comes in a page at a time, prepended above what is on screen.
+  const loadOlder = useCallback(async () => {
+    if (!id || !hasOlder || olderLoadingRef.current) return;
+    const oldest = messages.find((m) => m.created_at && !m.id.startsWith("tmp-"));
+    if (!oldest?.created_at) return;
+    olderLoadingRef.current = true;
+    setOlderLoadState("loading");
+    try {
+      const page = await api.getMessagesPage(id, {
+        limit: HISTORY_PAGE_SIZE,
+        before: oldest.created_at,
+      });
+      // Keep the parent's place: after the taller content lays out, shift the
+      // scroll by exactly what was added above.
+      if (page.messages.length) {
+        prependAnchorRef.current = {
+          height: contentHeightRef.current,
+          offset: scrollOffsetRef.current,
+        };
+      }
+      setMessages((current) => {
+        const known = new Set(current.map((m) => m.id));
+        return [...page.messages.filter((m: Msg) => !known.has(m.id)), ...current];
+      });
+      setHasOlder(page.has_more);
+      setOlderLoadState("idle");
+    } catch {
+      setOlderLoadState("error");
+    } finally {
+      olderLoadingRef.current = false;
+    }
+  }, [id, hasOlder, messages]);
+
   useEffect(() => {
+    // Loading older messages must not yank the view to the bottom.
+    if (prependAnchorRef.current) return;
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages, typing, streamingText]);
 
@@ -740,7 +788,44 @@ export default function ChatDetail() {
             ref={scrollRef}
             contentContainerStyle={styles.scroll}
             testID="chat-scroll"
+            scrollEventThrottle={100}
+            onScroll={(event) => {
+              const y = event.nativeEvent.contentOffset.y;
+              // Only a scroll *up* near the top asks for more; the jump to the
+              // newest message on open passes through the top going down.
+              const movingUp = y < scrollOffsetRef.current;
+              scrollOffsetRef.current = y;
+              if (movingUp && y < 120 && hasOlder && olderLoadState === "idle") void loadOlder();
+            }}
+            onContentSizeChange={(_w, height) => {
+              const anchor = prependAnchorRef.current;
+              contentHeightRef.current = height;
+              if (!anchor || height === anchor.height) return;
+              prependAnchorRef.current = null;
+              scrollRef.current?.scrollTo({ y: anchor.offset + (height - anchor.height), animated: false });
+            }}
           >
+            {historyLoadState === "ready" && hasOlder ? (
+              <Pressable
+                onPress={() => void loadOlder()}
+                disabled={olderLoadState === "loading"}
+                style={styles.olderStatus}
+                testID="chat-load-older"
+              >
+                {olderLoadState === "loading" ? (
+                  <ActivityIndicator size="small" color={colors.brand} />
+                ) : (
+                  <Ionicons name="arrow-up" size={14} color={colors.brand} />
+                )}
+                <Text style={styles.olderStatusText}>
+                  {olderLoadState === "loading"
+                    ? t("正在加载更早的消息…")
+                    : olderLoadState === "error"
+                      ? t("更早的消息没能加载，点此重试")
+                      : t("加载更早的消息")}
+                </Text>
+              </Pressable>
+            ) : null}
             {historyLoadState === "loading" ? (
               <View style={styles.historyStatus} testID="chat-history-loading">
                 <ActivityIndicator color={colors.brand} />
@@ -1304,6 +1389,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.86)",
   },
   historyStatusText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
+  olderStatus: {
+    alignSelf: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: "rgba(255,255,255,0.7)",
+  },
+  olderStatusText: { color: colors.brand, fontSize: type.sm, fontWeight: "600" },
   row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
   avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
 
@@ -1606,7 +1702,8 @@ const styles = StyleSheet.create({
     minHeight: 38,
     maxHeight: 110,
     paddingVertical: Platform.OS === "ios" ? 10 : 6,
-    fontSize: type.base,
+    // 16px or more: iOS zooms the page when a smaller field takes focus.
+    fontSize: 16,
     color: colors.onSurface,
   },
   micBtn: {

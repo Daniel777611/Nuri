@@ -241,7 +241,8 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     color: "#3A2F5A",
     fontFamily: "NotoSansSC_900Black",
-    fontSize: 12,
+    // 16px or more: iOS zooms the page when a smaller field takes focus.
+    fontSize: 16,
     height: 48,
     paddingHorizontal: 16,
   },

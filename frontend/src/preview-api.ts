@@ -330,6 +330,14 @@ let messages: Record<string, any[]> = {
     },
   ],
   "chat-1": [
+    // A long history, so paging back through it can be reviewed.
+    ...Array.from({ length: 80 }, (_, i) => ({
+      id: `old-msg-${i}`,
+      session_id: "chat-1",
+      role: i % 2 ? "ai" : "user",
+      text: i % 2 ? `（第 ${i} 条）好的，我们一起再观察几天。` : `（第 ${i} 条）今天小满又有点闹觉。`,
+      created_at: new Date(Date.UTC(2026, 6, 1, 8, i)).toISOString(),
+    })),
     {
       id: "msg-1",
       session_id: "chat-1",
@@ -852,6 +860,15 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     sessions = [next, ...sessions]; messages[next.id] = [{ id: id("msg"), session_id: next.id, role: "ai", text: "你好，我在这里。今天想聊聊什么？", created_at: new Date().toISOString() }]; return next;
   }
   if (/^\/chat\/sessions\/[^/]+$/.test(path) && method === "DELETE") { const sessionId = path.split("/").pop()!; sessions = sessions.filter((s) => s.id !== sessionId); delete messages[sessionId]; return {}; }
+  if (/^\/chat\/sessions\/[^/]+\/messages$/.test(routePath) && method === "GET" && path.includes("?")) {
+    const query = new URLSearchParams(path.split("?")[1]);
+    const limit = Number(query.get("limit")) || 50;
+    const before = query.get("before");
+    const older = (messages[routePath.split("/")[3]] || []).filter(
+      (m) => !before || String(m.created_at) < before,
+    );
+    return { messages: older.slice(-limit), has_more: older.length > limit };
+  }
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "GET") return messages[path.split("/")[3]] || [];
   if (/^\/chat\/sessions\/[^/]+\/messages\/[^/]+\/feedback$/.test(path) && method === "PUT") {
     const parts = path.split("/");

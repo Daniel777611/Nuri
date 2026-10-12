@@ -821,6 +821,18 @@ export const api = {
   getOrStartMainSession: () =>
     req(`/chat/sessions`, { method: "POST", body: JSON.stringify({}) }),
   getMessages: (sid: string) => req(`/chat/sessions/${sid}/messages`),
+  /** One page of history, oldest-to-newest: the newest `limit` messages older
+   *  than `before` (a created_at), or the newest overall without it. */
+  getMessagesPage: (sid: string, { limit, before }: { limit: number; before?: string }) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (before) query.set("before", before);
+    return req<{ messages: any[]; has_more: boolean } | any[]>(
+      `/chat/sessions/${encodeURIComponent(sid)}/messages?${query.toString()}`,
+    ).then((res) =>
+      // A backend from before paging ignores the query and sends the bare list.
+      Array.isArray(res) ? { messages: res, has_more: false } : res,
+    );
+  },
   setChatMessageFeedback: (sid: string, messageId: string, rating: "like" | "dislike") =>
     req<{
       message_id: string;

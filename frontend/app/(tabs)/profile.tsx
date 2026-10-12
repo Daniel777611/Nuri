@@ -139,7 +139,7 @@ export default function Profile() {
                 <Text style={styles.childName}>{c.nickname}</Text>
                 <Text style={styles.childMeta}>
                   {(({ key, vars }) => t(key, vars))(ageLabel(c.birth_date))}
-                  {c.allergies?.length ? ` · 过敏：${c.allergies.join(", ")}` : ""}
+                  {c.allergies?.length ? ` · ${t("过敏")}: ${c.allergies.join(", ")}` : ""}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.muted} />
