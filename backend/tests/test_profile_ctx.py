@@ -90,12 +90,14 @@ def test_age_label_treats_short_month_end_as_anniversary(
     assert _age_label(birth_date) == expected
 
 
-def test_child_model_preserves_date_only_value_and_rejects_future_date():
+def test_child_model_preserves_date_only_value_and_rejects_far_future_date():
     child = ChildCreate(nickname="小满", birth_date="2025-10-01")
     assert _child_payload(child)["birth_date"] == "2025-10-01"
 
+    # A due date up to a full pregnancy ahead is a baby on the way.
+    ChildCreate(nickname="豆豆", birth_date=_shift_months(2))
     with pytest.raises(ValueError):
-        ChildCreate(nickname="小满", birth_date=_shift_months(2))
+        ChildCreate(nickname="小满", birth_date=_shift_months(11))
 
 
 def test_recommendation_child_context_contains_age_but_not_identity_or_birthday():
@@ -233,7 +235,7 @@ def test_confirmed_birth_date_and_dynamic_age_reach_chat_profile(monkeypatch):
     assert "不要再次询问" in out
 
 
-@pytest.mark.parametrize("bad_date", ["not-a-date", "2027-01-01"])
+@pytest.mark.parametrize("bad_date", ["not-a-date", "2027-08-01"])
 def test_invalid_or_future_birth_date_is_not_marked_confirmed(monkeypatch, bad_date):
     class FixedDate(date):
         @classmethod
@@ -250,6 +252,24 @@ def test_invalid_or_future_birth_date_is_not_marked_confirmed(monkeypatch, bad_d
     assert "小啊谷" in out and "男孩" in out
     assert bad_date not in out
     assert "已确认出生日期" not in out
+
+
+def test_due_date_renders_as_a_pregnancy_not_a_birthday(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 24)
+
+    monkeypatch.setattr(family_store, "date", FixedDate)
+    # 84 days to go: 196 days, 28 weeks, along.
+    out = _profile_ctx({}, [{"nickname": "豆豆", "birth_date": "2026-11-16"}])
+    assert "预产期：2026-11-16" in out
+    assert "尚未出生，怀孕约28周" in out
+    assert "已确认出生日期" not in out
+    assert family_store.stage_label("2026-11-16") == "尚未出生，怀孕约28周"
+    assert family_store.age_in_months("2026-11-16") is None
+    # Past the due date, the same row is a newborn.
+    assert family_store.stage_label("2026-08-20") == "未满1个月"
 
 
 def test_multiple_children_keep_each_identity_bound_to_its_own_facts(monkeypatch):

@@ -96,7 +96,7 @@ def redact_child_profile_text(value: object, children: Optional[list] = None) ->
             born = date.fromisoformat(raw_birth_date)
         except (TypeError, ValueError):
             continue
-        replacement = age_label(raw_birth_date) or "孩子当前年龄"
+        replacement = stage_label(raw_birth_date) or "孩子当前年龄"
         year, month, day = born.year, born.month, born.day
         month_name = _ENGLISH_MONTHS[month - 1]
         month_short = month_name[:3]
@@ -182,7 +182,7 @@ def reconcile_context_with_child_profile(
 
     text = str(value or "")
     has_confirmed_birthday = any(
-        age_label(str(child.get("birth_date") or "")[:10])
+        stage_label(str(child.get("birth_date") or "")[:10])
         for child in (children or [])
     )
     if not text or not has_confirmed_birthday:
@@ -244,6 +244,36 @@ def age_label(birth_date: str) -> str:
     return f"{years}岁{rest}个月" if rest else f"{years}岁"
 
 
+#: A full-term pregnancy, in days. A child's birth_date may be a due date this
+#: far ahead; the row then describes a baby on the way, and becomes a newborn
+#: on its own once the date passes.
+PREGNANCY_DAYS = 280
+
+
+def pregnancy_weeks(birth_date: str) -> Optional[int]:
+    """Completed weeks of pregnancy when `birth_date` is a due date, else None."""
+    try:
+        due = date.fromisoformat(str(birth_date)[:10])
+    except (ValueError, TypeError):
+        return None
+    days_left = (due - date.today()).days
+    if days_left <= 0 or days_left > PREGNANCY_DAYS:
+        return None
+    return (PREGNANCY_DAYS - days_left) // 7
+
+
+def pregnancy_label(birth_date: str) -> str:
+    weeks = pregnancy_weeks(birth_date)
+    if weeks is None:
+        return ""
+    return f"尚未出生，怀孕约{weeks}周" if weeks else "尚未出生，刚怀孕不久"
+
+
+def stage_label(birth_date: str) -> str:
+    """age_label for a child who is born, pregnancy_label for one on the way."""
+    return age_label(birth_date) or pregnancy_label(birth_date)
+
+
 def safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
     """Return age-only family context plus an opaque profile version.
 
@@ -257,7 +287,7 @@ def safe_child_recommendation_context(children: list[dict]) -> dict[str, str]:
     fingerprint_rows: list[str] = []
     for child in children:
         birth_date = str(child.get("birth_date") or "")[:10]
-        age = age_label(birth_date)
+        age = stage_label(birth_date)
         if age:
             ages.append(age)
         if birth_date:
@@ -365,10 +395,16 @@ def profile_ctx(row: dict, children: Optional[list] = None) -> str:
         # or future legacy rows must not become authoritative prompt facts.
         birth_date = str(child.get("birth_date") or "")[:10]
         age = age_label(birth_date)
+        expecting = "" if age else pregnancy_label(birth_date)
         if age:
             has_confirmed_child_fact = True
             desc.append(f"已确认出生日期：{birth_date}")
             desc.append(f"当前年龄：{age}")
+        elif expecting:
+            # A due date the parent saved: the baby is not born yet.
+            has_confirmed_child_fact = True
+            desc.append(f"预产期：{birth_date}")
+            desc.append(expecting)
         gender = GENDER_LABELS.get(child.get("gender"))
         if gender:
             desc.append(gender)

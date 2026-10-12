@@ -585,8 +585,10 @@ class ChildCreate(BaseModel):
     @field_validator("birth_date")
     @classmethod
     def validate_birth_date(cls, value: date) -> date:
-        if value > date.today():
-            raise ValueError("birth_date cannot be in the future")
+        # A future date is a due date: a baby on the way, at most a full
+        # pregnancy ahead.
+        if value > date.today() + timedelta(days=core_family_store.PREGNANCY_DAYS):
+            raise ValueError("birth_date is more than a pregnancy ahead")
         return value
 
 class FavToggle(BaseModel):
@@ -5139,7 +5141,8 @@ def _core_ports() -> CorePorts:
             # 1 家庭模型
             load_profile=core_family_store.load_profile,
             profile_ctx=core_family_store.profile_ctx,
-            age_label=core_family_store.age_label,
+            # Born children by age, children on the way by weeks of pregnancy.
+            age_label=core_family_store.stage_label,
             age_months=core_family_store.age_in_months,
             memory_context=core_family_store.get_recalled_memory_context,
             standing_context=core_family_store.get_standing_context,

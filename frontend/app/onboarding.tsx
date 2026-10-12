@@ -27,6 +27,7 @@ import {
   daysInMonth,
   formatDateOnly,
   isValidBirthDate,
+  isValidDueDate,
   parseDateOnly,
 } from "@/src/child-age";
 
@@ -34,6 +35,8 @@ const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
 
 const YEARS = Array.from({ length: 9 }, (_, i) => new Date().getFullYear() - i);
+// A due date falls this year or next.
+const DUE_YEARS = [new Date().getFullYear(), new Date().getFullYear() + 1];
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 export default function Onboarding() {
@@ -48,6 +51,8 @@ export default function Onboarding() {
   const [birthYear, setBirthYear] = useState<number | null>(null);
   const [birthMonth, setBirthMonth] = useState<number | null>(null);
   const [birthDay, setBirthDay] = useState<number | null>(null);
+  // A baby on the way: the date picked is the due date.
+  const [expecting, setExpecting] = useState(false);
   const [nickname, setNickname] = useState("");
   const [city, setCity] = useState("");
   const [parentRole, setParentRole] = useState("");
@@ -78,6 +83,7 @@ export default function Onboarding() {
           const child = kids[0]; const born = parseDateOnly(child.birth_date || "");
           setExistingChild(child); setChildName(child.nickname || "");
           if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
+          setExpecting(isValidDueDate(child.birth_date || ""));
         }
       } catch (error) {
         if (isAuthError(error)) {
@@ -99,11 +105,19 @@ export default function Onboarding() {
     : "";
   const hasPartialBirthDate = !!birthYear || !!birthMonth || !!birthDay;
   const birthDateError = hasPartialBirthDate && !birthDate
-    ? t("请选择完整的出生年、月、日")
-    : birthDate && !isValidBirthDate(birthDate)
-      ? t("出生日期不能晚于今天")
-      : "";
-  const validBirthDate = isValidBirthDate(birthDate);
+    ? expecting ? t("请选择完整的预产期") : t("请选择完整的出生年、月、日")
+    : !birthDate
+      ? ""
+      : expecting
+        ? isValidDueDate(birthDate) ? "" : t("预产期要在今天之后的 40 周内")
+        : isValidBirthDate(birthDate) ? "" : t("出生日期不能晚于今天");
+  const validBirthDate = expecting ? isValidDueDate(birthDate) : isValidBirthDate(birthDate);
+  const chooseExpecting = (value: boolean) => {
+    if (value === expecting) return;
+    // A birthday is never a valid due date and vice versa; start over.
+    setExpecting(value);
+    setBirthYear(null); setBirthMonth(null); setBirthDay(null);
+  };
   const canNext = !syncError && (page === 0
     ? !!childName.trim() && validBirthDate
     : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true);
@@ -115,7 +129,7 @@ export default function Onboarding() {
         month: String(birthMonth),
         day: String(birthDay),
       })
-    : t("请选择孩子的出生年、月、日");
+    : expecting ? t("请选择预产期") : t("请选择孩子的出生年、月、日");
 
   const save = async () => {
     if (saving) return;
@@ -170,7 +184,7 @@ export default function Onboarding() {
             {!!syncError && <Text style={styles.syncError} accessibilityLiveRegion="assertive">{syncError}</Text>}
             <Hero page={page} />
             <View style={[styles.form, page >= 3 && styles.preferenceForm]}>
-              {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} hasBirthDate={!!birthDate} birthDateError={birthDateError} openPicker={() => setPickerOpen(true)} />}
+              {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} hasBirthDate={!!birthDate} birthDateError={birthDateError} openPicker={() => setPickerOpen(true)} expecting={expecting} setExpecting={chooseExpecting} />}
               {page === 1 && <ParentPage nickname={nickname} setNickname={setNickname} city={city} setCity={setCity} parentRole={parentRole} setParentRole={setParentRole} />}
               {page === 2 && <ConcernPage concerns={concerns} toggle={toggleConcern} other={concernOther} setOther={setConcernOther} />}
               {page === 3 && <TextPage title="了解你的教养方式" subtitle="帮助 NURI 了解你的最佳陪伴方式"><Field label="平常没带小孩时喜欢做的事"><TextInput value={hobbies} onChangeText={setHobbies} placeholder={t("例如：看剧、健身、和朋友聚会……")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>}
@@ -185,7 +199,7 @@ export default function Onboarding() {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
-        {pickerOpen && <BirthPicker year={birthYear} month={birthMonth} day={birthDay} close={() => setPickerOpen(false)} confirm={(year: number | null, month: number | null, day: number | null) => { setBirthYear(year); setBirthMonth(month); setBirthDay(day); setPickerOpen(false); }} />}
+        {pickerOpen && <BirthPicker years={expecting ? DUE_YEARS : YEARS} title={expecting ? "选择预产期" : "选择出生日期"} year={birthYear} month={birthMonth} day={birthDay} close={() => setPickerOpen(false)} confirm={(year: number | null, month: number | null, day: number | null) => { setBirthYear(year); setBirthMonth(month); setBirthDay(day); setPickerOpen(false); }} />}
         </View>
       </SafeAreaView>
     </LinearGradient>
@@ -198,12 +212,12 @@ function Hero({ page }: { page: number }) {
   return <View style={styles.choiceIcon}><View style={styles.iconBlockTall} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockTall} /></View>;
 }
 function TextPage({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) { const { t } = useT(); return <><Text style={styles.title}>{t(title)}</Text><Text style={styles.subtitle}>{t(subtitle)}</Text><View style={styles.pageBody}>{children}</View></>; }
-function ChildPage({ childName, setChildName, birthLabel, hasBirthDate, birthDateError, openPicker }: any) { const { t } = useT(); return <TextPage title="孩子基本信息" subtitle="这些信息只用来给你更个性化的建议，永远不会分享给第三方"><Field label="孩子怎么称呼？"><TextInput value={childName} onChangeText={setChildName} placeholder={t("例如：小满")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label="孩子的出生日期"><Pressable onPress={openPicker} style={[styles.input, styles.picker, !!birthDateError && styles.inputError]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !hasBirthDate && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable>{birthDateError ? <Text style={styles.errorText}>{birthDateError}</Text> : null}</Field></TextPage>; }
+function ChildPage({ childName, setChildName, birthLabel, hasBirthDate, birthDateError, openPicker, expecting, setExpecting }: any) { const { t } = useT(); return <TextPage title="孩子基本信息" subtitle="这些信息只用来给你更个性化的建议，永远不会分享给第三方"><Field label="宝宝出生了吗？"><View style={styles.chipWrap}>{([[false, "已出生"], [true, "还在肚子里"]] as const).map(([value, label]) => { const active = expecting === value; return <Pressable key={label} onPress={() => setExpecting(value)} style={[styles.chip, active && styles.chipActive]} testID={value ? "onboarding-expecting" : "onboarding-born"}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{t(label)}</Text></Pressable>; })}</View></Field><Field label={expecting ? "想怎么称呼宝宝？" : "孩子怎么称呼？"}><TextInput value={childName} onChangeText={setChildName} placeholder={expecting ? t("可以先填小名，例如：豆豆") : t("例如：小满")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label={expecting ? "预产期" : "孩子的出生日期"}><Pressable onPress={openPicker} style={[styles.input, styles.picker, !!birthDateError && styles.inputError]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !hasBirthDate && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable>{birthDateError ? <Text style={styles.errorText}>{birthDateError}</Text> : null}</Field></TextPage>; }
 function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParentRole }: any) { const { t } = useT(); return <TextPage title="家长基本信息" subtitle="AI 会用这个名字给你打招呼"><Field label="我应该怎么称呼你？"><TextInput value={nickname} onChangeText={setNickname} placeholder={t("例如：小满妈")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label="您是孩子的？"><View style={styles.chipWrap}>{PARENT_ROLES.map(([key, label]) => { const active = parentRole === key; return <Pressable key={key} onPress={() => setParentRole(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-role-${key}`}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{t(label)}</Text></Pressable>; })}</View></Field><Field label="您目前居住在哪里？"><TextInput value={city} onChangeText={setCity} placeholder={t("例如：San Francisco／多伦多")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
 function ConcernPage({ concerns, toggle, other, setOther }: any) { const { t } = useT(); return <TextPage title="目前最想要解决的育儿问题" subtitle="目前最困扰你的事情是什么？（可多选）"><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{t(label)}</Text></Pressable>; })}</View>{concerns.includes("other") && <TextInput value={other} onChangeText={setOther} placeholder={t("请描述你的困扰...")} placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
 function ChoicePage({ title, subtitle, options, value, onChange }: any) { const { t } = useT(); return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{t(label)}</Text></Pressable>)}</View></TextPage>; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { const { t } = useT(); return <View style={styles.field}><Text style={styles.label}>{t(label)}</Text>{children}</View>; }
-function BirthPicker({ year, month, day, close, confirm }: any) {
+function BirthPicker({ years, title, year, month, day, close, confirm }: any) {
   const { t } = useT();
   const [draftYear, setDraftYear] = useState<number | null>(year);
   const [draftMonth, setDraftMonth] = useState<number | null>(month);
@@ -218,7 +232,7 @@ function BirthPicker({ year, month, day, close, confirm }: any) {
     setDraftMonth(value);
     if (draftYear) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(draftYear, value)));
   };
-  return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t("选择出生日期")}</Text><Pressable onPress={() => confirm(draftYear, draftMonth, draftDay)}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><PickerColumn values={YEARS} selected={draftYear} onSelect={updateYear} label={(value) => t("{value} 年", { value })} /><PickerColumn values={MONTHS} selected={draftMonth} onSelect={updateMonth} label={(value) => t("{value} 月", { value })} /><PickerColumn values={days} selected={draftDay} onSelect={setDraftDay} label={(value) => t("{value} 日", { value })} /></View></View></View>;
+  return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t(title)}</Text><Pressable onPress={() => confirm(draftYear, draftMonth, draftDay)}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><PickerColumn values={years} selected={draftYear} onSelect={updateYear} label={(value) => t("{value} 年", { value })} /><PickerColumn values={MONTHS} selected={draftMonth} onSelect={updateMonth} label={(value) => t("{value} 月", { value })} /><PickerColumn values={days} selected={draftDay} onSelect={setDraftDay} label={(value) => t("{value} 日", { value })} /></View></View></View>;
 }
 
 // Opens scrolled to the chosen value, so reopening the picker shows it.

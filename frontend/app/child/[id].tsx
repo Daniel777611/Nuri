@@ -17,8 +17,10 @@ import { api, auth, isAuthError } from "@/src/api";
 import {
   compareDateOnly,
   completedAgeMonths,
+  isValidDueDate,
   localDateOnly,
   parseDateOnly,
+  pregnancyWeeks,
 } from "@/src/child-age";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
@@ -37,6 +39,8 @@ export default function ChildEdit() {
 
   const [nickname, setNickname] = useState("");
   const [birthDate, setBirthDate] = useState("");
+  // A baby on the way: birth_date then holds the due date.
+  const [expecting, setExpecting] = useState(false);
   const [gender, setGender] = useState<"boy" | "girl" | "other">("other");
   const [allergies, setAllergies] = useState("");
   const [notes, setNotes] = useState("");
@@ -56,6 +60,7 @@ export default function ChildEdit() {
         }
         setNickname(c.nickname);
         setBirthDate(c.birth_date || "");
+        setExpecting(isValidDueDate(c.birth_date || ""));
         setGender(c.gender);
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
@@ -72,13 +77,16 @@ export default function ChildEdit() {
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
-    ? t("请输入孩子的出生日期")
+    ? expecting ? t("请输入预产期") : t("请输入孩子的出生日期")
     : !parsedBirthDate
       ? t("请按 YYYY-MM-DD 填写有效日期")
-      : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
-        ? t("出生日期不能晚于今天")
-        : "";
+      : expecting
+        ? isValidDueDate(birthDate) ? "" : t("预产期要在今天之后的 40 周内")
+        : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
+          ? t("出生日期不能晚于今天")
+          : "";
   const ageMonths = completedAgeMonths(birthDate);
+  const weeks = pregnancyWeeks(birthDate);
   const canSave = !!nickname.trim() && !birthDateError;
 
   const save = async () => {
@@ -181,7 +189,23 @@ export default function ChildEdit() {
               testID="child-nickname"
             />
           </Field>
-          <Field label="出生日期">
+          <Field label="宝宝出生了吗？">
+            <View style={styles.row}>
+              {([[false, "已出生"], [true, "还在肚子里"]] as const).map(([value, label]) => (
+                <Pressable
+                  key={label}
+                  onPress={() => setExpecting(value)}
+                  style={[styles.chip, expecting === value && styles.chipActive]}
+                  testID={value ? "child-expecting" : "child-born"}
+                >
+                  <Text style={[styles.chipText, expecting === value && styles.chipTextActive]}>
+                    {t(label)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </Field>
+          <Field label={expecting ? "预产期" : "出生日期"}>
             <TextInput
               value={birthDate}
               onChangeText={setBirthDate}
@@ -197,18 +221,30 @@ export default function ChildEdit() {
               style={[styles.fieldHint, !!birthDateError && styles.errorText]}
               accessibilityLiveRegion="polite"
             >
-              {birthDateError || t("保存完整生日，用于准确计算月龄")}
+              {birthDateError ||
+                (expecting
+                  ? t("到了预产期会自动当作新生儿，出生后可以改成实际生日")
+                  : t("保存完整生日，用于准确计算月龄"))}
             </Text>
           </Field>
-          <Field label="月龄（根据生日自动计算）">
+          <Field label={expecting ? "孕周（根据预产期自动计算）" : "月龄（根据生日自动计算）"}>
             <View style={[styles.input, styles.readOnlyInput]} testID="child-months">
-              <Text style={[styles.readOnlyText, ageMonths === null && styles.mutedText]}>
-                {ageMonths === null
-                  ? t("请先填写有效的出生日期")
-                  : t("{months} 个月", { months: ageMonths })}
+              <Text
+                style={[
+                  styles.readOnlyText,
+                  (expecting ? weeks === null : ageMonths === null) && styles.mutedText,
+                ]}
+              >
+                {expecting
+                  ? weeks === null
+                    ? t("请先填写有效的预产期")
+                    : t("怀孕约 {weeks} 周", { weeks })
+                  : ageMonths === null
+                    ? t("请先填写有效的出生日期")
+                    : t("{months} 个月", { months: ageMonths })}
               </Text>
             </View>
-            <Text style={styles.fieldHint}>{t("月龄会随日期自动更新，不能单独修改")}</Text>
+            <Text style={styles.fieldHint}>{t("会随日期自动更新，不能单独修改")}</Text>
           </Field>
           <Field label="性别">
             <View style={styles.row}>

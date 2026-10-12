@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 
 import { api, auth, turnsLeftOf } from "@/src/api";
-import { completedAgeMonths } from "@/src/child-age";
+import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import Toast from "@/src/components/Toast";
 import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
@@ -420,11 +420,12 @@ function Toggle({
   );
 }
 
-function ageLabel(birthDate: string) {
+function ageLabel(birthDate: string): { key: string; vars?: Record<string, string | number> } {
   const months = completedAgeMonths(birthDate);
-  return months === null
-    ? { key: "出生日期待确认" as const, vars: undefined }
-    : { key: "{months} 月龄" as const, vars: { months } };
+  if (months !== null) return { key: "{months} 月龄", vars: { months } };
+  const weeks = pregnancyWeeks(birthDate);
+  if (weeks !== null) return { key: "预产期 {date} · 怀孕约 {weeks} 周", vars: { date: birthDate, weeks } };
+  return { key: "出生日期待确认" };
 }
 
 const styles = StyleSheet.create({

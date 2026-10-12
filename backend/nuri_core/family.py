@@ -134,8 +134,10 @@ def core(context_hints: dict, ports: CorePorts, uid: Optional[str] = None) -> Fa
         ),
         child_profiles=tuple(children),
         age_months=youngest_months,
+        # A family whose only child is still on the way is at the pregnancy
+        # stage; age_label reads a due date as weeks of pregnancy.
         stage_label=ports.age_label(str(youngest_child.get("birth_date") or ""))
-        if youngest_child else "",
+        if youngest_child else (age_labels[0] if age_labels else ""),
         help_preference=str(profile.get("help_preference") or ""),
         info_source=str(profile.get("info_source") or ""),
         locale=str(profile.get("preferred_locale") or "zh-TW"),

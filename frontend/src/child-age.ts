@@ -71,3 +71,28 @@ export function completedAgeMonths(value: string, today = localDateOnly()): numb
   if (today.day < anniversaryDay) months -= 1;
   return Math.max(0, months);
 }
+
+// A child's birth_date may be a due date up to a full pregnancy ahead
+// (backend/nuri_core/family_store.py PREGNANCY_DAYS); the child then counts as
+// on the way, and becomes a newborn on their own once the date passes.
+export const PREGNANCY_DAYS = 280;
+
+function daysBetween(from: DateOnly, to: DateOnly): number {
+  return Math.round(
+    (Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000,
+  );
+}
+
+/** A due date: after today, no more than a full pregnancy ahead. */
+export function isValidDueDate(value: string, today = localDateOnly()): boolean {
+  const due = parseDateOnly(value);
+  if (!due) return false;
+  const daysLeft = daysBetween(today, due);
+  return daysLeft > 0 && daysLeft <= PREGNANCY_DAYS;
+}
+
+/** Completed weeks of pregnancy when `value` is a due date, else null. */
+export function pregnancyWeeks(value: string, today = localDateOnly()): number | null {
+  if (!isValidDueDate(value, today)) return null;
+  return Math.floor((PREGNANCY_DAYS - daysBetween(today, parseDateOnly(value)!)) / 7);
+}
