@@ -1,0 +1,237 @@
+import { useEffect, useRef } from "react";
+import { View, Text, StyleSheet, Pressable, Animated } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+
+import {
+  TaskItem,
+  taskColors as c,
+  taskTypeMeta,
+  formatCNDate,
+  isOverdue,
+  progressRatio,
+} from "@/src/taskMeta";
+import { useT } from "@/src/i18n";
+
+/**
+ * 任务卡片（设计稿复刻）：
+ * 任务名（类型前缀+标题）→ 频率小字 → 进度条 → 截止日期/已过期 → 删除icon + 立刻打卡/补全打卡按钮
+ * 已完成卡片：浅紫底、删除线简化样式。
+ */
+export default function TaskCard({
+  task,
+  archiving = false,
+  completedMode = false,
+  onPressBody,
+  onCheckin,
+  onBackfill,
+  onDelete,
+}: {
+  task: TaskItem;
+  archiving?: boolean;
+  completedMode?: boolean;
+  onPressBody: () => void;
+  onCheckin?: () => void;
+  onBackfill?: () => void;
+  onDelete?: () => void;
+}) {
+  const { t } = useT();
+  const meta = taskTypeMeta(task.task_type);
+  const overdue = isOverdue(task);
+  const ratio = progressRatio(task);
+
+  // 归档动效：淡出 + 轻微下移
+  const opacity = useRef(new Animated.Value(1)).current;
+  const translateY = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (archiving) {
+      Animated.parallel([
+        Animated.timing(opacity, { toValue: 0, duration: 320, useNativeDriver: true }),
+        Animated.timing(translateY, { toValue: 14, duration: 320, useNativeDriver: true }),
+      ]).start();
+    } else {
+      opacity.setValue(1);
+      translateY.setValue(0);
+    }
+  }, [archiving, opacity, translateY]);
+
+  // 已完成卡片：简化样式（浅紫底 + 删除线）
+  if (completedMode) {
+    return (
+      <Pressable onPress={onPressBody} testID={`task-card-${task.id}`}>
+        <View style={styles.doneCard}>
+          <Text style={styles.doneTitle} numberOfLines={1}>
+            {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
+          </Text>
+        </View>
+      </Pressable>
+    );
+  }
+
+  return (
+    <Animated.View
+      style={[
+        styles.card,
+        overdue && styles.cardOverdue,
+        { opacity, transform: [{ translateY }] },
+      ]}
+      testID={`task-card-${task.id}`}
+    >
+      <Pressable onPress={onPressBody} style={styles.cardBody} testID={`task-body-${task.id}`}>
+        {/* 任务名（类型前缀+标题） */}
+        <Text style={styles.title} numberOfLines={2}>
+          {t("{prefix}：{title}", { prefix: t(meta.prefix), title: task.title })}
+        </Text>
+
+        {/* 频率小字 */}
+        {task.is_recurring && task.frequency_label ? (
+          <Text style={styles.freq}>{task.frequency_label}</Text>
+        ) : null}
+
+        {/* 进度条 */}
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${ratio * 100}%` }]} />
+        </View>
+
+        {/* 截止日期 / 已过期 */}
+        <View style={styles.statusRow}>
+          {overdue ? (
+            <Text style={styles.overdueText} testID={`task-overdue-${task.id}`}>
+              {t("已过期")}
+            </Text>
+          ) : task.due_date ? (
+            <Text style={styles.dueText}>截止：{formatCNDate(task.due_date)}</Text>
+          ) : null}
+        </View>
+      </Pressable>
+
+      {/* 底部操作行：删除 icon（左，仅在传入 onDelete 时显示）+ 打卡按钮（右） */}
+      <View style={styles.actionRow}>
+        {onDelete ? (
+          <Pressable
+            onPress={onDelete}
+            style={[styles.trashBtn, overdue && styles.trashBtnOverdue]}
+            hitSlop={6}
+            testID={`task-delete-${task.id}`}
+          >
+            <Ionicons
+              name="trash-outline"
+              size={18}
+              color={overdue ? c.overdue : c.textSecondary}
+            />
+          </Pressable>
+        ) : null}
+        {overdue ? (
+          <Pressable
+            onPress={onBackfill}
+            style={styles.backfillBtn}
+            testID={`task-backfill-${task.id}`}
+          >
+            <Text style={styles.backfillText}>{t("补全打卡")}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={onCheckin}
+            style={styles.checkinBtn}
+            testID={`task-check-${task.id}`}
+          >
+            <Text style={styles.checkinText}>{t("立刻打卡")}</Text>
+          </Pressable>
+        )}
+      </View>
+    </Animated.View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: {
+    // Figma glasscard: translucent outer shell, then a solid white content frame.
+    backgroundColor: "rgba(230,230,230,0.20)",
+    borderRadius: 24,
+    padding: 4,
+    marginBottom: 18,
+    shadowColor: "#000",
+    shadowOffset: { width: -2, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  cardOverdue: {
+    backgroundColor: "rgba(217,68,68,0.35)",
+  },
+  cardBody: { backgroundColor: "#FFFFFF", borderRadius: 20, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 4 },
+  title: { fontSize: 16, fontWeight: "700", color: c.text, lineHeight: 22 },
+  freq: { fontSize: 12, color: c.textSecondary, marginTop: 6 },
+  progressTrack: {
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: c.track,
+    overflow: "hidden",
+    marginTop: 8,
+  },
+  progressFill: { height: 30, borderRadius: 2, backgroundColor: "#6445D0" },
+  statusRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 6,
+    minHeight: 16,
+  },
+  dueText: { fontSize: 12, color: c.textSecondary },
+  overdueText: { fontSize: 12, color: c.overdue, fontWeight: "700" },
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 4,
+    paddingTop: 4,
+  },
+  trashBtn: {
+    width: 58,
+    height: 50,
+    borderRadius: 26,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trashBtnOverdue: {},
+  checkinBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 26,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkinText: { color: "#3A2F5A", fontSize: 14, fontWeight: "900" },
+  backfillBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 26,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: c.overdue,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  backfillText: { color: c.overdue, fontSize: 14, fontWeight: "900" },
+  doneCard: {
+    backgroundColor: "rgba(230,230,230,0.20)",
+    borderRadius: 24,
+    padding: 4,
+    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: -2, height: 0 },
+    shadowOpacity: 0.04,
+    shadowRadius: 5,
+    elevation: 1,
+  },
+  doneTitle: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#3A2F5A",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    textDecorationLine: "line-through",
+  },
+});

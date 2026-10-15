@@ -437,6 +437,7 @@ def test_a_signed_out_wipe_no_longer_clears_everyone(env, monkeypatch):
 
 
 def test_a_favorite_cannot_be_filed_in_another_accounts_collection(env):
+    env.db.tables["users"] = [{"id": "intruder"}]
     env.db.tables["collections"] = [{"id": "theirs", "user_id": "owner", "name": "x", "created_at": "1"}]
     intruder = {"Authorization": f"Bearer {main._make_token('intruder')}"}
     res = env.client.post("/api/favorites/save", headers=intruder,

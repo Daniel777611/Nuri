@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { usePathname } from "expo-router";
 
-import { api, auth } from "./api";
+import { api, auth, isAuthError } from "./api";
 import { isPreviewMode } from "./preview-api";
 
 const BEAT_MS = 60_000;
@@ -69,7 +69,9 @@ export function useActivityHeartbeat() {
         const res = await api.heartbeat({ visit_id: visitId, platform });
         visitId = res?.visit_id ?? null;
         if (res?.disabled) disabled = true;
-      } catch {
+      } catch (error) {
+        // A removed account is refused at sign-in now; stop beating for it.
+        if (isAuthError(error)) disabled = true;
         // A missed beat only shortens a measured visit; never bother the parent.
       } finally {
         inFlight = false;

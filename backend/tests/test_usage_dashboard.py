@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main, runtime, usage_dashboard as ud
+from backend import account_deletion, main, runtime, usage_dashboard as ud
 
 LA = ZoneInfo("America/Los_Angeles")
 # 2026-09-10 12:00 in Los Angeles.
@@ -408,6 +408,19 @@ def test_a_token_for_a_deleted_account_stops_beating(monkeypatch):
     headers = {"Authorization": f"Bearer {main._make_token('deleted-user')}"}
     res = TestClient(main.app).post("/api/activity/heartbeat", json={}, headers=headers)
     assert res.json() == {"visit_id": None, "disabled": True}
+
+
+def test_a_token_for_a_removed_account_is_refused_before_the_beat(monkeypatch):
+    # The account check at sign-in now runs first: a removed account's token
+    # never reaches the heartbeat (the client stops beating on the 401).
+    async def gone(_sb, _uid, **_kwargs):
+        return None
+
+    monkeypatch.setattr(account_deletion, "load_account", gone)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: _DB())
+    headers = {"Authorization": f"Bearer {main._make_token('deleted-user')}"}
+    res = TestClient(main.app).post("/api/activity/heartbeat", json={}, headers=headers)
+    assert res.status_code == 401
 
 
 # ── Admin routes ─────────────────────────────────────────────────────────────

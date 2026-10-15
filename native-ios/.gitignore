@@ -1,0 +1,17 @@
+node_modules/
+.expo/
+.metro-cache/
+dist/
+build/
+ios/Pods/
+ios/build/
+ios/*.xcworkspace/xcuserdata/
+ios/*.xcodeproj/xcuserdata/
+.env*
+*.xcarchive/
+*.ipa
+*.log
+*.p12
+*.p8
+*.mobileprovision
+*.xcuserstate
