@@ -1,6 +1,8 @@
 """Consumer self-deletion for NURI's custom JWT / public.users identity.
 
-No Supabase Auth admin API, Stripe, mail, or model provider is involved. The
+No Supabase Auth admin API, mail, or model provider is involved. Stripe is,
+once: a web subscription is cancelled before anything is deleted, because the
+identity DELETE cascades away the only link to it (backend/billing.py). The
 identity DELETE follows owned-content cleanup; its FK cascades are one DB
 statement. The protective privacy tombstone is erased only after identity loss.
 Ancillary FK-free stores require separate statements: preflight prevents known
@@ -20,7 +22,7 @@ from datetime import datetime, timezone
 import anyio
 from fastapi import HTTPException
 
-from backend import memstore, stores
+from backend import billing, memstore, stores
 from backend.nuri_core import family, outcome
 from backend.nuri_core.outcome_store import event_setting_prefix
 from backend.recommendation_feedback import event_storage_key
@@ -31,7 +33,8 @@ from backend.recommendation_snapshots import snapshot_storage_prefix
 # (children, conversations/messages, memory, tasks/cards, feedback, notification
 # devices/events/deliveries, visits, email logs and local billing caches) cascade
 # from public.users. Deployments must verify those existing migrations before
-# enabling this route. Provider billing records/subscriptions are NOT cancelled.
+# enabling this route. Live Stripe subscriptions are cancelled before deletion
+# starts; Stripe keeps its own invoice records.
 _NON_CASCADE_TABLES = (
     ("favorites", False),
     ("collections", False),
@@ -121,7 +124,8 @@ def _purge_memory(uid: str, email: str) -> None:
 
 async def delete_account(sb, uid: str, password: str,
                          verify_password: Callable[[str, str], bool], *,
-                         privileged_storage: bool) -> None:
+                         privileged_storage: bool) -> list[str]:
+    """Returns the Stripe subscriptions that were cancelled ([] for most)."""
     # runtime also supports an anon-key fallback. RLS can silently hide rows
     # from that role, so empty SELECT/DELETE is not proof of complete erasure.
     # Only a deliberately configured server service role may enter this flow.
@@ -170,6 +174,13 @@ async def delete_account(sb, uid: str, password: str,
         raise _failure("ACCOUNT_DELETION_UNAVAILABLE", state="not_started") from exc
     except Exception as exc:
         raise _failure("ACCOUNT_DELETION_UNAVAILABLE", state="not_started") from exc
+
+    # Last step that may still refuse: the account stays whole if Stripe can't
+    # confirm the cancellation, so the parent can retry or cancel in the Portal.
+    try:
+        cancelled = await anyio.to_thread.run_sync(lambda: billing.cancel_for_account(sb, uid))
+    except billing.SubscriptionCancelFailed as exc:
+        raise _failure("SUBSCRIPTION_CANCEL_FAILED", state="not_started") from exc
 
     # Removing privacy before the identity could revive default-on preferences
     # if the final identity DELETE fails. Persist an explicit all-false marker
@@ -246,3 +257,4 @@ async def delete_account(sb, uid: str, password: str,
         raise _failure("ACCOUNT_DELETION_UNCONFIRMED", state="unknown") from exc
     if rows:
         raise _failure("ACCOUNT_DELETION_UNCONFIRMED", state="unknown")
+    return cancelled

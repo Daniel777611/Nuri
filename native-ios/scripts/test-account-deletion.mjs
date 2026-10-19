@@ -179,7 +179,7 @@ test("actual page and object detail code: wrong current password preserves the s
   assert.match(f.find(f.render(), "delete-account-message").props.children, /password is incorrect.*not deleted/i);
 });
 
-for (const [status, result] of [[404, { detail: "not found" }], [503, { detail: { code: "ACCOUNT_DELETION_UNAVAILABLE", deletion_state: "not_started" } }], [503, { detail: { code: "ACCOUNT_DELETION_INCOMPLETE", deletion_state: "partial" } }], [503, { detail: { code: "ACCOUNT_DELETION_UNCONFIRMED", deletion_state: "unknown" } }], [200, { deleted: true }]]) test("actual page never treats " + status + " " + JSON.stringify(result) + " as deletion success", async () => {
+for (const [status, result] of [[404, { detail: "not found" }], [503, { detail: { code: "ACCOUNT_DELETION_UNAVAILABLE", deletion_state: "not_started" } }], [503, { detail: { code: "SUBSCRIPTION_CANCEL_FAILED", deletion_state: "not_started" } }], [503, { detail: { code: "ACCOUNT_DELETION_INCOMPLETE", deletion_state: "partial" } }], [503, { detail: { code: "ACCOUNT_DELETION_UNCONFIRMED", deletion_state: "unknown" } }], [200, { deleted: true }]]) test("actual page never treats " + status + " " + JSON.stringify(result) + " as deletion success", async () => {
   const f = fixture({ status, result }); await f.auth.setToken("account-A"); await f.mount(); f.submit(); await settle();
   assert.equal(await f.auth.getToken(), "account-A"); assert.deepEqual(f.clearCalls, []); assert.deepEqual(f.routes, []);
   assert.ok(f.find(f.render(), "delete-account-message"));

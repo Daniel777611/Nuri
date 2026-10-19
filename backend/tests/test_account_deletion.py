@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 # Importing runtime normally invokes dotenv. Keep even collection isolated from
 # local secrets; absent provider keys also mean SDK clients are not constructed.
 with patch.object(dotenv, "load_dotenv", lambda *_a, **_k: False), patch.dict(os.environ, {}, clear=True):
-    from backend import account_deletion, main, memstore, runtime
+    from backend import account_deletion, billing, main, memstore, runtime
 
 
 A = "10000000-0000-4000-8000-000000000001"
@@ -176,7 +176,19 @@ def isolated(monkeypatch):
 def env(monkeypatch):
     db = DB()
     monkeypatch.setattr(runtime, "get_supabase", lambda: db)
-    return SimpleNamespace(db=db, client=TestClient(main.app),
+    # Stripe itself is covered in test_billing.py; here only when and with
+    # what result deletion asks for the cancellation.
+    stripe = SimpleNamespace(cancelled=[], error=None, calls_before=None)
+
+    def cancel_for_account(sb, uid):
+        assert sb is db and uid == A
+        stripe.calls_before = list(db.calls)
+        if stripe.error:
+            raise stripe.error
+        return list(stripe.cancelled)
+
+    monkeypatch.setattr(billing, "cancel_for_account", cancel_for_account)
+    return SimpleNamespace(db=db, stripe=stripe, client=TestClient(main.app),
                            headers={"Authorization": "Bearer " + main._make_token(A)})
 
 
@@ -441,3 +453,29 @@ def test_password_reset_after_preflight_does_not_delete_identity(env):
     assert response.status_code == 503
     assert code(response) == "ACCOUNT_DELETION_INCOMPLETE"
     assert len(env.db.tables["users"]) == 2
+
+
+def test_subscription_is_cancelled_before_anything_is_written(env):
+    env.stripe.cancelled = ["sub_a"]
+    response = delete(env)
+    assert response.status_code == 200
+    assert response.json()["subscription_cancelled"] is True
+    assert env.stripe.calls_before is not None
+    assert not [c for c in env.stripe.calls_before if c[0] in ("delete", "upsert")]
+
+
+def test_failed_cancellation_keeps_the_whole_account(env):
+    before = copy.deepcopy(env.db.tables)
+    env.stripe.error = billing.SubscriptionCancelFailed("stripe unreachable")
+    response = delete(env)
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"code": "SUBSCRIPTION_CANCEL_FAILED",
+                                         "deletion_state": "not_started"}
+    assert env.db.deletes == []
+    assert env.db.tables == before
+
+
+def test_wrong_password_never_reaches_stripe(env):
+    response = delete(env, password="not-the-password")
+    assert response.status_code == 403
+    assert env.stripe.calls_before is None

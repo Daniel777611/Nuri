@@ -1428,11 +1428,11 @@ async def me(uid: str = Depends(_req_uid)):
 @api.delete("/auth/account")
 async def delete_own_account(body: AccountDelete, uid: str = Depends(_req_uid)):
     """Permanently remove only the account proven by the caller's JWT."""
-    await account_deletion.delete_account(
+    cancelled = await account_deletion.delete_account(
         _get_supabase(), uid, body.password, _verify_pw,
         privileged_storage=bool(runtime.SUPABASE_SERVICE_ROLE_KEY),
     )
-    return {"ok": True, "account_deleted": True, "subscription_cancelled": False}
+    return {"ok": True, "account_deleted": True, "subscription_cancelled": bool(cancelled)}
 
 @api.put("/auth/me")
 async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
