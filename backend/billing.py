@@ -183,6 +183,10 @@ def _uid_for_customer(sb, customer_id: str) -> Optional[str]:
     return rows[0]["user_id"] if rows else None
 
 
+def _account_exists(sb, uid: str) -> bool:
+    return bool(sb.table("users").select("id").eq("id", uid).limit(1).execute().data)
+
+
 def current_subscription(sb, uid: str) -> Optional[dict]:
     """The subscription that decides access: the newest entitled one, else the
     newest of any status (so the page can say "canceled" rather than nothing)."""
@@ -350,6 +354,63 @@ def change_plan(sb, uid: str, tier: str, interval: str) -> dict:
     return sync_subscription(sb, current["id"]) or current
 
 
+# ── Account deletion ──────────────────────────────────────────────────────────
+# Deleting the account cascades the local billing rows away, and with them the
+# only link from the parent to their Stripe customer: nothing could stop the
+# renewals afterwards, and the parent could no longer reach the Portal to do
+# it themselves. So cancellation comes first, and a failure stops the deletion.
+
+# Statuses Stripe can still bill or revive. canceled / incomplete_expired are
+# already final; cancelling them again is an error.
+_CANCELLABLE_STATUSES = frozenset({
+    "active", "trialing", "past_due", "unpaid", "incomplete", "paused",
+})
+
+
+class SubscriptionCancelFailed(RuntimeError):
+    pass
+
+
+def cancel_for_account(sb, uid: str) -> list[str]:
+    """Cancel, immediately, every subscription Stripe still holds for this
+    account's customer. Returns the ids cancelled; [] for an account that
+    never reached Checkout. Raises SubscriptionCancelFailed when that can't be
+    confirmed, and the caller must then keep the account.
+
+    Asks Stripe for the list rather than trusting the local rows: a webhook
+    that never arrived must not leave a subscription running. No refund for
+    the rest of the period — the parent chose to leave mid-period, as with a
+    cancellation in the Portal; a refund, if owed, is issued from Stripe.
+    """
+    customer_id = customer_id_for(sb, uid)
+    if not customer_id:
+        return []
+    try:
+        client = _client()
+    except BillingNotConfigured as exc:
+        raise SubscriptionCancelFailed("STRIPE_SECRET_KEY is not set") from exc
+    cancelled = []
+    try:
+        page = _plain(client.v1.subscriptions.list(
+            params={"customer": customer_id, "status": "all", "limit": 100},
+        ))
+        for sub in page.get("data") or []:
+            if sub.get("status") not in _CANCELLABLE_STATUSES:
+                continue
+            client.v1.subscriptions.cancel(sub["id"])
+            cancelled.append(sub["id"])
+    except stripe.InvalidRequestError as exc:
+        # A customer from the other mode (a sandbox customer once the live key
+        # is in) doesn't exist here, so nothing here can bill it.
+        if getattr(exc, "code", None) == "resource_missing" and not cancelled:
+            log.warning("customer %s unknown to this Stripe account", customer_id)
+            return []
+        raise SubscriptionCancelFailed(str(exc)) from exc
+    except stripe.StripeError as exc:
+        raise SubscriptionCancelFailed(str(exc)) from exc
+    return cancelled
+
+
 def create_portal(sb, uid: str, return_base: str, from_app: bool = False) -> Optional[str]:
     customer_id = customer_id_for(sb, uid)
     if not customer_id:
@@ -410,6 +471,12 @@ def sync_subscription(sb, subscription_id: str) -> Optional[dict]:
         uid = _uid_for_customer(sb, customer_id)
     if not uid:
         log.warning("subscription %s has no known account", subscription_id)
+        return None
+    if not _account_exists(sb, uid):
+        # Deleted: the cancellation that deletion makes still sends its
+        # events, and writing them would only fail the foreign key — a 5xx
+        # Stripe would retry for three days.
+        log.info("subscription %s belongs to a deleted account", subscription_id)
         return None
     if customer_id and not customer_id_for(sb, uid):
         sb.table("billing_customers").upsert(

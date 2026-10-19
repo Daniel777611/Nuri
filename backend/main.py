@@ -7373,6 +7373,16 @@ async def admin_delete_account(user_id: str, _: None = Depends(_require_admin)):
     rows = getattr(found, "data", None) or []
     if not rows:
         raise HTTPException(404, "account not found")
+    # Before the delete, which cascades away the only link to the Stripe
+    # customer; a subscription left running then bills a parent with no
+    # account to cancel it from.
+    try:
+        cancelled = await anyio.to_thread.run_sync(
+            lambda: billing.cancel_for_account(sb, user_id)
+        )
+    except billing.SubscriptionCancelFailed as e:
+        print(f"[error] admin_delete_account {user_id}: subscription cancel failed: {e}")
+        raise HTTPException(502, "订阅取消失败，账号未删除 —— 稍后重试，或先在 Stripe 后台取消")
     try:
         await anyio.to_thread.run_sync(
             lambda: sb.table("users").delete().eq("id", user_id).execute()
@@ -7388,7 +7398,7 @@ async def admin_delete_account(user_id: str, _: None = Depends(_require_admin)):
     except Exception as e:
         print(f"[warn] admin_delete_account email_codes {user_id}: {type(e).__name__}")
     print(f"[admin] deleted account {user_id} <{rows[0].get('email')}>")
-    return {"deleted": user_id, "email": rows[0].get("email")}
+    return {"deleted": user_id, "email": rows[0].get("email"), "subscriptions_cancelled": cancelled}
 
 
 class TestAccountCreate(BaseModel):

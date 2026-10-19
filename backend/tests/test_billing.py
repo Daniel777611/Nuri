@@ -30,9 +30,14 @@ class Query:
     def upsert(self, payload, on_conflict=None):
         self.operation, self.payload, self.conflict = "upsert", dict(payload), on_conflict
         return self
+    def delete(self): self.operation = "delete"; return self
 
     def execute(self):
         rows = self.db.tables.setdefault(self.table, [])
+        if self.operation == "delete":
+            gone = [r for r in rows if all(f(r) for f in self.filters)]
+            rows[:] = [r for r in rows if r not in gone]
+            return SimpleNamespace(data=gone)
         if self.operation == "upsert":
             key = self.conflict or "id"
             existing = next((r for r in rows if r.get(key) == self.payload[key]), None)
@@ -70,6 +75,7 @@ class FakeStripe:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self.subscriptions_by_id: dict[str, dict] = {}
+        self.list_error: Exception | None = None
         self.prices_by_id = {
             "price_m": {"id": "price_m", "unit_amount": 999, "currency": "usd",
                         "recurring": {"interval": "month"}},
@@ -95,6 +101,20 @@ class FakeStripe:
 
         class Subscriptions:
             def retrieve(self, sid, params=None, options=None):
+                return _obj(fake.subscriptions_by_id[sid])
+
+            def list(self, params=None, options=None):
+                fake.calls.append(("subscriptions.list", params))
+                if fake.list_error:
+                    raise fake.list_error
+                return _obj({"object": "list", "data": [
+                    s for s in fake.subscriptions_by_id.values()
+                    if s["customer"] == params["customer"]
+                ]})
+
+            def cancel(self, sid, params=None, options=None):
+                fake.calls.append(("subscriptions.cancel", {"id": sid}))
+                fake.subscriptions_by_id[sid]["status"] = "canceled"
                 return _obj(fake.subscriptions_by_id[sid])
 
         class Prices:
@@ -292,3 +312,77 @@ def test_unrelated_events_are_acknowledged(env):
                             "data": {"object": {}}})
     result = asyncio.run(main.billing_webhook(_request(payload), sig))
     assert result == {"received": True, "handled": False, "type": "invoice.paid"}
+
+
+# ── Account deletion ──────────────────────────────────────────────────────────
+
+def _with_customer(env):
+    env.db.tables["billing_customers"].append({"user_id": "u1", "stripe_customer_id": "cus_1"})
+
+
+def test_deletion_cancels_every_live_subscription(env):
+    _with_customer(env)
+    env.stripe.subscriptions_by_id["sub_1"] = _subscription("active")
+    env.stripe.subscriptions_by_id["sub_2"] = _subscription("past_due", sid="sub_2")
+    env.stripe.subscriptions_by_id["sub_old"] = _subscription("canceled", sid="sub_old")
+    assert billing.cancel_for_account(env.db, "u1") == ["sub_1", "sub_2"]
+    # Stripe's list, not the (empty) local rows, decides what gets cancelled.
+    assert env.db.tables["billing_subscriptions"] == []
+    assert ("subscriptions.cancel", {"id": "sub_old"}) not in env.stripe.calls
+
+
+def test_deletion_without_a_customer_never_calls_stripe(env):
+    assert billing.cancel_for_account(env.db, "u1") == []
+    assert env.stripe.calls == []
+
+
+def test_deletion_tolerates_a_customer_from_the_other_stripe_mode(env):
+    _with_customer(env)
+    env.stripe.list_error = stripe.InvalidRequestError(
+        "No such customer: 'cus_1'", "customer", code="resource_missing")
+    assert billing.cancel_for_account(env.db, "u1") == []
+
+
+def test_deletion_cancel_failure_is_raised(env):
+    _with_customer(env)
+    env.stripe.list_error = stripe.APIConnectionError("network down")
+    with pytest.raises(billing.SubscriptionCancelFailed):
+        billing.cancel_for_account(env.db, "u1")
+
+
+def test_deletion_without_a_stripe_key_is_a_failure_not_a_skip(env, monkeypatch):
+    _with_customer(env)
+    monkeypatch.setattr(billing, "_client", lambda: (_ for _ in ()).throw(
+        billing.BillingNotConfigured("no key")))
+    with pytest.raises(billing.SubscriptionCancelFailed):
+        billing.cancel_for_account(env.db, "u1")
+
+
+def test_admin_delete_cancels_the_subscription_first(env):
+    _with_customer(env)
+    env.stripe.subscriptions_by_id["sub_1"] = _subscription("active")
+    result = asyncio.run(main.admin_delete_account("u1", None))
+    assert result["subscriptions_cancelled"] == ["sub_1"]
+    assert env.stripe.subscriptions_by_id["sub_1"]["status"] == "canceled"
+    assert env.db.tables["users"] == []
+
+
+def test_admin_delete_keeps_the_account_when_cancel_fails(env):
+    _with_customer(env)
+    env.stripe.list_error = stripe.APIConnectionError("network down")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.admin_delete_account("u1", None))
+    assert exc.value.status_code == 502
+    assert [u["id"] for u in env.db.tables["users"]] == ["u1"]
+
+
+def test_webhook_for_a_deleted_account_is_acknowledged_not_retried(env):
+    env.db.tables["users"].clear()
+    env.stripe.subscriptions_by_id["sub_1"] = _subscription("canceled")
+    event = {"id": "evt_4", "object": "event", "type": "customer.subscription.deleted",
+             "data": {"object": _subscription("canceled")}}
+    payload, sig = _signed(event)
+    result = asyncio.run(main.billing_webhook(_request(payload), sig))
+    assert result["handled"] is False
+    assert env.db.tables["billing_subscriptions"] == []
+    assert env.db.tables["billing_customers"] == []
