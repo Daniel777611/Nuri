@@ -5,6 +5,7 @@
 // Every key is quoted: the source strings contain full-width punctuation
 // (，。？！) that is not a valid JavaScript identifier.
 export const zhTW: Record<string, string> = {
+  "首页": "首頁",
   "聊聊「{concern}」": "聊聊「{concern}」",
   "想聊的时候，Nuri 都在": "想聊的時候，Nuri 都在",
   "孩子正处在{stage}，关于「{concern}」，你最在意什么？可以从最近的一件事聊起。": "孩子正處在{stage}，關於「{concern}」，你最在意什麼？可以從最近的一件事聊起。",
