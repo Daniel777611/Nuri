@@ -30,6 +30,11 @@ test('Preview has separate credentials and cannot register the original APNs top
  assert.ok(method.indexOf('NuriRemotePushEnabled')<method.indexOf('center.requestAuthorization'));
  assert.ok(method.indexOf('resolve(NSNull())')<method.indexOf('registerForRemoteNotifications'));
  assert.match(read('src/nativePushRuntime.ts'),/value.bundleId !== "com.ordashtech.nuri.nativelab"/);
+ const delegate=read('native/NuriAppDelegate.swift');
+ assert.equal(delegate,read('ios/NURINativeLab/AppDelegate.swift'));
+ const configure=delegate.slice(delegate.indexOf('private func configureNotifications('),delegate.indexOf('public override func applicationDidBecomeActive'));
+ assert.ok(configure.indexOf('NuriRemotePushEnabled')<configure.indexOf('notificationCenter.requestAuthorization'));
+ assert.match(delegate,/private func registerForRemoteNotifications\(\) \{\s*guard Bundle.main.object\(forInfoDictionaryKey: "NuriRemotePushEnabled"\)/);
 });
 test('Preview keeps mature two-tab scope and excludes unverified remote notification settings',()=>{
  const release=read('src/appStoreRelease.ts');
