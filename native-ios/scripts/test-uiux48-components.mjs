@@ -92,6 +92,12 @@ test("Done blurs both native fields and survives modal focus restoration without
  p.calls.length=0;p.find("qa-expand").props.onPress();p.render();p.find("qa-expanded-done").props.onPress();p.render();
  p.kind("Modal").props.onDismiss();assert.deepEqual(p.calls,[],"Collapse preserves normal focus behavior");
 });
+test("expanded input waits for native Modal mounting before focusing so its keyboard accessory can attach",()=>{
+ const p=composer({value:"draft"});p.render();p.find("qa-expand").props.onPress();p.render();
+ const input=p.find("qa-expanded-input");assert.notEqual(input.props.autoFocus,true);
+ input.props.ref.current={focus:()=>p.calls.push("focus-expanded")};
+ assert.deepEqual(p.calls,[]);p.kind("Modal").props.onShow();assert.deepEqual(p.calls,["focus-expanded"]);
+});
 test("all 112 theme and 54 layout tokens retain three design modes",()=>{
  const t=load("../src/uiux48/tokens.ts");assert.equal(Object.keys(t.THEME48).length,112);assert.equal(Object.keys(t.LAYOUT48).length,54);
  for(const values of Object.values(t.THEME48))assert.deepEqual(Object.keys(values).sort(),["Afternoon","Morning","Night"]);

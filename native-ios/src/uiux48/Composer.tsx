@@ -26,7 +26,7 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const send=()=>{if(disabled||busy||recording||(!value.trim()&&!hasAttachment))return false;onSend();return true;};
   const input=(large=false)=><TextInput
     ref={large?expandedInput:compactRef} value={value} onChangeText={onChangeText}
-    multiline autoFocus={large} scrollEnabled={large||height>=72} editable={!disabled&&!busy}
+    multiline scrollEnabled={large||height>=72} editable={!disabled&&!busy}
     keyboardAppearance={t.keyboard.appearance}
     placeholder={placeholder??(en?"Say something to Nuri…":"和 Nuri 说点什么…")}
     placeholderTextColor={t.secondary}
@@ -63,7 +63,7 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
     {(focused||value.length>0)?<View style={{alignItems:"flex-end"}}><IconAction name="expand" label={en?"Expand composer":"展开输入"} onPress={()=>{dismissAfterModal.current=false;setExpanded(true);}} testID={`${testID}-expand`} /></View>:null}
     <GlassSurface kind="composer" contentStyle={s.row} testID={`${testID}-composer`}>{controls()}</GlassSurface>
     {recording?<NuriText secondary style={{fontSize:12,paddingTop:6}}>{en?"Recording — tap the microphone to finish":"正在录音，再点麦克风结束"}</NuriText>:null}
-    <Modal visible={expanded} transparent animationType="slide" onRequestClose={done} onDismiss={onExpandedDismiss}>
+    <Modal visible={expanded} transparent animationType="slide" onRequestClose={done} onDismiss={onExpandedDismiss} onShow={()=>expandedInput.current?.focus()}>
       <KeyboardAvoidingView behavior={Platform.OS==="ios"?"padding":"height"} style={[s.modal,{paddingBottom:Math.max(safe.bottom,12)}]}>
         <GlassSurface contentStyle={s.expandedCard} style={{width:"100%",maxWidth:500,alignSelf:"center"}} kind="composer" testID={`${testID}-expanded-composer`}>
           <View style={s.expandedText}>
