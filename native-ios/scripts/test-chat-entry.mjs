@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -91,7 +92,7 @@ function page(f) {
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", StyleSheet: { create: (value) => value } };
   const failure = load("../src/requestFailure.ts");
   const notice = load("../src/components/RequestFailureNotice.tsx", { "react/jsx-runtime": { jsx, jsxs: jsx },
-    "react-native": native, "@/src/i18n": { useT: () => ({ locale: "en" }) }, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure });
+    "react-native": native, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale: "en" }) }, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure });
   const component = load("../app/(tabs)/chats.tsx", {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": native,
     "@/src/api": f, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure,

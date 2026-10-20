@@ -3,7 +3,7 @@ import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollVie
 import { BlurView } from "expo-blur";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { useRouter } from "expo-router";
 import { useNuriTheme } from "./Theme";
 import { GLASS_BLUR48 } from "./materials";
@@ -30,7 +30,8 @@ export function IconAction({ name, label, onPress, testID, disabled }: { name: N
 export function NuriText({ children, secondary = false, style, ...props }: import("react-native").TextProps & { secondary?: boolean }) {
   const theme = useNuriTheme();
   const {locale}=useT();const weight=StyleSheet.flatten(style)?.fontWeight;
-  const fontFamily=locale==="en"?undefined:Number(weight)>=500?"NotoSansSC_500Medium":"NotoSansSC_400Regular";
+  // Traditional Chinese uses the platform CJK font, not Simplified glyph forms.
+  const fontFamily=locale!=="zh-CN"?undefined:Number(weight)>=500?"NotoSansSC_500Medium":"NotoSansSC_400Regular";
   return <Text {...props} style={[s.body, { color: secondary ? theme.secondary : theme.ink,fontFamily }, style]}>{children}</Text>;
 }
 
@@ -86,7 +87,7 @@ export function CardStack({children,testID}:{children:ReactNode;testID?:string})
 export function FormTabs({ active }: { active: "login" | "register" }) {
   const { locale } = useT(); const { ink, secondary } = useNuriTheme();
   const router = useRouter();
-  return <View style={{flexDirection:"row",height:44}}>{(["login","register"] as const).map(tab => <Pressable key={tab} onPress={()=>router.replace(tab === "login" ? "/login" : "/register")} accessibilityRole="tab" accessibilityState={{selected:active===tab}} testID={`auth-tab-${tab}`} style={{flex:1,alignItems:"center",justifyContent:"center",gap:8}}><Text style={{fontSize:16,color:active===tab?ink:secondary}}>{tab==="login"?(locale==="en"?"Log in":"登录"):(locale==="en"?"Create account":"创建账号")}</Text><View style={{height:2,width:64,backgroundColor:ink,opacity:active===tab?1:0}} /></Pressable>)}</View>;
+  return <View style={{flexDirection:"row",height:44}}>{(["login","register"] as const).map(tab => <Pressable key={tab} onPress={()=>router.replace(tab === "login" ? "/login" : "/register")} accessibilityRole="tab" accessibilityState={{selected:active===tab}} testID={`auth-tab-${tab}`} style={{flex:1,alignItems:"center",justifyContent:"center",gap:8}}><Text style={{fontSize:16,color:active===tab?ink:secondary}}>{tab==="login"?(locale==="en"?"Log in":translate(locale, "登录")):(locale==="en"?"Create account":translate(locale, "创建账号"))}</Text><View style={{height:2,width:64,backgroundColor:ink,opacity:active===tab?1:0}} /></Pressable>)}</View>;
 }
 export function InlineState({ message, busy, action, onPress }: { message: string; busy?: boolean; action?: string; onPress?: () => void }) { return <View accessibilityLiveRegion="polite" style={{gap:16,paddingVertical:12}}>{busy?<ActivityIndicator />:null}<NuriText secondary>{message}</NuriText>{action&&onPress?<NuriButton label={action} onPress={onPress} secondary />:null}</View>; }
 export function MenuRow({label,detail,onPress,testID,danger=false,disabled=false,density="default"}:{label:string;detail?:string;onPress:()=>void;testID?:string;danger?:boolean;disabled?:boolean;density?:"default"|"community"}) {
@@ -98,7 +99,7 @@ export function ToggleRow({label,value,onChange,testID,disabled=false}:{label:st
  const t=useNuriTheme();
  return <View style={{minHeight:50,flexDirection:"row",alignItems:"center",gap:12,opacity:disabled?.45:1}}><NuriText style={{flex:1,fontSize:16,lineHeight:22}}>{label}</NuriText><Switch accessibilityLabel={label} value={value} onValueChange={onChange} disabled={disabled} testID={testID} thumbColor="#ffffff" trackColor={{true:"#765f88",false:t.outline}} /></View>;
 }
-export function ChoiceChip({label,selected,onPress,testID,disabled=false}:{label:string;selected:boolean;onPress:()=>void;testID?:string;disabled?:boolean}) { const t=useNuriTheme();return <Pressable onPress={onPress} disabled={disabled} accessibilityRole="checkbox" accessibilityState={{checked:selected,disabled}} testID={testID} style={{minWidth:92,flexGrow:1,maxWidth:"100%",opacity:disabled?.45:1}}><GlassSurface kind="pill" contentStyle={{height:44,paddingHorizontal:16,alignItems:"center",justifyContent:"center",backgroundColor:selected?String(t.token("color/control/choice-selected-36")):"transparent",borderWidth:1,borderColor:selected?String(t.token("color/control/choice-selected-border-36")):"transparent",borderRadius:999}}><NuriText style={{fontSize:14,lineHeight:20}}>{label}</NuriText></GlassSurface></Pressable>; }
+export function ChoiceChip({label,selected,onPress,testID,disabled=false}:{label:string;selected:boolean;onPress:()=>void;testID?:string;disabled?:boolean}) { const t=useNuriTheme();return <Pressable onPress={onPress} disabled={disabled} accessibilityRole="checkbox" accessibilityState={{checked:selected,disabled}} aria-checked={selected} testID={testID} style={{minWidth:92,flexGrow:1,maxWidth:"100%",opacity:disabled?.45:1}}><GlassSurface kind="pill" contentStyle={{height:44,paddingHorizontal:16,alignItems:"center",justifyContent:"center",backgroundColor:selected?String(t.token("color/control/choice-selected-36")):"transparent",borderWidth:1,borderColor:selected?String(t.token("color/control/choice-selected-border-36")):"transparent",borderRadius:999}}><NuriText style={{fontSize:14,lineHeight:20}}>{label}</NuriText></GlassSurface></Pressable>; }
 const s = StyleSheet.create({
   iconTarget:{width:44,height:44,alignItems:"center",justifyContent:"center"},
   body:{fontSize:17,lineHeight:24,textAlign:"left"},

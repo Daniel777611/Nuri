@@ -8,6 +8,11 @@
     "scheme": "nuri-native-lab",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "locales": {
+      "en": "./locales/en.json",
+      "zh-Hans": "./locales/zh-Hans.json",
+      "zh-Hant": "./locales/zh-Hant.json"
+    },
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri.nativelab",
       "buildNumber": "1010",
@@ -16,6 +21,7 @@
       "entitlements": { "aps-environment": "production" },
       "infoPlist": {
         "CFBundleDisplayName": "Nuri",
+        "CFBundleLocalizations": ["en", "zh-Hans", "zh-Hant"],
         "NuriAPNSEnvironment": "production",
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": { "NSAllowsArbitraryLoads": false }

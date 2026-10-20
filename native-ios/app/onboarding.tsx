@@ -27,7 +27,7 @@ import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import {
   daysInMonth,
   formatDateOnly,
@@ -211,27 +211,27 @@ export default function Onboarding() {
     <AuthFrame testID="onboarding-card">
       {syncError?<NuriText style={{color:"#9a606a",fontSize:13}}>{syncError}</NuriText>:null}
       {page===0?<>
-        <NuriField label={locale==="en"?"What should Nuri call you?":"希望 Nuri 怎么称呼你？"} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
-        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Your role":"你的角色"}</NuriText>
+        <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
+        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Your role":translate(locale, "你的角色")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{PARENT_ROLES.map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={parentRole===key} onPress={()=>setParentRole(key)} testID={`onboarding-role-${key}`} />)}</View>
-        <NuriField label={locale==="en"?"City (optional)":"居住城市（可选）"} value={city} onChangeText={setCity} placeholder={locale==="en"?"You can add this later":"稍后再填"} testID="onboarding-city" />
+        <NuriField label={locale==="en"?"City (optional)":translate(locale, "居住城市（可选）")} value={city} onChangeText={setCity} placeholder={locale==="en"?"You can add this later":translate(locale, "稍后再填")} testID="onboarding-city" />
       </>:page===1?<>
-        <NuriField label={locale==="en"?"Child's nickname":"宝宝的昵称"} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
+        <NuriField label={locale==="en"?"Child's nickname":translate(locale, "宝宝的昵称")} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
         <NuriText secondary style={{fontSize:12}}>{t("宝宝出生了吗？")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
         <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期"):t("孩子的出生日期")}</NuriText>
         <Pressable accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker"><View pointerEvents="none"><NuriField value={birthLabel} editable={false} accessible={false} /></View></Pressable>
         {birthDateError?<NuriText style={{fontSize:12,color:"#9a606a"}}>{birthDateError}</NuriText>:null}
-        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":"性别（可选）"}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":"男孩"],["girl",locale==="en"?"Girl":"女孩"],["other",locale==="en"?"Prefer not to say":"不选择"]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} onPress={()=>setChildGender(key)} />)}</View>
+        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} onPress={()=>setChildGender(key)} />)}</View>
       </>:<>
-        <NuriText>{locale==="en"?"Choose a few topics to discuss with Nuri. You can change them later.":"选几个你想和 Nuri 聊的话题，之后可以修改。"}</NuriText>
+        <NuriText>{locale==="en"?"Choose a few topics to discuss with Nuri. You can change them later.":translate(locale, "选几个你想和 Nuri 聊的话题，之后可以修改。")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{CONCERNS.filter(([key])=>["sleep","emotion","food","parenting","development","other"].includes(key)).map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={concerns.includes(key)} onPress={()=>toggleConcern(key)} testID={`onboarding-concern-${key}`} />)}</View>
-        {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":"其他话题"} value={concernOther} onChangeText={setConcernOther} />:null}
+        {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":translate(locale, "其他话题")} value={concernOther} onChangeText={setConcernOther} />:null}
       </>}
-      <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":"进入 NURI"):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
-      {page===0?<NuriButton secondary disabled={!!syncError||saving} label={locale==="en"?"Set up later":"稍后设置"} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
-      {page===1?<NuriButton secondary label={locale==="en"?"Add a child later":"稍后添加"} onPress={()=>{setSkipChild(true);setPage(2);}} testID="onboarding-skip-child" />:null}
+      <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":translate(locale, "进入 NURI")):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
+      {page===0?<NuriButton secondary disabled={!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
+      {page===1?<NuriButton secondary label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{setSkipChild(true);setPage(2);}} testID="onboarding-skip-child" />:null}
       {page>0?<NuriButton secondary label={t("返回")} onPress={goBack} />:null}
     </AuthFrame>
     {pickerOpen?<BirthPicker expecting={expecting} year={birthYear} month={birthMonth} day={birthDay} close={()=>setPickerOpen(false)} confirm={(year:number|null,month:number|null,day:number|null)=>{setBirthYear(year);setBirthMonth(month);setBirthDay(day);setSkipChild(false);setPickerOpen(false);}} />:null}
@@ -281,7 +281,7 @@ function BirthPicker({ expecting, year, month, day, close, confirm }: { expectin
       <View style={{flexDirection:"row",gap:8,height:184}}>{columns.map(column=><ScrollView key={column.name} style={{flex:1}} showsVerticalScrollIndicator={false} testID={`birth-picker-${column.name}`} keyboardShouldPersistTaps="handled">{column.values.map(value=><Pressable key={value} accessibilityRole="button" accessibilityState={{selected:column.value===value}} accessibilityLabel={`${column.name}: ${value}`} testID={`birth-picker-${column.name}-${value}`} onPress={()=>column.change(value)} style={{minHeight:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:column.value===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{column.label(value)}</NuriText></Pressable>)}</ScrollView>)}</View>
       <NuriText testID="birth-picker-selection" style={{fontSize:14}}>{selected||"YYYY-MM-DD"}</NuriText>
       <NuriButton label={t("确定")} disabled={!valid} onPress={()=>confirm(draftYear,draftMonth,draftDay)} testID="birth-picker-confirm" />
-      <NuriButton secondary label={locale==="en"?"Cancel":"取消"} onPress={close} testID="birth-picker-cancel" />
+      <NuriButton secondary label={locale==="en"?"Cancel":translate(locale, "取消")} onPress={close} testID="birth-picker-cancel" />
     </AuthFrame>
   </View>;
 }

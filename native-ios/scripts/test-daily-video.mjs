@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
@@ -219,7 +220,7 @@ test("pure existing chat stays readable when optional AI checkin is refused", as
 test("actual player validators reject schemes, hosts, credentials, IDs and invalid app identity", () => {
   const r = runner(), jsx = (type, props) => ({ type, props });
   const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx },
-    "react-native": { StyleSheet: { create: (x) => x } }, "expo-constants": { default: {} }, "react-native-webview": {}, "@/src/i18n": {} });
+    "react-native": { StyleSheet: { create: (x) => x } }, "expo-constants": { default: {} }, "react-native-webview": {}, "@/src/i18n": {translate:_translateForI18nFixture,} });
   assert.equal(player.youtubeEmbedUrl("../private"), null);
   for (const url of ["http://www.youtube-nocookie.com/embed/ScMzIvxBSi4", "https://www.youtube-nocookie.com.evil.invalid/embed/ScMzIvxBSi4", "https://user:password@www.youtube-nocookie.com/embed/ScMzIvxBSi4", "https://www.youtube-nocookie.com/watch?v=ScMzIvxBSi4", "javascript:alert(1)", "https://www.youtube-nocookie.com/embed/anotherID00", "https://www.youtube-nocookie.com:444/embed/ScMzIvxBSi4"]) assert.equal(player.allowYouTubeNavigation(url, "ScMzIvxBSi4"), false);
   assert.equal(player.youtubeAppReferer("COM.OrdashTech.Nuri.NativeLab"), "https://com.ordashtech.nuri.nativelab");
@@ -240,7 +241,7 @@ test("link dispatch failure is observable and retryable without marking video pl
       AppState: { currentState: "active", addEventListener: () => ({ remove() {} }) },
       Linking: { openURL: async (url) => { calls.push(url); if (rejectLink) throw new Error("OS unavailable"); } } },
     "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } },
-    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": { useT: () => ({ t: (text) => text }) } });
+    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t: (text) => text }) } });
   const render = () => tree = r.render(() => player.default({ videoId: "ScMzIvxBSi4", width: 350, active: true }));
   const find = (id) => nodes(tree).find((node) => node.props?.testID === id);
   try {
@@ -263,7 +264,7 @@ for (const change of ["blur", "background", "unmount", "video change"]) test("he
       AppState: { currentState: "active", addEventListener: (_event, listener) => { listeners.add(listener); return { remove: () => listeners.delete(listener) }; } },
       Linking: { openURL: async (url) => { calls.push(url); if (!(await held.promise)) throw new Error("late OS failure"); } } },
     "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } },
-    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": { useT: () => ({ t: (text) => text }) } });
+    "react-native-webview": { WebView: "WebView" }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t: (text) => text }) } });
   const render = () => tree = r.render(() => player.default({ videoId, width: 350, active }));
   const find = (id) => nodes(tree).find((node) => node.props?.testID === id);
   try {

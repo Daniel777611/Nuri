@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -95,7 +96,7 @@ function fixture({ status = 200, result = confirmed, locale = "en" } = {}) {
     "@react-navigation/elements": { useHeaderHeight: () => 64 },
     "@/src/api": client, "@/src/accountDeletion": helper,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
-    "@/src/i18n": { useT: () => ({ locale }) }, "@/src/theme": { colors: {}, radius: {}, spacing: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) }, "@/src/theme": { colors: {}, radius: {}, spacing: {} },
   }, true).default;
   const render = () => { stateCursor = refCursor = 0; focus.length = 0; return page(); };
   const find = (node, id) => {

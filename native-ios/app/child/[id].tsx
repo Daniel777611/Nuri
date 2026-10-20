@@ -29,7 +29,7 @@ import { CardList, NuriButton, NuriField, NuriText, ChoiceChip, MenuRow } from "
 import { StateCard } from "@/src/uiux48/StateCard";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { colors, radius, spacing, type } from "@/src/theme";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 
 const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
   { key: "boy", label: "男孩" },
@@ -187,17 +187,17 @@ export default function ChildEdit() {
 
   if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
 
-  if(saved) return <StateCard testID="child-saved" message={locale==="en"?"Changes saved.":"修改已保存。"} primary={{label:locale==="en"?"Done":"完成",onPress:goBack}} />;
+  if(saved) return <StateCard testID="child-saved" message={locale==="en"?"Changes saved.":translate(locale, "修改已保存。")} primary={{label:locale==="en"?"Done":translate(locale, "完成"),onPress:goBack}} />;
   if(!editing) return <View style={{flex:1}}><CardList testID="child-detail-card">
-    {loadError?<><NuriText>{loadError}</NuriText><NuriButton secondary label={locale==="en"?"Retry":"重试"} onPress={()=>setReload(v=>v+1)} /></>:!loaded?<NuriText secondary>{locale==="en"?"Loading…":"正在读取…"}</NuriText>:<>
+    {loadError?<><NuriText>{loadError}</NuriText><NuriButton secondary label={locale==="en"?"Retry":translate(locale, "重试")} onPress={()=>setReload(v=>v+1)} /></>:!loaded?<NuriText secondary>{locale==="en"?"Loading…":translate(locale, "正在读取…")}</NuriText>:<>
       <MenuRow label={t("昵称")} detail={nickname} onPress={()=>router.setParams({uiState:"edit"})} />
       <MenuRow label={isValidDueDate(birthDate)?t("预产期"):t("出生日期")} detail={`${birthDate} · ${stageLabel}`} onPress={()=>router.setParams({uiState:"edit"})} testID="child-detail-date" />
-      <MenuRow label={locale==="en"?"Allergies & notes":"过敏信息与备注"} detail={[allergies,notes].filter(Boolean).join(" · ")} onPress={()=>router.setParams({uiState:"edit"})} />
-      <NuriButton label={locale==="en"?"Edit profile":"编辑资料"} onPress={()=>router.setParams({uiState:"edit"})} testID="child-detail-edit" />
-      <NuriButton secondary label={locale==="en"?"Delete child profile":"删除孩子资料"} onPress={()=>setConfirmDelete(true)} testID="child-detail-delete" />
+      <MenuRow label={locale==="en"?"Allergies & notes":translate(locale, "过敏信息与备注")} detail={[allergies,notes].filter(Boolean).join(" · ")} onPress={()=>router.setParams({uiState:"edit"})} />
+      <NuriButton label={locale==="en"?"Edit profile":translate(locale, "编辑资料")} onPress={()=>router.setParams({uiState:"edit"})} testID="child-detail-edit" />
+      <NuriButton secondary label={locale==="en"?"Delete child profile":translate(locale, "删除孩子资料")} onPress={()=>setConfirmDelete(true)} testID="child-detail-delete" />
       {saveError?<NuriText>{saveError}</NuriText>:null}
     </>}
-  </CardList><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":"删除这份孩子资料？"} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":"将从共用云端账号移除此资料，不仅是本机。"} confirmText={locale==="en"?"Delete profile":"删除资料"} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
+  </CardList><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":translate(locale, "删除这份孩子资料？")} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":translate(locale, "将从共用云端账号移除此资料，不仅是本机。")} confirmText={locale==="en"?"Delete profile":translate(locale, "删除资料")} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 
   return <View style={{flex:1}}><KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==="ios"?"padding":"height"} keyboardVerticalOffset={headerHeight}><CardList>
     <NuriText style={{fontSize:20,fontWeight:"500"}}>{isNew?t("添加孩子"):t("编辑信息")}</NuriText>
@@ -213,5 +213,5 @@ export default function ChildEdit() {
     <NuriField label={t("特殊注意事项")} value={notes} onChangeText={setNotes} multiline editable={!saving&&!loadError} style={{height:96,paddingTop:14}} testID="child-notes" />
     <NuriButton label={saving?t("保存中..."):t("保存")} busy={saving} disabled={!canSave||saving||!!loadError} onPress={()=>void save()} testID="child-save-btn" />
     {!isNew?<NuriButton secondary label={t("删除此孩子")} disabled={saving||!!loadError} onPress={()=>setConfirmDelete(true)} testID="child-delete-btn" />:null}
-  </CardList></KeyboardAvoidingView><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":"删除这份孩子资料？"} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":"将从共用云端账号移除此资料，不仅是本机。"} confirmText={locale==="en"?"Delete profile":"删除资料"} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
+  </CardList></KeyboardAvoidingView><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":translate(locale, "删除这份孩子资料？")} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":translate(locale, "将从共用云端账号移除此资料，不仅是本机。")} confirmText={locale==="en"?"Delete profile":translate(locale, "删除资料")} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 }

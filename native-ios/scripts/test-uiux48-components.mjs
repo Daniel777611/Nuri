@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {test} from "node:test";
@@ -16,15 +17,31 @@ test("drafts survive Home/full-chat bridge but never cross account epochs or sta
 });
 const nodes=n=>!n||typeof n!=="object"?[]:Array.isArray(n)?n.flatMap(nodes):[n,...nodes(n.props?.children)];
 let sequence=0;
-function composer(initial={},night=false){
+function composer(initial={},night=false,locale="en"){
  const slots=[];let cursor=0;let tree;const calls=[];let props={value:"",onChangeText:v=>{props.value=v;},onSend:()=>calls.push("send"),onAttach:()=>calls.push("attach"),onMic:()=>calls.push("mic"),testID:"qa",...initial};
  const react={useRef(value){const i=cursor++;return slots[i]??={current:value};},useId(){const i=cursor++;return slots[i]??= "composer-"+(++sequence);},useState(value){const i=cursor++;if(!(i in slots))slots[i]=value;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
  const jsx=(type,props)=>({type,props});
  const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
- const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){calls.push("dismiss-keyboard");}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View",useWindowDimensions:()=>({width:402,height:874})},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{useT:()=>({locale:"en"})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
+ const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){calls.push("dismiss-keyboard");}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View",useWindowDimensions:()=>({width:402,height:874})},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
  const render=()=>{cursor=0;tree=Component(props);return tree;};
  return{render,calls,props,find:id=>nodes(tree).find(n=>n.props?.testID===id),kind:type=>nodes(tree).find(n=>n.type===type)};
 }
+test("Traditional Chinese compact/expanded composer labels preserve drafts and never send on render",()=>{
+ for(const night of [false,true]){
+  const p=composer({value:"使用者的原文 draft"},night,"zh-TW");p.render();
+  assert.equal(p.find("qa-input").props.placeholder,"和 Nuri 說點什麼…");
+  assert.equal(p.find("qa-input").props.accessibilityLabel,"給 Nuri 的訊息");
+  assert.equal(p.find("qa-attach").props.label,"拍照或上傳圖片");
+  assert.equal(p.find("qa-mic").props.label,"錄音");
+  assert.equal(p.find("qa-send-btn").props.accessibilityLabel,"傳送");
+  p.find("qa-expand").props.onPress();p.render();
+  assert.equal(p.find("qa-expanded-input").props.value,"使用者的原文 draft");
+  assert.equal(p.find("qa-expanded-done").props.label,"收起輸入");
+  assert.equal(p.find("qa-expanded-mic").props.label,"錄音");
+  assert.equal(p.find("qa-expanded-attach").props.label,"拍照或上傳圖片");
+  assert.deepEqual(p.calls,[]);
+ }
+});
 test("text keeps microphone and separate send; recording cannot send while mic can stop",()=>{
  const p=composer({value:"text"});p.render();assert.ok(p.find("qa-mic"));assert.ok(p.find("qa-send-btn"));p.find("qa-mic").props.onPress();assert.deepEqual(p.calls,["mic"]);
  p.props.recording=true;p.render();assert.equal(p.find("qa-send-btn").props.disabled,true);p.find("qa-send-btn").props.onPress();assert.deepEqual(p.calls,["mic"]);
@@ -103,16 +120,16 @@ test("actual native typing indicator uses shared glass, approved avatar and them
  const ast=ts.createSourceFile("chat.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  const component=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="TypingDots");assert.ok(component);
  const code=ts.transpileModule(component.getText(ast)+"\nmodule.exports=TypingDots;",{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
- for(const locale of ["en","zh-CN"])for(const ink of ["#3d3340","#f8f2f8"]){
+ for(const locale of ["en","zh-CN","zh-TW"])for(const ink of ["#3d3340","#f8f2f8"]){
   const jsx=(type,props)=>({type,props}),module={exports:{}};
   const Animated={Value:class{},loop:()=>({start(){},stop(){}}),sequence:x=>x,delay:x=>x,timing:()=>({}),View:"AnimatedView"};
-  new Function("require","module","exports","useNuriTheme","useT","useRef","useEffect","Animated","Easing","View","GlassSurface","NuriText","SceneAvatar",code)(()=>({jsx,jsxs:jsx}),module,module.exports,()=>({ink}),()=>({locale}),x=>({current:x}),cb=>cb(),Animated,{inOut:x=>x,out:x=>x,in:x=>x,quad:"quad"},"View","GlassSurface","NuriText","SceneAvatar");
+  new Function("require","module","exports","useNuriTheme","useT","useRef","useEffect","Animated","Easing","View","GlassSurface","NuriText","SceneAvatar","translate",code)(()=>({jsx,jsxs:jsx}),module,module.exports,()=>({ink}),()=>({locale}),x=>({current:x}),cb=>cb(),Animated,{inOut:x=>x,out:x=>x,in:x=>x,quad:"quad"},"View","GlassSurface","NuriText","SceneAvatar",_translateForI18nFixture);
   const tree=module.exports(),all=nodes(tree);
   assert.equal(tree.type,"GlassSurface");assert.equal(tree.props.kind,"message");
   assert.equal(all.filter(n=>n.type==="SceneAvatar").length,1);
   assert.equal(all.filter(n=>n.type==="AnimatedView").length,3);
   for(const dot of all.filter(n=>n.type==="AnimatedView"))assert.equal(dot.props.style.backgroundColor,ink);
-  assert.ok(all.find(n=>n.props?.accessibilityLiveRegion==="polite").props.children.includes(locale==="en"?"replying":"正在回复"));
+  assert.ok(all.find(n=>n.props?.accessibilityLiveRegion==="polite").props.children.includes(locale==="en"?"replying":locale==="zh-TW"?"正在回覆":"正在回复"));
  }
 });
 test("all 112 theme and 54 layout tokens retain three design modes",()=>{
