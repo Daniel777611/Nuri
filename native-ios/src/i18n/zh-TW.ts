@@ -806,6 +806,9 @@ export const zhTW: Record<string, string> = {
   "欢迎回来。想从哪里聊起？": "歡迎回來。想從哪裡聊起？",
   "为你找到的育儿话题": "為你找到的育兒話題",
   "此内容保留原语言，尚未提供当前语言的翻译。": "此內容保留原語言，尚未提供目前語言的翻譯。",
+  // Test product keeps honest unavailable states where no history contract exists.
+  "仍可点击已收到的系统推送进入 Nuri 对话，或管理通知设置。": "仍可點選已收到的系統通知進入 Nuri 對話，或管理通知設定。",
+  "管理通知": "管理通知",
   // UIUX48 static interface copy; user messages and API content are never converted.
   "正在为你整理推荐…": "正在為你整理推薦…",
   "这项推荐暂未开放": "這項推薦尚未開放",
