@@ -102,8 +102,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = useCallback(async (next: unknown) => {
     const normalized = normalizeLocale(next);
+    const saved = await storage.setItem(LOCALE_KEY, normalized);
+    if (!saved) throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
     setLocaleState(normalized);
-    await storage.setItem(LOCALE_KEY, normalized);
   }, []);
 
   const value = useMemo<I18nValue>(

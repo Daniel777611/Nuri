@@ -166,6 +166,20 @@ test("failed Traditional preference/local-storage saves never show success or le
   await p.find("profile-language-zh-CN").props.onPress();await tick();assert.ok(p.localeWrites.includes("zh-CN"));
  }finally{p?.unmount();f.restore();}}
 });
+test("language is available without AI permission, with no cloud write or false sync receipt",async()=>{
+ const f=fixture();let p;
+ try{
+  await f.login("A");p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true});
+  p.render();await tick();await tick();p.render();
+  await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  assert.deepEqual(p.localeWrites,["zh-TW"]);
+  assert.equal(p.find("profile-saved-card"),undefined);
+  assert.ok(p.find("profile-language-local-card"));
+  assert.match(p.find("profile-language-local-card").props.message,/雲端語言尚未同步/);
+  assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET").length,0);
+  assert.notEqual(f.aiConsent.getState().status,"allowed");
+ }finally{p?.unmount();f.restore();}
+});
 for (const change of ["B", "logout", "ABA"]) {
   test("actual API parsed JSON held for A → " + change + " is not an auth error or data result", async () => {
     const f = fixture();
