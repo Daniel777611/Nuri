@@ -3,7 +3,7 @@ import { View, AppState } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { api, type NotificationPreferences } from "@/src/api";
 import { useAccountState, useAccountScope } from "@/src/useAccountState";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { getReminderSettings, openNotificationSettings, requestNotificationPermission, type NativeReminderSettings } from "@/src/nativePush";
 import { CardList, CenteredCard, NuriButton, NuriText, NuriField, MenuRow, ToggleRow, InlineState } from "@/src/uiux48/Primitives";
 import { StateCard } from "@/src/uiux48/StateCard";
@@ -21,7 +21,7 @@ export default function NotificationSettings() {
  const [loading,setLoading]=useState(true);const [busy,setBusy]=useState(false);
  const [error,setError]=useAccountState("");const active=useRef(false);const pending=useRef(false);const dirty=useRef(false);
  const [saved,setSaved]=useAccountState(false);
- const copy=(cn:string,english:string)=>en?english:cn;
+ const copy=(cn:string,english:string)=>en?english:translate(locale,cn);
  const reload=useCallback(async()=>{
   const owner=capture();setLoading(true);
   const results=await Promise.allSettled([getReminderSettings(),api.getNotificationPreferences(),api.getPrivacy()]);

@@ -31,7 +31,7 @@ export function NuriThemeProvider({ children }: { children: ReactNode }) {
       if (active && selected) update(selected);
       if (active && Platform.OS === "web" && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1") {
         const lang = new URLSearchParams(globalThis.location?.search).get("lang");
-        if (lang === "en" || lang === "zh-CN") void setLocale(lang);
+        if (lang === "en" || lang === "zh-CN" || lang === "zh-TW") void setLocale(lang);
       }
     });
     return () => { active = false; };

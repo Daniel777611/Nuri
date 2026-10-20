@@ -18,7 +18,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
-import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
+import { LOCALE_LABELS, LOCALES, useT, translate } from "@/src/i18n";
 import { usePurchaseAllowed } from "@/src/nativeShell";
 import { openNotificationSettings } from "@/src/nativePush";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -135,9 +135,9 @@ export default function Profile() {
     // their choice.
     const next = { ...privacy, language: locale, ...patch };
     setPrivacy(next);
-    if (patch.language) await setLocale(patch.language);
-    if (!current(ticket)){mutation.current=false;setSaving(false);return;}
     try {
+      if (patch.language) await setLocale(patch.language);
+      if (!current(ticket)) return;
       await api.setPrivacy(next);
       if(current(ticket))setResult("saved");
     } catch {
@@ -145,8 +145,10 @@ export default function Profile() {
       // Do not leave a privacy toggle visually enabled/disabled when the
       // persisted setting did not actually save.
       setPrivacy(previous);
-      if (patch.language) await setLocale(locale);
-      setActionError(locale==="en"?"Not saved. Please retry.":"未能保存，请重试。");
+      if (patch.language) {
+        try { await setLocale(locale); } catch { /* Keep the failure explicit; never claim a save. */ }
+      }
+      setActionError(locale==="en"?"Not saved. Please retry.":translate(locale, "未能保存，请重试。"));
     } finally {mutation.current=false;if(current(ticket))setSaving(false);}
   };
 
@@ -211,7 +213,7 @@ export default function Profile() {
   };
 
 
-  const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:cn;
+  const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:translate(locale,cn);
   const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch{if(current(ticket))setActionError(copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
   const titles:Record<string,string>={personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
@@ -252,7 +254,7 @@ export default function Profile() {
         <NuriButton label={copy("保存设置","Save settings")} disabled={privacyUnavailable||saving} busy={saving} onPress={()=>void updatePrivacy(privacyDraft)} testID="privacy-save" />
         <MenuRow label={copy("隐私政策","Privacy policy")} onPress={linkPolicy} testID="profile-privacy-policy" />{policyError?<NuriText>{policyError}</NuriText>:null}
       </>:null}
-      {section==="language"?<>{LOCALES.filter(v=>v!=="zh-TW").map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language.")}</NuriText></>:null}
+      {section==="language"?<>{LOCALES.map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language.")}</NuriText></>:null}
       {section==="account"?<>
         <NuriText secondary>{copy("登录邮箱","Sign-in email")}</NuriText><NuriText>{me?.email||"—"}</NuriText>
         <MenuRow label={copy("设置或重设密码","Set or reset password")} onPress={()=>router.push("/forgot-password")} />

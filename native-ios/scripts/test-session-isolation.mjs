@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -84,8 +85,9 @@ function runner() {
 }
 function page(path, f, options = {}) {
   const r = runner(), routes = [], localeWrites = [];
+  let pageLocale=options.locale??"en";
   const t = (key) => key;
-  const setLocale = async (value) => { localeWrites.push(value); if (options.localeBarrier) await options.localeBarrier.promise; };
+  const setLocale = async (value) => { localeWrites.push(value); if (options.localeBarrier) await options.localeBarrier.promise; if(options.failLocale===value)throw Error("fixture storage failed");pageLocale=value; };
   const router = { push: (value) => routes.push(value), replace: (value) => routes.push(value), dismissTo: (value) => routes.push(value), back: () => routes.push("back"), canGoBack: () => false };
   const jsx = (type, props) => ({ type, props });
   const hooks = load("../src/useAccountState.ts", { react: r.react, "./api": f });
@@ -102,7 +104,7 @@ function page(path, f, options = {}) {
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "expo-blur": { BlurView: "Blur" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ bottom: 0, top: 0 }) },
     "@react-navigation/native": { useIsFocused: () => true }, "@react-navigation/elements": { useHeaderHeight: () => 44 },
-    "@/src/i18n": { useT: () => ({ t, locale: "en", setLocale }), LOCALES: ["en", "zh-CN"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文" } },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t:options.realI18n?(key,vars)=>_translateForI18nFixture(pageLocale,key,vars):t, locale: pageLocale, setLocale }), LOCALES: ["en", "zh-CN", "zh-TW"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文", "zh-TW":"繁體中文" } },
     "@/src/nativeShell": { usePurchaseAllowed: () => false, isNativeShell: () => true, useOnReturnToApp: () => {} },
     "@/src/nativePush": { getReminderSettings: async () => ({ enabled: false, intervalSeconds: 30 }), MAX_LOCAL_REMINDER_INTERVAL_SECONDS: 31536000, openNotificationSettings: async () => {}, requestNotificationPermission: async () => {}, setReminderSettings: async () => {} },
     "@/src/child-age": load("../src/child-age.ts"), "@/src/taskMeta": load("../src/taskMeta.ts"),
@@ -138,6 +140,32 @@ function page(path, f, options = {}) {
   return { ...r, routes, localeWrites, hooks, render, nodes: () => nodes(tree), find: (id) => nodes(tree).find((node) => node.props?.testID === id), kind: (type) => nodes(tree).find((node) => node.type === type), visible: () => JSON.stringify(tree) };
 }
 
+test("actual language screen exposes all three choices and persists zh-TW through the existing privacy API",async()=>{
+ const f=fixture();let p;
+ try{
+  await f.login("A");await f.permit();p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true});
+  p.render();await tick();await tick();p.render();
+  for(const locale of ["zh-CN","zh-TW","en"])assert.ok(p.find("profile-language-"+locale));
+  assert.equal(p.find("profile-language-zh-TW").props.label,"繁體中文");
+  const before=f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET").length;
+  assert.equal(before,0,"Rendering the language page must not mutate preferences");
+  await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  const calls=f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET");
+  assert.equal(calls.length,1);assert.equal(JSON.parse(calls[0].init.body).language,"zh-TW");
+  assert.deepEqual(p.localeWrites,["zh-TW"]);assert.equal(p.find("profile-saved-card").props.message,"變更已儲存。");
+ }finally{p?.unmount();f.restore();}
+});
+test("failed Traditional preference/local-storage saves never show success or leave the language mutation locked",async()=>{
+ for(const failure of ["server","storage"]){const f=fixture();let p;try{
+  await f.login("A");await f.permit();if(failure==="server")f.responder=(path,init)=>path==="/privacy"&&init.method?response({detail:"fixture offline"},503):null;
+  p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true,failLocale:failure==="storage"?"zh-TW":undefined});
+  p.render();await tick();await tick();p.render();await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  assert.equal(p.find("profile-saved-card"),undefined);assert.ok(p.find("profile-action-result"));
+  if(failure==="storage")assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method).length,0);
+  assert.deepEqual(p.localeWrites,["zh-TW","en"]);
+  await p.find("profile-language-zh-CN").props.onPress();await tick();assert.ok(p.localeWrites.includes("zh-CN"));
+ }finally{p?.unmount();f.restore();}}
+});
 for (const change of ["B", "logout", "ABA"]) {
   test("actual API parsed JSON held for A → " + change + " is not an auth error or data result", async () => {
     const f = fixture();

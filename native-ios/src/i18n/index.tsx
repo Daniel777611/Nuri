@@ -31,8 +31,8 @@ export const LOCALES = ["zh-CN", "zh-TW", "en"] as const;
 export type Locale = (typeof LOCALES)[number];
 
 export const LOCALE_LABELS: Record<Locale, string> = {
-  "zh-CN": "简中",
-  "zh-TW": "繁中",
+  "zh-CN": "简体中文",
+  "zh-TW": "繁體中文",
   en: "English",
 };
 

@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -64,7 +65,7 @@ const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityInd
   Platform: { OS: "ios" }, StyleSheet: { create: (value) => value }, useWindowDimensions: () => ({ width: 390 }) };
 function postComponent(guideInputs = []) {
   return load("../src/components/DailyPostCard.tsx", {
-    "react/jsx-runtime": runtime, "react-native": native, "@/src/i18n": { useT: () => ({ t }) },
+    "react/jsx-runtime": runtime, "react-native": native, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t }) },
     "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" },
     "@/src/nuriResourceGuide": { nuriResourceGuide: (input, translate) => { guideInputs.push(input); return guideModule.nuriResourceGuide(input, translate); } },
     "@/src/resourceSummary": summaryModule, "@/src/externalContent": externalModule,
@@ -84,7 +85,7 @@ function page(params = { id: "post-A" }) {
   const auth = { getSessionGeneration: () => generation, subscribeSessionBoundary: () => () => {} };
   const screen = load("../app/daily-post.tsx", {
     react: r.react, "react/jsx-runtime": runtime, "react-native": { ...native, Linking: { openURL: (url) => p.source(url) } },
-    "@/src/api": { api }, "@/src/i18n": { useT: () => ({ t, locale: "zh-CN" }) },
+    "@/src/api": { api }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t, locale: "zh-CN" }) },
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": { __esModule: true, default: (props) => jsx("Notice", { ...props, testID: "failure-notice" }) },
     "@/src/components/DailyPostCard": postComponent(), "@/src/externalContent": externalModule,

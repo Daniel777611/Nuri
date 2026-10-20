@@ -18,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
 import { savePendingVerification } from "@/src/authFlow";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
@@ -125,7 +125,7 @@ export default function Login() {
 
   return <AuthFrame testID="login-card">
     <FormTabs active="login" />
-    <NuriText style={{fontSize:14,lineHeight:22}}>{locale === "en" ? "Continue your conversation with Nuri." : "和 Nuri 继续上次的对话。"}</NuriText>
+    <NuriText style={{fontSize:14,lineHeight:22}}>{locale === "en" ? "Continue your conversation with Nuri." : translate(locale, "和 Nuri 继续上次的对话。")}</NuriText>
     <View style={{gap:16}}>
       <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" textContentType="username" testID="login-email" />
       <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry textContentType="password" testID="login-password" />

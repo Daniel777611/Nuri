@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -322,7 +323,7 @@ function uiFixture(f, locale, { returnTo, canGoBack = false } = {}) {
     "@/src/api": f, "@/src/aiConsent": policy, "@/src/aiConsentCopy": copy, "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState(), refresh: f.aiConsent.refresh }) },
     "@/src/aiPermissionNavigation": navigation,
     "@/src/requestFailure": failureCopy,
-    "@/src/i18n": { useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
   };
   const page = load("../app/ai-permission.tsx", dependencies, true).default;
   const render = () => { cursor = 0; const tree = page(); effects.splice(0).forEach((run) => run()); return tree; };
@@ -342,7 +343,7 @@ function headerFixture(f, locale) {
     "react-native": { Pressable: "Pressable", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
     "@expo/vector-icons": { Ionicons: "Icon" },
     "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
-    "@/src/i18n": { useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },

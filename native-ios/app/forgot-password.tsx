@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api } from "@/src/api";
 import { authErrorMessage, cleanCode, useCountdown } from "@/src/authFlow";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
 
 // Two steps on one screen: ask for the address, then take the mailed code and
@@ -92,22 +92,22 @@ export default function ForgotPassword() {
   const canReset = code.length === 6 && password.length >= 6 && password === confirmPassword && !submitting;
 
   if (step === "done") return <AuthFrame testID="reset-done-card" contentGap={24}>
-    <NuriText style={{fontSize:16,lineHeight:22}}>{locale==="en"?"You can now log in with your new password.":"现在可以使用新密码登录。"}</NuriText>
-    <NuriButton label={locale==="en"?"Back to login":"返回登录"} onPress={()=>router.replace("/login")} testID="reset-done-login" />
+    <NuriText style={{fontSize:16,lineHeight:22}}>{locale==="en"?"You can now log in with your new password.":translate(locale, "现在可以使用新密码登录。")}</NuriText>
+    <NuriButton label={locale==="en"?"Back to login":translate(locale, "返回登录")} onPress={()=>router.replace("/login")} testID="reset-done-login" />
   </AuthFrame>;
 
   return <AuthFrame testID="forgot-card">
     <NuriText>{step==="email"?t("输入注册时用的邮箱，我们会发一个 6 位验证码。"):t("输入邮件里的验证码，并设置新密码。")}</NuriText>
     {step==="email"?<NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="forgot-email" />:<>
-      <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"Code from your email":"输入邮箱中的验证码"} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} testID="forgot-code" />
+      <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"Code from your email":translate(locale, "输入邮箱中的验证码")} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} testID="forgot-code" />
       <NuriField label={t("新密码（至少6位）")} value={password} onChangeText={setPassword} secureTextEntry autoComplete="new-password" testID="forgot-new-password" />
-      <NuriField label={locale==="en"?"Confirm new password":"再次输入"} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" testID="forgot-confirm-password" />
-      {confirmPassword&&confirmPassword!==password?<NuriText style={{color:"#9a606a",fontSize:13}}>{locale==="en"?"Passwords do not match.":"两次输入的密码不一致。"}</NuriText>:null}
+      <NuriField label={locale==="en"?"Confirm new password":translate(locale, "再次输入")} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" testID="forgot-confirm-password" />
+      {confirmPassword&&confirmPassword!==password?<NuriText style={{color:"#9a606a",fontSize:13}}>{locale==="en"?"Passwords do not match.":translate(locale, "两次输入的密码不一致。")}</NuriText>:null}
       <Pressable onPress={sendCode} disabled={secondsLeft>0||submitting} style={{minHeight:44,justifyContent:"center"}} testID="forgot-resend"><NuriText secondary style={{fontSize:13}}>{secondsLeft>0?t("{n} 秒后可重新发送",{n:secondsLeft}):t("重新发送验证码")}</NuriText></Pressable>
     </>}
     {notice?<NuriText secondary style={{fontSize:13}} testID="forgot-notice">{notice}</NuriText>:null}
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="forgot-error">{error}</NuriText>:null}
-    <NuriButton label={submitting?t("保存中..."):step==="email"?t("发送验证码"):(locale==="en"?"Save new password":"保存新密码")} busy={submitting} disabled={step==="email"?!canSend:!canReset} onPress={step==="email"?sendCode:reset} testID={step==="email"?"forgot-send-btn":"forgot-reset-btn"} />
+    <NuriButton label={submitting?t("保存中..."):step==="email"?t("发送验证码"):(locale==="en"?"Save new password":translate(locale, "保存新密码"))} busy={submitting} disabled={step==="email"?!canSend:!canReset} onPress={step==="email"?sendCode:reset} testID={step==="email"?"forgot-send-btn":"forgot-reset-btn"} />
   </AuthFrame>;
 }
 

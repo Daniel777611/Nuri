@@ -4,7 +4,7 @@ import { Image } from "expo-image";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { useRouter } from "expo-router";
 import { apiErrorDetail, auth } from "@/src/api";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { useAccountScope, useAccountState } from "@/src/useAccountState";
 import { getNativeGoogleConfiguration, getNativeGoogleSDK, NativeGoogleAuthError } from "@/src/googleNativeAuth";
 import { signInWithNativeGoogle, type GoogleStorageFailure } from "@/src/googleSignInSession";
@@ -69,10 +69,10 @@ export default function GoogleSignInButton({ disabled = false, returnTo, acquire
 
   // This native lab intentionally does not load the web GIS script or DOM.
   return <View style={styles.wrap} testID="google-signin">
-    <Text style={[styles.dividerText,{color:theme.secondary,marginBottom:12}]}>{locale==="en"?"Or sign in with":"或使用以下方式登录"}</Text>
+    <Text style={[styles.dividerText,{color:theme.secondary,marginBottom:12}]}>{locale==="en"?"Or sign in with":translate(locale, "或使用以下方式登录")}</Text>
     <Pressable style={{minHeight:44,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}} disabled={disabled||busy||!available||Platform.OS!=="ios"} onPress={submit} testID="google-signin-native-button" accessibilityRole="button" accessibilityLabel={t("用 Google 继续")}>
       <Image source={require("@/assets/uiux48/google-sdk-logo.png")} style={{width:20,height:20}} contentFit="contain" />
-      <Text style={{fontSize:16,lineHeight:22,color:theme.ink}}>{locale==="en"?"Sign in with Google":"使用 Google 登录"}</Text>
+      <Text style={{fontSize:16,lineHeight:22,color:theme.ink}}>{locale==="en"?"Sign in with Google":translate(locale, "使用 Google 登录")}</Text>
     </Pressable>
     {!available&&Platform.OS==="ios"?<Text style={styles.note} testID="google-signin-unavailable">{t("Google 登录暂时不可用，请用邮箱登录。")}</Text>:null}
     {busy ? <ActivityIndicator style={styles.note} accessibilityLabel={t("正在登录…")} /> : null}

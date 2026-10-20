@@ -53,7 +53,7 @@ import {
   type VoiceRecording,
 } from "@/src/chatVoiceInput";
 import { colors, radius, spacing, type } from "@/src/theme";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { shortResourceSummary } from "@/src/resourceSummary";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
@@ -443,11 +443,11 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   useFocusEffect(useCallback(() => registerNativeNavigationGuard(embedded?"/":`/chat/${id}`, (action) => {
     if (capture() === null) return;
     if (action === "home") { requestHomeReturn(); return; }
-    if(voiceRecordingRef.current){showToast(locale==="en"?"Finish recording before leaving.":"请先结束录音，再离开对话。");return;}
+    if(voiceRecordingRef.current){showToast(locale==="en"?"Finish recording before leaving.":translate(locale, "请先结束录音，再离开对话。"));return;}
     if (sendingRef.current) {
       pendingHomeReturnRef.current = false;
       pendingHeaderNavigationRef.current = action;
-      showToast(locale === "en" ? "Saving this reply before leaving…" : "正在保存这轮对话，完成后会离开…");
+      showToast(locale === "en" ? "Saving this reply before leaving…" : translate(locale, "正在保存这轮对话，完成后会离开…"));
     } else {
       navigateFromChat(action);
     }
@@ -597,7 +597,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 
   const explainVoiceError = (error: unknown) => {
     const code = error instanceof VoiceInputError ? error.code : "failed";
-    setMediaError(code==="permission_denied"?(locale==="en"?"Microphone access was not granted. You can use text instead.":"麦克风权限未获允许，可以改用文字。"):locale==="en"?"Voice input was not confirmed. Please retry or use text.":"语音输入未确认成功，请重试或改用文字。");
+    setMediaError(code==="permission_denied"?(locale==="en"?"Microphone access was not granted. You can use text instead.":translate(locale, "麦克风权限未获允许，可以改用文字。")):locale==="en"?"Voice input was not confirmed. Please retry or use text.":translate(locale, "语音输入未确认成功，请重试或改用文字。"));
     if (code === "unsupported") showToast(t("当前浏览器不支持语音输入"));
     else if (code === "permission_denied") showToast(t("需要麦克风权限才能语音输入，请在系统设置中允许"));
     else if (code === "no_microphone") showToast(t("没有找到可用的麦克风"));
@@ -621,7 +621,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       const spoken = (text || "").trim();
       if (!spoken) {
-        setMediaState("voicePermission");setMediaError(locale==="en"?"No speech was recognized. Please retry.":"没有听清，请再说一次。");
+        setMediaState("voicePermission");setMediaError(locale==="en"?"No speech was recognized. Please retry.":translate(locale, "没有听清，请再说一次。"));
         showToast(t("没有听清，请再说一次"));
         return;
       }
@@ -651,7 +651,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     if (ticket === null) return;
     if (voiceState !== "idle" || voiceStartInFlightRef.current) return;
     if (!isVoiceInputSupported()) {
-      setMediaError(locale==="en"?"Voice input is unavailable on this device. Use text instead.":"此设备暂不支持语音输入，可以改用文字。");
+      setMediaError(locale==="en"?"Voice input is unavailable on this device. Use text instead.":translate(locale, "此设备暂不支持语音输入，可以改用文字。"));
       showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
       return;
     }
@@ -873,19 +873,19 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1,fontSize:13}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} testID="chat-image-remove" /></GlassSurface>:null}
       <NuriComposer value={input} onChangeText={setInput} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>{if(voiceState==="recording")void stopVoice();else {setMediaError("");setMediaState("voicePermission");}}} busy={sending||processingImage||voiceState==="starting"||voiceState==="transcribing"} disabled={historyLoadState!=="ready"} recording={voiceState==="recording"} hasAttachment={!!pendingImage} testID={embedded?"home-chat":"chat"} />
     </View>
-      <MediaPanel visible={imageMenuVisible||mediaState!==null} title={imageMenuVisible?(locale==="en"?"Add content":"添加内容"):({cameraPermission:locale==="en"?"Show Nuri a photo":"拍照给 Nuri 看",voicePermission:locale==="en"?"Use microphone":"使用麦克风",voice:locale==="en"?"Listening":"正在聆听",voiceReview:locale==="en"?"Review voice input":"确认语音内容",imagePreview:locale==="en"?"Review photo":"确认照片"}[mediaState??"voicePermission"])} onClose={()=>{cancelVoice();setMediaState(null);setImageMenuVisible(false);}} onDismiss={flushNativePicker}>
+      <MediaPanel visible={imageMenuVisible||mediaState!==null} title={imageMenuVisible?(locale==="en"?"Add content":translate(locale, "添加内容")):({cameraPermission:locale==="en"?"Show Nuri a photo":translate(locale, "拍照给 Nuri 看"),voicePermission:locale==="en"?"Use microphone":translate(locale, "使用麦克风"),voice:locale==="en"?"Listening":translate(locale, "正在聆听"),voiceReview:locale==="en"?"Review voice input":translate(locale, "确认语音内容"),imagePreview:locale==="en"?"Review photo":translate(locale, "确认照片")}[mediaState??"voicePermission"])} onClose={()=>{cancelVoice();setMediaState(null);setImageMenuVisible(false);}} onDismiss={flushNativePicker}>
         <AuthFrame testID={imageMenuVisible?"attachments-card":`media-${mediaState}-card`} contentGap={24}>
-          {imageMenuVisible?<><MenuRow label={locale==="en"?"Take a photo":"拍照"} onPress={()=>{setImageMenuVisible(false);setMediaState("cameraPermission");}} testID="chat-image-camera" /><MenuRow label={locale==="en"?"Choose from photos":"从照片中选择"} onPress={choosePhoto} testID="chat-image-library" /><NuriText secondary style={{fontSize:12,lineHeight:16}}>{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText><NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" /></>:null}
-          {mediaState==="cameraPermission"?<><NuriText>{locale==="en"?"Allow camera access to photograph what you would like to discuss.":"允许相机后，可以拍下你想聊的内容。"}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Preview or remove the photo before sending.":"发送前，你可以预览或移除照片。"}</NuriText><NuriButton label={locale==="en"?"Continue to camera":"继续拍照"} onPress={takePhoto} testID="camera-permission-continue" /><NuriButton secondary label={locale==="en"?"Choose from photos":"从照片中选择"} onPress={choosePhoto} /></>:null}
-          {mediaState==="voicePermission"?<><NuriText>{locale==="en"?"Allow microphone access to speak directly to Nuri.":"允许麦克风后，你可以直接对 Nuri 说话。"}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Only audio you actively record is used for voice input.":"只有你主动录制的音频才用于语音输入。"}</NuriText><NuriButton label={locale==="en"?"Continue with voice":"继续使用语音"} busy={voiceState==="starting"} onPress={()=>void startVoice()} testID="voice-permission-continue" /><NuriButton secondary label={locale==="en"?"Use text instead":"改用文字"} disabled={voiceState==="starting"} onPress={()=>{setMediaState(null);composerRef.current?.focus();}} testID="voice-permission-text" /></>:null}
-          {mediaState==="voice"?<><NuriIcon name="mic" />{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="media-voice-waveform" />:null}<NuriText>{Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText><NuriText>{locale==="en"?"Take your time. Nuri is listening.":"慢慢说，Nuri 在听。"}</NuriText><NuriButton label={voiceState==="transcribing"?(locale==="en"?"Transcribing…":"正在识别语音…"):(locale==="en"?"Finish recording":"完成录音")} busy={voiceState==="transcribing"} onPress={()=>void stopVoice()} testID="media-voice-finish" /><NuriButton secondary label={locale==="en"?"Cancel recording":"取消录音"} onPress={()=>{cancelVoice();setMediaState(null);}} testID="media-voice-cancel" /></>:null}
+          {imageMenuVisible?<><MenuRow label={locale==="en"?"Take a photo":translate(locale, "拍照")} onPress={()=>{setImageMenuVisible(false);setMediaState("cameraPermission");}} testID="chat-image-camera" /><MenuRow label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} testID="chat-image-library" /><NuriText secondary style={{fontSize:12,lineHeight:16}}>{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText><NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" /></>:null}
+          {mediaState==="cameraPermission"?<><NuriText>{locale==="en"?"Allow camera access to photograph what you would like to discuss.":translate(locale, "允许相机后，可以拍下你想聊的内容。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Preview or remove the photo before sending.":translate(locale, "发送前，你可以预览或移除照片。")}</NuriText><NuriButton label={locale==="en"?"Continue to camera":translate(locale, "继续拍照")} onPress={takePhoto} testID="camera-permission-continue" /><NuriButton secondary label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} /></>:null}
+          {mediaState==="voicePermission"?<><NuriText>{locale==="en"?"Allow microphone access to speak directly to Nuri.":translate(locale, "允许麦克风后，你可以直接对 Nuri 说话。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Only audio you actively record is used for voice input.":translate(locale, "只有你主动录制的音频才用于语音输入。")}</NuriText><NuriButton label={locale==="en"?"Continue with voice":translate(locale, "继续使用语音")} busy={voiceState==="starting"} onPress={()=>void startVoice()} testID="voice-permission-continue" /><NuriButton secondary label={locale==="en"?"Use text instead":translate(locale, "改用文字")} disabled={voiceState==="starting"} onPress={()=>{setMediaState(null);composerRef.current?.focus();}} testID="voice-permission-text" /></>:null}
+          {mediaState==="voice"?<><NuriIcon name="mic" />{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="media-voice-waveform" />:null}<NuriText>{Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText><NuriText>{locale==="en"?"Take your time. Nuri is listening.":translate(locale, "慢慢说，Nuri 在听。")}</NuriText><NuriButton label={voiceState==="transcribing"?(locale==="en"?"Transcribing…":translate(locale, "正在识别语音…")):(locale==="en"?"Finish recording":translate(locale, "完成录音"))} busy={voiceState==="transcribing"} onPress={()=>void stopVoice()} testID="media-voice-finish" /><NuriButton secondary label={locale==="en"?"Cancel recording":translate(locale, "取消录音")} onPress={()=>{cancelVoice();setMediaState(null);}} testID="media-voice-cancel" /></>:null}
           {mediaState==="voiceReview"||mediaState==="imagePreview"?<>
             {mediaState==="imagePreview"&&pendingImage?<Image source={{uri:pendingImage.previewUri}} style={{width:"100%",height:220,borderRadius:28}} contentFit="contain" testID="media-review-photo" />:null}
-            <NuriText secondary style={{fontSize:mediaState==="voiceReview"?12:16,lineHeight:mediaState==="voiceReview"?16:22}}>{mediaState==="voiceReview"?(locale==="en"?"Your voice is now text. Edit it before sending.":"语音已转成文字，你可以修改后发送。"):(locale==="en"?"Add a note so Nuri understands your question.":"添加一句说明，让 Nuri 更了解你想问什么。")}</NuriText>
-            <NuriField label={locale==="en"?"Your content":"你的内容"} value={input} onChangeText={setInput} multiline style={{height:96,paddingTop:14,textAlignVertical:"top"}} testID="media-review-input" />
-            <View style={{flexDirection:"row",justifyContent:"space-between"}}><IconAction name="plus" label={locale==="en"?"Add photo":"添加照片"} onPress={()=>{setMediaState(null);setImageMenuVisible(true);}} testID="media-review-plus" /><IconAction name="mic" label={locale==="en"?"Continue voice input":"继续语音输入"} onPress={()=>setMediaState("voicePermission")} testID="media-review-mic" /></View>
-            <NuriButton label={mediaState==="imagePreview"?(locale==="en"?"Send photo":"发送照片"):(locale==="en"?"Send to Nuri":"发送给 Nuri")} disabled={sending||(!input.trim()&&!pendingImage)} onPress={()=>{setMediaState(null);void send();}} testID="media-review-send" />
-            <NuriButton secondary label={mediaState==="imagePreview"?(locale==="en"?"Choose again":"重新选择"):(locale==="en"?"Continue voice input":"继续语音输入")} onPress={()=>{if(mediaState==="imagePreview"){setMediaState(null);setImageMenuVisible(true);}else setMediaState("voicePermission");}} testID="media-review-again" />
+            <NuriText secondary style={{fontSize:mediaState==="voiceReview"?12:16,lineHeight:mediaState==="voiceReview"?16:22}}>{mediaState==="voiceReview"?(locale==="en"?"Your voice is now text. Edit it before sending.":translate(locale, "语音已转成文字，你可以修改后发送。")):(locale==="en"?"Add a note so Nuri understands your question.":translate(locale, "添加一句说明，让 Nuri 更了解你想问什么。"))}</NuriText>
+            <NuriField label={locale==="en"?"Your content":translate(locale, "你的内容")} value={input} onChangeText={setInput} multiline style={{height:96,paddingTop:14,textAlignVertical:"top"}} testID="media-review-input" />
+            <View style={{flexDirection:"row",justifyContent:"space-between"}}><IconAction name="plus" label={locale==="en"?"Add photo":translate(locale, "添加照片")} onPress={()=>{setMediaState(null);setImageMenuVisible(true);}} testID="media-review-plus" /><IconAction name="mic" label={locale==="en"?"Continue voice input":translate(locale, "继续语音输入")} onPress={()=>setMediaState("voicePermission")} testID="media-review-mic" /></View>
+            <NuriButton label={mediaState==="imagePreview"?(locale==="en"?"Send photo":translate(locale, "发送照片")):(locale==="en"?"Send to Nuri":translate(locale, "发送给 Nuri"))} disabled={sending||(!input.trim()&&!pendingImage)} onPress={()=>{setMediaState(null);void send();}} testID="media-review-send" />
+            <NuriButton secondary label={mediaState==="imagePreview"?(locale==="en"?"Choose again":translate(locale, "重新选择")):(locale==="en"?"Continue voice input":translate(locale, "继续语音输入"))} onPress={()=>{if(mediaState==="imagePreview"){setMediaState(null);setImageMenuVisible(true);}else setMediaState("voicePermission");}} testID="media-review-again" />
           </>:null}
           {mediaError?<NuriText accessibilityLiveRegion="assertive" testID="media-error">{mediaError}</NuriText>:null}
         </AuthFrame>
@@ -1092,7 +1092,7 @@ function TypingDots() {
         <View style={{width:24,height:24}}><View style={{transform:[{scale:24/34}],transformOrigin:"top left"}}><SceneAvatar /></View></View>
         <NuriText style={{fontSize:15,lineHeight:22,fontWeight:"600"}}>Nuri</NuriText>
       </View>
-      <NuriText accessibilityLiveRegion="polite" style={{fontSize:17,lineHeight:26}}>{locale==="en"?"Nuri is replying…":"Nuri 正在回复…"}</NuriText>
+      <NuriText accessibilityLiveRegion="polite" style={{fontSize:17,lineHeight:26}}>{locale==="en"?"Nuri is replying…":translate(locale, "Nuri 正在回复…")}</NuriText>
         <View style={{flexDirection:"row",gap:5,alignItems:"center",height:16}}>
           {[dot1, dot2, dot3].map((dot, i) => (
             <Animated.View
