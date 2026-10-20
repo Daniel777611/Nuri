@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -133,7 +134,8 @@ for (const created of [false, true]) test("actual SDK → server ID-token exchan
     assert.equal(f.requests[0].init.method, "POST");
     assert.deepEqual(f.providerCalls.map((call) => call.method), ["configure", "signOut", "signIn", "signOut"]);
     assert.deepEqual(f.providerCalls[0].value, { iosClientId: IOS_ID, webClientId: WEB_ID, offlineAccess: false });
-    assert.ok([...f.secure.keys()].every((key) => key.startsWith("com.ordashtech.nuri.nativelab.credentials.v1:")));
+    const bundle=JSON.parse(readFileSync(new URL('../app.json',import.meta.url),'utf8')).expo.ios.bundleIdentifier;
+    assert.ok([...f.secure.keys()].every((key) => key.startsWith(bundle+".credentials.v1:")));
     assert.ok([...f.ordinary.keys()].every((key) => !key.endsWith("auth_token")));
     assert.ok(![...f.secure.values(), ...f.ordinary.values()].some((value) => value.includes(CREDENTIAL)), "Google token/profile is not persisted");
   } finally { f.restore(); }
@@ -276,15 +278,19 @@ function runner() {
   return { react, render(fn) { cursor = 0; pending = []; const tree = fn(); pending.forEach((effect) => effect()); return tree; }, unmount() { effects.forEach((effect) => effect?.cleanup?.()); } };
 }
 
-function button(f, props = {}) {
+function button(f, props = {}, bundleIdentifier = "com.ordashtech.nuri.nativelab") {
   const r = runner(), routes = [], busy = [];
   const jsx = (type, props) => ({ type, props });
   const component = load("../src/components/GoogleSignInButton.tsx", {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/api": f,
+    "expo-image":{Image:"Image"},
+    "expo-constants":{__esModule:true,default:{expoConfig:{ios:{bundleIdentifier}}}},
+    "@/src/uiux48/Theme":{useNuriTheme:()=>({ink:"#3d3340",secondary:"#5d5060"})},
+    "@/assets/uiux48/google-sdk-logo.png":1,
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
-    "react-native": { View: "View", Text: "Text", ActivityIndicator: "Spinner", Platform: { OS: "ios" }, StyleSheet: { create: (value) => value } },
+    "react-native": { View: "View", Text: "Text", Pressable:"Pressable", ActivityIndicator: "Spinner", Platform: { OS: "ios" }, StyleSheet: { create: (value) => value } },
     "expo-router": { useRouter: () => ({ replace: (href) => routes.push(href) }) },
-    "@/src/i18n": { useT: () => ({ t: (value) => value, locale: "en", setLocale: async () => {} }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t: (value) => value, locale: "en", setLocale: async () => {} }) },
     "@/src/theme": { colors: {}, type: {}, spacing: {} },
     "@/src/googleNativeAuth": f, "@/src/googleSignInSession": f,
     "@/src/nativePushRuntime": load("../src/nativePushRuntime.ts"),
@@ -300,9 +306,15 @@ test("actual unconfigured native button explains unavailable without SDK / serve
   const f = fixture(), p = button(f);
   try {
     f.configuration = null; p.render(); await tick(); p.render();
-    assert.ok(p.find("google-signin-unavailable")); assert.equal(p.find("google-signin-native-button"), undefined);
+    assert.ok(p.find("google-signin-unavailable")); assert.equal(p.find("google-signin-native-button").props.disabled,true);
+    await p.find("google-signin-native-button").props.onPress();
     assert.deepEqual(f.providerCalls, []); assert.deepEqual(f.requests, []);
   } finally { p.unmount(); f.restore(); }
+});
+
+test("Preview hides unsupported Google without SDK, server or credential changes", async () => {
+  const f=fixture(),p=button(f,{},"com.ordashtech.nuri.preview");
+  try{f.configuration=null;p.render();await tick();assert.equal(p.render(),null);assert.deepEqual(f.providerCalls,[]);assert.deepEqual(f.requests,[]);assert.equal(f.secure.size,0);}finally{p.unmount();f.restore();}
 });
 
 test("actual native button double press shares email form lock and cancellation is quiet", async () => {

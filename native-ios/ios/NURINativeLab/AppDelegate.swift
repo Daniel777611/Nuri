@@ -47,6 +47,9 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
   private func configureNotifications(
     launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) {
+    // Preview has no verified independent remote-push backend topic.
+    // Do not show a system permission prompt for an unavailable capability.
+    guard Bundle.main.object(forInfoDictionaryKey: "NuriRemotePushEnabled") as? Bool != false else { return }
     let notificationCenter = UNUserNotificationCenter.current()
     notificationCenter.delegate = self
 
@@ -83,11 +86,13 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
 
   public override func applicationDidBecomeActive(_ application: UIApplication) {
     super.applicationDidBecomeActive(application)
+    guard Bundle.main.object(forInfoDictionaryKey: "NuriRemotePushEnabled") as? Bool != false else { return }
     NuriPushStore.shared.notifyPushStateChanged()
     NuriReminderScheduler.shared.restoreSavedSettings()
   }
 
   private func registerForRemoteNotifications() {
+    guard Bundle.main.object(forInfoDictionaryKey: "NuriRemotePushEnabled") as? Bool != false else { return }
     DispatchQueue.main.async {
       UIApplication.shared.registerForRemoteNotifications()
     }

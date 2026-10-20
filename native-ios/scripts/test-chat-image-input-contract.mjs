@@ -23,7 +23,8 @@ assert.match(
   /if \(Platform\.OS === "web"\)[\s\S]*?void openSafeWebPicker\(\);[\s\S]*?setImageMenuVisible\(true\);/,
   "the plus button must open the system picker directly on web and reserve the NURI menu for native builds",
 );
-assert.match(chat, /onPress=\{openImageInput\}/, "the plus button must use the direct picker dispatcher");
+assert.match(chat, /onAttach=\{openImageInput\}/, "the shared composer's plus button must use the direct picker dispatcher");
+assert.match(read("../src/uiux48/Composer.tsx"), /onPress=\{onAttach\}/, "the visible plus control must call the injected picker dispatcher");
 assert.match(chat, /prepareChatImage\(asset\)/, "selected photos must be resized and compressed");
 assert.match(chat, /setPendingImage\(prepared\)/, "a prepared photo must enter send-preview state");
 assert.match(chat, /testID="chat-image-preview"/, "the chosen photo must be visible before send");

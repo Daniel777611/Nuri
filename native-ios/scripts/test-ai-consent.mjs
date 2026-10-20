@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -9,7 +10,11 @@ function load(path, dependencies = {}, jsx = false) {
   }).outputText;
   const loaded = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
-    assert.ok(name in dependencies, "unexpected dependency " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+    if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+   assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, loaded, loaded.exports);
   return loaded.exports;
@@ -123,10 +128,10 @@ test("every actual profile/text/audio/image/context adapter is fail-closed, not 
     () => f.api.sendMessage("session", { text: "mock" }), () => f.api.sendMessage("session", { text: "", image_base64: "data:image/jpeg;base64,bW9jaw==" }),
     () => f.api.streamMessage("session", { text: "mock" }, () => {}), () => f.api.transcribeVoice("bW9jaw==", "en"),
     () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardResearch("card"),
-    () => f.api.taskInsights(), () => f.api.createTask({ text: "mock" }), () => f.api.updateTask("task", { mood: "mock" }),
     () => f.api.openNotification("notification"), () => f.api.setPrivacy({ daily_push: true }), () => f.api.setPrivacy({ allow_external_content_research: true }), () => f.api.setPrivacy({ allow_history_training: true }),
   ];
   for (const run of operations) await assert.rejects(run(), blocked);
+  for(const name of ["taskInsights","createTask","updateTask","listTasks","deleteTask","clearCompletedTasks"])assert.equal(f.api[name],undefined,"Retired task adapters must not remain callable in the App Store build");
   assert.deepEqual(aiCalls(f), []);
 });
 
@@ -162,8 +167,8 @@ test("login/privacy/deletion and existing non-AI reads remain usable without AI 
   const f = fixture(); await f.auth.setToken("account-A");
   await f.api.login({ email: "mock@example.invalid", password: "mock" });
   await f.api.getPrivacy(); await f.api.setPrivacy({ daily_push: false, allow_external_content_research: false, allow_history_training: false });
-  await f.api.listChildren(); await f.api.listTasks(); await f.api.listSessions(); await f.api.getMessages("session"); await f.api.wipe(); await f.api.deleteChild("child"); await f.api.billingStatus();
-  assert.equal(f.calls.length, 10);
+  await f.api.listChildren(); await f.api.listSessions(); await f.api.getMessages("session"); await f.api.wipe(); await f.api.deleteChild("child"); await f.api.billingStatus();
+  assert.equal(f.calls.length, 9);
   assert.equal(policy.requiresAIConsent("/auth/account", { method: "DELETE" }), false);
   assert.equal(f.secureReads.length, 0);
 });
@@ -318,7 +323,7 @@ function uiFixture(f, locale, { returnTo, canGoBack = false } = {}) {
     "@/src/api": f, "@/src/aiConsent": policy, "@/src/aiConsentCopy": copy, "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState(), refresh: f.aiConsent.refresh }) },
     "@/src/aiPermissionNavigation": navigation,
     "@/src/requestFailure": failureCopy,
-    "@/src/i18n": { useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
   };
   const page = load("../app/ai-permission.tsx", dependencies, true).default;
   const render = () => { cursor = 0; const tree = page(); effects.splice(0).forEach((run) => run()); return tree; };
@@ -337,8 +342,8 @@ function headerFixture(f, locale) {
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "react-native": { Pressable: "Pressable", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
     "@expo/vector-icons": { Ionicons: "Icon" },
-    "expo-router": { usePathname: () => "/knowledge", useRouter: () => ({ push: (route) => routes.push(route) }) },
-    "@/src/i18n": { useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
+    "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
@@ -401,7 +406,9 @@ for (const locale of ["zh-CN", "zh-TW", "en"]) test("actual " + locale + " page 
   ui.find(tree, "ai-permission-allow").props.onPress(); await tick();
   await f.api.getOrStartMainSession();
   tree = ui.render(); assert.equal(ui.find(tree, "ai-permission-allow"), null);
-  ui.find(tree, "ai-permission-decline").props.onPress(); await tick(); await assert.rejects(f.api.transcribeVoice("mock"), blocked);
+  ui.find(tree, "ai-permission-decline").props.onPress(); await tick();
+  assert.equal(f.aiConsent.getState().status,"allowed","navigation/rendering withdrawal confirmation must not mutate consent");
+  const confirm=ui.find(ui.render(),"ai-withdraw-card");assert.ok(confirm);confirm.props.primary.onPress();await tick();await assert.rejects(f.api.transcribeVoice("mock"), blocked);
 });
 
 test("late actual page callback from A cannot grant a newly signed-in B", async () => {

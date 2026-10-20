@@ -17,6 +17,9 @@ import { I18nProvider } from "@/src/i18n";
 import { useActivityHeartbeat } from "@/src/useActivityHeartbeat";
 import { usePushBridge } from "@/src/usePushBridge";
 import NativePageControls from "@/src/components/NativePageControls";
+import { NuriThemeProvider, NuriNavigationTheme } from "@/src/uiux48/Theme";
+import { NuriShell } from "@/src/uiux48/Shell";
+import { APP_STORE_BLOCKED_STACK_ROUTES } from "@/src/appStoreRelease";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -47,20 +50,12 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <I18nProvider>
         <SafeAreaProvider>
-          <StatusBar style="dark" />
-          <Stack
+          <NuriThemeProvider><NuriNavigationTheme><NuriShell><Stack
             screenOptions={{
-              headerShown: Platform.OS !== "web",
-              header: () => (
-                <SafeAreaView edges={["top"]} style={{ backgroundColor: "#FAFAF9" }}>
-                  <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-                    <NativePageControls />
-                  </View>
-                </SafeAreaView>
-              ),
-              contentStyle: { backgroundColor: "#FAFAF9" },
+              headerShown: false,
+              contentStyle: { backgroundColor: "transparent" },
             }}
-          />
+          ><Stack.Protected guard={false}>{APP_STORE_BLOCKED_STACK_ROUTES.map(name => <Stack.Screen key={name} name={name} />)}</Stack.Protected></Stack></NuriShell></NuriNavigationTheme></NuriThemeProvider>
         </SafeAreaProvider>
       </I18nProvider>
     </GestureHandlerRootView>

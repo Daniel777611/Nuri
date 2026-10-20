@@ -31,8 +31,8 @@ export const LOCALES = ["zh-CN", "zh-TW", "en"] as const;
 export type Locale = (typeof LOCALES)[number];
 
 export const LOCALE_LABELS: Record<Locale, string> = {
-  "zh-CN": "简中",
-  "zh-TW": "繁中",
+  "zh-CN": "简体中文",
+  "zh-TW": "繁體中文",
   en: "English",
 };
 
@@ -102,8 +102,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = useCallback(async (next: unknown) => {
     const normalized = normalizeLocale(next);
+    const saved = await storage.setItem(LOCALE_KEY, normalized);
+    if (!saved) throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
     setLocaleState(normalized);
-    await storage.setItem(LOCALE_KEY, normalized);
   }, []);
 
   const value = useMemo<I18nValue>(

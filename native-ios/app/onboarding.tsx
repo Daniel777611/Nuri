@@ -1,4 +1,6 @@
-import { useEffect } from "react";
+import { AuthFrame, ChoiceChip, GlassSurface, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
+import { useNuriTheme } from "@/src/uiux48/Theme";
+import { useCallback, useEffect } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
@@ -13,7 +15,8 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
+import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { LinearGradient } from "expo-linear-gradient";
@@ -24,11 +27,12 @@ import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import {
   daysInMonth,
   formatDateOnly,
   isValidBirthDate,
+  isValidDueDate,
   parseDateOnly,
 } from "@/src/child-age";
 
@@ -48,12 +52,11 @@ const HELP_PREFS = [["research", "专业研究与知识"], ["experience", "真�
 const INFO_SOURCES = [["research", "专业研究／论文"], ["expert", "医师或专家"], ["parents", "其他家长经验"], ["all", "都会参考"]] as const;
 const FREQUENCIES = [["daily", "每天一次"], ["weekly_2_3", "每周 2～3 次"], ["weekly", "每周一次"], ["on_demand", "有需要时再推播"]] as const;
 
-const YEARS = Array.from({ length: 9 }, (_, i) => new Date().getFullYear() - i);
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 export default function Onboarding() {
   const { capture, current } = useAccountScope();
-  const { t } = useT();
+  const { t, locale } = useT();
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
   const recoverExpiredCredentials = recovery.recover;
@@ -64,9 +67,12 @@ export default function Onboarding() {
   // 0/1/2 = Figma 注册流程 2/4/5；3–6 = 注册流程 6/6.1/6.2/6.3。
   const [page, setPage] = useState(0);
   const [childName, setChildName] = useState("");
+  const [childGender, setChildGender] = useState("other");
+  const [skipChild, setSkipChild] = useState(false);
   const [birthYear, setBirthYear] = useState<number | null>(null);
   const [birthMonth, setBirthMonth] = useState<number | null>(null);
   const [birthDay, setBirthDay] = useState<number | null>(null);
+  const [expecting, setExpecting] = useState(false);
   const [nickname, setNickname] = useState("");
   const [city, setCity] = useState("");
   const [parentRole, setParentRole] = useState("");
@@ -80,6 +86,16 @@ export default function Onboarding() {
   const [existingChild, setExistingChild] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState("");
+
+  // UI-only route state drives the existing shared header, never a save.
+  useEffect(()=>{router.setParams({uiState:page===0?"setupParent":page===1?"setupChild":"setupConcerns"});},[page,router]);
+  useFocusEffect(useCallback(()=>{
+    if(page===0&&!pickerOpen)return;
+    return registerNativeNavigationGuard("/onboarding",action=>{
+      if(capture()===null||saving||action!=="back")return;
+      if(pickerOpen)setPickerOpen(false);else setPage(value=>Math.max(0,value-1));
+    });
+  },[page,pickerOpen,saving,capture,setPage,setPickerOpen]));
 
   useEffect(() => {
     const ticket = capture();
@@ -101,8 +117,9 @@ export default function Onboarding() {
         setInfoSource(me?.info_source || ""); setFrequency(me?.content_frequency || "");
         if (kids?.[0]) {
           const child = kids[0]; const born = parseDateOnly(child.birth_date || "");
-          setExistingChild(child); setChildName(child.nickname || "");
+          setExistingChild(child); setChildName(child.nickname || ""); setChildGender(child.gender || "other");
           if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
+          setExpecting(isValidDueDate(child.birth_date || ""));
         }
       } catch (error) {
         if (cancelled || !current(ticket)) return;
@@ -117,7 +134,7 @@ export default function Onboarding() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setExistingChild, setChildName, setBirthYear, setBirthMonth, setBirthDay, setSyncError]);
+  }, [router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setExistingChild, setChildName, setBirthYear, setBirthMonth, setBirthDay, setExpecting, setSyncError]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
   const birthDate = birthYear && birthMonth && birthDay
@@ -125,14 +142,16 @@ export default function Onboarding() {
     : "";
   const hasPartialBirthDate = !!birthYear || !!birthMonth || !!birthDay;
   const birthDateError = hasPartialBirthDate && !birthDate
-    ? t("请选择完整的出生年、月、日")
-    : birthDate && !isValidBirthDate(birthDate)
-      ? t("出生日期不能晚于今天")
+    ? expecting ? t("请选择完整的预产期") : t("请选择完整的出生年、月、日")
+    : birthDate && !(expecting ? isValidDueDate(birthDate) : isValidBirthDate(birthDate))
+      ? expecting ? t("预产期要在今天之后的 40 周内") : t("出生日期不能晚于今天")
       : "";
-  const validBirthDate = isValidBirthDate(birthDate);
-  const canNext = !syncError && (page === 0
-    ? !!childName.trim() && validBirthDate
-    : page === 1 ? !!nickname.trim() && !!city.trim() && !!parentRole : true);
+  const validBirthDate = expecting ? isValidDueDate(birthDate) : isValidBirthDate(birthDate);
+  const chooseExpecting = (value: boolean) => {
+    if (value === expecting) return;
+    setExpecting(value); setBirthYear(null); setBirthMonth(null); setBirthDay(null); setSkipChild(false);
+  };
+  const canNext = !syncError && (page === 0 ? !!nickname.trim() && !!parentRole : page === 1 ? skipChild || (!!childName.trim() && validBirthDate) : true);
   const birthLabel = birthDate
     ? // All three are set whenever birthDate is, but that is a fact about
       // formatDateOnly rather than something the type system can see.
@@ -141,14 +160,14 @@ export default function Onboarding() {
         month: String(birthMonth),
         day: String(birthDay),
       })
-    : t("请选择孩子的出生年、月、日");
+    : expecting ? t("请选择预产期") : t("请选择孩子的出生年、月、日");
 
   const save = async () => {
     const ticket = capture();
     if (ticket === null) return;
     if (saving) return;
-    if (!childName.trim() || !validBirthDate) {
-      setPage(0);
+    if (!skipChild && (!childName.trim() || !validBirthDate)) {
+      setPage(1);
       return;
     }
     setSaving(true);
@@ -156,11 +175,11 @@ export default function Onboarding() {
     const requestToken = await auth.getToken();
     if (!current(ticket)) return;
     try {
-      const child = { nickname: childName.trim(), birth_date: birthDate, gender: existingChild?.gender || "other", allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
-      const saved: any = existingChild?.id
-        ? await api.updateChild(existingChild.id, child)
-        : await api.addChild(child);
-      if (saved?.birth_date !== birthDate) throw new Error("Child birthday was not persisted");
+      const child = { nickname: childName.trim(), birth_date: birthDate, gender: childGender, allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
+      if (!skipChild) {
+        const saved: any = existingChild?.id ? await api.updateChild(existingChild.id, child) : await api.addChild(child);
+        if (saved?.birth_date !== birthDate) throw new Error("Child birthday was not persisted");
+      }
       // The next write must not continue under a login that replaced the
       // session which submitted the child. Capture directly before that call.
       const profileRequestToken = await auth.getToken();
@@ -180,7 +199,7 @@ export default function Onboarding() {
     } finally { setSaving(false); }
   };
 
-  const next = () => page === 6 ? save() : setPage((p) => p + 1);
+  const next = () => page === 2 ? save() : setPage((p) => p + 1);
   const skip = () => page === 2 ? setPage(3) : save();
   const goBack = () => page > 0 && setPage((p) => p - 1);
   const toggleConcern = (key: string) => setConcerns((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
@@ -188,44 +207,35 @@ export default function Onboarding() {
   if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
   if (!fontsLoaded) return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
 
-  return (
-    <LinearGradient colors={["#FFFFFF", "#FFF8FB", "#C0AEF5"]} locations={[0, 0.38, 1]} style={styles.gradient}>
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight} style={styles.safe}>
-          <View style={styles.topBar}>
-            <Pressable onPress={goBack} hitSlop={12} style={[styles.backButton, page === 0 && styles.hidden]}>
-              <Ionicons name="arrow-back" size={23} color="#3A2F5A" />
-            </Pressable>
-            <Pressable onPress={page >= 2 ? skip : undefined} disabled={page < 2} hitSlop={10}>
-              <Text style={styles.progressText}>{stepNumber}/4{page >= 2 ? `  ${t("跳过")}` : ""}</Text>
-            </Pressable>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-            {!!syncError && <Text style={styles.syncError} accessibilityLiveRegion="assertive">{syncError}</Text>}
-            <Hero page={page} />
-            <View style={[styles.form, page >= 3 && styles.preferenceForm]}>
-              {page === 0 && <ChildPage childName={childName} setChildName={setChildName} birthLabel={birthLabel} hasBirthDate={!!birthDate} birthDateError={birthDateError} openPicker={() => setPickerOpen(true)} />}
-              {page === 1 && <ParentPage nickname={nickname} setNickname={setNickname} city={city} setCity={setCity} parentRole={parentRole} setParentRole={setParentRole} />}
-              {page === 2 && <ConcernPage concerns={concerns} toggle={toggleConcern} other={concernOther} setOther={setConcernOther} />}
-              {page === 3 && <TextPage title="了解你的教养方式" subtitle="帮助 NURI 了解你的最佳陪伴方式"><Field label="平常没带小孩时喜欢做的事"><TextInput value={hobbies} onChangeText={setHobbies} placeholder={t("例如：看剧、健身、和朋友聚会……")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>}
-              {page === 4 && <ChoicePage title="遇到教养问题时" subtitle="你希望 NURI 提供什么样的帮助？" options={HELP_PREFS} value={helpPref} onChange={setHelpPref} />}
-              {page === 5 && <ChoicePage title="你平常比较信任" subtitle="哪些信息来源？" options={INFO_SOURCES} value={infoSource} onChange={setInfoSource} />}
-              {page === 6 && <ChoicePage title="希望多久收到一次" subtitle="育儿知识或有帮助的内容？" options={FREQUENCIES} value={frequency} onChange={setFrequency} />}
-              <View style={[styles.ctaRow, page === 2 && styles.concernCta]}>
-                <Pressable onPress={next} disabled={!canNext || saving} style={({ pressed }) => [styles.cta, canNext && !saving && styles.ctaReady, pressed && canNext && styles.pressed]} testID="onboarding-next-btn">
-                  <Text style={styles.ctaText}>{page === 6 ? (saving ? t("保存中...") : t("完成")) : t("下一步")}</Text><Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
-                </Pressable>
-              </View>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-        {pickerOpen && <BirthPicker year={birthYear} month={birthMonth} day={birthDay} close={() => setPickerOpen(false)} confirm={(year: number | null, month: number | null, day: number | null) => { setBirthYear(year); setBirthMonth(month); setBirthDay(day); setPickerOpen(false); }} />}
-        </View>
-      </SafeAreaView>
-    </LinearGradient>
-  );
+  return <View style={{flex:1}}>
+    <AuthFrame testID="onboarding-card">
+      {syncError?<NuriText style={{color:"#9a606a",fontSize:13}}>{syncError}</NuriText>:null}
+      {page===0?<>
+        <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
+        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Your role":translate(locale, "你的角色")}</NuriText>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{PARENT_ROLES.map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={parentRole===key} onPress={()=>setParentRole(key)} testID={`onboarding-role-${key}`} />)}</View>
+        <NuriField label={locale==="en"?"City (optional)":translate(locale, "居住城市（可选）")} value={city} onChangeText={setCity} placeholder={locale==="en"?"You can add this later":translate(locale, "稍后再填")} testID="onboarding-city" />
+      </>:page===1?<>
+        <NuriField label={locale==="en"?"Child's nickname":translate(locale, "宝宝的昵称")} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
+        <NuriText secondary style={{fontSize:12}}>{t("宝宝出生了吗？")}</NuriText>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
+        <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期"):t("孩子的出生日期")}</NuriText>
+        <Pressable accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker"><View pointerEvents="none"><NuriField value={birthLabel} editable={false} accessible={false} /></View></Pressable>
+        {birthDateError?<NuriText style={{fontSize:12,color:"#9a606a"}}>{birthDateError}</NuriText>:null}
+        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} onPress={()=>setChildGender(key)} />)}</View>
+      </>:<>
+        <NuriText>{locale==="en"?"Choose a few topics to discuss with Nuri. You can change them later.":translate(locale, "选几个你想和 Nuri 聊的话题，之后可以修改。")}</NuriText>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{CONCERNS.filter(([key])=>["sleep","emotion","food","parenting","development","other"].includes(key)).map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={concerns.includes(key)} onPress={()=>toggleConcern(key)} testID={`onboarding-concern-${key}`} />)}</View>
+        {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":translate(locale, "其他话题")} value={concernOther} onChangeText={setConcernOther} />:null}
+      </>}
+      <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":translate(locale, "进入 NURI")):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
+      {page===0?<NuriButton secondary disabled={!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
+      {page===1?<NuriButton secondary label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{setSkipChild(true);setPage(2);}} testID="onboarding-skip-child" />:null}
+      {page>0?<NuriButton secondary label={t("返回")} onPress={goBack} />:null}
+    </AuthFrame>
+    {pickerOpen?<BirthPicker expecting={expecting} year={birthYear} month={birthMonth} day={birthDay} close={()=>setPickerOpen(false)} confirm={(year:number|null,month:number|null,day:number|null)=>{setBirthYear(year);setBirthMonth(month);setBirthDay(day);setSkipChild(false);setPickerOpen(false);}} />:null}
+  </View>;
 }
 
 function Hero({ page }: { page: number }) {
@@ -239,8 +249,11 @@ function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParen
 function ConcernPage({ concerns, toggle, other, setOther }: any) { const { t } = useT(); return <TextPage title="目前最想要解决的育儿问题" subtitle="目前最困扰你的事情是什么？（可多选）"><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View>{concerns.includes("other") && <TextInput value={other} onChangeText={setOther} placeholder={t("请描述你的困扰...")} placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
 function ChoicePage({ title, subtitle, options, value, onChange }: any) { const { t } = useT(); return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{t(label)}</Text></Pressable>)}</View></TextPage>; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { const { t } = useT(); return <View style={styles.field}><Text style={styles.label}>{t(label)}</Text>{children}</View>; }
-function BirthPicker({ year, month, day, close, confirm }: any) {
-  const { t } = useT();
+function BirthPicker({ expecting, year, month, day, close, confirm }: { expecting: boolean; year: number|null; month: number|null; day: number|null; close:()=>void; confirm:(year:number|null,month:number|null,day:number|null)=>void }) {
+  const { t, locale } = useT();
+  const theme = useNuriTheme();
+  const currentYear = new Date().getFullYear();
+  const years = expecting ? [currentYear, currentYear + 1] : Array.from({length:9},(_,i)=>currentYear-i);
   const [draftYear, setDraftYear] = useState<number | null>(year);
   const [draftMonth, setDraftMonth] = useState<number | null>(month);
   const [draftDay, setDraftDay] = useState<number | null>(day);
@@ -254,7 +267,23 @@ function BirthPicker({ year, month, day, close, confirm }: any) {
     setDraftMonth(value);
     if (draftYear) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(draftYear, value)));
   };
-  return <View style={styles.sheetRoot}><Pressable style={StyleSheet.absoluteFill} onPress={close} /><View style={styles.sheet}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{t("选择出生日期")}</Text><Pressable onPress={() => confirm(draftYear, draftMonth, draftDay)}><Text style={styles.done}>{t("确定")}</Text></Pressable></View><View style={styles.divide} /><View style={styles.pickerCols}><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{YEARS.map((value) => <Pressable key={value} onPress={() => updateYear(value)} style={[styles.pickerItem, draftYear === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 年", { value })}</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{MONTHS.map((value) => <Pressable key={value} onPress={() => updateMonth(value)} style={[styles.pickerItem, draftMonth === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 月", { value })}</Text></Pressable>)}</ScrollView><ScrollView style={styles.pickerColumn} showsVerticalScrollIndicator={false}>{days.map((value) => <Pressable key={value} onPress={() => setDraftDay(value)} style={[styles.pickerItem, draftDay === value && styles.pickerItemActive]}><Text style={styles.pickerText}>{t("{value} 日", { value })}</Text></Pressable>)}</ScrollView></View></View></View>;
+  const selected = draftYear && draftMonth && draftDay ? formatDateOnly({year:draftYear,month:draftMonth,day:draftDay}) : "";
+  const valid = expecting ? isValidDueDate(selected) : isValidBirthDate(selected);
+  const columns = [
+    {name:"year",values:years,value:draftYear,change:updateYear,label:(value:number)=>locale==="en"?String(value):t("{value} 年",{value})},
+    {name:"month",values:MONTHS,value:draftMonth,change:updateMonth,label:(value:number)=>locale==="en"?String(value):t("{value} 月",{value})},
+    {name:"day",values:days,value:draftDay,change:setDraftDay,label:(value:number)=>locale==="en"?String(value):t("{value} 日",{value})},
+  ];
+  return <View style={[StyleSheet.absoluteFill,{backgroundColor:theme.night?"rgba(20,17,33,.7)":"rgba(66,49,66,.24)"}]} accessibilityViewIsModal>
+    <AuthFrame testID="onboarding-date-card" contentGap={16}>
+      <NuriText style={{fontSize:20,lineHeight:28,fontWeight:"500"}}>{expecting?t("选择预产期"):t("选择出生日期")}</NuriText>
+      <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期要在今天之后的 40 周内"):t("请选择完整的出生年、月、日")}</NuriText>
+      <View style={{flexDirection:"row",gap:8,height:184}}>{columns.map(column=><ScrollView key={column.name} style={{flex:1}} showsVerticalScrollIndicator={false} testID={`birth-picker-${column.name}`} keyboardShouldPersistTaps="handled">{column.values.map(value=><Pressable key={value} accessibilityRole="button" accessibilityState={{selected:column.value===value}} accessibilityLabel={`${column.name}: ${value}`} testID={`birth-picker-${column.name}-${value}`} onPress={()=>column.change(value)} style={{minHeight:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:column.value===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{column.label(value)}</NuriText></Pressable>)}</ScrollView>)}</View>
+      <NuriText testID="birth-picker-selection" style={{fontSize:14}}>{selected||"YYYY-MM-DD"}</NuriText>
+      <NuriButton label={t("确定")} disabled={!valid} onPress={()=>confirm(draftYear,draftMonth,draftDay)} testID="birth-picker-confirm" />
+      <NuriButton secondary label={locale==="en"?"Cancel":translate(locale, "取消")} onPress={close} testID="birth-picker-cancel" />
+    </AuthFrame>
+  </View>;
 }
 
 const styles = StyleSheet.create({
