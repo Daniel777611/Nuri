@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Platform } from "react-native";
+import { Appearance, Platform } from "react-native";
 import { storage } from "@/src/utils/storage";
 import { THEME48, type NuriMode } from "./tokens";
 import { useT } from "@/src/i18n";
 import { DefaultTheme, DarkTheme, ThemeProvider as NavigationThemeProvider } from "@react-navigation/native";
+import { iosKeyboard48 } from "./keyboard";
 
 const MODES: NuriMode[] = ["Morning", "Afternoon", "Night"];
 const hourMode = (): NuriMode => { const h = new Date().getHours(); return h < 12 && h >= 5 ? "Morning" : h < 19 && h >= 12 ? "Afternoon" : "Night"; };
@@ -12,6 +13,13 @@ const Context = createContext({ mode: "Morning" as NuriMode, setMode: (_mode: Nu
 export function NuriThemeProvider({ children }: { children: ReactNode }) {
   const [mode, update] = useState<NuriMode>(hourMode);
   const { setLocale } = useT();
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    // This is an app-local appearance override, not a device setting. Keep
+    // system keyboard chrome/alerts in the same day/night mode as Nuri.
+    Appearance.setColorScheme(mode === "Night" ? "dark" : "light");
+    return () => Appearance.setColorScheme(null);
+  }, [mode]);
   useEffect(() => {
     let active = true;
     void storage.getItem("nuri_uiux48_theme", "").then(saved => {
@@ -38,7 +46,7 @@ export function NuriThemeProvider({ children }: { children: ReactNode }) {
 export function useNuriTheme() {
   const { mode, setMode } = useContext(Context);
   const token = (name: keyof typeof THEME48) => THEME48[name][mode];
-  return { mode, setMode, night: mode === "Night", token,
+  return { mode, setMode, night: mode === "Night", keyboard: iosKeyboard48(mode === "Night"), token,
     ink: String(token("color/text/primary")), secondary: String(token("color/text/card-secondary")),
     glass: String(token("color/glass/unified-card-27")),
     message: String(token("color/chat/nuri-message-glass-23")),

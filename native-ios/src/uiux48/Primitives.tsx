@@ -63,7 +63,7 @@ export function NuriButton({ label, busy, secondary, style, ...props }: Omit<Pre
 }
 export const NuriField = forwardRef<TextInput,TextInputProps & { label?: string }>(function NuriField({ label, style, ...props }, ref) {
   const t = useNuriTheme();
-  return <View style={s.fieldWrap}>{label ? <NuriText secondary style={s.label}>{label}</NuriText> : null}<TextInput {...props} ref={ref} placeholderTextColor={t.secondary} style={[s.field,{color:t.ink,backgroundColor:t.composer,borderColor:t.outline},style]} /></View>;
+  return <View style={s.fieldWrap}>{label ? <NuriText secondary style={s.label}>{label}</NuriText> : null}<TextInput keyboardAppearance={t.keyboard.appearance} {...props} ref={ref} placeholderTextColor={t.secondary} style={[s.field,{color:t.ink,backgroundColor:t.composer,borderColor:t.outline},style]} /></View>;
 });
 export function CenteredCard({ children, testID, maxHeight, scroll = true, contentGap = 20 }: { children: ReactNode; testID?: string; maxHeight?: number; scroll?: boolean; contentGap?: number }) {
   return <View style={s.cardRegion}><GlassSurface testID={testID} style={[s.mainCard, maxHeight ? {maxHeight} : null]} contentStyle={{ padding: 24 }} kind="message">

@@ -18,6 +18,7 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const input=(large=false)=><TextInput
     ref={large?undefined:compactRef} value={value} onChangeText={onChangeText}
     multiline autoFocus={large} scrollEnabled={large||height>=72} editable={!disabled&&!busy}
+    keyboardAppearance={t.keyboard.appearance}
     placeholder={placeholder??(en?"Say something to Nuri…":"和 Nuri 说点什么…")}
     placeholderTextColor={t.secondary}
     onFocus={()=>{setFocused(true);onFocus?.();}} onBlur={()=>{setFocused(false);onBlur?.();}}
@@ -37,10 +38,14 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
       </Pressable>:null}
     </>;
   };
-  const keyboardAccessory=(large=false)=><InputAccessoryView nativeID={large?accessoryId+"-expanded":accessoryId}>
-    <View style={[s.accessory,{backgroundColor:t.composer}]}>
+  const keyboardAccessory=(large=false)=><InputAccessoryView nativeID={large?accessoryId+"-expanded":accessoryId} backgroundColor="transparent">
+    <View style={s.accessory} testID={`${testID}-${large?"expanded-":""}keyboard-panel`}>
+      {/* The keyboard and accessory are separate native views. Continue the
+          panel material behind the keyboard's rounded top corners, rather
+          than exposing the room through a second pair of corner cutouts. */}
+      <View pointerEvents="none" style={[s.keyboardPanel,{backgroundColor:t.keyboard.surface}]} testID={`${testID}-${large?"expanded-":""}keyboard-material`} />
       <Pressable onPress={done} style={s.doneTarget} accessibilityRole="button" accessibilityLabel={en?"Done":"完成"} testID={`${testID}-${large?"expanded-":""}keyboard-done`}>
-        <NuriText style={{fontSize:15,lineHeight:22}}>{en?"Done":"完成"}</NuriText>
+        <NuriText style={{fontSize:15,lineHeight:22,fontWeight:"600",color:t.keyboard.ink}}>{en?"Done":"完成"}</NuriText>
       </Pressable>
     </View>
   </InputAccessoryView>;
@@ -74,5 +79,6 @@ const s=StyleSheet.create({
   expandedText:{height:132,position:"relative"},
   expandedActions:{height:44,flexDirection:"row",alignItems:"center"},
   accessory:{height:44,alignItems:"flex-end",justifyContent:"center",paddingRight:12},
+  keyboardPanel:{position:"absolute",top:0,left:0,right:0,bottom:-28,borderTopLeftRadius:28,borderTopRightRadius:28},
   doneTarget:{minWidth:64,height:44,alignItems:"center",justifyContent:"center"},
 });

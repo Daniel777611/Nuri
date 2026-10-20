@@ -16,11 +16,12 @@ test("drafts survive Home/full-chat bridge but never cross account epochs or sta
 });
 const nodes=n=>!n||typeof n!=="object"?[]:Array.isArray(n)?n.flatMap(nodes):[n,...nodes(n.props?.children)];
 let sequence=0;
-function composer(initial={}){
+function composer(initial={},night=false){
  const slots=[];let cursor=0;let tree;const calls=[];let props={value:"",onChangeText:v=>{props.value=v;},onSend:()=>calls.push("send"),onAttach:()=>calls.push("attach"),onMic:()=>calls.push("mic"),testID:"qa",...initial};
  const react={useRef(value){const i=cursor++;return slots[i]??={current:value};},useId(){const i=cursor++;return slots[i]??= "composer-"+(++sequence);},useState(value){const i=cursor++;if(!(i in slots))slots[i]=value;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
  const jsx=(type,props)=>({type,props});
- const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View"},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{useT:()=>({locale:"en"})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff"})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
+ const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
+ const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View"},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{useT:()=>({locale:"en"})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
  const render=()=>{cursor=0;tree=Component(props);return tree;};
  return{render,calls,props,find:id=>nodes(tree).find(n=>n.props?.testID===id),kind:type=>nodes(tree).find(n=>n.type===type)};
 }
@@ -43,6 +44,25 @@ test("glass has role/theme strength and composer remains the opaque input tier",
  const {GLASS_BLUR48:g}=load("../src/uiux48/materials.ts");
  assert.ok(g.Night.card>g.Morning.card);assert.ok(g.Night.message>g.Afternoon.message);
  for(const mode of ["Morning","Afternoon","Night"]){assert.equal(g[mode].composer,100);assert.equal(g[mode].pill,70);}
+});
+test("native keyboard and Done share the day/night panel without purple glass or exposed lower corners",()=>{
+ for(const night of [false,true]){
+  const p=composer({value:"draft"},night);p.render();
+  const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
+  assert.equal(p.find("qa-input").props.keyboardAppearance,night?"dark":"light");
+  assert.equal(p.kind("Accessory").props.backgroundColor,"transparent");
+  assert.equal(p.find("qa-keyboard-material").props.style[1].backgroundColor,keyboard.surface);
+  const panel=p.find("qa-keyboard-material").props.style[0];
+  assert.equal(panel.borderTopLeftRadius,28);assert.equal(panel.borderTopRightRadius,28);assert.equal(panel.bottom,-28);
+  assert.equal(p.find("qa-keyboard-panel").props.style.height,44);
+  assert.equal(p.find("qa-keyboard-done").props.style.height,44);
+  p.find("qa-expand").props.onPress();p.render();
+  assert.equal(p.find("qa-expanded-input").props.keyboardAppearance,night?"dark":"light");
+  assert.equal(p.find("qa-expanded-keyboard-material").props.style[1].backgroundColor,keyboard.surface);
+ }
+ const theme=readFileSync(new URL("../src/uiux48/Theme.tsx",import.meta.url),"utf8");
+ assert.match(theme,/Appearance\.setColorScheme\(mode === "Night" \? "dark" : "light"\)/);
+ assert.match(readFileSync(new URL("../src/uiux48/Primitives.tsx",import.meta.url),"utf8"),/keyboardAppearance=\{t\.keyboard\.appearance\}/);
 });
 test("all 112 theme and 54 layout tokens retain three design modes",()=>{
  const t=load("../src/uiux48/tokens.ts");assert.equal(Object.keys(t.THEME48).length,112);assert.equal(Object.keys(t.LAYOUT48).length,54);
