@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {translate} from './i18n-test-utils.mjs';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import ts from 'typescript';
@@ -38,9 +39,9 @@ test('actual tab component has no Community or notification-history buttons/icon
  const ast=ts.createSourceFile('Shell.tsx',read('src/uiux48/Shell.tsx'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  const component=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='NuriTabBar');assert.ok(component);
  const code=ts.transpileModule(component.getText(ast)+'\nmodule.exports=NuriTabBar;',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
- for(const locale of ['zh-CN','en']){
+ for(const locale of ['zh-CN','zh-TW','en']){
   const jsx=(type,props)=>({type,props}),m={exports:{}},routes=[];
-  new Function('require','module','exports','usePathname','useRouter','useT','useNuriTheme','useSafeAreaInsets','APP_STORE_TABS','requestGuardedNativeNavigation','View','GlassSurface','Pressable','NuriIcon','Text','s',code)(()=>({jsx,jsxs:jsx}),m,m.exports,()=>'/profile',()=>({navigate:p=>routes.push(p)}),()=>({locale}),()=>({night:false,ink:'#222'}),()=>({bottom:34}),policy.APP_STORE_TABS,()=>false,'View','Glass','Pressable','Icon','Text',{footer:{},tabs:{},tab:{}});
+  new Function('require','module','exports','usePathname','useRouter','useT','useNuriTheme','useSafeAreaInsets','APP_STORE_TABS','requestGuardedNativeNavigation','View','GlassSurface','Pressable','NuriIcon','Text','s','translate',code)(()=>({jsx,jsxs:jsx}),m,m.exports,()=>'/profile',()=>({navigate:p=>routes.push(p)}),()=>({locale}),()=>({night:false,ink:'#222'}),()=>({bottom:34}),policy.APP_STORE_TABS,()=>false,'View','Glass','Pressable','Icon','Text',{footer:{},tabs:{},tab:{}},translate);
   const all=nodes(m.exports()),tabs=all.filter(n=>n.props?.accessibilityRole==='tab');assert.equal(tabs.length,2);
   assert.deepEqual(tabs.map(n=>n.props.testID),['nuri-tab-home','nuri-tab-chat']);
   assert.deepEqual(all.filter(n=>n.type==='Icon').map(n=>n.props.name),['home','chat']);
