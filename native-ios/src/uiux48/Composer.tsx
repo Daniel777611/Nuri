@@ -1,5 +1,5 @@
 import { useId, useRef, useState, type RefObject } from "react";
-import { InputAccessoryView, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { InputAccessoryView, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useT } from "@/src/i18n";
 import { useNuriTheme } from "./Theme";
@@ -11,12 +11,21 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const [focused,setFocused] = useState(false);
   const localInput = useRef<TextInput>(null);
   const compactRef = inputRef ?? localInput;
+  const expandedInput = useRef<TextInput>(null);
+  const dismissAfterModal = useRef(false);
   const t=useNuriTheme(); const {locale}=useT(); const safe=useSafeAreaInsets(); const en=locale==="en";
+  const window = useWindowDimensions();
   const accessoryId=`nuri-composer-${useId()}`;
-  const done=()=>{Keyboard.dismiss();setExpanded(false);setFocused(false);};
+  const blurAndDismiss=()=>{compactRef.current?.blur();expandedInput.current?.blur();Keyboard.dismiss();};
+  const done=()=>{dismissAfterModal.current=expanded;blurAndDismiss();setExpanded(false);setFocused(false);};
+  const onExpandedDismiss=()=>{
+    // iOS restores the presenting field's focus when its Modal disappears.
+    // Honour Done again after that restoration, without clearing the draft.
+    if(dismissAfterModal.current){dismissAfterModal.current=false;blurAndDismiss();setFocused(false);}
+  };
   const send=()=>{if(disabled||busy||recording||(!value.trim()&&!hasAttachment))return false;onSend();return true;};
   const input=(large=false)=><TextInput
-    ref={large?undefined:compactRef} value={value} onChangeText={onChangeText}
+    ref={large?expandedInput:compactRef} value={value} onChangeText={onChangeText}
     multiline autoFocus={large} scrollEnabled={large||height>=72} editable={!disabled&&!busy}
     keyboardAppearance={t.keyboard.appearance}
     placeholder={placeholder??(en?"Say something to Nuri…":"和 Nuri 说点什么…")}
@@ -38,22 +47,23 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
       </Pressable>:null}
     </>;
   };
-  const keyboardAccessory=(large=false)=><InputAccessoryView nativeID={large?accessoryId+"-expanded":accessoryId} backgroundColor="transparent">
-    <View style={s.accessory} testID={`${testID}-${large?"expanded-":""}keyboard-panel`}>
-      {/* The keyboard and accessory are separate native views. Continue the
-          panel material behind the keyboard's rounded top corners, rather
-          than exposing the room through a second pair of corner cutouts. */}
-      <View pointerEvents="none" style={[s.keyboardPanel,{backgroundColor:t.keyboard.surface}]} testID={`${testID}-${large?"expanded-":""}keyboard-material`} />
+  const keyboardAccessory=(large=false)=>{
+    const id=large?accessoryId+"-expanded":accessoryId;
+    const content=<View style={[s.accessory,{width:window.width}]} testID={`${testID}-${large?"expanded-":""}keyboard-panel`}>
       <Pressable onPress={done} style={s.doneTarget} accessibilityRole="button" accessibilityLabel={en?"Done":"完成"} testID={`${testID}-${large?"expanded-":""}keyboard-done`}>
         <NuriText style={{fontSize:15,lineHeight:22,fontWeight:"600",color:t.keyboard.ink}}>{en?"Done":"完成"}</NuriText>
       </Pressable>
-    </View>
-  </InputAccessoryView>;
+    </View>;
+    // The shell supplies one continuous panel behind this accessory and the
+    // system keyboard, using the real keyboard frame rather than an overlay
+    // drawn over native keys or predictive suggestions.
+    return <InputAccessoryView nativeID={id}>{content}</InputAccessoryView>;
+  };
   return <View>
-    {(focused||value.length>0)?<View style={{alignItems:"flex-end"}}><IconAction name="expand" label={en?"Expand composer":"展开输入"} onPress={()=>setExpanded(true)} testID={`${testID}-expand`} /></View>:null}
+    {(focused||value.length>0)?<View style={{alignItems:"flex-end"}}><IconAction name="expand" label={en?"Expand composer":"展开输入"} onPress={()=>{dismissAfterModal.current=false;setExpanded(true);}} testID={`${testID}-expand`} /></View>:null}
     <GlassSurface kind="composer" contentStyle={s.row} testID={`${testID}-composer`}>{controls()}</GlassSurface>
     {recording?<NuriText secondary style={{fontSize:12,paddingTop:6}}>{en?"Recording — tap the microphone to finish":"正在录音，再点麦克风结束"}</NuriText>:null}
-    <Modal visible={expanded} transparent animationType="slide" onRequestClose={()=>setExpanded(false)}>
+    <Modal visible={expanded} transparent animationType="slide" onRequestClose={done} onDismiss={onExpandedDismiss}>
       <KeyboardAvoidingView behavior={Platform.OS==="ios"?"padding":"height"} style={[s.modal,{paddingBottom:Math.max(safe.bottom,12)}]}>
         <GlassSurface contentStyle={s.expandedCard} style={{width:"100%",maxWidth:500,alignSelf:"center"}} kind="composer" testID={`${testID}-expanded-composer`}>
           <View style={s.expandedText}>
@@ -79,6 +89,5 @@ const s=StyleSheet.create({
   expandedText:{height:132,position:"relative"},
   expandedActions:{height:44,flexDirection:"row",alignItems:"center"},
   accessory:{height:44,alignItems:"flex-end",justifyContent:"center",paddingRight:12},
-  keyboardPanel:{position:"absolute",top:0,left:0,right:0,bottom:-28,borderTopLeftRadius:28,borderTopRightRadius:28},
   doneTarget:{minWidth:64,height:44,alignItems:"center",justifyContent:"center"},
 });

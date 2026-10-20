@@ -21,7 +21,7 @@ function composer(initial={},night=false){
  const react={useRef(value){const i=cursor++;return slots[i]??={current:value};},useId(){const i=cursor++;return slots[i]??= "composer-"+(++sequence);},useState(value){const i=cursor++;if(!(i in slots))slots[i]=value;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
  const jsx=(type,props)=>({type,props});
  const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
- const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View"},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{useT:()=>({locale:"en"})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
+ const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){calls.push("dismiss-keyboard");}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View",useWindowDimensions:()=>({width:402,height:874})},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{useT:()=>({locale:"en"})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
  const render=()=>{cursor=0;tree=Component(props);return tree;};
  return{render,calls,props,find:id=>nodes(tree).find(n=>n.props?.testID===id),kind:type=>nodes(tree).find(n=>n.type===type)};
 }
@@ -45,24 +45,52 @@ test("glass has role/theme strength and composer remains the opaque input tier",
  assert.ok(g.Night.card>g.Morning.card);assert.ok(g.Night.message>g.Afternoon.message);
  for(const mode of ["Morning","Afternoon","Night"]){assert.equal(g[mode].composer,100);assert.equal(g[mode].pill,70);}
 });
-test("native keyboard and Done share the day/night panel without purple glass or exposed lower corners",()=>{
+test("native keyboard keeps its own suggestions and the same functional Done callback",()=>{
  for(const night of [false,true]){
   const p=composer({value:"draft"},night);p.render();
-  const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
   assert.equal(p.find("qa-input").props.keyboardAppearance,night?"dark":"light");
-  assert.equal(p.kind("Accessory").props.backgroundColor,"transparent");
-  assert.equal(p.find("qa-keyboard-material").props.style[1].backgroundColor,keyboard.surface);
-  const panel=p.find("qa-keyboard-material").props.style[0];
-  assert.equal(panel.borderTopLeftRadius,28);assert.equal(panel.borderTopRightRadius,28);assert.equal(panel.bottom,-28);
-  assert.equal(p.find("qa-keyboard-panel").props.style.height,44);
+  assert.equal(p.kind("Accessory").props.nativeID,p.find("qa-input").props.inputAccessoryViewID);
+  assert.equal(p.find("qa-keyboard-material"),undefined,"No overlay may cover predictive keyboard content");
+  assert.equal(p.find("qa-keyboard-panel").props.style[0].height,44);
   assert.equal(p.find("qa-keyboard-done").props.style.height,44);
   p.find("qa-expand").props.onPress();p.render();
   assert.equal(p.find("qa-expanded-input").props.keyboardAppearance,night?"dark":"light");
-  assert.equal(p.find("qa-expanded-keyboard-material").props.style[1].backgroundColor,keyboard.surface);
+  assert.equal(p.kind("Accessory").props.nativeID,p.find("qa-expanded-input").props.inputAccessoryViewID);
+  p.find("qa-expanded-keyboard-done").props.onPress();p.render();
+  assert.equal(p.kind("Modal").props.visible,false);assert.deepEqual(p.calls,["dismiss-keyboard"]);
  }
  const theme=readFileSync(new URL("../src/uiux48/Theme.tsx",import.meta.url),"utf8");
  assert.match(theme,/Appearance\.setColorScheme\(mode === "Night" \? "dark" : "light"\)/);
  assert.match(readFileSync(new URL("../src/uiux48/Primitives.tsx",import.meta.url),"utf8"),/keyboardAppearance=\{t\.keyboard\.appearance\}/);
+ const shell=readFileSync(new URL("../src/uiux48/Shell.tsx",import.meta.url),"utf8");
+ assert.match(shell,/top:panelTop/);assert.match(shell,/backgroundColor:keyboardTheme.surface/);
+ assert.doesNotMatch(readFileSync(new URL("../src/uiux48/Composer.tsx",import.meta.url),"utf8"),/bottom:\s*-28|NativeKeyboardAccessory/);
+});
+test("keyboard panel uses measured frame coordinates, not a fixed bottom margin or floating-keyboard mask",()=>{
+ const {keyboardPanelTop:top}=load("../src/uiux48/keyboard.ts");
+ assert.equal(top({screenY:500,height:374,width:402},{y:0,height:874,width:402}),500);
+ assert.equal(top({screenY:500,height:374,width:402},{y:62,height:812,width:402}),438);
+ assert.equal(top({screenY:874,height:0,width:402},{y:0,height:874,width:402}),null);
+ assert.equal(top({screenY:874,height:374,width:402},{y:0,height:874,width:402}),null);
+ assert.equal(top({screenY:500,height:200,width:250},{y:0,height:874,width:402}),null);
+ assert.equal(top(null,{y:0,height:874,width:402}),null);
+});
+test("Done blurs both native fields and survives modal focus restoration without losing the draft",()=>{
+ const p=composer({value:"three\nline\ndraft"});p.render();
+ const compact=p.find("qa-input").props.ref;
+ compact.current={blur:()=>p.calls.push("blur-compact")};
+ p.find("qa-keyboard-done").props.onPress();
+ assert.deepEqual(p.calls,["blur-compact","dismiss-keyboard"]);
+ p.calls.length=0;p.find("qa-expand").props.onPress();p.render();
+ p.find("qa-expanded-input").props.ref.current={blur:()=>p.calls.push("blur-expanded")};
+ p.find("qa-expanded-keyboard-done").props.onPress();p.render();
+ assert.equal(p.kind("Modal").props.visible,false);
+ assert.equal(p.find("qa-input").props.value,"three\nline\ndraft");
+ p.kind("Modal").props.onDismiss();
+ assert.deepEqual(p.calls,["blur-compact","blur-expanded","dismiss-keyboard","blur-compact","blur-expanded","dismiss-keyboard"]);
+ p.kind("Modal").props.onDismiss();assert.equal(p.calls.length,6,"Dismiss intent is consumed once");
+ p.calls.length=0;p.find("qa-expand").props.onPress();p.render();p.find("qa-expanded-done").props.onPress();p.render();
+ p.kind("Modal").props.onDismiss();assert.deepEqual(p.calls,[],"Collapse preserves normal focus behavior");
 });
 test("all 112 theme and 54 layout tokens retain three design modes",()=>{
  const t=load("../src/uiux48/tokens.ts");assert.equal(Object.keys(t.THEME48).length,112);assert.equal(Object.keys(t.LAYOUT48).length,54);

@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Keyboard, Platform, Pressable, StyleSheet, Text, View, type KeyboardEvent } from "react-native";
 import { usePathname, useRouter, useSegments, useGlobalSearchParams } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -9,19 +9,31 @@ import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigatio
 import { NuriScene } from "./Scene";
 import { useNuriTheme } from "./Theme";
 import { GlassSurface, NuriIcon } from "./Primitives";
+import { keyboardPanelTop } from "./keyboard";
 
 export function NuriShell({ children }: { children: ReactNode }) {
-  const path=usePathname(); const segments=useSegments(); const {night,mode}=useNuriTheme();
+  const path=usePathname(); const segments=useSegments(); const {night,mode,keyboard:keyboardTheme}=useNuriTheme();
   const [keyboard,setKeyboard]=useState(false);
-  useEffect(()=>{const show=Keyboard.addListener("keyboardWillShow",()=>setKeyboard(true));const hide=Keyboard.addListener("keyboardWillHide",()=>setKeyboard(false));const showAndroid=Keyboard.addListener("keyboardDidShow",()=>setKeyboard(true));const hideAndroid=Keyboard.addListener("keyboardDidHide",()=>setKeyboard(false));return()=>{show.remove();hide.remove();showAndroid.remove();hideAndroid.remove();};},[]);
+  const root=useRef<View>(null);
+  const [rootFrame,setRootFrame]=useState({y:0,width:0,height:0});
+  const [keyboardFrame,setKeyboardFrame]=useState<KeyboardEvent["endCoordinates"]|null>(null);
+  useEffect(()=>{
+    const show=(event:KeyboardEvent)=>{if(Platform.OS==="ios")Keyboard.scheduleLayoutAnimation(event);setKeyboard(true);setKeyboardFrame(event.endCoordinates);};
+    const hide=()=>{setKeyboard(false);setKeyboardFrame(null);};
+    const change=(event:KeyboardEvent)=>{Keyboard.scheduleLayoutAnimation(event);setKeyboardFrame(event.endCoordinates);};
+    const listeners=[Keyboard.addListener("keyboardWillShow",show),Keyboard.addListener("keyboardWillHide",hide),Keyboard.addListener("keyboardDidShow",show),Keyboard.addListener("keyboardDidHide",hide),Keyboard.addListener("keyboardWillChangeFrame",change)];
+    return()=>listeners.forEach(listener=>listener.remove());
+  },[]);
+  const panelTop=Platform.OS==="ios"&&keyboard?keyboardPanelTop(keyboardFrame,rootFrame):null;
   const welcome=path==="/welcome";
   const {uiState}=useGlobalSearchParams<{uiState?:string}>();
   const signedOutResult=path==="/account-deletion"&&uiState==="deleted";
   const home=segments[0]==="(tabs)"&&path==="/";
   const auth=/^\/(welcome|login|register|verify-email|forgot-password|onboarding|ai-permission)$/.test(path);
-  return <View testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
+  return <View ref={root} onLayout={()=>root.current?.measureInWindow((_x,y,width,height)=>setRootFrame(previous=>previous.y===y&&previous.width===width&&previous.height===height?previous:{y,width,height}))} testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
     <StatusBar style={night?"light":"dark"} />
     <NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />
+    {panelTop!==null?<View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="nuri-keyboard-backplate" style={{position:"absolute",top:panelTop,left:0,right:0,bottom:0,borderTopLeftRadius:28,borderTopRightRadius:28,backgroundColor:keyboardTheme.surface}} />:null}
     {!welcome?<SafeAreaView edges={["top"]} style={Platform.OS==="web"?{paddingTop:62}:undefined}>{home?null:<NativePageControls />}</SafeAreaView>:null}
     <SafeAreaView edges={auth&&!welcome?["bottom"]:[]} style={{flex:1,minHeight:0,paddingBottom:Platform.OS==="web"&&auth&&!welcome?34:0}}>{children}</SafeAreaView>
     {!auth&&!welcome&&!keyboard&&!signedOutResult?<NuriTabBar />:null}
