@@ -4,6 +4,7 @@ import { NuriComposer } from "@/src/uiux48/Composer";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
+import { appStoreNavigationRoute } from "@/src/appStoreRelease";
 import { auth } from "@/src/api";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCallback, useEffect, useRef } from "react";
@@ -419,7 +420,10 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       if (router.canGoBack()) router.back();
       else router.dismissTo("/(tabs)");
     } else if (action === "home") returnHome();
-    else router.navigate(({notifications:"/notifications",chat:"/(tabs)/chats",community:"/community",profile:"/(tabs)/profile"}[action]) as never);
+    else {
+      const destination=appStoreNavigationRoute(action);
+      if(destination)router.navigate(destination as never);
+    }
   }, [router, capture, returnHome]);
 
   const requestHomeReturn = useCallback(() => {

@@ -19,6 +19,7 @@ import { usePushBridge } from "@/src/usePushBridge";
 import NativePageControls from "@/src/components/NativePageControls";
 import { NuriThemeProvider, NuriNavigationTheme } from "@/src/uiux48/Theme";
 import { NuriShell } from "@/src/uiux48/Shell";
+import { APP_STORE_BLOCKED_STACK_ROUTES } from "@/src/appStoreRelease";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -54,7 +55,7 @@ export default function RootLayout() {
               headerShown: false,
               contentStyle: { backgroundColor: "transparent" },
             }}
-          /></NuriShell></NuriNavigationTheme></NuriThemeProvider>
+          ><Stack.Protected guard={false}>{APP_STORE_BLOCKED_STACK_ROUTES.map(name => <Stack.Screen key={name} name={name} />)}</Stack.Protected></Stack></NuriShell></NuriNavigationTheme></NuriThemeProvider>
         </SafeAreaProvider>
       </I18nProvider>
     </GestureHandlerRootView>

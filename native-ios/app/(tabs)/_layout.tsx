@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 
-// UIUX48's shared shell owns the four-tab bar; nested stacks stay transparent.
+// The App Store shell exposes only mature Home/Chat tabs. Profile stays in Settings.
 export default function MainLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return <Stack screenOptions={{ headerShown: false }}><Stack.Protected guard={false}><Stack.Screen name="tasks" /></Stack.Protected></Stack>;
 }

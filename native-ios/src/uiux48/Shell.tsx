@@ -10,6 +10,7 @@ import { NuriScene } from "./Scene";
 import { useNuriTheme } from "./Theme";
 import { GlassSurface, NuriIcon } from "./Primitives";
 import { keyboardPanelTop } from "./keyboard";
+import { APP_STORE_TABS } from "@/src/appStoreRelease";
 
 export function NuriShell({ children }: { children: ReactNode }) {
   const path=usePathname(); const segments=useSegments(); const {night,mode,keyboard:keyboardTheme}=useNuriTheme();
@@ -42,9 +43,8 @@ export function NuriShell({ children }: { children: ReactNode }) {
 
 export function NuriTabBar() {
   const path=usePathname();const router=useRouter();const {locale}=useT();const t=useNuriTheme();const safe=useSafeAreaInsets();
-  const active=path.startsWith("/chat")?"chat":path.startsWith("/notification")?"notifications":path.startsWith("/community")?"community":path==="/"?"home":null;
-  const routes=[{name:"home",cn:"首页",en:"Home",route:"/(tabs)"},{name:"chat",cn:"对话",en:"Chat",route:"/(tabs)/chats"},{name:"notifications",cn:"推送",en:"Notifications",route:"/notifications"},{name:"community",cn:"社区",en:"Community",route:"/community"}] as const;
-  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><GlassSurface kind="pill" contentStyle={s.tabs} style={{width:"100%",maxWidth:500,alignSelf:"center"}}>{routes.map(tab=><Pressable key={tab.name} onPress={()=>{
+  const active=path.startsWith("/chat")?"chat":path==="/"?"home":null;
+  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><GlassSurface kind="pill" contentStyle={s.tabs} style={{width:"100%",maxWidth:280,alignSelf:"center"}}>{APP_STORE_TABS.map(tab=><Pressable key={tab.name} onPress={()=>{
     if(active===tab.name)return;
     if(requestGuardedNativeNavigation(path,tab.name))return;
     router.navigate(tab.route as never);

@@ -127,10 +127,10 @@ test("every actual profile/text/audio/image/context adapter is fail-closed, not 
     () => f.api.sendMessage("session", { text: "mock" }), () => f.api.sendMessage("session", { text: "", image_base64: "data:image/jpeg;base64,bW9jaw==" }),
     () => f.api.streamMessage("session", { text: "mock" }, () => {}), () => f.api.transcribeVoice("bW9jaw==", "en"),
     () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardResearch("card"),
-    () => f.api.taskInsights(), () => f.api.createTask({ text: "mock" }), () => f.api.updateTask("task", { mood: "mock" }),
     () => f.api.openNotification("notification"), () => f.api.setPrivacy({ daily_push: true }), () => f.api.setPrivacy({ allow_external_content_research: true }), () => f.api.setPrivacy({ allow_history_training: true }),
   ];
   for (const run of operations) await assert.rejects(run(), blocked);
+  for(const name of ["taskInsights","createTask","updateTask","listTasks","deleteTask","clearCompletedTasks"])assert.equal(f.api[name],undefined,"Retired task adapters must not remain callable in the App Store build");
   assert.deepEqual(aiCalls(f), []);
 });
 
@@ -166,8 +166,8 @@ test("login/privacy/deletion and existing non-AI reads remain usable without AI 
   const f = fixture(); await f.auth.setToken("account-A");
   await f.api.login({ email: "mock@example.invalid", password: "mock" });
   await f.api.getPrivacy(); await f.api.setPrivacy({ daily_push: false, allow_external_content_research: false, allow_history_training: false });
-  await f.api.listChildren(); await f.api.listTasks(); await f.api.listSessions(); await f.api.getMessages("session"); await f.api.wipe(); await f.api.deleteChild("child"); await f.api.billingStatus();
-  assert.equal(f.calls.length, 10);
+  await f.api.listChildren(); await f.api.listSessions(); await f.api.getMessages("session"); await f.api.wipe(); await f.api.deleteChild("child"); await f.api.billingStatus();
+  assert.equal(f.calls.length, 9);
   assert.equal(policy.requiresAIConsent("/auth/account", { method: "DELETE" }), false);
   assert.equal(f.secureReads.length, 0);
 });

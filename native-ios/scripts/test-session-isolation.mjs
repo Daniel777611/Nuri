@@ -195,7 +195,7 @@ test("actual state hook clears on every epoch, rejects saved setters, queued upd
     await f.login("A"); assert.equal(render()[0], "safe"); const write = render()[1]; r.unmount(); write("unmounted"); assert.equal(render()[0], "safe");
   } finally { f.restore(); }
 });
-for (const name of ["profile", "tasks", "index"]) test("actual " + name + " clears visible A data immediately; B failures/late A/ABA cannot restore it", async () => {
+for (const name of ["profile", "index"]) test("actual " + name + " clears visible A data immediately; B failures/late A/ABA cannot restore it", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page("../app/(tabs)/" + name + ".tsx", f); p.render(); await tick(); p.render();
@@ -277,17 +277,14 @@ test("actual Home late canonical-session result cannot navigate B or an unmounte
     } finally { p?.unmount(); f.restore(); }
   }
 });
-test("preserved legacy Tasks late check-in result cannot open a B completion sheet", async () => {
-  const f = fixture(), barrier = deferred(); let p;
-  try {
-    await f.login("A"); await f.permit(); p = page("../app/(tabs)/tasks.tsx", f); p.render(); await tick(); p.render();
-    const taskCard = p.kind("TaskCard"); assert.ok(taskCard); const original = taskCard.props.task;
-    f.responder = (path, init) => path.startsWith("/tasks/") && init.method === "PATCH" ? barrier.promise : null;
-    const pending = taskCard.props.onCheckin(original); await tick(); await f.login("B"); p.render();
-    assert.ok(f.calls.some((call) => call.path.startsWith("/tasks/") && call.init.method === "PATCH"));
-    barrier.resolve(response({ ...original, completed_at: "2030-01-02" })); await pending; p.render();
-    assert.equal(p.kind("CheckinSheet").props.visible, false); assert.doesNotMatch(p.visible(), /A-private-/);
-  } finally { p?.unmount(); f.restore(); }
+test("retired task list/detail cannot display cached A data or send requests across A/B/ABA", async () => {
+  for(const path of ["../app/(tabs)/tasks.tsx","../app/task/[id].tsx"]){
+    const f=fixture();let p;
+    try{
+      await f.login("A");p=page(path,f,{exportName:"default"});
+      for(const owner of ["A","B","A"]){await f.login(owner);p.render();await tick();p.render();assert.equal(p.kind("Redirect").props.href,"/(tabs)");assert.equal(p.kind("TaskCard"),undefined);assert.equal(p.kind("CheckinSheet"),undefined);assert.doesNotMatch(p.visible(),/private-/);assert.equal(f.calls.length,0);}
+    }finally{p?.unmount();f.restore();}
+  }
 });
 test("actual notification preference two-step operation never sends the second write under B", async () => {
   const f = fixture(), barrier = deferred(); let p;
