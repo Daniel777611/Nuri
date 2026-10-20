@@ -1,3 +1,13 @@
+import ChatConversation from "../chat/[id]";
+import { GlassSurface, IconAction, NuriIcon, NuriText, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
+import { NuriComposer } from "@/src/uiux48/Composer";
+import { NuriAvatar } from "@/src/uiux48/Scene";
+import { useNuriTheme } from "@/src/uiux48/Theme";
+import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
+import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
+import { nuriResourceGuide } from "@/src/nuriResourceGuide";
+import { resourceLanguageMismatch, hasPostSummarySource } from "@/src/resourceSummary";
+import { KeyboardAvoidingView } from "react-native";
 import { useCallback, useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -70,67 +80,17 @@ const conversationExcerpt = (text: string, maxLength = 18) => {
     : normalized;
 };
 
-type HomeNavigationIconName = "knowledge" | "chat" | "tasks" | "community";
-
-const HOME_NAVIGATION_ICONS: Record<
-  HomeNavigationIconName,
-  { asset: string; fallback: keyof typeof Ionicons.glyphMap }
-> = {
-  knowledge: { asset: "navigation-knowledge.svg", fallback: "library-outline" },
-  chat: { asset: "navigation-chat.svg", fallback: "sparkles-outline" },
-  tasks: { asset: "navigation-tasks.svg", fallback: "calendar-outline" },
-  community: { asset: "navigation-community.svg", fallback: "people-outline" },
-};
-
-function HomeNavigationIcon({ name }: { name: HomeNavigationIconName }) {
-  const icon = HOME_NAVIGATION_ICONS[name];
-  if (Platform.OS === "web") {
-    return (
-      <Image
-        source={{ uri: `/homepage/${icon.asset}` }}
-        style={styles.navigationIcon}
-        resizeMode="contain"
-      />
-    );
-  }
-  return <Ionicons name={icon.fallback} size={25} color={C.text} />;
-}
-
-// 待开发占位 bottom sheet（统一规范）
-function DevSheet({
-  visible,
-  emoji,
-  name,
-  onClose,
-}: {
-  visible: boolean;
-  emoji: string;
-  name: string;
-  onClose: () => void;
-}) {
-  // Its own hook call: this sheet is a sibling of Home, not a child, so it
-  // cannot borrow the translator from there.
-  const { t } = useT();
-  if (!visible) return null;
-  return (
-    <View style={styles.sheetRoot}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-      <View style={styles.sheet} testID="dev-sheet">
-        <View style={styles.sheetHandle} />
-        <Text style={styles.sheetEmoji}>{emoji}</Text>
-        <Text style={styles.sheetTitle}>{t("{name}即将上线，敬请期待", { name })}</Text>
-        <Pressable onPress={onClose} style={styles.sheetBtn} testID="dev-sheet-close">
-          <Text style={styles.sheetBtnText}>{t("我知道了")}</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
 export default function Home() {
   const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
+  const theme48 = useNuriTheme();
+  const [homeDraft,setHomeDraft] = useState("");
+  const homeDraftHydration=useRef(true);
+  const [inlineSessionId,setInlineSessionId] = useState<string|null>(null);
+  const [inlineAction,setInlineAction] = useState<"send"|"attach"|"mic"|"focus"|undefined>(undefined);
+  const [inlineActive,setInlineActive] = useState(false);
+  const [bodyHeight,setBodyHeight] = useState(500);
   const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
   const { width: viewportWidth } = useWindowDimensions();
@@ -138,7 +98,7 @@ export default function Home() {
   // phone the frame shrinks with the viewport; on desktop it remains centered.
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const dailyCardWidth = Math.max(0, phoneWidth - 60);
-  const [nickname, setNickname] = useState("Momo妈妈");
+  const [nickname, setNickname] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -227,7 +187,7 @@ export default function Home() {
     setVideoFailure(null);
     if (!quiet) setDailyVideoStatus((previous) => previous === "ready" ? previous : "loading");
     try {
-      const result = await api.getDailyVideo();
+      const result = await api.getDailyVideo(locale);
       if (!current(ticket) || request !== dailyVideoRequest.current) return;
       if (result.state === "ready" && result.card) { setDailyVideo(result.card); setDailyVideoStatus("ready"); dailyVideoPolls.current = 0; }
       else if (result.state === "pending") setDailyVideoStatus("pending");
@@ -238,7 +198,7 @@ export default function Home() {
         setDailyVideoStatus((previous) => previous === "ready" ? previous : "error");
       }
     }
-  }, [capture, current, setDailyVideo, setDailyVideoStatus, setVideoFailure]);
+  }, [capture, current, locale, setDailyVideo, setDailyVideoStatus, setVideoFailure]);
 
   useEffect(() => {
     if (dailyVideoStatus !== "pending" || !isHomeFocused) return;
@@ -318,6 +278,10 @@ export default function Home() {
         preview?.has_conversation && typeof preview.session_id === "string"
           ? preview.session_id
           : null;
+      if(homeDraftHydration.current){
+        homeDraftHydration.current=false;
+        setHomeDraft(sessionId?readChatDraft(sessionId):"");
+      }
       const lastUserMessage = preview?.last_user_message?.text || "";
       // Only the backend-authored display text is shown. category/key remain
       // internal provenance and must never leak into parent-facing copy.
@@ -340,7 +304,7 @@ export default function Home() {
         setNuriPreviewStatus("error");
       }
     }
-  }, [capture, current, setNuriPreview, setNuriPreviewStatus, setNuriFailure]);
+  }, [capture, current, setNuriPreview, setNuriPreviewStatus, setNuriFailure, setHomeDraft]);
 
   const handleFailure = (failure: RequestFailureKind | null, retry: () => void) => {
     if (failure === "permission") router.push(aiPermissionHref("/(tabs)"));
@@ -349,6 +313,7 @@ export default function Home() {
   };
 
   const openNuriChat = async () => {
+    if(inlineActive&&requestGuardedNativeNavigation("/","chat"))return;
     const ticket = capture();
     if (ticket === null || !homeActive.current) return;
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
@@ -372,6 +337,7 @@ export default function Home() {
           ? { id: preview.session_id }
           : await api.getOrStartMainSession();
       if (!acceptsResult()) return;
+      if (!inlineActive) writeChatDraft(session.id, homeDraft, generation);
       router.push(`/chat/${session.id}`);
       navigated = true;
     } catch (error) {
@@ -422,6 +388,7 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       homeActive.current = true;
+      homeDraftHydration.current=true;
       void loadNuriPreview();
       void loadCheckin();
       return () => {
@@ -442,8 +409,10 @@ export default function Home() {
   const nuriMemo =
     nuriPreviewStatus === "error" && nuriFailure
       ? requestFailureCopy(locale, nuriFailure).title
-    : checkin?.state === "ready" && checkin.line
+    : checkin?.state === "ready" && checkin.line && !resourceLanguageMismatch(checkin.line,undefined,locale)
       ? checkin.line
+    : checkin?.state === "ready" && checkin.line
+      ? t("欢迎回来。想从哪里聊起？")
     : checkin?.state === "active"
       ? t("刚才的话还没聊完，要接着聊吗？")
     : hasLoadedPreview && nuriPreview?.hasLastUserMessage
@@ -472,386 +441,60 @@ export default function Home() {
           ? t("从这里聊起")
           : t("和我聊聊");
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-        <ScrollView
-          style={styles.scroll}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 94 + insets.bottom }}
-        >
-          <View style={styles.topBar}>
-            <Image
-              source={
-                Platform.OS === "web"
-                  ? { uri: "/homepage/nuri-mark.svg" }
-                  : nativeLogoImage
-              }
-              style={styles.logo}
-              resizeMode="contain"
-            />
-            <Text style={styles.welcome} numberOfLines={1}>
-              {t("欢迎！{nickname}", { nickname })}
-            </Text>
-            <Pressable
-              onPress={() => router.push("/(tabs)/profile")}
-              testID="home-avatar"
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={t("个人资料")}
-            >
-              <View style={styles.avatar}>
-                {avatarUrl ? (
-                  <Image source={{ uri: avatarUrl }} style={styles.avatarImage} resizeMode="cover" />
-                ) : (
-                  <Text style={styles.avatarText}>{nickname.slice(0, 1)}</Text>
-                )}
-              </View>
+  const beginInline = async (action:"send"|"attach"|"mic"|"focus") => {
+    const ticket = capture();
+    if (ticket === null || !homeActive.current || openingNuriChat.current) return;
+    openingNuriChat.current = true;
+    const operation = ++chatOperation.current;
+    try {
+      const preview = await api.getMainConversationPreview();
+      if (!current(ticket) || !homeActive.current || operation !== chatOperation.current) return;
+      const session = preview.has_conversation && preview.session_id ? {id:preview.session_id} : await api.getOrStartMainSession();
+      if (!current(ticket) || !homeActive.current || operation !== chatOperation.current) return;
+      setInlineSessionId(session.id);setInlineAction(action);setInlineActive(true);
+    } catch (error) {
+      if (current(ticket) && homeActive.current && operation === chatOperation.current) {
+        const failure=requestFailureKind(error);setNuriFailure(failure);setNuriPreviewStatus("error");
+        if(failure==="permission"||failure==="session")handleFailure(failure,()=>{});else showToast(requestFailureCopy(locale,failure).title);
+      }
+    } finally { if(current(ticket)&&operation===chatOperation.current)openingNuriChat.current=false; }
+  };
+  const en=locale==="en";
+  const statusTitle=(status:DailyPostStatus,failure:RequestFailureKind|null)=>failure?requestFailureCopy(locale,failure).title:status==="loading"||status==="pending"?(en?"Finding something for you…":"正在为你整理推荐…"):status==="disabled"?(en?"This recommendation is not available":"这项推荐暂未开放"):status==="error"?(en?"Could not load — tap to retry":"加载失败，点此重试"):(en?"No recommendation yet":"暂时没有新的推荐");
+  const greeting=theme48.mode==="Morning"?(en?"Good morning":"早上好"):theme48.mode==="Afternoon"?(en?"Good afternoon":"下午好"):(en?"Good evening":"晚上好");
+  return <View style={{flex:1,minHeight:0}} testID="home-screen">
+    <View style={{height:60,paddingHorizontal:24,flexDirection:"row",alignItems:"center",gap:10}}>
+      <NuriAvatar /><NuriText style={{fontSize:20,lineHeight:28,fontWeight:"600",flex:1}}>{en?`Welcome, ${nickname}!`:`欢迎，${nickname}！`}</NuriText>
+      <IconAction name="settings" label={en?"Profile & settings":"个人资料与设置"} onPress={()=>{if(!requestGuardedNativeNavigation("/","profile"))router.push("/(tabs)/profile");}} testID="home-settings" />
+    </View>
+    <NuriKeyboardFrame>
+      <View style={{flex:1,minHeight:0}} onLayout={e=>setBodyHeight(e.nativeEvent.layout.height)}>
+        <View style={{height:156}}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={342} decelerationRate="fast" contentContainerStyle={{paddingLeft:24,paddingRight:24,paddingTop:22,paddingBottom:22,gap:12}} testID="home-recommendations">
+            <Pressable onPress={()=>dailyPost?openDailyPost(dailyPost):handleFailure(dailyFailure,()=>void loadDailyPost())} accessibilityRole="button" testID={dailyPost?"home-daily-post-card":"home-daily-post-empty"}>
+              <GlassSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingVertical:12,justifyContent:"space-between"}}>
+                <NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Social picks":"社交推荐"}</NuriText>
+                <NuriText style={{fontSize:17,lineHeight:22,fontWeight:"600"}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</NuriText>
+                <NuriText secondary style={{fontSize:12,lineHeight:16}}>Facebook · Threads</NuriText>
+              </GlassSurface>
             </Pressable>
-          </View>
-
-          {dailyPostStatus !== "disabled" || dailyVideoStatus !== "disabled" ? (
-            <>
-              <View style={styles.sectionHeading}>
-                {Platform.OS === "web" ? (
-                  <Image
-                    source={{ uri: "/homepage/daily-selection-icon.svg" }}
-                    style={styles.dailySectionIcon}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <Ionicons name="stats-chart" size={25} color={C.text} />
-                )}
-                <Text style={styles.sectionHeadingText}>{t("每日精选")}</Text>
-              </View>
-
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={dailyCardWidth + 17}
-                decelerationRate="fast" contentContainerStyle={{ paddingRight: 17 }}
-                onScroll={(event) => setDailyPage(Math.round(event.nativeEvent.contentOffset.x / (dailyCardWidth + 17)))} scrollEventThrottle={80}
-                testID="home-daily-carousel">
-              {dailyPostStatus !== "disabled" ? <DailyPostCard
-                width={dailyCardWidth}
-                nickname={dailyPost?.nickname ?? ""}
-                status={dailyPostStatus}
-                card={dailyPost}
-                onPress={openDailyPost}
-                onRetry={() => handleFailure(dailyFailure, () => void loadDailyPost())}
-                failureText={dailyFailure ? requestFailureCopy(locale, dailyFailure).title : undefined}
-                failureAction={dailyFailure ? requestFailureCopy(locale, dailyFailure).action : undefined}
-              /> : null}
-              {dailyVideoStatus !== "disabled" ? <DailyVideoCard width={dailyCardWidth} status={dailyVideoStatus} card={dailyVideo}
-                onPress={openDailyVideo} onRetry={() => handleFailure(videoFailure, () => void loadDailyVideo())}
-                failureText={videoFailure ? requestFailureCopy(locale, videoFailure).title : undefined}
-                failureAction={videoFailure ? requestFailureCopy(locale, videoFailure).action : undefined} /> : null}
-              </ScrollView>
-              {dailyPostStatus !== "disabled" && dailyVideoStatus !== "disabled" ? <View style={styles.dailyDots}>
-                {[0, 1].map((page) => <View key={page} style={[styles.dailyDot, dailyPage === page && styles.dailyDotActive]} />)}
-              </View> : null}
-            </>
-          ) : null}
-
-          <View style={[styles.sectionHeading, styles.nuriSectionHeading]}>
-            {Platform.OS === "web" ? (
-              <Image
-                source={{ uri: "/homepage/nuri-home-icon.svg" }}
-                style={styles.nuriSectionIcon}
-                resizeMode="contain"
-              />
-            ) : (
-              <Ionicons name="home-outline" size={22} color={C.text} />
-            )}
-            <Text style={styles.sectionHeadingText}>{t("NURI之家")}</Text>
-          </View>
-
-          <Pressable
-            onPress={openNuriChat}
-            disabled={nuriPreviewStatus === "loading" || openingNuriChat.current}
-            style={({ pressed }) => [styles.nuriStage, pressed && styles.nuriStagePressed]}
-            testID="home-nuri-card"
-            accessibilityRole="button"
-            accessibilityLabel={nuriActionText}
-            accessibilityState={{ busy: nuriPreviewStatus === "loading" }}
-          >
-            <LinearGradient
-              colors={[C.purpleLight, C.purpleDark]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-              style={styles.nuriCard}
-            >
-              {checkin?.state === "ready" && checkin.topic && !nuriFailure ? <View style={styles.nuriTopicPill}><Text style={styles.nuriTopicText} numberOfLines={1}>{t("上次聊到")} · {checkin.topic}</Text></View> : null}
-              <Text style={styles.nuriMemo} numberOfLines={3} testID="home-nuri-memo">
-                {nuriMemo}
-              </Text>
-              <View
-                style={styles.nuriButton}
-                testID="home-nuri-action"
-                pointerEvents="none"
-              >
-                <Text style={styles.nuriButtonText} testID="home-nuri-action-label">
-                  {nuriActionText}
-                </Text>
-              </View>
-              <View pointerEvents="none" style={styles.mascotCrop} testID="home-mascot-crop">
-                <Image source={mascotImage} style={styles.mascot} resizeMode="contain" testID="home-mascot-image" />
-              </View>
-            </LinearGradient>
-          </Pressable>
-          {checkinFailure ? <RequestFailureNotice error={checkinFailure} onRetry={() => void loadCheckin()}
-            onPermission={() => router.push(aiPermissionHref("/(tabs)"))} onLogin={() => router.push("/login")} /> : null}
-        </ScrollView>
-
-        <View
-          style={[
-            styles.bottomNavigation,
-            {
-              minHeight: 74 + insets.bottom,
-              paddingBottom:
-                Platform.OS === "web"
-                  ? ("env(safe-area-inset-bottom)" as unknown as number)
-                  : insets.bottom,
-            },
-          ]}
-          testID="home-bottom-navigation"
-        >
-          <Pressable
-            style={styles.navigationItem}
-            onPress={() => router.push("/knowledge" as never)}
-            accessibilityRole="button"
-            accessibilityLabel={t("知识图书馆")}
-          >
-            <HomeNavigationIcon name="knowledge" />
-          </Pressable>
-          <Pressable
-            style={styles.navigationItem}
-            onPress={() => router.push("/(tabs)/chats")}
-            accessibilityRole="button"
-            accessibilityLabel={t("对话")}
-          >
-            <HomeNavigationIcon name="chat" />
-          </Pressable>
-          <Pressable
-            style={styles.navigationItem}
-            onPress={() => router.push("/(tabs)/tasks")}
-            accessibilityRole="button"
-            accessibilityLabel={t("任务")}
-          >
-            <HomeNavigationIcon name="tasks" />
-          </Pressable>
-          <Pressable
-            style={styles.navigationItem}
-            onPress={() => router.push("/community")}
-            accessibilityRole="button"
-            accessibilityLabel={t("社区")}
-          >
-            <HomeNavigationIcon name="community" />
-          </Pressable>
+            <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>
+              <GlassSurface style={{width:330}} contentStyle={{height:112,padding:12,flexDirection:"row",gap:12}}>
+                <View style={{width:72,height:80,borderRadius:16,overflow:"hidden"}}><Image source={require("@/assets/uiux48/imgThumbnailAfternoonScene.png")} style={{width:72,height:80}} resizeMode="cover" /><View style={{position:"absolute",left:4,bottom:4,width:30,height:30,borderRadius:15,backgroundColor:"rgba(161,139,182,.32)",alignItems:"center",justifyContent:"center"}}><NuriIcon name="play" /></View></View>
+                <View style={{flex:1,justifyContent:"space-between"}}><NuriText secondary style={{fontSize:12,lineHeight:16}}>YouTube {en?"video":"视频"}</NuriText><NuriText style={{fontSize:16,lineHeight:20,fontWeight:"600"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Parenting picks":"育儿精选"}</NuriText></View>
+              </GlassSurface>
+            </Pressable>
+          </ScrollView>
         </View>
+        <GlassSurface kind="message" style={{position:"absolute",left:24,right:24,bottom:16,...(inlineActive?{height:Math.max(160,Math.min(360,bodyHeight-24))}:{})}} contentStyle={{paddingHorizontal:20,paddingVertical:16,...(inlineActive?{flex:1,minHeight:0}:{gap:8})}} testID="home-inline-chat-card">
+          <View style={{flexDirection:"row",alignItems:"center"}}><NuriText style={{fontSize:17,lineHeight:22,fontWeight:"500",flex:1}}>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</NuriText><IconAction name="expand" label={nuriFailure?requestFailureCopy(locale,nuriFailure).action:en?"Open full conversation":"展开完整对话"} onPress={openNuriChat} testID="home-nuri-action" /></View>
+          {inlineActive&&inlineSessionId?<ChatConversation sessionId={inlineSessionId} embedded initialDraft={homeDraft} initialAction={inlineAction} onExpand={()=>void openNuriChat()} />:<>
+            <NuriText secondary style={{fontSize:17,lineHeight:22}} testID="home-nuri-memo">{nuriMemo}</NuriText>
+            <NuriComposer value={homeDraft} onChangeText={v=>{homeDraftHydration.current=false;setHomeDraft(v);if(nuriPreview?.sessionId)writeChatDraft(nuriPreview.sessionId,v,generation);}} onSend={()=>void beginInline("send")} onAttach={()=>void beginInline("attach")} onMic={()=>void beginInline("mic")} testID="home" />
+          </>}
+        </GlassSurface>
       </View>
-
-      <DevSheet
-        visible={!!devSheet}
-        emoji={devSheet?.emoji || ""}
-        name={devSheet?.name || ""}
-        onClose={() => setDevSheet(null)}
-      />
-      <Toast message={toastMsg} />
-    </SafeAreaView>
-  );
+    </NuriKeyboardFrame>
+    <Toast message={toastMsg} />
+  </View>;
 }
-
-const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: "#F4F1F9",
-  },
-  phoneCanvas: {
-    alignSelf: "center",
-    flex: 1,
-    position: "relative",
-    overflow: "hidden",
-    backgroundColor: C.canvas,
-  },
-  scroll: {
-    flex: 1,
-  },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    minHeight: 78,
-    paddingHorizontal: 17,
-    paddingTop: 14,
-    paddingBottom: 10,
-    gap: 18,
-  },
-  logo: { width: 39, height: 46 },
-  welcome: {
-    flex: 1,
-    color: C.text,
-    fontFamily: "NotoSansSC_500Medium",
-    fontSize: 20,
-    lineHeight: 28,
-  },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    overflow: "hidden",
-    backgroundColor: "#7355E7",
-    borderWidth: 1,
-    borderColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarImage: {
-    width: "100%",
-    height: "100%",
-  },
-  avatarText: {
-    color: "#FFFFFF",
-    fontFamily: "NotoSansSC_700Bold",
-    fontSize: 17,
-  },
-  sectionHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    minHeight: 26,
-    marginLeft: 17,
-    marginTop: 6,
-    marginBottom: 12,
-  },
-  dailySectionIcon: {
-    width: 25,
-    height: 24,
-  },
-  dailyDots: { flexDirection: "row", alignSelf: "center", gap: 6, marginTop: 10 },
-  dailyDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#DDD6EC" },
-  dailyDotActive: { width: 18, backgroundColor: C.purple },
-  nuriTopicPill: { alignSelf: "flex-start", maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.22)", marginBottom: 8 },
-  nuriTopicText: { color: "#FFFFFF", fontFamily: "NotoSansSC_600SemiBold", fontSize: 12, lineHeight: 18 },
-  nuriSectionIcon: {
-    width: 22,
-    height: 22,
-  },
-  sectionHeadingText: {
-    color: C.text,
-    fontFamily: "NotoSansSC_700Bold",
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  nuriSectionHeading: {
-    marginTop: 25,
-    marginBottom: 15,
-  },
-  nuriStage: {
-    height: 312,
-    marginHorizontal: 16,
-    marginBottom: 8,
-    position: "relative",
-  },
-  nuriStagePressed: { opacity: 0.94 },
-  nuriCard: {
-    height: 312,
-    borderRadius: 36,
-    paddingHorizontal: 28,
-    paddingTop: 22,
-    paddingBottom: 20,
-    overflow: "hidden",
-  },
-  nuriMemo: {
-    maxWidth: 326,
-    color: "#FFFFFF",
-    fontFamily: "NotoSansSC_600SemiBold",
-    fontSize: 24,
-    lineHeight: 34,
-    letterSpacing: 0.2,
-  },
-  nuriButton: {
-    position: "absolute",
-    left: 28,
-    bottom: 27,
-    width: 145,
-    minHeight: 56,
-    borderRadius: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFF",
-  },
-  nuriButtonText: {
-    color: C.text,
-    fontFamily: "NotoSansSC_700Bold",
-    fontSize: 13,
-    lineHeight: 20,
-    letterSpacing: 0.5,
-  },
-  mascotCrop: {
-    position: "absolute",
-    left: "50%",
-    right: -13,
-    top: 150,
-  },
-  mascot: {
-    width: "100%",
-    // RN Image otherwise supplies the bundled source's intrinsic pixel height.
-    height: undefined,
-    aspectRatio: MASCOT_ASPECT_RATIO,
-    transform: [{ scaleX: -1 }],
-  },
-  bottomNavigation: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 20,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-around",
-    backgroundColor: C.canvas,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(38,27,69,0.14)",
-    paddingTop: 9,
-  },
-  navigationItem: {
-    flex: 1,
-    height: 56,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  navigationIcon: {
-    width: 25,
-    height: 26,
-  },
-  sheetRoot: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.32)",
-    justifyContent: "flex-end",
-    zIndex: 50,
-  },
-  sheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 24,
-    paddingBottom: 32,
-    alignItems: "center",
-    gap: 10,
-  },
-  sheetHandle: {
-    width: 36,
-    height: 4,
-    backgroundColor: "#E0E0E8",
-    borderRadius: 2,
-    marginBottom: 4,
-  },
-  sheetEmoji: { fontSize: 36 },
-  sheetTitle: { fontSize: 16, fontWeight: "700", color: C.text },
-  sheetBtn: {
-    marginTop: 10,
-    backgroundColor: C.purple,
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignSelf: "stretch",
-    alignItems: "center",
-  },
-  sheetBtnText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
-});

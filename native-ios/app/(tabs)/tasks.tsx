@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
-import { useFocusEffect, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useRouter } from "expo-router";
 
 import { api } from "@/src/api";
 import { useT } from "@/src/i18n";
@@ -33,7 +33,9 @@ import Toast from "@/src/components/Toast";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
-export default function Tasks() {
+/** UIUX48 removed task navigation. Keep historical handlers/data untouched. */
+export default function DeprecatedTasksRoute() { return <Redirect href="/(tabs)" />; }
+export function LegacyTasks() {
   const { capture, current } = useAccountScope();
   const { t } = useT();
   const router = useRouter();

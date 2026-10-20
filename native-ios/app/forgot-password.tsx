@@ -1,3 +1,4 @@
+import { AuthFrame, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   KeyboardAvoidingView,
@@ -14,7 +15,7 @@ import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { Ionicons } from "@expo/vector-icons";
 
-import { api, auth } from "@/src/api";
+import { api } from "@/src/api";
 import { authErrorMessage, cleanCode, useCountdown } from "@/src/authFlow";
 import { useT } from "@/src/i18n";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -23,14 +24,15 @@ import { colors, radius, spacing, type } from "@/src/theme";
 // the new password together. The server answers "sent" whether or not the
 // address has an account, so this screen never says which it was either.
 export default function ForgotPassword() {
-  const { capture, current, isMounted } = useAccountScope();
+  const { capture, current } = useAccountScope();
   const router = useRouter();
   const headerHeight = useHeaderHeight();
   const { t, locale } = useT();
-  const [step, setStep] = useState<"email" | "reset">("email");
+  const [step, setStep] = useState<"email" | "reset" | "done">("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -63,28 +65,21 @@ export default function ForgotPassword() {
   const reset = async () => {
     const ticket = capture();
     if (ticket === null || submitting) return;
-    let ownerIdentity: number | null = null;
-    const ownsLogin = async (token: string) => {
-      const live = await auth.getToken();
-      return isMounted() && ownerIdentity === auth.getIdentityGeneration() && live === token;
-    };
     setError(null);
     setNotice(null);
     setSubmitting(true);
     try {
-      const res = await api.resetPassword({
+      await api.resetPassword({
         email: normalizedEmail,
         code,
         new_password: password,
       });
       if (!current(ticket)) return;
-      ownerIdentity = auth.getIdentityGeneration() + 1;
-      const saved = await auth.setToken(res.access_token, { expectedGeneration: ticket });
-      if (!saved || !await ownsLogin(res.access_token)) return;
-      const onboarded = !!res.user?.onboarding_completed;
-      const stored = await auth.setOnboarded(onboarded, { expectedToken: res.access_token, expectedGeneration: auth.getSessionGeneration() });
-      if (!stored || !await ownsLogin(res.access_token)) return;
-      router.replace(onboarded ? "/(tabs)" : "/onboarding");
+      // Figma48 ends at an explicit success card, then returns to login. A
+      // successful reset response must not silently install a new session.
+      setCode(""); setPassword(""); setConfirmPassword("");
+      setStep("done");
+      router.setParams({ uiState: "resetDone" });
     } catch (e) {
       if (!current(ticket)) return;
       setError(authErrorMessage(e, t) || t("重置失败，请重试"));
@@ -94,121 +89,26 @@ export default function ForgotPassword() {
   };
 
   const canSend = emailLooksValid && !submitting;
-  const canReset = code.length === 6 && password.length >= 6 && !submitting;
+  const canReset = code.length === 6 && password.length >= 6 && password === confirmPassword && !submitting;
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={headerHeight}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-        >
-          <Pressable
-            onPress={() => router.replace("/login")}
-            style={styles.back}
-            testID="forgot-back"
-          >
-            <Ionicons name="arrow-back" size={18} color={colors.onSurface} />
-            <Text style={styles.backText}>{t("返回登录")}</Text>
-          </Pressable>
+  if (step === "done") return <AuthFrame testID="reset-done-card" contentGap={24}>
+    <NuriText style={{fontSize:16,lineHeight:22}}>{locale==="en"?"You can now log in with your new password.":"现在可以使用新密码登录。"}</NuriText>
+    <NuriButton label={locale==="en"?"Back to login":"返回登录"} onPress={()=>router.replace("/login")} testID="reset-done-login" />
+  </AuthFrame>;
 
-          <Text style={styles.h1}>{t("重置密码")}</Text>
-          <Text style={styles.sub}>
-            {step === "email"
-              ? t("输入注册时用的邮箱，我们会发一个 6 位验证码。")
-              : t("输入邮件里的验证码，并设置新密码。")}
-          </Text>
-
-          <Text style={styles.label}>{t("邮箱")}</Text>
-          <TextInput
-            value={email}
-            onChangeText={setEmail}
-            editable={step === "email"}
-            placeholder="you@example.com"
-            placeholderTextColor={colors.muted}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
-            style={[styles.input, step === "reset" && styles.inputLocked]}
-            testID="forgot-email"
-          />
-
-          {step === "reset" ? (
-            <>
-              <Text style={[styles.label, { marginTop: spacing.lg }]}>{t("验证码")}</Text>
-              <TextInput
-                value={code}
-                onChangeText={(value) => setCode(cleanCode(value))}
-                placeholder="000000"
-                placeholderTextColor={colors.muted}
-                keyboardType="number-pad"
-                textContentType="oneTimeCode"
-                autoComplete="one-time-code"
-                maxLength={6}
-                style={[styles.input, styles.codeInput]}
-                testID="forgot-code"
-              />
-              <Text style={[styles.label, { marginTop: spacing.lg }]}>{t("新密码（至少6位）")}</Text>
-              <TextInput
-                value={password}
-                onChangeText={setPassword}
-                placeholder="••••••"
-                placeholderTextColor={colors.muted}
-                secureTextEntry
-                autoComplete="new-password"
-                style={styles.input}
-                testID="forgot-new-password"
-              />
-              <Pressable
-                onPress={sendCode}
-                disabled={secondsLeft > 0 || submitting}
-                style={styles.resend}
-                testID="forgot-resend"
-              >
-                <Text style={[styles.resendText, (secondsLeft > 0 || submitting) && { opacity: 0.5 }]}>
-                  {secondsLeft > 0
-                    ? t("{n} 秒后可重新发送", { n: secondsLeft })
-                    : t("重新发送验证码")}
-                </Text>
-              </Pressable>
-            </>
-          ) : null}
-
-          {notice ? <Text style={styles.notice} testID="forgot-notice">{notice}</Text> : null}
-          {error ? (
-            <View style={styles.errorBox} testID="forgot-error">
-              <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
-          ) : null}
-
-          {step === "email" ? (
-            <Pressable
-              onPress={sendCode}
-              disabled={!canSend}
-              style={[styles.cta, !canSend && { opacity: 0.5 }]}
-              testID="forgot-send-btn"
-            >
-              <Text style={styles.ctaText}>{submitting ? t("发送中...") : t("发送验证码")}</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={reset}
-              disabled={!canReset}
-              style={[styles.cta, !canReset && { opacity: 0.5 }]}
-              testID="forgot-reset-btn"
-            >
-              <Text style={styles.ctaText}>{submitting ? t("保存中...") : t("重置密码并登录")}</Text>
-            </Pressable>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
+  return <AuthFrame testID="forgot-card">
+    <NuriText>{step==="email"?t("输入注册时用的邮箱，我们会发一个 6 位验证码。"):t("输入邮件里的验证码，并设置新密码。")}</NuriText>
+    {step==="email"?<NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="forgot-email" />:<>
+      <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"Code from your email":"输入邮箱中的验证码"} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} testID="forgot-code" />
+      <NuriField label={t("新密码（至少6位）")} value={password} onChangeText={setPassword} secureTextEntry autoComplete="new-password" testID="forgot-new-password" />
+      <NuriField label={locale==="en"?"Confirm new password":"再次输入"} value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry autoComplete="new-password" testID="forgot-confirm-password" />
+      {confirmPassword&&confirmPassword!==password?<NuriText style={{color:"#9a606a",fontSize:13}}>{locale==="en"?"Passwords do not match.":"两次输入的密码不一致。"}</NuriText>:null}
+      <Pressable onPress={sendCode} disabled={secondsLeft>0||submitting} style={{minHeight:44,justifyContent:"center"}} testID="forgot-resend"><NuriText secondary style={{fontSize:13}}>{secondsLeft>0?t("{n} 秒后可重新发送",{n:secondsLeft}):t("重新发送验证码")}</NuriText></Pressable>
+    </>}
+    {notice?<NuriText secondary style={{fontSize:13}} testID="forgot-notice">{notice}</NuriText>:null}
+    {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="forgot-error">{error}</NuriText>:null}
+    <NuriButton label={submitting?t("保存中..."):step==="email"?t("发送验证码"):(locale==="en"?"Save new password":"保存新密码")} busy={submitting} disabled={step==="email"?!canSend:!canReset} onPress={step==="email"?sendCode:reset} testID={step==="email"?"forgot-send-btn":"forgot-reset-btn"} />
+  </AuthFrame>;
 }
 
 const styles = StyleSheet.create({

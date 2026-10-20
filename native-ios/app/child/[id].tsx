@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   View,
@@ -20,9 +20,14 @@ import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/a
 import {
   compareDateOnly,
   completedAgeMonths,
+  isValidDueDate,
   localDateOnly,
   parseDateOnly,
+  pregnancyWeeks,
 } from "@/src/child-age";
+import { CardList, NuriButton, NuriField, NuriText, ChoiceChip, MenuRow } from "@/src/uiux48/Primitives";
+import { StateCard } from "@/src/uiux48/StateCard";
+import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 
@@ -34,18 +39,25 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 
 export default function ChildEdit() {
   const { capture, current } = useAccountScope();
-  const { t } = useT();
+  const { t, locale } = useT();
+  const [confirmDelete,setConfirmDelete]=useState(false);
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
   const recoverExpiredCredentials = recovery.recover;
   const headerHeight = useHeaderHeight();
   const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(tabs)/profile");
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, uiState } = useLocalSearchParams<{ id: string; uiState?: string }>();
   const isNew = id === "new";
+  const editing = isNew || uiState === "edit";
+  const [loaded,setLoaded]=useState(false);
+  const [saved,setSaved]=useState(false);
+  const [reload,setReload]=useState(0);
+  const mutation=useRef(false);
 
   const [nickname, setNickname] = useState("");
   const [birthDate, setBirthDate] = useState("");
+  const [expecting, setExpecting] = useState(false);
   const [gender, setGender] = useState<"boy" | "girl" | "other">("other");
   const [allergies, setAllergies] = useState("");
   const [notes, setNotes] = useState("");
@@ -57,6 +69,7 @@ export default function ChildEdit() {
     const ticket = capture();
     if (ticket === null) return;
     let cancelled = false;
+    setLoaded(false);setLoadError("");
     (async () => {
       if (isNew) return;
       const requestToken = await auth.getToken();
@@ -71,9 +84,11 @@ export default function ChildEdit() {
         }
         setNickname(c.nickname);
         setBirthDate(c.birth_date || "");
+        setExpecting(isValidDueDate(c.birth_date || ""));
         setGender(c.gender);
         setAllergies((c.allergies || []).join(", "));
         setNotes(c.notes || "");
+        setLoaded(true);
       } catch (error) {
         if (cancelled || !current(ticket)) return;
         if (isAuthError(error)) {
@@ -84,23 +99,30 @@ export default function ChildEdit() {
       }
     })();
     return () => { cancelled = true; };
-  }, [id, isNew, router, t, recoverExpiredCredentials, capture, current, setLoadError, setNickname, setBirthDate, setGender, setAllergies, setNotes]);
+  }, [id, isNew, reload, router, t, recoverExpiredCredentials, capture, current, setLoadError, setNickname, setBirthDate, setExpecting, setGender, setAllergies, setNotes, setLoaded]);
 
   const parsedBirthDate = parseDateOnly(birthDate);
   const birthDateError = !birthDate
-    ? t("请输入孩子的出生日期")
+    ? expecting ? t("请输入预产期") : t("请输入孩子的出生日期")
     : !parsedBirthDate
       ? t("请按 YYYY-MM-DD 填写有效日期")
-      : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
+      : expecting
+        ? isValidDueDate(birthDate) ? "" : t("预产期要在今天之后的 40 周内")
+        : compareDateOnly(parsedBirthDate, localDateOnly()) > 0
         ? t("出生日期不能晚于今天")
         : "";
   const ageMonths = completedAgeMonths(birthDate);
+  const weeks = pregnancyWeeks(birthDate);
+  const stageLabel = isValidDueDate(birthDate)
+    ? t("尚未出生，预计孕周约 {weeks} 周", { weeks: weeks! })
+    : ageMonths === null ? t("请先填写有效的出生日期") : t("{months} 个月", { months: ageMonths });
   const canSave = !!nickname.trim() && !birthDateError;
 
   const save = async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (!canSave || saving) return;
+    if (!canSave || saving || mutation.current) return;
+    mutation.current=true;
     setSaving(true);
     setSaveError("");
     const body = {
@@ -113,9 +135,9 @@ export default function ChildEdit() {
         .filter(Boolean),
       notes: notes.trim(),
     };
-    const requestToken = await auth.getToken();
-    if (!current(ticket)) return;
+    let requestToken: string | null = null;
     try {
+      requestToken=await auth.getToken();if(!current(ticket))return;
       const saved: any = isNew
         ? await api.addChild(body)
         : await api.updateChild(id as string, body);
@@ -123,7 +145,7 @@ export default function ChildEdit() {
         throw new Error("The saved birthday did not match the submitted value");
       }
       if (await auth.getToken() !== requestToken || !current(ticket)) return;
-      goBack();
+      setSaved(true);
     } catch (error) {
       if (!current(ticket)) return;
       if (isAuthError(error)) {
@@ -132,6 +154,7 @@ export default function ChildEdit() {
       }
       setSaveError(t("保存失败，这次修改尚未写入。请检查网络后重试。"));
     } finally {
+      mutation.current=false;
       setSaving(false);
     }
   };
@@ -139,12 +162,13 @@ export default function ChildEdit() {
   const remove = async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (isNew || !id || saving) return;
+    if (isNew || !id || saving || mutation.current) return;
+    mutation.current=true;
     setSaving(true);
     setSaveError("");
-    const requestToken = await auth.getToken();
-    if (!current(ticket)) return;
+    let requestToken: string | null = null;
     try {
+      requestToken=await auth.getToken();if(!current(ticket))return;
       await api.deleteChild(id as string);
       if (await auth.getToken() !== requestToken || !current(ticket)) return;
       goBack();
@@ -156,237 +180,38 @@ export default function ChildEdit() {
       }
       setSaveError(t("删除失败，孩子资料仍然保留。请稍后重试。"));
     } finally {
+      mutation.current=false;
       setSaving(false);
     }
   };
 
   if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <View style={styles.header} onLayout={(event) => setPageHeaderHeight(event.nativeEvent.layout.height)}>
-        <Pressable
-          onPress={goBack}
-          style={[styles.back, Platform.OS !== "web" && { display: "none" }]}
-          testID="child-back-btn"
-        >
-          <Ionicons name="chevron-back" size={20} color={colors.onSurface} />
-        </Pressable>
-        <Text style={styles.title}>
-          {isNew ? t("添加孩子") : t("编辑信息")}
-        </Text>
-        <Pressable
-          onPress={save}
-          disabled={!canSave || saving}
-          style={[styles.save, (!canSave || saving) && styles.disabled]}
-          testID="child-save-btn"
-        >
-          <Text style={styles.saveText}>{saving ? t("保存中...") : t("保存")}</Text>
-        </Pressable>
-      </View>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={headerHeight + pageHeaderHeight}
-        style={{ flex: 1 }}
-      >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
-          {!!loadError && (
-            <Text style={styles.syncError} accessibilityLiveRegion="assertive">
-              {loadError}
-            </Text>
-          )}
-          {!!saveError && (
-            <Text style={styles.syncError} accessibilityLiveRegion="assertive">
-              {saveError}
-            </Text>
-          )}
-          <Field label="昵称">
-            <TextInput
-              value={nickname}
-              onChangeText={setNickname}
-              style={styles.input}
-              placeholder={t("例如：小满")}
-              placeholderTextColor={colors.muted}
-              testID="child-nickname"
-            />
-          </Field>
-          <Field label="出生日期">
-            <TextInput
-              value={birthDate}
-              onChangeText={setBirthDate}
-              autoCapitalize="none"
-              autoCorrect={false}
-              maxLength={10}
-              style={[styles.input, !!birthDateError && styles.inputError]}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor={colors.muted}
-              testID="child-birth-date"
-            />
-            <Text
-              style={[styles.fieldHint, !!birthDateError && styles.errorText]}
-              accessibilityLiveRegion="polite"
-            >
-              {birthDateError || t("保存完整生日，用于准确计算月龄")}
-            </Text>
-          </Field>
-          <Field label="月龄（根据生日自动计算）">
-            <View style={[styles.input, styles.readOnlyInput]} testID="child-months">
-              <Text style={[styles.readOnlyText, ageMonths === null && styles.mutedText]}>
-                {ageMonths === null
-                  ? t("请先填写有效的出生日期")
-                  : t("{months} 个月", { months: ageMonths })}
-              </Text>
-            </View>
-            <Text style={styles.fieldHint}>{t("月龄会随日期自动更新，不能单独修改")}</Text>
-          </Field>
-          <Field label="性别">
-            <View style={styles.row}>
-              {GENDERS.map((g) => (
-                <Pressable
-                  key={g.key}
-                  onPress={() => setGender(g.key)}
-                  style={[
-                    styles.chip,
-                    gender === g.key && styles.chipActive,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      gender === g.key && styles.chipTextActive,
-                    ]}
-                  >
-                    {t(g.label)}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </Field>
-          <Field label="过敏史">
-            <TextInput
-              value={allergies}
-              onChangeText={setAllergies}
-              style={styles.input}
-              placeholder={t("逗号分隔")}
-              placeholderTextColor={colors.muted}
-              testID="child-allergies"
-            />
-          </Field>
-          <Field label="特殊注意事项">
-            <TextInput
-              value={notes}
-              onChangeText={setNotes}
-              style={[styles.input, { height: 96, paddingTop: spacing.md }]}
-              multiline
-              placeholderTextColor={colors.muted}
-              testID="child-notes"
-            />
-          </Field>
-          {!isNew && (
-            <Pressable
-              onPress={remove}
-              disabled={saving}
-              style={styles.delete}
-              testID="child-delete-btn"
-            >
-              <Ionicons name="trash-outline" size={16} color={colors.error} />
-              <Text style={styles.deleteText}>{t("删除此孩子")}</Text>
-            </Pressable>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
-}
+  if(saved) return <StateCard testID="child-saved" message={locale==="en"?"Changes saved.":"修改已保存。"} primary={{label:locale==="en"?"Done":"完成",onPress:goBack}} />;
+  if(!editing) return <View style={{flex:1}}><CardList testID="child-detail-card">
+    {loadError?<><NuriText>{loadError}</NuriText><NuriButton secondary label={locale==="en"?"Retry":"重试"} onPress={()=>setReload(v=>v+1)} /></>:!loaded?<NuriText secondary>{locale==="en"?"Loading…":"正在读取…"}</NuriText>:<>
+      <MenuRow label={t("昵称")} detail={nickname} onPress={()=>router.setParams({uiState:"edit"})} />
+      <MenuRow label={isValidDueDate(birthDate)?t("预产期"):t("出生日期")} detail={`${birthDate} · ${stageLabel}`} onPress={()=>router.setParams({uiState:"edit"})} testID="child-detail-date" />
+      <MenuRow label={locale==="en"?"Allergies & notes":"过敏信息与备注"} detail={[allergies,notes].filter(Boolean).join(" · ")} onPress={()=>router.setParams({uiState:"edit"})} />
+      <NuriButton label={locale==="en"?"Edit profile":"编辑资料"} onPress={()=>router.setParams({uiState:"edit"})} testID="child-detail-edit" />
+      <NuriButton secondary label={locale==="en"?"Delete child profile":"删除孩子资料"} onPress={()=>setConfirmDelete(true)} testID="child-detail-delete" />
+      {saveError?<NuriText>{saveError}</NuriText>:null}
+    </>}
+  </CardList><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":"删除这份孩子资料？"} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":"将从共用云端账号移除此资料，不仅是本机。"} confirmText={locale==="en"?"Delete profile":"删除资料"} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  const { t } = useT();
-  return (
-    <View style={{ marginBottom: spacing.lg }}>
-      <Text style={styles.label}>{t(label)}</Text>
-      {children}
-    </View>
-  );
+  return <View style={{flex:1}}><KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==="ios"?"padding":"height"} keyboardVerticalOffset={headerHeight}><CardList>
+    <NuriText style={{fontSize:20,fontWeight:"500"}}>{isNew?t("添加孩子"):t("编辑信息")}</NuriText>
+    {loadError?<NuriText>{loadError}</NuriText>:null}{saveError?<NuriText>{saveError}</NuriText>:null}
+    <NuriField label={t("昵称")} value={nickname} onChangeText={setNickname} editable={!saving&&!loadError} testID="child-nickname" />
+    <NuriText secondary>{t("宝宝出生了吗？")}</NuriText>
+    <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving||!!loadError} onPress={()=>{if(value!==expecting){setExpecting(value);setBirthDate("");}}} testID={value?"child-expecting":"child-born"} />)}</View>
+    <NuriField label={expecting?t("预产期"):t("出生日期")} value={birthDate} onChangeText={setBirthDate} autoCapitalize="none" autoCorrect={false} placeholder="YYYY-MM-DD" maxLength={10} editable={!saving&&!loadError} testID="child-birth-date" />
+    <NuriText secondary style={{fontSize:12}}>{birthDateError||(expecting?t("根据预产期估算孕周，不代表医学检查结果"):t("保存完整生日，用于准确计算月龄"))}</NuriText>
+    <NuriText testID="child-months">{!birthDateError?stageLabel:expecting?t("请先填写有效的预产期"):t("请先填写有效的出生日期")}</NuriText>
+    <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{GENDERS.map(g=><ChoiceChip key={g.key} label={t(g.label)} selected={gender===g.key} onPress={()=>setGender(g.key)} />)}</View>
+    <NuriField label={t("过敏史")} value={allergies} onChangeText={setAllergies} editable={!saving&&!loadError} testID="child-allergies" />
+    <NuriField label={t("特殊注意事项")} value={notes} onChangeText={setNotes} multiline editable={!saving&&!loadError} style={{height:96,paddingTop:14}} testID="child-notes" />
+    <NuriButton label={saving?t("保存中..."):t("保存")} busy={saving} disabled={!canSave||saving||!!loadError} onPress={()=>void save()} testID="child-save-btn" />
+    {!isNew?<NuriButton secondary label={t("删除此孩子")} disabled={saving||!!loadError} onPress={()=>setConfirmDelete(true)} testID="child-delete-btn" />:null}
+  </CardList></KeyboardAvoidingView><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":"删除这份孩子资料？"} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":"将从共用云端账号移除此资料，不仅是本机。"} confirmText={locale==="en"?"Delete profile":"删除资料"} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 }
-
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.surface },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderBottomColor: colors.divider,
-    borderBottomWidth: 1,
-    backgroundColor: "#fff",
-  },
-  back: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.pill,
-  },
-  title: { flex: 1, fontSize: type.lg, fontWeight: "600", textAlign: "center" },
-  save: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  saveText: { color: colors.brand, fontWeight: "700", fontSize: type.base },
-  scroll: { padding: spacing.lg },
-  label: {
-    fontSize: type.base,
-    color: colors.onSurfaceSecondary,
-    marginBottom: spacing.sm,
-    fontWeight: "600",
-  },
-  input: {
-    backgroundColor: colors.surfaceSecondary,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    fontSize: type.lg,
-    color: colors.onSurface,
-  },
-  inputError: { borderColor: colors.error },
-  readOnlyInput: { justifyContent: "center", backgroundColor: colors.surface },
-  readOnlyText: { fontSize: type.lg, color: colors.onSurface },
-  mutedText: { color: colors.muted },
-  fieldHint: { marginTop: spacing.xs, fontSize: type.sm, color: colors.muted },
-  errorText: { color: colors.error },
-  syncError: {
-    color: colors.error,
-    backgroundColor: "#FFF2F0",
-    borderColor: colors.error,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    fontSize: type.sm,
-    lineHeight: 20,
-  },
-  disabled: { opacity: 0.45 },
-  row: { flexDirection: "row", gap: spacing.sm },
-  chip: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radius.pill,
-    borderColor: colors.border,
-    borderWidth: 1,
-    backgroundColor: colors.surfaceSecondary,
-  },
-  chipActive: { backgroundColor: colors.brandTertiary, borderColor: colors.brand },
-  chipText: { color: colors.onSurfaceTertiary, fontSize: type.base },
-  chipTextActive: { color: colors.onBrandTertiary, fontWeight: "600" },
-  delete: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: spacing.sm,
-    alignItems: "center",
-    padding: spacing.md,
-    marginTop: spacing.md,
-  },
-  deleteText: { color: colors.error, fontSize: type.base, fontWeight: "600" },
-});

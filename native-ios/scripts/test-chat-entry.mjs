@@ -9,7 +9,10 @@ function load(path, dependencies = {}) {
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
-    assert.ok(name in dependencies, "unexpected dependency " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+   assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, module, module.exports);
   return module.exports;

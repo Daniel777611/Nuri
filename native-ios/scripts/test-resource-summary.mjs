@@ -9,7 +9,14 @@ const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.Modu
 const context = { exports: {}, require: () => { throw new Error("summary display must not import providers, storage or source data"); },
   fetch: () => { throw new Error("network forbidden"); } };
 vm.runInNewContext(compiled, context);
-const { resourceSummary, shortResourceSummary, resourceSummaryDisclosure, RESOURCE_SUMMARY_DISCLOSURE } = context.exports;
+const { resourceSummary, shortResourceSummary, resourceSummaryDisclosure, RESOURCE_SUMMARY_DISCLOSURE, hasPostSummarySource } = context.exports;
+
+test("only the current backend summary discriminators allow supplied post preview fields", () => {
+  for (const summary_source of ["post", "facebook_ai_summary"]) assert.equal(hasPostSummarySource({summary_source}), true);
+  for (const summary_source of [undefined, null, true, {}, "", "original", "POST", "post "]) assert.equal(hasPostSummarySource({summary_source}), false);
+  assert.equal(hasPostSummarySource(null), false);
+  assert.equal(hasPostSummarySource(undefined), false);
+});
 
 test("short supplied text is preserved without paraphrasing or adding facts", () => {
   assert.equal(resourceSummary("Some families report different routines."), "Some families report different routines.");

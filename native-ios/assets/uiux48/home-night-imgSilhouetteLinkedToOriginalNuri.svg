@@ -1,0 +1,10 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="440" height="39" viewBox="0 0 440 39" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect id="Mask / Density falls with distance" width="440" height="39" fill="url(#paint0_linear_0_626)"/>
+<defs>
+<linearGradient id="paint0_linear_0_626" x1="220" y1="0" x2="220" y2="39" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="0.3" stop-color="white" stop-opacity="0.88"/>
+<stop offset="1" stop-color="white" stop-opacity="0.28"/>
+</linearGradient>
+</defs>
+</svg>

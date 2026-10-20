@@ -9,7 +9,11 @@ function load(path, dependencies = {}, jsx = false) {
   }).outputText;
   const loaded = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
-    assert.ok(name in dependencies, "unexpected dependency " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+    if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+   assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, loaded, loaded.exports);
   return loaded.exports;
@@ -337,7 +341,7 @@ function headerFixture(f, locale) {
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "react-native": { Pressable: "Pressable", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
     "@expo/vector-icons": { Ionicons: "Icon" },
-    "expo-router": { usePathname: () => "/knowledge", useRouter: () => ({ push: (route) => routes.push(route) }) },
+    "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
     "@/src/i18n": { useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
@@ -401,7 +405,9 @@ for (const locale of ["zh-CN", "zh-TW", "en"]) test("actual " + locale + " page 
   ui.find(tree, "ai-permission-allow").props.onPress(); await tick();
   await f.api.getOrStartMainSession();
   tree = ui.render(); assert.equal(ui.find(tree, "ai-permission-allow"), null);
-  ui.find(tree, "ai-permission-decline").props.onPress(); await tick(); await assert.rejects(f.api.transcribeVoice("mock"), blocked);
+  ui.find(tree, "ai-permission-decline").props.onPress(); await tick();
+  assert.equal(f.aiConsent.getState().status,"allowed","navigation/rendering withdrawal confirmation must not mutate consent");
+  const confirm=ui.find(ui.render(),"ai-withdraw-card");assert.ok(confirm);confirm.props.primary.onPress();await tick();await assert.rejects(f.api.transcribeVoice("mock"), blocked);
 });
 
 test("late actual page callback from A cannot grant a newly signed-in B", async () => {

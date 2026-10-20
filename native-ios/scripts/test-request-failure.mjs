@@ -62,6 +62,7 @@ function notice(locale, kind) {
     "react-native": { Pressable: "Pressable", View: "View", Text: "Text", StyleSheet: { create: (styles) => styles } },
     "@/src/i18n": { useT: () => ({ locale }) },
     "@/src/theme": { colors: {} },
+    "@/src/uiux48/Primitives": {NuriText:"NuriText",NuriButton:"NuriButton"},
     "@/src/requestFailure": failure,
   }, true).default;
   const tree = Component({ error: kind, onRetry: () => calls.push("retry"), onPermission: () => calls.push("permission"), onLogin: () => calls.push("login") });

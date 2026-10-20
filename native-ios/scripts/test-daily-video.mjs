@@ -34,6 +34,23 @@ test("actual Home independently shows post and video, routes owned video ID", as
     await tick(); assert.ok(f.calls.some((call) => call.path === "/feed/daily-video/video-A/events" && JSON.parse(call.init.body).event === "open"));
   } finally { p?.unmount(); f.restore(); }
 });
+test("current UI locale reaches all three existing video routes, not invented paths",async()=>{
+ const f=fixture();let p;
+ try{
+  await f.login("A");await f.permit();p=page(f,"home");p.render();await tick();p.render();
+  assert.equal(new URLSearchParams(f.calls.find(c=>c.path==="/feed/daily-video").search).get("locale"),"en");p.unmount();
+  f.responder=path=>path==="/feed/daily-video/video-A"?response({state:"ready",card:{...videoCard("A"),summary:""}}):null;
+  p=page(f,"video",{id:"video-A"});p.render();await tick();p.render();await tick();p.render();
+  for(const path of ["/feed/daily-video/video-A","/feed/daily-video/video-A/summary"]){const call=f.calls.find(c=>c.path===path);assert.ok(call);assert.equal(new URLSearchParams(call.search).get("locale"),"en");}
+ }finally{p?.unmount();f.restore();}
+});
+test("English Home does not present cached Chinese check-in as localized UI",async()=>{
+ const f=fixture();let p;
+ try{await f.login("A");await f.permit();f.responder=path=>path==="/chat/main/checkin"?response({state:"ready",id:"checkin-A",line:"缓存的中文回访，不应混入英文首页。"}):null;
+  p=page(f,"home");p.render();await tick();p.render();assert.doesNotMatch(p.find("home-nuri-memo").props.children,/缓存的中文回访/);
+  assert.equal(f.calls.filter(c=>c.path==="/chat/main/checkin").length,1,"no extra generation GET to translate a cached row");
+ }finally{p?.unmount();f.restore();}
+});
 test("Home post failure does not suppress the ready video", async () => {
   const f = fixture(); let p;
   try {
@@ -153,12 +170,12 @@ test("actual Home and video screens restore brief AI summaries, never video titl
     await f.login("A"); await f.permit(); home = page(f, "home"); home.render(); await tick(); home.render();
     const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: videoCard("A").concern });
     assert.equal(home.find("home-daily-video-external-title").props.children, guide.headline);
-    assert.ok(home.find("home-daily-video-external-notice"));
+    assert.ok(home.find("home-daily-video-card"));
     assert.equal(home.find("home-daily-video-thumbnail"), undefined); assert.equal(home.find("home-daily-video-title"), undefined);
-    assert.equal(home.find("home-daily-video-external-notice").props.children, "Saved description summary");
+    assert.equal(home.find("home-daily-video-external-notice"),undefined,"UIUX48 keeps the concise topic card; the AI summary is on detail");
     assert.doesNotMatch(home.visible(), /A video title|A private video|Fixture pediatrician|i\.ytimg\.com/);
     video = page(f, "video", { id: "video-A" }); video.render(); await tick(); video.render(); await tick(); video.render();
-    assert.equal(video.find("daily-video-external-title").props.children, "YouTube 育儿资源链接");
+    assert.equal(video.find("daily-video-external-title").props.children, guide.headline);
     assert.ok(video.find("daily-video-external-notice"));
     assert.equal(video.find("daily-video-title"), undefined); assert.equal(video.find("daily-video-guide-title"), undefined);
     assert.equal(video.find("daily-video-guide-headline").props.children, guide.headline);
@@ -174,8 +191,8 @@ test("Home ready checkin opens server session, never ordinary session POST", asy
     await f.login("A"); await f.permit(); f.responder = (path) => path === "/chat/main/checkin" ? response({ state: "ready", id: "check-A", topic: "Sleep", line: "How was bedtime?", opened: false })
       : path === "/chat/main/checkin/check-A/open" ? response({ session_id: "checkin-session-A" }) : null;
     p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.equal(p.find("home-nuri-memo").props.children, "How was bedtime?"); assert.equal(p.find("home-nuri-action-label").props.children, "回复NURI");
-    await p.find("home-nuri-card").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
+    assert.equal(p.find("home-nuri-memo").props.children, "How was bedtime?"); assert.equal(p.find("home-nuri-action").props.label,"Open full conversation");
+    await p.find("home-nuri-action").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
   } finally { p?.unmount(); f.restore(); }
 });
@@ -185,17 +202,17 @@ test("failed checkin open never silently creates another chat; retry repeats ope
     await f.login("A"); await f.permit(); let fail = true;
     f.responder = (path) => path === "/chat/main/checkin" ? response({ state: "ready", id: "check-A", line: "Follow up" })
       : path === "/chat/main/checkin/check-A/open" ? response(fail ? {} : { session_id: "checkin-session-A" }, fail ? 503 : 200) : null;
-    p = page(f, "home"); p.render(); await tick(); p.render(); await p.find("home-nuri-card").props.onPress(); p.render();
-    assert.equal(p.find("home-nuri-action-label").props.children, "Retry"); assert.deepEqual(p.routes, []);
+    p = page(f, "home"); p.render(); await tick(); p.render(); await p.find("home-nuri-action").props.onPress(); p.render();
+    assert.equal(p.find("home-nuri-action").props.label,"Retry"); assert.deepEqual(p.routes, []);
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
-    fail = false; await p.find("home-nuri-card").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
+    fail = false; await p.find("home-nuri-action").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
   } finally { p?.unmount(); f.restore(); }
 });
 test("pure existing chat stays readable when optional AI checkin is refused", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.ok(p.find("request-failure-permission")); await p.find("home-nuri-card").props.onPress();
+    assert.match(p.visible(),/AI permission is needed/); await p.find("home-nuri-action").props.onPress();
     assert.deepEqual(p.routes, ["/chat/existing-A"]); assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
   } finally { p?.unmount(); f.restore(); }
 });
@@ -302,10 +319,10 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     const code = ts.transpileModule(`${component.getText(ast)}\n${styles.getText(ast)}\nmodule.exports = MessageBubble;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     const scope = load("../src/useAccountState.ts", { react: r.react, "./api": f });
     const module = { exports: {} };
-    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary", code)(
+    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar", code)(
       () => ({ jsx, jsxs: jsx }), module, module.exports, () => ({ t: (value) => value }), () => ({ push: (href) => routes.push(href) }), scope.useAccountScope,
       "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" },
-      load("../src/resourceSummary.ts").shortResourceSummary);
+      load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar");
     const tree = r.render(() => module.exports({ msg: { id: "marker", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: { id: "video-A", title: "Stored video", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg", channel: "Fixture channel", key_points: ["AI_SEARCH_VIDEO_POINT."], summary: "AI_SEARCH_VIDEO_SUMMARY.", transcript: "PRIVATE_SOURCE_TRANSCRIPT" } } } }));
     const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
     const card = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-card"); assert.ok(card);

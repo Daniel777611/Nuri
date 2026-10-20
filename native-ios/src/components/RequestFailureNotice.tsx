@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useT } from "@/src/i18n";
+import { NuriButton, NuriText } from "@/src/uiux48/Primitives";
 import { colors } from "@/src/theme";
 import { requestFailureCopy, type RequestFailureKind } from "@/src/requestFailure";
 
@@ -12,12 +13,10 @@ export default function RequestFailureNotice({ error, onRetry, onPermission, onL
   const { locale } = useT();
   const copy = requestFailureCopy(locale, error);
   const action = error === "permission" ? onPermission : error === "session" ? onLogin : onRetry;
-  return <View style={styles.box} testID={`request-failure-${error}`} accessibilityLiveRegion="polite">
-    <Text style={styles.title}>{copy.title}</Text>
-    <Text style={styles.detail}>{copy.detail}</Text>
-    <Pressable onPress={action} style={styles.button} accessibilityRole="button" accessibilityLabel={copy.action} testID="request-failure-action">
-      <Text style={styles.action}>{copy.action}</Text>
-    </Pressable>
+  return <View style={{alignSelf:"stretch",padding:20,gap:14}} testID={`request-failure-${error}`} accessibilityLiveRegion="polite">
+    <NuriText style={{fontSize:20,lineHeight:28}}>{copy.title}</NuriText>
+    <NuriText secondary>{copy.detail}</NuriText>
+    <NuriButton onPress={action} label={copy.action} accessibilityLabel={copy.action} testID="request-failure-action" />
   </View>;
 }
 

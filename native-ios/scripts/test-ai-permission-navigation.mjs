@@ -10,7 +10,7 @@ const module = { exports: {} };
 new Function("require", "module", "exports", output)((name) => { throw new Error(`unexpected dependency ${name}`); }, module, module.exports);
 const { aiPermissionReturnPath, aiPermissionHref } = module.exports;
 
-const safe = ["/(tabs)", "/(tabs)/chats", "/(tabs)/profile", "/(tabs)/tasks", "/knowledge", "/daily-post", "/chat/session_1-A", "/detail/card_1-A", "/daily-video", "/daily-video?id=video_1-A"];
+const safe = ["/(tabs)", "/(tabs)/chats", "/(tabs)/profile", "/(tabs)/tasks", "/knowledge", "/daily-post", "/daily-post?id=post_1-A", "/daily-post?id=post_1-A&uiState=takeaway&point=0", "/daily-post?id=post_1-A&uiState=takeaway&point=1", "/chat/session_1-A", "/detail/card_1-A", "/daily-video", "/daily-video?id=video_1-A"];
 
 test("only known app-local routes are retained and the home alias is normalized", () => {
   assert.equal(aiPermissionReturnPath("/"), "/(tabs)");
@@ -29,6 +29,9 @@ const unsafe = [
   "/chat/%61", "/chat/a\\b", "/chat/a\n", " /(tabs)", "/knowledge?x=1", "/login", "/ai-permission", "", null, undefined, 42, ["/knowledge"], { returnTo: "/knowledge" },
   "/daily-video?id=", "/daily-video?id=a&redirect=https://outside.invalid", "/daily-video?id=a&id=b", "/daily-video?id=a#outside",
   "/daily-video?id=%61", "/daily-video?id=a/b", "/daily-video?id=../b", "/daily-video?id=a\\b", "/daily-video?id=a\n", "/daily-video?locale=en&id=a",
+  "/daily-post?id=", "/daily-post?id=a&id=b", "/daily-post?id=%61", "/daily-post?id=a&redirect=https://outside.invalid",
+  "/daily-post?id=a&uiState=takeaway&point=2", "/daily-post?id=a&uiState=takeaway&point=00", "/daily-post?id=a&uiState=takeaway",
+  "/daily-post?uiState=takeaway&id=a&point=0", "/daily-post?id=a&uiState=takeaway&point=0&point=1", "/daily-post?id=a#outside",
 ];
 
 test("external URLs, schemes, traversal, extra parameters and non-string router params fail closed", () => {

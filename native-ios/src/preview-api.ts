@@ -318,7 +318,13 @@ const previewDeliveryMeta = {
   },
 } as const;
 let favorites: any[] = [card];
+// Development preview only. Mirrors the existing server's toggle contract so
+// UI tests catch accidental removal rather than receiving a fake empty success.
+let previewCollections: { id: string; name: string }[] = [];
+let previewCollectionSequence = 0;
 let privacy = { allow_history_training: true, allow_external_content_research: false, daily_push: true, anonymous_community_share: false, language: "zh-CN" };
+// Local fixture only, mirroring the existing server's preference fields.
+let notificationPreferences = {enabled:true,reminders_enabled:true,chat_enabled:true,care_enabled:true,quiet_hours_start:"22:00",quiet_hours_end:"08:00",time_zone:"America/Chicago",max_per_day:4,show_preview:false};
 let sessions = [
   {
     id: "card-chat-1",
@@ -383,6 +389,8 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   const method = init?.method || "GET";
   const body = bodyOf(init);
   const routePath = path.split("?")[0];
+  if(path==="/notifications/preferences"&&method==="GET")return {...notificationPreferences};
+  if(path==="/notifications/preferences"&&method==="PATCH")return notificationPreferences={...notificationPreferences,...body};
 
   if (path === "/auth/register") {
     profile = { ...profile, email: body.email || profile.email };
@@ -445,10 +453,12 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (routePath.startsWith("/feed/daily-post/") && method === "POST") return { recorded: true };
   // Reuse main's fixed pediatrician explainer; no search or model is called.
   if (/^\/feed\/daily-video\/[^/]+\/summary$/.test(routePath) && method === "GET") {
+    if(new URLSearchParams(path.split("?")[1]||"").get("locale")==="en")return {summary:"This local fixture describes offering a calm, safe space and setting a gentle limit. It is preview text, not a full video summary."};
     return { summary: "这段示例介绍孩子情绪激动时，先提供安全安静的环境，再平静地设定界限。此处只是本地预览文案，请以原视频为准。" };
   }
   if ((routePath === "/feed/daily-video" || /^\/feed\/daily-video\/[^/]+$/.test(routePath)) && method === "GET") {
     const nickname = profile.nickname || "";
+    const english=new URLSearchParams(path.split("?")[1]||"").get("locale")==="en";
     const card: DailyVideoCard = {
       id: "preview-daily-video", card_id: "dailyvideo:preview-daily-video",
       day: new Date().toISOString().slice(0, 10), platform: "youtube", video_id: "vIULng1QDpo",
@@ -457,7 +467,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       title: "What to Do When Your Child Has a Tantrum | Ask-a-Doc | Cook Children's",
       display_title: "孩子发脾气时，家长该怎么做", channel: "Cook Children's Health Care System",
       speaker_kind: "institution", video_lang: "en", summary: "", concern: "宝宝一不如意就躺地哭闹",
-      basis: "conversation", locale: "zh-CN", nickname,
+      basis: "conversation", locale: english?"en":"zh-CN", nickname,
       intro: `${nickname ? `${nickname}你好呀，` : "你好呀，"}最近你和NURI聊到「宝宝一不如意就躺地哭闹」，找到一个相关的视频，你可能会感兴趣：`,
     };
     return { state: "ready", day: card.day, card };
@@ -761,9 +771,16 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   if (path === "/favorites/toggle") {
     const cardId = body.card_id; const exists = favorites.some((f) => f.id === cardId);
     favorites = exists ? favorites.filter((f) => f.id !== cardId) : [...favorites, { ...card, id: cardId }];
-    return { favorited: !exists };
+    return { favorited: !exists, card_id: cardId };
   }
-  if (path === "/favorites/save") return {};
+  if (path === "/favorites/save") {
+    const item = favorites.find(f => f.id === body.card_id);
+    const saved = !item || item.collection_id !== body.collection_id;
+    favorites = saved
+      ? [...favorites.filter(f => f.id !== body.card_id), { ...(item ?? card), id: body.card_id, collection_id: body.collection_id }]
+      : favorites.filter(f => f.id !== body.card_id);
+    return { saved, card_id: body.card_id, collection_id: body.collection_id };
+  }
 
   if (path === "/privacy" && method === "GET") return privacy;
   if (path === "/privacy" && method === "PUT") return (privacy = { ...privacy, ...body });
@@ -883,7 +900,20 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
     messages[sessionId] = [...(messages[sessionId] || []), user_message, ai]; return { user_message, ai_messages: [ai] };
   }
 
-  if (path === "/collections" && method === "GET") return [];
+  if (path === "/collections" && method === "GET") return previewCollections;
+  if (path === "/collections" && method === "POST") {
+    const group = { id: `fixture-collection-${++previewCollectionSequence}`, name: body.name };
+    previewCollections = [...previewCollections, group]; return group;
+  }
+  if (path.startsWith("/collections/") && method === "PUT") {
+    const id = path.split("/").pop()!;
+    previewCollections = previewCollections.map(c => c.id === id ? { ...c, name: body.name } : c);
+    return { id, name: body.name };
+  }
+  if (path.startsWith("/collections/") && method === "DELETE") {
+    previewCollections = previewCollections.filter(c => c.id !== path.split("/").pop());
+    return { ok: true };
+  }
   if (path === "/analytics") return {};
   return {};
 }

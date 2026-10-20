@@ -1,3 +1,4 @@
+import { AuthFrame, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useEffect } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -146,100 +147,15 @@ export default function VerifyEmail() {
 
   const canSubmit = code.length === 6 && !submitting;
 
-  return (
-    <LinearGradient
-      colors={["#FFFFFF", "#FFF8FB", "#C0AEF5"]}
-      locations={[0, 0.38, 1]}
-      style={styles.gradient}
-    >
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight} style={styles.safe}>
-            <View style={styles.header}>
-              <Pressable
-                onPress={switchEmail}
-                style={({ pressed }) => [styles.headerLink, pressed && styles.pressed]}
-                testID="verify-use-another-email"
-              >
-                <Ionicons name="arrow-back" size={14} color="#3A2F5A" />
-                <Text style={styles.headerLinkText}>{t("换一个邮箱")}</Text>
-              </Pressable>
-            </View>
-
-            <ScrollView
-              contentContainerStyle={styles.content}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <Image source={wordmark} style={styles.wordmark} resizeMode="contain" />
-
-              <View style={styles.form} testID="verify-email-step">
-                <Text style={styles.title}>{t("验证邮箱")}</Text>
-                <Text style={styles.description}>
-                  {t("我们已向 {email} 发送了 6 位验证码，10 分钟内有效。", { email })}
-                </Text>
-
-                <TextInput
-                  value={code}
-                  onChangeText={(value) => setCode(cleanCode(value))}
-                  placeholder="000000"
-                  placeholderTextColor="rgba(58, 47, 90, 0.3)"
-                  keyboardType="number-pad"
-                  textContentType="oneTimeCode"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  autoFocus
-                  onSubmitEditing={() => canSubmit && submit()}
-                  style={styles.codeInput}
-                  testID="verify-code"
-                />
-
-                {error ? (
-                  <View style={styles.errorBox} testID="verify-error">
-                    <Ionicons name="alert-circle-outline" size={16} color="#C3454C" />
-                    <Text style={styles.errorText}>{error}</Text>
-                  </View>
-                ) : null}
-                {notice ? <Text style={styles.notice} testID="verify-notice">{notice}</Text> : null}
-
-                <Pressable
-                  onPress={resend}
-                  disabled={secondsLeft > 0 || resending}
-                  style={({ pressed }) => [styles.resend, pressed && styles.pressed]}
-                  testID="verify-resend"
-                >
-                  <Text style={[styles.resendText, (secondsLeft > 0 || resending) && styles.resendDisabled]}>
-                    {resending
-                      ? t("发送中...")
-                      : secondsLeft > 0
-                        ? t("{n} 秒后可重新发送", { n: secondsLeft })
-                        : t("重新发送验证码")}
-                  </Text>
-                </Pressable>
-                <Text style={styles.hint}>{t("没收到？请检查垃圾邮件文件夹。")}</Text>
-
-                <View style={styles.ctaRow}>
-                  <Pressable
-                    onPress={submit}
-                    disabled={!canSubmit}
-                    style={({ pressed }) => [
-                      styles.cta,
-                      canSubmit && styles.ctaActive,
-                      pressed && canSubmit && styles.pressed,
-                    ]}
-                    testID="verify-submit-btn"
-                  >
-                    <Text style={styles.ctaText}>{submitting ? t("验证中...") : t("验证")}</Text>
-                    <Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
-                  </Pressable>
-                </View>
-              </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </View>
-      </SafeAreaView>
-    </LinearGradient>
-  );
+  return <AuthFrame testID="verify-email-step">
+    <NuriText>{t("我们已向 {email} 发送了 6 位验证码，10 分钟内有效。",{email})}</NuriText>
+    <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"6-digit code":"6 位验证码"} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} onSubmitEditing={()=>canSubmit&&submit()} testID="verify-code" />
+    <Pressable onPress={resend} disabled={secondsLeft>0||resending} style={{minHeight:44,justifyContent:"center"}} testID="verify-resend"><NuriText style={{fontSize:16,opacity:secondsLeft>0?.5:1}}>{resending?t("发送中..."):secondsLeft>0?t("{n} 秒后可重新发送",{n:secondsLeft}):t("重新发送验证码")}</NuriText></Pressable>
+    {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="verify-error">{error}</NuriText>:null}
+    {notice?<NuriText secondary style={{fontSize:13}} testID="verify-notice">{notice}</NuriText>:null}
+    <NuriButton label={submitting?t("验证中..."):(locale==="en"?"Verify and continue":"验证并继续")} busy={submitting} disabled={!canSubmit} onPress={submit} testID="verify-submit-btn" />
+    <Pressable onPress={switchEmail} style={{minHeight:44,justifyContent:"center"}} testID="verify-use-another-email"><NuriText secondary style={{fontSize:13}}>{t("换一个邮箱")}</NuriText></Pressable>
+  </AuthFrame>;
 }
 
 const styles = StyleSheet.create({
