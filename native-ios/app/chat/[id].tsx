@@ -221,14 +221,11 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
       : t("这些内容来自已恢复的家庭记忆，不是聊天记录。");
 
   return (
-    <View style={styles.memoryContextCard} testID="chat-memory-context">
+    <GlassSurface kind="message" contentStyle={{padding:16,gap:8}} style={{marginBottom:8}} testID="chat-memory-context">
       <View style={styles.memoryContextHeader}>
-        <View style={styles.memoryContextIcon}>
-          <Ionicons name="albums-outline" size={18} color={colors.brand} />
-        </View>
-        <Text style={styles.memoryContextTitle}>{t("已恢复的家庭记忆")}</Text>
+        <NuriText style={{fontSize:17,lineHeight:22,fontWeight:"500"}}>{t("已恢复的家庭记忆")}</NuriText>
       </View>
-      <Text style={styles.memoryContextNotice}>{notice}</Text>
+      <NuriText secondary style={{fontSize:12,lineHeight:16}}>{notice}</NuriText>
       {items.length ? (
         <View style={styles.memoryContextItems}>
           {items.map((item, index) => (
@@ -237,13 +234,12 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
               style={styles.memoryContextItem}
               testID={`chat-memory-context-item-${index}`}
             >
-              <View style={styles.memoryContextBullet} />
-              <Text style={styles.memoryContextText}>{item.text}</Text>
+              <NuriText style={{flex:1,fontSize:17,lineHeight:26}}>{item.text}</NuriText>
             </View>
           ))}
         </View>
       ) : null}
-    </View>
+    </GlassSurface>
   );
 }
 
@@ -984,23 +980,23 @@ function MessageBubble({
             accessibilityRole="button"
             testID="chat-daily-post-card"
           >
-            <Text style={styles.postCardEyebrow}>{t("每日精选")}</Text>
-            <Text style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</Text>
-            {postPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</Text> : null}
+            <NuriText secondary style={styles.postCardEyebrow}>{t("每日精选")}</NuriText>
+            <NuriText style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</NuriText>
+            {postPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</NuriText> : null}
             <View style={styles.postCardCta}>
-              <Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text>
-              <Ionicons name="arrow-forward" size={14} color={colors.brand} />
+              <NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText>
+              <NuriIcon name="arrowRight" />
             </View>
           </Pressable>
         ) : null}
         {video ? <Pressable style={styles.postCard}
           onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
           accessibilityRole="button" testID="chat-daily-video-card">
-          <Text style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</Text>
-          <Text style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</Text>
-          {videoPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</Text> : null}
-          <Text style={styles.postCardCtaText}>{t("AI 检索摘要 · 非完整视频摘要")}</Text>
-          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text><Ionicons name="arrow-forward" size={14} color={colors.brand} /></View>
+          <NuriText secondary style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</NuriText>
+          <NuriText style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</NuriText>
+          {videoPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</NuriText> : null}
+          <NuriText secondary style={styles.postCardEyebrow}>{t("AI 检索摘要 · 非完整视频摘要")}</NuriText>
+          <View style={styles.postCardCta}><NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText><NuriIcon name="arrowRight" /></View>
         </Pressable> : null}
         {isAI && actionsVisible && actionsEnabled && msg.text && !post && !video ? (
           <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
@@ -1216,19 +1212,15 @@ const styles = StyleSheet.create({
   },
   cardDividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
   postCard: {
-    marginTop: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: "rgba(100, 76, 195, 0.24)",
-    backgroundColor: "rgba(250, 248, 255, 0.94)",
-    gap: 6,
+    minHeight: 44,
+    gap: 8,
   },
-  postCardEyebrow: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
-  postCardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#241C3F" },
+  postCardEyebrow: { fontSize: 12, lineHeight:16 },
+  postCardTitle: { fontSize: 17, lineHeight: 22, fontWeight: "500" },
+  postCardSummary: {fontSize:17,lineHeight:26},
   postCardLine: { fontSize: type.sm, lineHeight: 19, color: colors.onSurfaceTertiary },
   postCardCta: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
-  postCardCtaText: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
+  postCardCtaText: { fontSize: 15, lineHeight:22, fontWeight: "500" },
   videoThumbWrap: { borderRadius: 12, overflow: "hidden", aspectRatio: 16 / 9, backgroundColor: "#000000", marginBottom: 4 },
   videoThumb: { width: "100%", height: "100%" },
   cardDividerLabel: {
@@ -1289,9 +1281,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: spacing.sm,
-    padding: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(238, 233, 255, 0.72)",
+    paddingVertical: 8,
   },
   memoryContextBullet: {
     width: 6,

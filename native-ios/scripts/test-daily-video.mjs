@@ -319,13 +319,17 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     const code = ts.transpileModule(`${component.getText(ast)}\n${styles.getText(ast)}\nmodule.exports = MessageBubble;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     const scope = load("../src/useAccountState.ts", { react: r.react, "./api": f });
     const module = { exports: {} };
-    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar", code)(
+    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar","NuriIcon", code)(
       () => ({ jsx, jsxs: jsx }), module, module.exports, () => ({ t: (value) => value }), () => ({ push: (href) => routes.push(href) }), scope.useAccountScope,
       "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" },
-      load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar");
+      load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar","NuriIcon");
     const tree = r.render(() => module.exports({ msg: { id: "marker", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: { id: "video-A", title: "Stored video", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg", channel: "Fixture channel", key_points: ["AI_SEARCH_VIDEO_POINT."], summary: "AI_SEARCH_VIDEO_SUMMARY.", transcript: "PRIVATE_SOURCE_TRANSCRIPT" } } } }));
     const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
     const card = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-card"); assert.ok(card);
+    assert.equal(card.props.style.backgroundColor,undefined,"Resource content inherits the shared message glass in every theme, not an old light-purple panel");
+    const summaryNode=nodes(tree).find(node=>node.props?.testID==="chat-daily-video-summary");
+    assert.equal(summaryNode.type,"NuriText");assert.equal(summaryNode.props.style.color,undefined,"Shared text resolves the current theme");
+    assert.equal(summaryNode.props.style.fontSize,17);assert.equal(summaryNode.props.style.lineHeight,26);
     assert.equal(nodes(tree).some((node) => node.props?.testID === "chat-card-divider"), false);
     card.props.onPress(); assert.deepEqual(routes, [{ pathname: "/daily-video", params: { id: "video-A" } }]);
     const summaryFallbackTree = r.render(() => module.exports({ msg: { id: "video-fallback", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: {
