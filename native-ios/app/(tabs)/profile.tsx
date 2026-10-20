@@ -41,7 +41,7 @@ export default function Profile() {
   const [loadState,setLoadState]=useAccountState<"loading"|"ready"|"error">("loading");
   const [actionError,setActionError]=useAccountState("");
   const [saving,setSaving]=useAccountState(false);
-  const [result,setResult]=useAccountState<"saved"|"cleared"|null>(null);
+  const [result,setResult]=useAccountState<"saved"|"language-local"|"cleared"|null>(null);
   const [confirmLogout,setConfirmLogout]=useState(false);
   const confirmIdentity=useRef(auth.getIdentityGeneration());
   const mutation=useRef(false);
@@ -140,8 +140,18 @@ export default function Profile() {
       if (!current(ticket)) return;
       await api.setPrivacy(next);
       if(current(ticket))setResult("saved");
-    } catch {
+    } catch (failure) {
       if (!current(ticket)) return;
+      // A full PrivacySettings PUT preserves existing cloud flags. Its
+      // consent guard must not be bypassed or replaced with a partial body
+      // (the existing backend fills omitted flags with defaults). Keep the
+      // independently saved UI language, without claiming cloud sync or AI
+      // permission, when that unchanged full body requires consent.
+      if (Object.keys(patch).length === 1 && patch.language && failure && typeof failure === "object"
+          && "aiConsentRequired" in failure && failure.aiConsentRequired === true
+          && "code" in failure && failure.code === "AI_CONSENT_REQUIRED") {
+        setPrivacy(previous);setResult("language-local");return;
+      }
       // Do not leave a privacy toggle visually enabled/disabled when the
       // persisted setting did not actually save.
       setPrivacy(previous);
@@ -220,6 +230,7 @@ export default function Profile() {
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
+  if(result==="language-local")return <StateCard testID="profile-language-local-card" title={copy("本机语言已更改","Language changed on this device")} message={copy("页面语言已保存在这台设备上。云端语言尚未同步。","The page language is saved on this device. The cloud language has not been synced.")} note={copy("更改本机语言不代表授权 AI。若之后允许相关 AI 功能，可再次选择语言以同步云端偏好。","Changing the device language does not grant AI permission. If you later allow the relevant AI features, select the language again to sync the cloud preference.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
   if(result==="cleared")return <StateCard testID="profile-cleared-card" title={copy("云端数据已清除","Cloud data cleared")} message={copy("你可以重新设置资料，或退出登录。","You can set up your profile again, or sign out.")} primary={{label:copy("重新设置","Set up again"),onPress:()=>{setResult(null);router.replace("/onboarding");}}} secondary={{label:copy("退出登录","Sign out"),onPress:()=>{setResult(null);setConfirmLogout(true);}}} error={logoutError??undefined} />;
   if(confirmLogout)return <StateCard testID="profile-logout-card" title={copy("退出登录？","Sign out?")} message={copy("随时重新登录，继续自己的对话。","Sign in again anytime to continue your conversations.")} primary={{label:copy("退出登录","Sign out"),onPress:()=>void logout(logoutFailureCode==="LOCAL_SIGNOUT_FAILED")}} secondary={{label:copy("取消","Cancel"),onPress:()=>setConfirmLogout(false)}} busy={signingOut} error={logoutError??undefined}>{logoutFailureCode==="PUSH_CLEANUP_PENDING"?<><NuriButton secondary label={copy("打开系统通知设置","Open notification settings")} onPress={()=>void openNotificationSettings().catch(()=>setLogoutError(copy("系统设置未能打开，请重试。","Could not open system settings.")))} /><NuriButton secondary label={copy("仅本机退出（可能仍收到旧账号通知）","Sign out locally (notifications may continue)")} disabled={signingOut} onPress={()=>void logout(true)} testID="profile-force-local-logout" /></>:null}</StateCard>;
   return <View style={{flex:1}}>
@@ -254,7 +265,7 @@ export default function Profile() {
         <NuriButton label={copy("保存设置","Save settings")} disabled={privacyUnavailable||saving} busy={saving} onPress={()=>void updatePrivacy(privacyDraft)} testID="privacy-save" />
         <MenuRow label={copy("隐私政策","Privacy policy")} onPress={linkPolicy} testID="profile-privacy-policy" />{policyError?<NuriText>{policyError}</NuriText>:null}
       </>:null}
-      {section==="language"?<>{LOCALES.map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language.")}</NuriText></>:null}
+      {section==="language"?<>{LOCALES.map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{(privacy.language==="zh"?"zh-CN":privacy.language)===locale?copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language."):copy("本机界面已使用所选语言，Nuri 的云端内容语言尚未同步。","Pages use your selected language on this device. Nuri’s cloud content language has not been synced.")}</NuriText></>:null}
       {section==="account"?<>
         <NuriText secondary>{copy("登录邮箱","Sign-in email")}</NuriText><NuriText>{me?.email||"—"}</NuriText>
         <MenuRow label={copy("设置或重设密码","Set or reset password")} onPress={()=>router.push("/forgot-password")} />
