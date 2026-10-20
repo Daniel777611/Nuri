@@ -1,5 +1,6 @@
-/** Fixed public product scope for build 1011, for every account. This is not
- * a reviewer/account/remote-config switch. TestFlight 1010 is unchanged. */
+/** Fixed public product scope for the formal-release line, for every account.
+ * This is not a reviewer/account/remote-config switch. The full TestFlight
+ * product remains on its separate release branch. */
 export const APP_STORE_TABS = [
   { name: "home", cn: "首页", en: "Home", route: "/(tabs)" },
   { name: "chat", cn: "对话", en: "Chat", route: "/(tabs)/chats" },
