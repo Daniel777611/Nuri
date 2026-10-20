@@ -5,6 +5,11 @@ import {test} from 'node:test';
 const read=p=>readFileSync(new URL('../'+p,import.meta.url),'utf8');
 const config=JSON.parse(read('app.json')).expo;
 const plist=p=>JSON.parse(spawnSync('/usr/bin/plutil',['-convert','json','-o','-',new URL('../'+p,import.meta.url).pathname],{encoding:'utf8'}).stdout);
+test('Preview build number remains consistent across Expo and native archive settings',()=>{
+ assert.equal(plist('ios/NURINativeLab/Info.plist').CFBundleVersion,'$(CURRENT_PROJECT_VERSION)');
+ const nativeBuilds=[...read('ios/NURINativeLab.xcodeproj/project.pbxproj').matchAll(/CURRENT_PROJECT_VERSION = (\d+);/g)].map(x=>x[1]);
+ assert.deepEqual(nativeBuilds,[config.ios.buildNumber,config.ios.buildNumber]);
+});
 test('Preview is independently installable, without claiming original URLs or OAuth client',()=>{
  assert.equal(config.ios.bundleIdentifier,'com.ordashtech.nuri.preview');
  assert.equal(config.scheme,'nuri-preview');

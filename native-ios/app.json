@@ -15,7 +15,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri.preview",
-      "buildNumber": "1011",
+      "buildNumber": "1013",
       "appleTeamId": "6PL6HQYU7P",
       "supportsTablet": false,
       "entitlements": {},
