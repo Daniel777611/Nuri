@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="402" height="874" viewBox="0 0 402 874" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Scene / Broad open ground">
+<path id="Vector" d="M0 502C100 476 190 480 270 497C330 509 372 510 402 502V874H0V502Z" fill="url(#paint0_linear_0_592)"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_592" x1="201" y1="483.373" x2="201" y2="874" gradientUnits="userSpaceOnUse">
+<stop stop-color="#DDD0D4"/>
+<stop offset="1" stop-color="#E8DACA"/>
+</linearGradient>
+</defs>
+</svg>

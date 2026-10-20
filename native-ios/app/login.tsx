@@ -1,3 +1,4 @@
+import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import { useRef, useState as useLocalState } from "react";
 import {
@@ -17,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
 import { savePendingVerification } from "@/src/authFlow";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
@@ -122,91 +123,18 @@ export default function Login() {
     }
   };
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={headerHeight}
-        style={{ flex: 1 }}
-      >
-        <ScrollView
-          contentContainerStyle={{ flexGrow: 1, padding: spacing.lg, justifyContent: "center" }}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.logo}>
-            <Ionicons name="leaf-outline" size={28} color={colors.brand} />
-          </View>
-          <Text style={styles.h1}>{t("欢迎回来")}</Text>
-          <Text style={styles.sub}>
-            {t("登录继续你和 AI 育儿助手的对话。")}
-          </Text>
-
-          <Text style={styles.label}>{t("邮箱")}</Text>
-          <TextInput
-            value={email}
-            onChangeText={setEmail}
-            placeholder="you@example.com"
-            placeholderTextColor={colors.muted}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            style={styles.input}
-            testID="login-email"
-          />
-
-          <Text style={[styles.label, { marginTop: spacing.lg }]}>{t("密码")}</Text>
-          <TextInput
-            value={password}
-            onChangeText={setPassword}
-            placeholder="••••••"
-            placeholderTextColor={colors.muted}
-            secureTextEntry
-            style={styles.input}
-            testID="login-password"
-          />
-          <Pressable
-            onPress={() => router.push("/forgot-password")}
-            style={styles.forgot}
-            testID="login-forgot-password"
-          >
-            <Text style={styles.forgotText}>{t("忘记密码？")}</Text>
-          </Pressable>
-
-          {visibleError ? (
-            <View style={styles.errorBox} testID="login-error" accessibilityLiveRegion="polite">
-              <Ionicons name="alert-circle-outline" size={16} color={colors.error} />
-              <Text style={styles.errorText}>{visibleError}</Text>
-            </View>
-          ) : null}
-
-          <Pressable
-            onPress={submit}
-            disabled={!email || !password || submitting}
-            style={[
-              styles.cta,
-              (!email || !password || submitting) && { opacity: 0.5 },
-            ]}
-            testID="login-submit-btn"
-          >
-            <Text style={styles.ctaText}>{submitting ? t("登录中...") : t("登录")}</Text>
-          </Pressable>
-
-          <GoogleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
-
-          <Pressable
-            onPress={() => router.replace("/register")}
-            style={styles.altBtn}
-            testID="login-go-register"
-          >
-            <Text style={styles.altBtnText}>
-              {t("还没有账号？")}<Text style={{ color: colors.brand }}>{t("立即注册")}</Text>
-            </Text>
-          </Pressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
+  return <AuthFrame testID="login-card">
+    <FormTabs active="login" />
+    <NuriText style={{fontSize:14,lineHeight:22}}>{locale === "en" ? "Continue your conversation with Nuri." : translate(locale, "和 Nuri 继续上次的对话。")}</NuriText>
+    <View style={{gap:16}}>
+      <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" textContentType="username" testID="login-email" />
+      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry textContentType="password" testID="login-password" />
+    </View>
+    <Pressable onPress={() => router.push("/forgot-password")} style={{alignSelf:"flex-end",minHeight:22,justifyContent:"center"}} testID="login-forgot-password"><NuriText style={{fontSize:13,lineHeight:22}}>{t("忘记密码？")}</NuriText></Pressable>
+    {visibleError ? <NuriText testID="login-error" style={{color:colors.error,fontSize:13}}>{visibleError}</NuriText> : null}
+    <NuriButton label={submitting?t("登录中..."):t("登录")} busy={submitting} disabled={!email || !password || submitting} onPress={submit} testID="login-submit-btn" />
+    <GoogleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
+  </AuthFrame>;
 }
 
 const styles = StyleSheet.create({

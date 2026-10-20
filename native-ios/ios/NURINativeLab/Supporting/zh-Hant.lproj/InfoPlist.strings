@@ -1,0 +1,6 @@
+CFBundleDisplayName = "Nuri Preview";
+NSCameraUsageDescription = "允許 NURI 使用相機，拍攝你主動加入對話的照片。";
+NSMicrophoneUsageDescription = "NURI 需要使用麥克風，將你主動錄製的語音轉成文字。";
+NSPhotoLibraryUsageDescription = "允許 NURI 存取你主動加入對話或從應用程式儲存的照片。";
+NSPhotoLibraryAddUsageDescription = "允許 NURI 將你主動選擇分享的圖片儲存至相簿。";
+NSFaceIDUsageDescription = "允許 Nuri 使用 Face ID 保護已儲存的登入憑據。";

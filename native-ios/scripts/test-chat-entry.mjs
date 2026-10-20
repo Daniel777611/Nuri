@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -9,7 +10,10 @@ function load(path, dependencies = {}) {
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
-    assert.ok(name in dependencies, "unexpected dependency " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+   assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, module, module.exports);
   return module.exports;
@@ -88,7 +92,7 @@ function page(f) {
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", StyleSheet: { create: (value) => value } };
   const failure = load("../src/requestFailure.ts");
   const notice = load("../src/components/RequestFailureNotice.tsx", { "react/jsx-runtime": { jsx, jsxs: jsx },
-    "react-native": native, "@/src/i18n": { useT: () => ({ locale: "en" }) }, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure });
+    "react-native": native, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale: "en" }) }, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure });
   const component = load("../app/(tabs)/chats.tsx", {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": native,
     "@/src/api": f, "@/src/theme": { colors: {} }, "@/src/requestFailure": failure,

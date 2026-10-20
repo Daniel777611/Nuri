@@ -1,3 +1,4 @@
+import { AuthFrame, NuriButton, NuriText } from "@/src/uiux48/Primitives";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -5,11 +6,12 @@ import { aiConsent } from "@/src/api";
 import { AIConsentError, AI_CONSENT_VERSION, AI_PRIVACY_URL, AI_PROVIDER_DATA_URL } from "@/src/aiConsent";
 import { aiConsentCopy } from "@/src/aiConsentCopy";
 import { useAIConsent } from "@/src/useAIConsent";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { colors } from "@/src/theme";
 import { aiPermissionReturnPath } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy } from "@/src/requestFailure";
+import { StateCard } from "@/src/uiux48/StateCard";
 
 export default function AIPermission() {
   const { locale } = useT();
@@ -20,6 +22,7 @@ export default function AIPermission() {
   const returnPath = aiPermissionReturnPath(returnTo);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [withdraw, setWithdraw] = useState(false);
   const active = useRef(true);
   const request = useRef(0);
   const inFlight = useRef(false);
@@ -31,6 +34,7 @@ export default function AIPermission() {
     setBusy(true); setError("");
     try {
       const saved = await aiConsent.setAllowed(allowed, state);
+      if(saved && !allowed && active.current && sequence === request.current) setWithdraw(false);
       if (active.current && sequence === request.current && !saved) setError(copy.changed);
       if (saved && allowed && returnPath && active.current && sequence === request.current
           && aiConsent.getState().userId === state.userId && aiConsent.getState().status === "allowed") {
@@ -49,27 +53,21 @@ export default function AIPermission() {
   const openLink = (url: string) => { void Linking.openURL(url).catch(() => { if (active.current) setError(copy.linkError); }); };
   const checked = !!state.userId && ["allowed", "not_allowed"].includes(state.status);
   const needsLogin = state.status === "signed_out" || state.failure === "session";
-  return <SafeAreaView style={styles.safe}>
-    <ScrollView contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{copy.title}</Text>
-      {[copy.intro, copy.data, copy.provider, copy.separate, copy.withdraw].map((paragraph, index) => <Text key={index} style={styles.body} testID={`ai-permission-explanation-${index}`}>{paragraph}</Text>)}
-      <Text style={styles.version}>{copy.version}: {AI_CONSENT_VERSION}</Text>
-      <Pressable onPress={() => openLink(AI_PRIVACY_URL)} accessibilityRole="link" style={styles.link} testID="ai-permission-privacy"><Text style={styles.linkText}>{copy.privacy}</Text></Pressable>
-      <Pressable onPress={() => openLink(AI_PROVIDER_DATA_URL)} accessibilityRole="link" style={styles.link} testID="ai-permission-provider"><Text style={styles.linkText}>{copy.processing}</Text></Pressable>
-      <View style={styles.status} accessibilityLiveRegion="polite" testID="ai-permission-status">
-        {state.status === "loading" || state.status === "unknown" ? <ActivityIndicator color={colors.brand} /> : null}
-        <Text style={styles.body}>{state.status === "allowed" ? copy.allowed : needsLogin ? requestFailureCopy(locale, "session").detail : state.status === "error" ? copy.loadError : state.status === "not_allowed" ? copy.denied : copy.loading}</Text>
-      </View>
-      {error ? <Text style={styles.error} accessibilityLiveRegion="assertive" testID="ai-permission-error">{error}</Text> : null}
-      {state.status === "allowed" ? <Pressable disabled={busy} onPress={() => { if (returnPath && router.canGoBack()) router.back(); else router.replace((returnPath || "/(tabs)") as never); }} style={[styles.button, styles.primary]} accessibilityRole="button" testID="ai-permission-continue"><Text style={styles.primaryText}>{locale === "en" ? "Continue" : locale === "zh-TW" ? "繼續使用 Nuri" : "继续使用 Nuri"}</Text></Pressable> : null}
-      {checked ? <>
-        {state.status !== "allowed" ? <Pressable disabled={busy} onPress={() => void choose(true)} style={[styles.button, styles.primary, busy && styles.disabled]} accessibilityRole="button" testID="ai-permission-allow"><Text style={styles.primaryText}>{copy.allow}</Text></Pressable> : null}
-        <Pressable disabled={busy} onPress={() => void choose(false)} style={[styles.button, busy && styles.disabled]} accessibilityRole="button" testID="ai-permission-decline"><Text style={styles.buttonText}>{state.status === "allowed" ? copy.revoke : copy.decline}</Text></Pressable>
-      </> : null}
-      <Pressable disabled={busy} onPress={() => { setError(""); void refresh().catch(() => { if (active.current) setError(copy.loadError); }); }} style={styles.button} accessibilityRole="button" testID="ai-permission-retry"><Text style={styles.buttonText}>{copy.retry}</Text></Pressable>
-      <Pressable disabled={busy} onPress={() => router.replace(needsLogin ? "/login" : "/(tabs)/profile")} style={styles.button} accessibilityRole="button" testID="ai-permission-non-ai"><Text style={styles.buttonText}>{needsLogin ? copy.login : copy.nonAI}</Text></Pressable>
-    </ScrollView>
-  </SafeAreaView>;
+  // Opening this card is not consent withdrawal. Only the explicit confirm
+  // callback calls the existing owner-checked consent service.
+  if(withdraw && state.status === "allowed") return <StateCard testID="ai-withdraw-card" title={locale==="en"?"Pause AI features?":translate(locale, "暂时停用 AI 功能？")} message={locale==="en"?"Your profile and non-AI records remain available. You can choose permission again later.":translate(locale, "个人资料与已有非 AI 记录仍可使用。之后可以重新选择许可。")} primary={{label:locale==="en"?"Confirm withdrawal":translate(locale, "确认撤回"),onPress:()=>void choose(false)}} secondary={{label:locale==="en"?"Keep using AI":translate(locale, "继续使用 AI"),onPress:()=>setWithdraw(false)}} busy={busy} error={error} />;
+  return <AuthFrame testID="ai-permission-card">
+    {[copy.intro,copy.data,copy.provider,copy.separate,copy.withdraw].map((paragraph,index)=><NuriText key={index} style={{fontSize:16,lineHeight:24}} testID={`ai-permission-explanation-${index}`}>{paragraph}</NuriText>)}
+    <NuriText secondary style={{fontSize:12}}>{copy.version}: {AI_CONSENT_VERSION}</NuriText>
+    <Pressable onPress={()=>openLink(AI_PRIVACY_URL)} accessibilityRole="link" style={{minHeight:44,justifyContent:"center"}} testID="ai-permission-privacy"><NuriText secondary style={{fontSize:13,textDecorationLine:"underline"}}>{copy.privacy}</NuriText></Pressable>
+    <Pressable onPress={()=>openLink(AI_PROVIDER_DATA_URL)} accessibilityRole="link" style={{minHeight:44,justifyContent:"center"}} testID="ai-permission-provider"><NuriText secondary style={{fontSize:13,textDecorationLine:"underline"}}>{copy.processing}</NuriText></Pressable>
+    <View accessibilityLiveRegion="polite" testID="ai-permission-status">{state.status==="loading"||state.status==="unknown"?<ActivityIndicator />:null}<NuriText secondary style={{fontSize:13}}>{state.status==="allowed"?copy.allowed:needsLogin?requestFailureCopy(locale,"session").detail:state.status==="error"?copy.loadError:state.status==="not_allowed"?copy.denied:copy.loading}</NuriText></View>
+    {error?<NuriText style={{color:colors.error,fontSize:13}} testID="ai-permission-error">{error}</NuriText>:null}
+    {state.status==="allowed"?<NuriButton disabled={busy} label={locale==="en"?"Continue":translate(locale, "继续使用 Nuri")} onPress={()=>{if(returnPath&&router.canGoBack())router.back();else router.replace((returnPath||"/(tabs)")as never);}} testID="ai-permission-continue" />:null}
+    {checked?<>{state.status!=="allowed"?<NuriButton disabled={busy} busy={busy} label={copy.allow} onPress={()=>void choose(true)} testID="ai-permission-allow" />:null}<NuriButton secondary disabled={busy} label={state.status==="allowed"?copy.revoke:copy.decline} onPress={()=>state.status==="allowed"?setWithdraw(true):void choose(false)} testID="ai-permission-decline" /></>:null}
+    {(state.status==="error"||state.status==="unknown")?<NuriButton secondary disabled={busy} label={copy.retry} onPress={()=>{setError("");void refresh().catch(()=>{if(active.current)setError(copy.loadError);});}} testID="ai-permission-retry" />:null}
+    <NuriButton secondary disabled={busy} label={needsLogin?copy.login:copy.nonAI} onPress={()=>router.replace(needsLogin?"/login":"/(tabs)/profile")} testID="ai-permission-non-ai" />
+  </AuthFrame>;
 }
 
 const styles = StyleSheet.create({

@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState as useLocalState } from "react";
-import { ActivityIndicator, Platform, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image } from "expo-image";
+import { useNuriTheme } from "@/src/uiux48/Theme";
 import { useRouter } from "expo-router";
 import { apiErrorDetail, auth } from "@/src/api";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { useAccountScope, useAccountState } from "@/src/useAccountState";
 import { getNativeGoogleConfiguration, getNativeGoogleSDK, NativeGoogleAuthError } from "@/src/googleNativeAuth";
 import { signInWithNativeGoogle, type GoogleStorageFailure } from "@/src/googleSignInSession";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, spacing, type } from "@/src/theme";
+import Constants from "expo-constants";
 
 export default function GoogleSignInButton({ disabled = false, returnTo, acquire, release, onBusyChange }: {
   disabled?: boolean;
@@ -17,6 +20,7 @@ export default function GoogleSignInButton({ disabled = false, returnTo, acquire
   onBusyChange?: (busy: boolean) => void;
 }) {
   const router = useRouter();
+  const theme = useNuriTheme();
   const { t, locale, setLocale } = useT();
   const { generation, capture, current, isMounted } = useAccountScope();
   const [available, setAvailable] = useLocalState(false);
@@ -64,20 +68,25 @@ export default function GoogleSignInButton({ disabled = false, returnTo, acquire
     }
   };
 
+  // Preview must not offer the original app's bundle-bound OAuth client.
+  // Email/password authentication continues through the existing API.
+  if (Constants.expoConfig?.ios?.bundleIdentifier === "com.ordashtech.nuri.preview" && !available) return null;
+
   // This native lab intentionally does not load the web GIS script or DOM.
-  if (Platform.OS !== "ios") return null;
-  const NativeButton = available ? getNativeGoogleSDK().GoogleSigninButton : null;
   return <View style={styles.wrap} testID="google-signin">
-    <View style={styles.dividerRow}><View style={styles.dividerLine} /><Text style={styles.dividerText}>{t("或")}</Text><View style={styles.dividerLine} /></View>
-    {NativeButton ? <NativeButton style={styles.nativeButton} size={NativeButton.Size.Wide} color={NativeButton.Color.Light} disabled={disabled || busy} onPress={submit} testID="google-signin-native-button" accessibilityLabel={t("用 Google 继续")} />
-      : <Text style={styles.note} testID="google-signin-unavailable">{t("Google 登录暂时不可用，请用邮箱登录。")}</Text>}
+    <Text style={[styles.dividerText,{color:theme.secondary,marginBottom:12}]}>{locale==="en"?"Or sign in with":translate(locale, "或使用以下方式登录")}</Text>
+    <Pressable style={{minHeight:44,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}} disabled={disabled||busy||!available||Platform.OS!=="ios"} onPress={submit} testID="google-signin-native-button" accessibilityRole="button" accessibilityLabel={t("用 Google 继续")}>
+      <Image source={require("@/assets/uiux48/google-sdk-logo.png")} style={{width:20,height:20}} contentFit="contain" />
+      <Text style={{fontSize:16,lineHeight:22,color:theme.ink}}>{locale==="en"?"Sign in with Google":translate(locale, "使用 Google 登录")}</Text>
+    </Pressable>
+    {!available&&Platform.OS==="ios"?<Text style={styles.note} testID="google-signin-unavailable">{t("Google 登录暂时不可用，请用邮箱登录。")}</Text>:null}
     {busy ? <ActivityIndicator style={styles.note} accessibilityLabel={t("正在登录…")} /> : null}
     {failure || error ? <Text style={styles.error} testID="google-signin-error" accessibilityLiveRegion="polite">{failure ? localFailureCopy[failure] : error}</Text> : null}
   </View>;
 }
 
 const styles = StyleSheet.create({
-  wrap: { alignItems: "center", marginTop: spacing.lg },
+  wrap: { alignItems: "center" },
   dividerRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.md, alignSelf: "stretch" },
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerText: { color: colors.muted, fontSize: type.sm },

@@ -18,6 +18,9 @@
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		EEAF90F87F004A119F865194 /* NuriPushBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4441B22E7D6F4E348E90243C /* NuriPushBridge.swift */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
+		F21D387E3F974280941ADCE5 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = F6300C0C96E44AFBB51617FD /* InfoPlist.strings */; };
+		A4F03CB7D1074E6CB25C6E2C /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = E59C21D855754FA5B0657C34 /* InfoPlist.strings */; };
+		35641BCD28984CEEBDCEB5DF /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 400D1FC95DCB4AA48334A84F /* InfoPlist.strings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +41,9 @@
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = NURINativeLab/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* NURINativeLab-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "NURINativeLab-Bridging-Header.h"; path = "NURINativeLab/NURINativeLab-Bridging-Header.h"; sourceTree = "<group>"; };
+		F6300C0C96E44AFBB51617FD /* InfoPlist.strings */ = {isa = PBXFileReference; name = "InfoPlist.strings"; path = "en.lproj/InfoPlist.strings"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = text.plist.strings; explicitFileType = undefined; includeInIndex = 0; };
+		E59C21D855754FA5B0657C34 /* InfoPlist.strings */ = {isa = PBXFileReference; name = "InfoPlist.strings"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = text.plist.strings; explicitFileType = undefined; includeInIndex = 0; };
+		400D1FC95DCB4AA48334A84F /* InfoPlist.strings */ = {isa = PBXFileReference; name = "InfoPlist.strings"; path = "zh-Hant.lproj/InfoPlist.strings"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = text.plist.strings; explicitFileType = undefined; includeInIndex = 0; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,6 +64,7 @@
 				EC6598702D6EEE6FA8D30975 /* ExpoModulesProvider.swift */,
 				79CB825216184327A77D20CD /* NuriGoogleAuthBridge.swift */,
 				0E579BFE0C344C3A916A2C5B /* NuriGoogleAuthBridge.m */,
+				08DB13C8021B4AC4A950C62C /* Supporting */,
 			);
 			name = NURINativeLab;
 			sourceTree = "<group>";
@@ -139,10 +146,48 @@
 			isa = PBXGroup;
 			children = (
 				BB2F792C24A3F905000567C9 /* Expo.plist */,
+				209F24EAC845433A9DC0508C /* en.lproj */,
+				F2BAB6B5CB7D41059B16AA8E /* zh-Hans.lproj */,
+				224036F3017A411FB70C8E85 /* zh-Hant.lproj */,
 			);
 			name = Supporting;
 			path = NURINativeLab/Supporting;
 			sourceTree = "<group>";
+		};
+		08DB13C8021B4AC4A950C62C /* Supporting */ = {
+			isa = "PBXGroup";
+			children = (
+			);
+			name = Supporting;
+			sourceTree = "<group>";
+			path = "";
+		};
+		209F24EAC845433A9DC0508C /* en.lproj */ = {
+			isa = "PBXGroup";
+			children = (
+				F6300C0C96E44AFBB51617FD /* InfoPlist.strings */,
+			);
+			name = en.lproj;
+			sourceTree = "<group>";
+			path = "";
+		};
+		F2BAB6B5CB7D41059B16AA8E /* zh-Hans.lproj */ = {
+			isa = "PBXGroup";
+			children = (
+				E59C21D855754FA5B0657C34 /* InfoPlist.strings */,
+			);
+			name = zh-Hans.lproj;
+			sourceTree = "<group>";
+			path = "";
+		};
+		224036F3017A411FB70C8E85 /* zh-Hant.lproj */ = {
+			isa = "PBXGroup";
+			children = (
+				400D1FC95DCB4AA48334A84F /* InfoPlist.strings */,
+			);
+			name = zh-Hant.lproj;
+			sourceTree = "<group>";
+			path = "";
 		};
 /* End PBXGroup section */
 
@@ -189,6 +234,8 @@
 			knownRegions = (
 				en,
 				Base,
+				"zh-Hans",
+				"zh-Hant",
 			);
 			mainGroup = 83CBB9F61A601CBA00E9B192;
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
@@ -209,6 +256,9 @@
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
 				35E29B30466931BE657DE04E /* PrivacyInfo.xcprivacy in Resources */,
+				F21D387E3F974280941ADCE5 /* InfoPlist.strings in Resources */,
+				A4F03CB7D1074E6CB25C6E2C /* InfoPlist.strings in Resources */,
+				35641BCD28984CEEBDCEB5DF /* InfoPlist.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -374,7 +424,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NURINativeLab/NURINativeLab.entitlements;
-				CURRENT_PROJECT_VERSION = 1009;
+				CURRENT_PROJECT_VERSION = 1013;
 				DEVELOPMENT_TEAM = 6PL6HQYU7P;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -394,7 +444,7 @@
 					"-lc++",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ordashtech.nuri.nativelab;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ordashtech.nuri.preview;
 				PRODUCT_NAME = "NURINativeLab";
 				SWIFT_OBJC_BRIDGING_HEADER = "NURINativeLab/NURINativeLab-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -411,7 +461,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NURINativeLab/NURINativeLab.entitlements;
-				CURRENT_PROJECT_VERSION = 1009;
+				CURRENT_PROJECT_VERSION = 1013;
 				DEVELOPMENT_TEAM = 6PL6HQYU7P;
 				INFOPLIST_FILE = NURINativeLab/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -426,7 +476,7 @@
 					"-lc++",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ordashtech.nuri.nativelab;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ordashtech.nuri.preview;
 				PRODUCT_NAME = "NURINativeLab";
 				SWIFT_OBJC_BRIDGING_HEADER = "NURINativeLab/NURINativeLab-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

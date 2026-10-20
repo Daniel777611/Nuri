@@ -1333,7 +1333,7 @@ export default function Detail() {
                           </Text>
                         ) : null}
                       </View>
-                      <Text style={styles.resourceTitle}>{shortResourceSummary(resource.title, 140) || t(resourceKindLabel(resource))}</Text>
+                      <Text style={styles.resourceTitle}>{resource.kind==="video"?t("打开外部视频"):t("打开外部文章")}</Text>
                       <Text style={styles.resourcePublisher}>{shortResourceSummary(resource.publisher, 100) || externalSourceHost(resource.url)} · {externalSourceHost(resource.url)}</Text>
                       {externalSourceUrl(resource.url) && shortResourceSummary(resource.description, 360) ? <>
                         <Text style={styles.resourceSummaryLabel}>{t("资源短简介")}</Text>

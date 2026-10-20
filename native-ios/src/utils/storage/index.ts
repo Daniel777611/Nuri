@@ -10,9 +10,9 @@ import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
 
 // The standalone Native Lab deliberately starts with a fresh session. Never
 // read, migrate, or delete the original app's unprefixed keys/default service.
-export const NATIVE_STORAGE_NAMESPACE = "com.ordashtech.nuri.nativelab.v1.";
+export const NATIVE_STORAGE_NAMESPACE = "com.ordashtech.nuri.preview.v1.";
 export const NATIVE_SECURE_STORAGE_OPTIONS: SecureStore.SecureStoreOptions = Object.freeze({
-  keychainService: "com.ordashtech.nuri.nativelab.credentials.v1",
+  keychainService: "com.ordashtech.nuri.preview.credentials.v1",
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   // Do not request a shared accessGroup. Use the lab app's private signed group.
 });

@@ -1,4 +1,4 @@
-export type NativeNavigationAction = "back" | "home" | "notifications";
+export type NativeNavigationAction = "back" | "home" | "notifications" | "chat" | "community" | "profile";
 
 type NavigationGuard = {
   pathname: string;

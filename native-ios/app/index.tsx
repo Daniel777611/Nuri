@@ -110,7 +110,7 @@ export default function Index() {
         if (!token) {
           // Returning users are the common case, so land on login. New users
           // reach register via the "立即注册" link there.
-          if (await sessionIsCurrent(null, revision, request) && requestIsCurrent(request) && sessionRevisionRef.current === revision) router.replace("/login");
+          if (await sessionIsCurrent(null, revision, request) && requestIsCurrent(request) && sessionRevisionRef.current === revision) router.replace("/welcome");
           return;
         }
 
