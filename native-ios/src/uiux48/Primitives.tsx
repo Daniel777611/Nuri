@@ -6,7 +6,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useT, translate } from "@/src/i18n";
 import { useRouter } from "expo-router";
 import { useNuriTheme } from "./Theme";
-import { GLASS_BLUR48 } from "./materials";
+import { GLASS_BLUR48, GLASS_SHADOW48 } from "./materials";
 
 const icons = {
   home: require("@/assets/uiux48/approved-icons/home.svg"), chat: require("@/assets/uiux48/approved-icons/chat.svg"),
@@ -37,13 +37,13 @@ export function NuriText({ children, secondary = false, style, ...props }: impor
 
 /** Shadow lives outside the clipped material. Only the material clips; neither
  * the outer shadow nor the card's top/bottom corners belong to a ScrollView. */
-export function GlassSurface({ children, style, contentStyle, kind = "card", testID }: { children: ReactNode; style?: StyleProp<ViewStyle>; contentStyle?: StyleProp<ViewStyle>; kind?: "card" | "message" | "user" | "composer" | "pill"; testID?: string }) {
+export function GlassSurface({ children, style, contentStyle, kind = "card", shadow = true, testID }: { children: ReactNode; style?: StyleProp<ViewStyle>; contentStyle?: StyleProp<ViewStyle>; kind?: "card" | "message" | "user" | "composer" | "pill"; shadow?: boolean; testID?: string }) {
   const t = useNuriTheme();
   const radius = kind === "pill" ? 999 : kind === "composer" ? 24 : 28;
   const fill = kind === "message" ? t.message : kind === "user" ? t.userMessage : kind === "composer" ? t.composer : t.glass;
-  return <View testID={testID} style={[s.shadow, { borderRadius: radius }, style]}>
+  return <View testID={testID} style={[{ borderRadius: radius, boxShadow: shadow ? kind === "pill" ? GLASS_SHADOW48.floating : GLASS_SHADOW48.surface : undefined }, style]}>
     <View style={{ borderRadius: radius, overflow: "hidden", flexShrink: 1 }}>
-      <BlurView intensity={GLASS_BLUR48[t.mode][kind]} tint={t.night ? "dark" : "light"} style={StyleSheet.absoluteFill} />
+      <BlurView intensity={GLASS_BLUR48[t.mode][kind]} tint={t.night ? "dark" : "light"} style={[StyleSheet.absoluteFill,{borderRadius:radius,overflow:"hidden"}]} />
       <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: fill }]} />
       <View pointerEvents="none" style={[StyleSheet.absoluteFill,{borderRadius:radius,borderWidth:1,borderTopColor:"rgba(255,250,245,.42)",borderLeftColor:"rgba(255,250,245,.24)",borderRightColor:"rgba(102,82,124,.08)",borderBottomColor:"rgba(255,250,245,.35)"}]} />
       <LinearGradient pointerEvents="none" colors={["rgba(255,255,255,.55)","rgba(255,255,255,.04)"]} start={{x:0,y:0}} end={{x:1,y:0}} style={{position:"absolute",left:radius,right:radius,top:0,height:1}} />
@@ -55,7 +55,7 @@ export function GlassSurface({ children, style, contentStyle, kind = "card", tes
 export function NuriButton({ label, busy, secondary, style, ...props }: Omit<PressableProps,"children"|"style"> & { label: string; busy?: boolean; secondary?: boolean; style?: StyleProp<ViewStyle> }) {
   const t = useNuriTheme();
   return <View style={[s.pill,style]}><Pressable {...props} accessibilityRole={props.accessibilityRole??"button"} accessibilityState={{ disabled: !!props.disabled, busy: !!busy }} style={({ pressed }) => [StyleSheet.absoluteFill,{borderRadius:999,overflow:"hidden",alignItems:"center",justifyContent:"center",opacity:props.disabled?.5:pressed?.7:1}]}>
-    <BlurView intensity={GLASS_BLUR48[t.mode].pill} tint={secondary&&t.night?"dark":"light"} style={StyleSheet.absoluteFill} />
+    <BlurView intensity={GLASS_BLUR48[t.mode].pill} tint={secondary&&t.night?"dark":"light"} style={[StyleSheet.absoluteFill,{borderRadius:999,overflow:"hidden"}]} />
     <View pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:secondary?String(t.token("color/welcome38/secondary-tint")):t.coral}]} />
     <LinearGradient pointerEvents="none" colors={["rgba(255,255,255,.28)","rgba(255,255,255,.1)","rgba(255,255,255,.018)","rgba(255,255,255,.035)","rgba(255,255,255,.11)"]} locations={[0,.16,.52,.82,1]} style={StyleSheet.absoluteFill} />
     <View pointerEvents="none" style={[StyleSheet.absoluteFill,{borderRadius:999,borderWidth:1.5,borderTopColor:"rgba(255,255,255,.94)",borderLeftColor:"rgba(255,255,255,.64)",borderRightColor:"rgba(255,255,255,.24)",borderBottomColor:"rgba(255,255,255,.8)"}]} />
@@ -99,12 +99,11 @@ export function ToggleRow({label,value,onChange,testID,disabled=false}:{label:st
  const t=useNuriTheme();
  return <View style={{minHeight:50,flexDirection:"row",alignItems:"center",gap:12,opacity:disabled?.45:1}}><NuriText style={{flex:1,fontSize:16,lineHeight:22}}>{label}</NuriText><Switch accessibilityLabel={label} value={value} onValueChange={onChange} disabled={disabled} testID={testID} thumbColor="#ffffff" trackColor={{true:"#765f88",false:t.outline}} /></View>;
 }
-export function ChoiceChip({label,selected,onPress,testID,disabled=false}:{label:string;selected:boolean;onPress:()=>void;testID?:string;disabled?:boolean}) { const t=useNuriTheme();return <Pressable onPress={onPress} disabled={disabled} accessibilityRole="checkbox" accessibilityState={{checked:selected,disabled}} aria-checked={selected} testID={testID} style={{minWidth:92,flexGrow:1,maxWidth:"100%",opacity:disabled?.45:1}}><GlassSurface kind="pill" contentStyle={{height:44,paddingHorizontal:16,alignItems:"center",justifyContent:"center",backgroundColor:selected?String(t.token("color/control/choice-selected-36")):"transparent",borderWidth:1,borderColor:selected?String(t.token("color/control/choice-selected-border-36")):"transparent",borderRadius:999}}><NuriText style={{fontSize:14,lineHeight:20}}>{label}</NuriText></GlassSurface></Pressable>; }
+export function ChoiceChip({label,selected,onPress,testID,disabled=false}:{label:string;selected:boolean;onPress:()=>void;testID?:string;disabled?:boolean}) { const t=useNuriTheme();return <Pressable onPress={onPress} disabled={disabled} accessibilityRole="checkbox" accessibilityState={{checked:selected,disabled}} aria-checked={selected} testID={testID} style={{minWidth:92,flexGrow:1,maxWidth:"100%",opacity:disabled?.45:1}}><GlassSurface kind="pill" shadow={false} contentStyle={{height:44,paddingHorizontal:16,alignItems:"center",justifyContent:"center",backgroundColor:selected?String(t.token("color/control/choice-selected-36")):"transparent",borderWidth:1,borderColor:selected?String(t.token("color/control/choice-selected-border-36")):"transparent",borderRadius:999}}><NuriText style={{fontSize:14,lineHeight:20}}>{label}</NuriText></GlassSurface></Pressable>; }
 const s = StyleSheet.create({
   iconTarget:{width:44,height:44,alignItems:"center",justifyContent:"center"},
   body:{fontSize:17,lineHeight:24,textAlign:"left"},
-  shadow:{shadowColor:"#3A2B53",shadowOffset:{width:0,height:10},shadowOpacity:.12,shadowRadius:20,elevation:2},
-  pill:{width:278,maxWidth:"100%",height:50,alignSelf:"center",borderRadius:999,alignItems:"center",justifyContent:"center",shadowColor:"#543d5e",shadowOpacity:.14,shadowRadius:7,shadowOffset:{width:0,height:5}},
+  pill:{width:278,maxWidth:"100%",height:50,alignSelf:"center",borderRadius:999,alignItems:"center",justifyContent:"center",boxShadow:GLASS_SHADOW48.button},
   buttonText:{fontSize:16,lineHeight:22,fontWeight:"500",textAlign:"center"},
   fieldWrap:{gap:8,width:"100%"},label:{fontSize:12,lineHeight:16},
   field:{height:54,borderRadius:10,borderWidth:1,paddingHorizontal:16,fontSize:16,textAlign:"left"},
