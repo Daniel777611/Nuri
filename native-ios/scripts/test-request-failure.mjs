@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -60,8 +61,9 @@ function notice(locale, kind) {
   const Component = load("../src/components/RequestFailureNotice.tsx", {
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "react-native": { Pressable: "Pressable", View: "View", Text: "Text", StyleSheet: { create: (styles) => styles } },
-    "@/src/i18n": { useT: () => ({ locale }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) },
     "@/src/theme": { colors: {} },
+    "@/src/uiux48/Primitives": {NuriText:"NuriText",NuriButton:"NuriButton"},
     "@/src/requestFailure": failure,
   }, true).default;
   const tree = Component({ error: kind, onRetry: () => calls.push("retry"), onPermission: () => calls.push("permission"), onLogin: () => calls.push("login") });

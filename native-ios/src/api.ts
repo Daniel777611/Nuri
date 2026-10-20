@@ -204,6 +204,11 @@ export type PushDeviceRegistration = {
 };
 
 /** A tapped notification, now written into the conversation as NURI's message. */
+/** Existing backend NotificationPreferencesPatch; omitted keys are preserved. */
+export type NotificationPreferences = {
+ enabled:boolean;reminders_enabled:boolean;chat_enabled:boolean;care_enabled:boolean;
+ quiet_hours_start:string;quiet_hours_end:string;time_zone:string;max_per_day:number;show_preview:boolean;
+};
 export type OpenedNotification = {
   session_id: string;
   kind: "care" | "daily_post" | "daily_video";
@@ -1086,6 +1091,9 @@ export const api = {
   },
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
+  getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),
+  setNotificationPreferences: (patch: Partial<NotificationPreferences>) =>
+    req<NotificationPreferences>("/notifications/preferences", {method:"PATCH",body:JSON.stringify(patch)}),
   // A model turn can legitimately run past the 12s default. Aborting early
   // doesn't stop the backend, it just makes users resend and stack more work,
   // so this has to stay above the backend's own OpenAI timeout budget.
@@ -1103,16 +1111,6 @@ export const api = {
       { method: "POST", body: JSON.stringify({ audio_base64: audioBase64, locale }) },
       45000,
     ),
-
-  // ── Tasks ─────────────────────────────────────────────────────────────────
-  listTasks: (scope?: "today" | "week") =>
-    req(`/tasks${scope ? `?scope=${scope}` : ""}`),
-  createTask: (b: any) => req("/tasks", { method: "POST", body: JSON.stringify(b) }),
-  updateTask: (id: string, b: any) =>
-    req(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
-  deleteTask: (id: string) => req(`/tasks/${id}`, { method: "DELETE" }),
-  clearCompletedTasks: () => req(`/tasks/clear-completed`, { method: "POST" }),
-  taskInsights: () => req(`/tasks/insights`),
 
   // ── Privacy ───────────────────────────────────────────────────────────────
   getPrivacy: () => req(`/privacy`),
@@ -1136,15 +1134,16 @@ export const api = {
   // An earlier card by id, for a care notification that named it.
   getDailyPostById: (id: string): Promise<DailyPostResponse> =>
     req(`/feed/daily-post/${encodeURIComponent(id)}`),
-  getDailyVideo: (): Promise<DailyVideoResponse> => {
+  getDailyVideo: (locale?: ResourceLocale): Promise<DailyVideoResponse> => {
     const tz = deviceTimeZone();
-    return req(`/feed/daily-video${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+    const query=[tz?`tz=${encodeURIComponent(tz)}`:"",locale?`locale=${encodeURIComponent(locale)}`:""].filter(Boolean).join("&");
+    return req(`/feed/daily-video${query?`?${query}`:""}`, undefined, 60000);
   },
   // Saved, owned row only: no generation or summary call on this route.
-  getDailyVideoById: (id: string): Promise<DailyVideoResponse> =>
-    req(`/feed/daily-video/${encodeURIComponent(id)}`),
-  getDailyVideoSummary: (id: string): Promise<{ summary: string }> =>
-    req(`/feed/daily-video/${encodeURIComponent(id)}/summary`, undefined, 30000),
+  getDailyVideoById: (id: string, locale?: ResourceLocale): Promise<DailyVideoResponse> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}${locale?`?locale=${encodeURIComponent(locale)}`:""}`),
+  getDailyVideoSummary: (id: string, locale?: ResourceLocale): Promise<{ summary: string }> =>
+    req(`/feed/daily-video/${encodeURIComponent(id)}/summary${locale?`?locale=${encodeURIComponent(locale)}`:""}`, undefined, 30000),
   dailyVideoEvent: (id: string, event: "open" | "source_click" | "chat") =>
     req<{ recorded: boolean }>(`/feed/daily-video/${encodeURIComponent(id)}/events`, {
       method: "POST", body: JSON.stringify({ event }),

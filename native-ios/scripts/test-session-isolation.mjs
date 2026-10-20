@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -51,6 +52,7 @@ function fixture(nativeXHR = false) {
     if (path === "/children") return response([{ id: "child-" + owner, nickname: owner + "-private-child", birth_date: "2022-01-01" }]);
     if (path === "/favorites") return response([{ id: "favorite-" + owner, title: owner + "-private-favorite" }]);
     if (path === "/privacy") return response({ daily_push: true, allow_history_training: true, allow_external_content_research: false, language: "en" });
+    if (path === "/notifications/preferences") return response({enabled:true,reminders_enabled:true,chat_enabled:true,care_enabled:true,quiet_hours_start:"22:00",quiet_hours_end:"08:00",time_zone:"UTC",max_per_day:4,show_preview:false});
     if (path.startsWith("/tasks")) return response([{ id: "task-" + owner, title: owner + "-private-task", created_at: "2030-01-01", completed_count: 0, total_count: 1, task_type: "care" }]);
     if (path === "/chat/main/preview") return response({ has_conversation: true, session_id: "chat-" + owner, last_user_message: { text: owner + "-private-message" }, memory_preview: { text: owner + "-private-memory" } });
     if (path.startsWith("/feed/daily-post")) return response({ state: "ready", card: { id: "daily-" + owner, headline: owner + "-private-daily", excerpt: "post", source_url: "https://source.invalid/post", basis: "conversation" } });
@@ -83,8 +85,9 @@ function runner() {
 }
 function page(path, f, options = {}) {
   const r = runner(), routes = [], localeWrites = [];
+  let pageLocale=options.locale??"en";
   const t = (key) => key;
-  const setLocale = async (value) => { localeWrites.push(value); if (options.localeBarrier) await options.localeBarrier.promise; };
+  const setLocale = async (value) => { localeWrites.push(value); if (options.localeBarrier) await options.localeBarrier.promise; if(options.failLocale===value)throw Error("fixture storage failed");pageLocale=value; };
   const router = { push: (value) => routes.push(value), replace: (value) => routes.push(value), dismissTo: (value) => routes.push(value), back: () => routes.push("back"), canGoBack: () => false };
   const jsx = (type, props) => ({ type, props });
   const hooks = load("../src/useAccountState.ts", { react: r.react, "./api": f });
@@ -92,6 +95,7 @@ function page(path, f, options = {}) {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/useAccountState": hooks,
     "@/src/api": f, "@/src/sessionBoundary": f.boundary,
     "@/src/requestFailure": load("../src/requestFailure.ts"),
+    "@/src/collectionActions": load("../src/collectionActions.ts"),
     "@/src/aiPermissionNavigation": load("../src/aiPermissionNavigation.ts"),
     "@/src/theme": { colors: {}, radius: {}, spacing: {}, type: {} },
     "expo-router": { useRouter: () => router, useLocalSearchParams: () => options.params || {}, useFocusEffect: (fn) => r.react.useEffect(fn, [fn]), Redirect: "Redirect", Stack: { Screen: "Screen" } },
@@ -100,16 +104,29 @@ function page(path, f, options = {}) {
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "expo-blur": { BlurView: "Blur" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ bottom: 0, top: 0 }) },
     "@react-navigation/native": { useIsFocused: () => true }, "@react-navigation/elements": { useHeaderHeight: () => 44 },
-    "@/src/i18n": { useT: () => ({ t, locale: "en", setLocale }), LOCALES: ["en", "zh-CN"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文" } },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t:options.realI18n?(key,vars)=>_translateForI18nFixture(pageLocale,key,vars):t, locale: pageLocale, setLocale }), LOCALES: ["en", "zh-CN", "zh-TW"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文", "zh-TW":"繁體中文" } },
     "@/src/nativeShell": { usePurchaseAllowed: () => false, isNativeShell: () => true, useOnReturnToApp: () => {} },
     "@/src/nativePush": { getReminderSettings: async () => ({ enabled: false, intervalSeconds: 30 }), MAX_LOCAL_REMINDER_INTERVAL_SECONDS: 31536000, openNotificationSettings: async () => {}, requestNotificationPermission: async () => {}, setReminderSettings: async () => {} },
     "@/src/child-age": load("../src/child-age.ts"), "@/src/taskMeta": load("../src/taskMeta.ts"),
     "@/src/components/notificationCopy": load("../src/components/notificationCopy.ts"), "@/src/components/reminderInterval": load("../src/components/reminderInterval.ts"),
     "@/src/authFlow": { savePendingVerification: async () => {}, cleanCode: (value) => value, useCountdown: () => 0, authErrorMessage: () => "error" },
     "@/src/nativePushRuntime": { safeNotificationRoute: () => null },
+    // Presentation-only UIUX48 components remain shallow in this callback/
+    // ownership harness. All existing session assertions execute unchanged.
+    "@/src/uiux48/Primitives": Object.fromEntries(["AuthFrame","NuriKeyboardFrame","FormTabs","NuriField","NuriText","NuriButton","ChoiceChip","GlassSurface","IconAction","NuriIcon","CenteredCard","CardList","MenuRow","ToggleRow","InlineState"].map(name=>[name,name])),
+    "@/src/uiux48/Theme": { useNuriTheme:()=>({mode:"Morning",ink:"#3D3340",secondary:"#5D5060",token:()=>""}) },
+    "@/src/uiux48/Scene": { NuriAvatar:"NuriAvatar" },
+    "@/src/uiux48/Composer": { NuriComposer:"NuriComposer" },
+    "@/src/uiux48/StateCard": {StateCard:"StateCard"},
+    "@/src/uiux48/MediaPanel": {MediaPanel:"MediaPanel"},
+    "@/src/uiux48/chatDraft": load("../src/uiux48/chatDraft.ts",{"@/src/api":f}),
+    "@/src/components/nativeNavigation":{requestGuardedNativeNavigation:()=>false},
+    "@/src/nuriResourceGuide":load("../src/nuriResourceGuide.ts"),
+    "@/src/resourceSummary":load("../src/resourceSummary.ts"),
+    "../chat/[id]": {default:"ChatConversation",__esModule:true},
   };
   for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "DailyVideoCard", "RequestFailureNotice", "GoogleSignInButton"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
-  const component = load(path, dep).default;
+  const component = load(path, dep)[options.exportName ?? (path.endsWith("/tasks.tsx") ? "LegacyTasks" : "default")];
   let tree;
   function expand(node) {
     if (!node || typeof node !== "object") return node;
@@ -123,6 +140,46 @@ function page(path, f, options = {}) {
   return { ...r, routes, localeWrites, hooks, render, nodes: () => nodes(tree), find: (id) => nodes(tree).find((node) => node.props?.testID === id), kind: (type) => nodes(tree).find((node) => node.type === type), visible: () => JSON.stringify(tree) };
 }
 
+test("actual language screen exposes all three choices and persists zh-TW through the existing privacy API",async()=>{
+ const f=fixture();let p;
+ try{
+  await f.login("A");await f.permit();p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true});
+  p.render();await tick();await tick();p.render();
+  for(const locale of ["zh-CN","zh-TW","en"])assert.ok(p.find("profile-language-"+locale));
+  assert.equal(p.find("profile-language-zh-TW").props.label,"繁體中文");
+  const before=f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET").length;
+  assert.equal(before,0,"Rendering the language page must not mutate preferences");
+  await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  const calls=f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET");
+  assert.equal(calls.length,1);assert.equal(JSON.parse(calls[0].init.body).language,"zh-TW");
+  assert.deepEqual(p.localeWrites,["zh-TW"]);assert.equal(p.find("profile-saved-card").props.message,"變更已儲存。");
+ }finally{p?.unmount();f.restore();}
+});
+test("failed Traditional preference/local-storage saves never show success or leave the language mutation locked",async()=>{
+ for(const failure of ["server","storage"]){const f=fixture();let p;try{
+  await f.login("A");await f.permit();if(failure==="server")f.responder=(path,init)=>path==="/privacy"&&init.method?response({detail:"fixture offline"},503):null;
+  p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true,failLocale:failure==="storage"?"zh-TW":undefined});
+  p.render();await tick();await tick();p.render();await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  assert.equal(p.find("profile-saved-card"),undefined);assert.ok(p.find("profile-action-result"));
+  if(failure==="storage")assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method).length,0);
+  assert.deepEqual(p.localeWrites,["zh-TW","en"]);
+  await p.find("profile-language-zh-CN").props.onPress();await tick();assert.ok(p.localeWrites.includes("zh-CN"));
+ }finally{p?.unmount();f.restore();}}
+});
+test("language is available without AI permission, with no cloud write or false sync receipt",async()=>{
+ const f=fixture();let p;
+ try{
+  await f.login("A");p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true});
+  p.render();await tick();await tick();p.render();
+  await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
+  assert.deepEqual(p.localeWrites,["zh-TW"]);
+  assert.equal(p.find("profile-saved-card"),undefined);
+  assert.ok(p.find("profile-language-local-card"));
+  assert.match(p.find("profile-language-local-card").props.message,/雲端語言尚未同步/);
+  assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET").length,0);
+  assert.notEqual(f.aiConsent.getState().status,"allowed");
+ }finally{p?.unmount();f.restore();}
+});
 for (const change of ["B", "logout", "ABA"]) {
   test("actual API parsed JSON held for A → " + change + " is not an auth error or data result", async () => {
     const f = fixture();
@@ -180,7 +237,7 @@ test("actual state hook clears on every epoch, rejects saved setters, queued upd
     await f.login("A"); assert.equal(render()[0], "safe"); const write = render()[1]; r.unmount(); write("unmounted"); assert.equal(render()[0], "safe");
   } finally { f.restore(); }
 });
-for (const name of ["profile", "tasks", "index"]) test("actual " + name + " clears visible A data immediately; B failures/late A/ABA cannot restore it", async () => {
+for (const name of ["profile", "index"]) test("actual " + name + " clears visible A data immediately; B failures/late A/ABA cannot restore it", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page("../app/(tabs)/" + name + ".tsx", f); p.render(); await tick(); p.render();
@@ -197,10 +254,15 @@ for (const name of ["profile", "tasks", "index"]) test("actual " + name + " clea
     await f.login("A"); p.render(); if (oldHandler) await oldHandler(); assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
+test("deprecated Tasks route redirects to Home without loading or mutating tasks",async()=>{
+ const f=fixture();let p;
+ try{await f.login("A");p=page("../app/(tabs)/tasks.tsx",f,{exportName:"default"});p.render();assert.equal(p.kind("Redirect").props.href,"/(tabs)");assert.equal(f.calls.length,0);}
+ finally{p?.unmount();f.restore();}
+});
 test("actual Profile language barrier cannot PUT A preferences with B JWT", async () => {
   const f = fixture(), barrier = deferred(); let p;
   try {
-    await f.login("A"); await f.permit(); p = page("../app/(tabs)/profile.tsx", f, { localeBarrier: barrier }); p.render(); await tick(); p.render();
+    await f.login("A"); await f.permit(); p = page("../app/(tabs)/profile.tsx", f, { localeBarrier: barrier, params:{section:"language"} }); p.render(); await tick(); p.render();
     const pending = p.find("profile-language-zh-CN").props.onPress(); await tick(); await f.login("B"); p.render(); barrier.resolve(); await pending; await tick();
     assert.equal(f.calls.filter((call) => call.path === "/privacy" && call.init.method === "PUT").length, 0);
   } finally { p?.unmount(); f.restore(); }
@@ -214,17 +276,32 @@ test("actual Profile wipe late A outcome never clears B or navigates login", asy
     assert.equal(await f.auth.getToken(), "account-B"); assert.deepEqual(p.routes, []);
   } finally { p?.unmount(); f.restore(); }
 });
+test("actual Profile cloud-data removal is event-only and confirmed success exposes cleared choices without silent sign-out", async () => {
+  const f=fixture();let p;
+  try{
+    await f.login("A");p=page("../app/(tabs)/profile.tsx",f,{params:{section:"privacy"}});p.render();await tick();p.render();
+    assert.equal(f.calls.filter(c=>c.path==="/privacy/wipe").length,0);
+    f.responder=path=>path==="/privacy/wipe"?response({ok:true}):null;
+    const pending=p.kind("ConfirmDialog").props.onConfirm();await pending;p.render();
+    assert.equal(f.calls.filter(c=>c.path==="/privacy/wipe").length,1);assert.ok(p.find("profile-cleared-card"));assert.equal(await f.auth.getToken(),"account-A");assert.deepEqual(p.routes,[]);
+  }finally{p?.unmount();f.restore();}
+});
+test("actual Profile rejects an unconfirmed cloud-data response instead of showing cleared", async () => {
+  const f=fixture();let p;
+  try{await f.login("A");p=page("../app/(tabs)/profile.tsx",f,{params:{section:"privacy"}});p.render();await tick();p.render();f.responder=path=>path==="/privacy/wipe"?response({}):null;await p.kind("ConfirmDialog").props.onConfirm();p.render();assert.equal(p.find("profile-cleared-card"),undefined);assert.equal(await f.auth.getToken(),"account-A");assert.deepEqual(p.routes,[]);}finally{p?.unmount();f.restore();}
+});
 test("actual Profile strict logout failure restores A and real Keychain retry survives epoch changes", async () => {
   const f = fixture(); let p;
   try {
     await f.login("A"); f.ordinary.set(f.PUSH_INSTALLATION_KEY, "installation");
     f.responder = (path) => path.startsWith("/mobile/push-devices") ? response({}, 503) : null;
-    p = page("../app/(tabs)/profile.tsx", f); p.render(); await tick(); p.render();
+    p = page("../app/(tabs)/profile.tsx", f, {params:{section:"account"}}); p.render(); await tick(); p.render();
     p.find("profile-logout-btn").props.onPress(); await tick(); p.render(); await tick(); p.render();
-    assert.equal(await f.auth.getToken(), "account-A"); assert.ok(p.find("profile-logout-error")); assert.ok(p.find("profile-force-local-logout"));
+    assert.equal(await f.auth.getToken(),"account-A","opening confirmation does not sign out");p.find("profile-logout-card").props.primary.onPress();await tick();p.render();await tick();p.render();
+    assert.equal(await f.auth.getToken(), "account-A"); assert.ok(p.find("profile-logout-card").props.error); assert.ok(p.find("profile-force-local-logout"));
     f.failRemove(true); p.find("profile-force-local-logout").props.onPress(); await tick(); p.render(); await tick(); p.render();
-    assert.equal(await f.auth.getToken(), null); assert.ok(p.find("profile-logout-error"));
-    f.failRemove(false); p.find("profile-logout-btn").props.onPress(); await tick(); p.render(); await tick();
+    assert.equal(await f.auth.getToken(), null); assert.ok(p.find("profile-logout-card").props.error);
+    f.failRemove(false); p.find("profile-logout-card").props.primary.onPress(); await tick(); p.render(); await tick();
     assert.deepEqual(p.routes, ["/login"]);
   } finally { p?.unmount(); f.restore(); }
 });
@@ -235,33 +312,59 @@ test("actual Home late canonical-session result cannot navigate B or an unmounte
       await f.login("A"); await f.permit(); p = page("../app/(tabs)/index.tsx", f); p.render(); await tick(); p.render();
       f.responder = (path) => path === "/chat/main/preview" ? response({ has_conversation: false, session_id: null })
         : path === "/chat/sessions" ? barrier.promise : null;
-      const pending = p.find("home-nuri-card").props.onPress(); await tick();
+      const pending = p.find("home-nuri-action").props.onPress(); await tick();
       assert.ok(f.calls.some((call) => call.path === "/chat/sessions" && call.init.method === "POST"), "canonical creation must reach the held request");
       if (unmount) p.unmount(); else { await f.login("B"); p.render(); }
       barrier.resolve(response({ id: "A-private-chat" })); await pending; assert.deepEqual(p.routes, []);
     } finally { p?.unmount(); f.restore(); }
   }
 });
-test("actual Tasks late check-in result cannot open a B completion sheet", async () => {
-  const f = fixture(), barrier = deferred(); let p;
-  try {
-    await f.login("A"); await f.permit(); p = page("../app/(tabs)/tasks.tsx", f); p.render(); await tick(); p.render();
-    const taskCard = p.kind("TaskCard"); assert.ok(taskCard); const original = taskCard.props.task;
-    f.responder = (path, init) => path.startsWith("/tasks/") && init.method === "PATCH" ? barrier.promise : null;
-    const pending = taskCard.props.onCheckin(original); await tick(); await f.login("B"); p.render();
-    assert.ok(f.calls.some((call) => call.path.startsWith("/tasks/") && call.init.method === "PATCH"));
-    barrier.resolve(response({ ...original, completed_at: "2030-01-02" })); await pending; p.render();
-    assert.equal(p.kind("CheckinSheet").props.visible, false); assert.doesNotMatch(p.visible(), /A-private-/);
-  } finally { p?.unmount(); f.restore(); }
+test("retired task list/detail cannot display cached A data or send requests across A/B/ABA", async () => {
+  for(const path of ["../app/(tabs)/tasks.tsx","../app/task/[id].tsx"]){
+    const f=fixture();let p;
+    try{
+      await f.login("A");p=page(path,f,{exportName:"default"});
+      for(const owner of ["A","B","A"]){await f.login(owner);p.render();await tick();p.render();assert.equal(p.kind("Redirect").props.href,"/(tabs)");assert.equal(p.kind("TaskCard"),undefined);assert.equal(p.kind("CheckinSheet"),undefined);assert.doesNotMatch(p.visible(),/private-/);assert.equal(f.calls.length,0);}
+    }finally{p?.unmount();f.restore();}
+  }
 });
 test("actual notification preference two-step operation never sends the second write under B", async () => {
   const f = fixture(), barrier = deferred(); let p;
   try {
     await f.login("A"); p = page("../app/notification-settings.tsx", f); p.render(); await tick(); p.render();
     f.responder = (path, _init, owner) => path === "/privacy" ? owner === "A" ? barrier.promise : response({}, 503) : null;
-    p.find("remote-daily-push-toggle").props.onValueChange(false); await tick(); await f.login("B"); p.render(); barrier.resolve(response({ daily_push: true })); await tick(); p.render();
+    p.find("remote-daily-push-toggle").props.onChange(false); p.render();
+    const pending=p.find("notification-settings-save").props.onPress();
+    await tick(); await f.login("B"); p.render(); barrier.resolve(response({ daily_push: true })); await pending; await tick(); p.render();
     assert.equal(f.calls.filter((call) => call.init.method === "PUT").length, 0); assert.equal(p.find("remote-daily-push-toggle").props.value, false);
   } finally { p?.unmount(); f.restore(); }
+});
+test("notification save shows an explicit shared success card only after confirmed preferences",async()=>{
+ const f=fixture();let p;
+ try{await f.login("A");p=page("../app/notification-settings.tsx",f);p.render();await tick();p.render();
+  assert.equal(p.find("notification-settings-saved"),undefined);
+  p.find("notification-settings-save").props.onPress();await tick();p.render();
+  assert.equal(p.find("notification-settings-saved").props.title,"Settings saved");
+  assert.match(p.find("notification-settings-saved").props.note,/does not mean a test reminder was sent/);
+  p.find("notification-settings-saved").props.primary.onPress();p.render();assert.ok(p.find("notification-settings-save"));
+ }finally{p?.unmount();f.restore();}
+});
+for(const outcome of ["empty","conflict","offline"])test("notification "+outcome+" save retains form and never shows saved",async()=>{
+ const f=fixture();let p;
+ try{await f.login("A");p=page("../app/notification-settings.tsx",f);p.render();await tick();p.render();
+  p.find("quiet-hours-start").props.onChangeText("21:15");p.render();
+  f.responder=(path,init)=>path==="/notifications/preferences"&&init.method==="PATCH"?response(outcome==="conflict"?{...JSON.parse(init.body),quiet_hours_start:"22:00"}:{},outcome==="offline"?503:200):null;
+  p.find("notification-settings-save").props.onPress();await tick();p.render();
+  assert.equal(p.find("notification-settings-saved"),undefined);assert.equal(p.find("quiet-hours-start").props.value,"21:15");assert.match(p.find("notification-settings-result").props.children,/not fully confirmed/);
+ }finally{p?.unmount();f.restore();}
+});
+test("notification delayed save cannot show success in a replacement account",async()=>{
+ const f=fixture(),barrier=deferred();let p;
+ try{await f.login("A");p=page("../app/notification-settings.tsx",f);p.render();await tick();p.render();
+  f.responder=(path,init)=>path==="/notifications/preferences"&&init.method==="PATCH"?barrier.promise:null;
+  p.find("notification-settings-save").props.onPress();await tick();const body=JSON.parse(f.calls.at(-1).init.body);
+  await f.login("B");p.render();barrier.resolve(response(body));await tick();p.render();assert.equal(p.find("notification-settings-saved"),undefined);
+ }finally{p?.unmount();f.restore();}
 });
 test("actual login callback cannot overwrite queued B or navigate after unmount; normal login still works", async () => {
   for (const scenario of ["queued B", "unmount", "normal"]) {

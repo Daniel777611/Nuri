@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import type { DailyPostCard as Card } from "@/src/api";
 import { useT } from "@/src/i18n";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
-import { shortResourceSummary } from "@/src/resourceSummary";
+import { shortResourceSummary, hasPostSummarySource } from "@/src/resourceSummary";
 import { externalSourceUrl } from "@/src/externalContent";
 
 export type DailyPostStatus = "loading" | "pending" | "ready" | "empty" | "error" | "disabled";
@@ -44,7 +44,7 @@ export function dailyPostTag(
 
 export function dailyPostPreview(card: Card): string | null {
   // These are the backend's AI-written search previews, not a verbatim quote.
-  return externalSourceUrl(card.source_url)
+  return hasPostSummarySource(card) && externalSourceUrl(card.source_url)
     ? shortResourceSummary(card.question, 110) || shortResourceSummary(card.headline, 110)
     : null;
 }

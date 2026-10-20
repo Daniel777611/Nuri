@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -281,10 +282,13 @@ function button(f, props = {}) {
   const jsx = (type, props) => ({ type, props });
   const component = load("../src/components/GoogleSignInButton.tsx", {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/api": f,
+    "expo-image":{Image:"Image"},
+    "@/src/uiux48/Theme":{useNuriTheme:()=>({ink:"#3d3340",secondary:"#5d5060"})},
+    "@/assets/uiux48/google-sdk-logo.png":1,
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
-    "react-native": { View: "View", Text: "Text", ActivityIndicator: "Spinner", Platform: { OS: "ios" }, StyleSheet: { create: (value) => value } },
+    "react-native": { View: "View", Text: "Text", Pressable:"Pressable", ActivityIndicator: "Spinner", Platform: { OS: "ios" }, StyleSheet: { create: (value) => value } },
     "expo-router": { useRouter: () => ({ replace: (href) => routes.push(href) }) },
-    "@/src/i18n": { useT: () => ({ t: (value) => value, locale: "en", setLocale: async () => {} }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t: (value) => value, locale: "en", setLocale: async () => {} }) },
     "@/src/theme": { colors: {}, type: {}, spacing: {} },
     "@/src/googleNativeAuth": f, "@/src/googleSignInSession": f,
     "@/src/nativePushRuntime": load("../src/nativePushRuntime.ts"),
@@ -300,7 +304,8 @@ test("actual unconfigured native button explains unavailable without SDK / serve
   const f = fixture(), p = button(f);
   try {
     f.configuration = null; p.render(); await tick(); p.render();
-    assert.ok(p.find("google-signin-unavailable")); assert.equal(p.find("google-signin-native-button"), undefined);
+    assert.ok(p.find("google-signin-unavailable")); assert.equal(p.find("google-signin-native-button").props.disabled,true);
+    await p.find("google-signin-native-button").props.onPress();
     assert.deepEqual(f.providerCalls, []); assert.deepEqual(f.requests, []);
   } finally { p.unmount(); f.restore(); }
 });

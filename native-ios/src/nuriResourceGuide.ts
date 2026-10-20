@@ -1,4 +1,4 @@
-// NURI-authored reading prompts, not a digest of an external resource.
+// Optional NURI conversation invitation, not homework or a source digest.
 // Only the family's topic and age/stage labels are accepted. No source text,
 // source metadata, provider, storage or network dependency belongs here.
 
@@ -50,27 +50,35 @@ function familyLabel(value: unknown, maxCharacters: number): string {
 export function nuriResourceGuide(
   input: NuriResourceGuideInput = {},
   t: NuriResourceGuideTranslator = interpolate,
+  locale?: string,
 ): NuriResourceGuide {
-  const concern = familyLabel(input?.concern, 48);
-  const stage = familyLabel(input?.stage, 32);
+  // Translation dictionaries can translate known labels, not arbitrary family
+  // text. For an untranslated Chinese label in English UI use the generic
+  // invitation; never present a mixed-language template as a translation.
+  const label=(value:unknown,limit:number)=>{
+    const cleaned=familyLabel(value,limit);
+    if(locale!=="en"||!/[\u3400-\u9fff]/.test(cleaned))return cleaned;
+    const translated=t(cleaned);
+    return /[\u3400-\u9fff]/.test(translated)?"":translated;
+  };
+  const concern = label(input?.concern, 48);
+  const stage = label(input?.stage, 32);
   const headline = concern
-    ? t("关于「{concern}」的 NURI 导读", { concern })
-    : t("NURI 阅读导读");
+    ? t("聊聊「{concern}」", { concern })
+    : t("想聊的时候，Nuri 都在");
   const intro = concern && stage
-    ? t("你可以结合孩子目前的阶段（{stage}），围绕「{concern}」阅读原站内容，并核对哪些信息与你家有关。", { concern, stage })
+    ? t("孩子正处在{stage}，关于「{concern}」，你最在意什么？可以从最近的一件事聊起。", { concern, stage })
     : concern
-      ? t("围绕「{concern}」阅读原站内容，留意作者说明的适用情境，和你家的情况作比较。", { concern })
+      ? t("关于「{concern}」，你最在意什么？想聊的时候可以直接告诉 Nuri，不需要先整理。", { concern })
       : stage
-        ? t("结合孩子目前的阶段（{stage}）阅读原站内容，留意作者说明的适用情境。", { stage })
-        : t("阅读原站内容时，可以核对来源和适用情境，再决定是否继续了解。");
+        ? t("孩子正处在{stage}，你最近感觉怎么样？不需要先准备问题。", { stage })
+        : t("不需要先查资料或整理问题。想聊的时候，直接说说最近的情况就好。");
   return {
     headline,
     intro,
-    actions: [
-      t("到原站核对作者、发布日期和内容背景。"),
-      t("记下与你家情况相关、还想进一步了解的问题。"),
-      t("把你的问题和观察带回 NURI，一起梳理和讨论。"),
-    ],
-    disclosure: t("这是 NURI 根据你的关注点提供的导读，不是原文或完整视频摘要。"),
+    // Retained in the shared shape for older callsites, but deliberately empty:
+    // QA 2026-10-18 found the fixed three-step checklist repetitive and burdensome.
+    actions: [],
+    disclosure: t("这是可选的聊天邀请，不是原文或完整视频摘要。"),
   };
 }
