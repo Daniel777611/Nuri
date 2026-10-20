@@ -10,6 +10,7 @@ import { getNativeGoogleConfiguration, getNativeGoogleSDK, NativeGoogleAuthError
 import { signInWithNativeGoogle, type GoogleStorageFailure } from "@/src/googleSignInSession";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, spacing, type } from "@/src/theme";
+import Constants from "expo-constants";
 
 export default function GoogleSignInButton({ disabled = false, returnTo, acquire, release, onBusyChange }: {
   disabled?: boolean;
@@ -66,6 +67,10 @@ export default function GoogleSignInButton({ disabled = false, returnTo, acquire
       active.current = false; release?.(); setBusy(false); onBusyChange?.(false);
     }
   };
+
+  // Preview must not offer the original app's bundle-bound OAuth client.
+  // Email/password authentication continues through the existing API.
+  if (Constants.expoConfig?.ios?.bundleIdentifier === "com.ordashtech.nuri.preview" && !available) return null;
 
   // This native lab intentionally does not load the web GIS script or DOM.
   return <View style={styles.wrap} testID="google-signin">

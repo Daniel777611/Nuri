@@ -226,7 +226,7 @@ export default function Profile() {
     {section==="main"?<CardStack testID="profile-card-stack">
       <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:14,flexDirection:"row",gap:16,alignItems:"center"}}><NuriAvatar size={56} /><View style={{flex:1}}><NuriText style={{fontSize:20,fontWeight:"500"}}>{me?.nickname||copy("个人资料","Your profile")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{copy("和 Nuri 一起照顾每一天","Care for each day with Nuri")}</NuriText></View></GlassSurface>
       <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("我的收藏","Favorites"),"favorites")}{row(copy("家庭偏好","Family preferences"),"preferences")}</GlassSurface>
-      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}><MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI 许可","Privacy & AI permission"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}</GlassSurface>
+      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI 许可","Privacy & AI permission"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}</GlassSurface>
     </CardStack>:<CardList>
       <NuriText style={{fontSize:20,fontWeight:"500"}}>{titles[section]||copy("设置","Settings")}</NuriText>
       {notice}

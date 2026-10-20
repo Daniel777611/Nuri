@@ -786,6 +786,12 @@ final class NuriPushBridge: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
+    // This independently installable Preview has no verified second APNs
+    // backend topic. Never request access or impersonate the original app.
+    guard Bundle.main.object(forInfoDictionaryKey: "NuriRemotePushEnabled") as? Bool != false else {
+      resolve(NSNull())
+      return
+    }
     let center = UNUserNotificationCenter.current()
     center.getNotificationSettings { settings in
       let finishRegistration = {

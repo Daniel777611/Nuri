@@ -7,7 +7,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>Nuri</string>
+    <string>Nuri Preview</string>
     <key>CFBundleLocalizations</key>
     <array>
       <string>en</string>
@@ -33,23 +33,13 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>nuri-native-lab</string>
-          <string>com.ordashtech.nuri.nativelab</string>
-        </array>
-      </dict>
-      <dict>
-        <key>CFBundleURLSchemes</key>
-        <array>
-          <string>com.googleusercontent.apps.22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv</string>
+          <string>nuri-preview</string>
+          <string>com.ordashtech.nuri.preview</string>
         </array>
       </dict>
     </array>
     <key>CFBundleVersion</key>
     <string>1011</string>
-    <key>GIDClientID</key>
-    <string>22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com</string>
-    <key>GIDServerClientID</key>
-    <string>22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <key>LSMinimumSystemVersion</key>
@@ -75,8 +65,8 @@
     <array>
       <string>$(PRODUCT_BUNDLE_IDENTIFIER).expo.index_route</string>
     </array>
-    <key>NuriAPNSEnvironment</key>
-    <string>production</string>
+    <key>NuriRemotePushEnabled</key>
+    <false/>
     <key>RCTNewArchEnabled</key>
     <true/>
     <key>UILaunchStoryboardName</key>

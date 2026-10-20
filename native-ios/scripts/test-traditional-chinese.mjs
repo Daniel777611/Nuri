@@ -38,6 +38,6 @@ test('native permission purpose strings and supported iOS languages include Trad
  const keys=['NSCameraUsageDescription','NSMicrophoneUsageDescription','NSPhotoLibraryUsageDescription','NSPhotoLibraryAddUsageDescription','NSFaceIDUsageDescription'];
  for(const locale of ['en','zh-Hans','zh-Hant']){const d=JSON.parse(read('locales/'+locale+'.json'));for(const key of keys)assert.ok(d[key]);}
  assert.match(read('locales/zh-Hant.json'),/麥克風/);
- assert.equal(config.ios.bundleIdentifier,'com.ordashtech.nuri.nativelab');
- assert.equal(config.ios.entitlements['aps-environment'],'production');
+ assert.ok(['com.ordashtech.nuri.nativelab','com.ordashtech.nuri.preview'].includes(config.ios.bundleIdentifier));
+ assert.equal(config.ios.entitlements['aps-environment'],config.ios.bundleIdentifier==='com.ordashtech.nuri.preview'?undefined:'production');
 });
