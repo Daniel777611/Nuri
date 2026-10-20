@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 
-// 全产品无底部导航栏：所有跳转通过主页模块卡片和按钮触发
+// UIUX48's shared shell owns the four-tab bar; nested stacks stay transparent.
 export default function MainLayout() {
   return <Stack screenOptions={{ headerShown: false }} />;
 }

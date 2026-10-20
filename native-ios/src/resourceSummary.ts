@@ -5,6 +5,21 @@
 
 export type ResourceSummaryOptions = { limit?: number; locale?: string };
 
+/** Existing daily-post API discriminator. Missing/unknown provenance must not
+ * turn arbitrary legacy fields into an AI summary. This is not a permission,
+ * copyright, or factual-accuracy certification. */
+export function hasPostSummarySource(card: {summary_source?: unknown} | null | undefined): boolean {
+  return card?.summary_source === "post" || card?.summary_source === "facebook_ai_summary";
+}
+
+/** Detect a known mismatch, not a language/translation certification. Unknown
+ * cache metadata stays unknown; the CJK check only catches the observed English
+ * UI + Chinese generated-preview regression. Never rewrite chat/source text. */
+export function resourceLanguageMismatch(text: unknown, contentLocale: unknown, uiLocale: string): boolean {
+  const known=typeof contentLocale==="string"&&/^(en|zh-CN|zh-TW)$/.test(contentLocale)?contentLocale:null;
+  return known ? known!==uiLocale : uiLocale==="en"&&typeof text==="string"&&/[\u3400-\u9fff]/.test(text);
+}
+
 export const RESOURCE_SUMMARY_DISCLOSURE =
   "AI 根据检索到的信息整理，可能仅包含部分内容，也可能有误；请打开原站核对，不代表完整原文或完整视频内容。";
 

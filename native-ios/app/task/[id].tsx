@@ -6,7 +6,7 @@ import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import * as MediaLibrary from "expo-media-library";
 import { captureRef, releaseCapture } from "react-native-view-shot";
 import { saveTaskCardToPhotos, TaskCardExportError } from "@/src/components/taskCardExport";
@@ -19,7 +19,8 @@ import { useT } from "@/src/i18n";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
-export default function TaskDetail() {
+export default function DeprecatedTaskDetailRoute() { return <Redirect href="/(tabs)" />; }
+function LegacyTaskDetail() {
   const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
   const { id } = useLocalSearchParams<{ id: string }>();

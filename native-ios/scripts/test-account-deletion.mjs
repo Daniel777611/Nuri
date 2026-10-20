@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -9,7 +10,11 @@ function load(path, dependencies = {}, jsx = false) {
   }).outputText;
   const result = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
-    assert.ok(name in dependencies, "unexpected import " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+    if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+   assert.ok(name in dependencies, "unexpected import " + name);
     return dependencies[name];
   }, result, result.exports);
   return result.exports;
@@ -87,11 +92,11 @@ function fixture({ status = 200, result = confirmed, locale = "en" } = {}) {
       ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView", Linking: { openURL: async (url) => links.push(url) }, Platform: { OS: "ios" },
       Pressable: "Pressable", ScrollView: "ScrollView", StyleSheet: { create: (styles) => styles }, Text: "Text", TextInput: "TextInput", View: "View",
     },
-    "expo-router": { useRouter: () => ({ replace: (route) => routes.push(route) }), useFocusEffect: (callback) => focus.push(callback) },
+    "expo-router": { useRouter: () => ({ replace: (route) => routes.push(route),setParams:()=>{} }), useFocusEffect: (callback) => focus.push(callback) },
     "@react-navigation/elements": { useHeaderHeight: () => 64 },
     "@/src/api": client, "@/src/accountDeletion": helper,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
-    "@/src/i18n": { useT: () => ({ locale }) }, "@/src/theme": { colors: {}, radius: {}, spacing: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) }, "@/src/theme": { colors: {}, radius: {}, spacing: {} },
   }, true).default;
   const render = () => { stateCursor = refCursor = 0; focus.length = 0; return page(); };
   const find = (node, id) => {
@@ -169,7 +174,8 @@ for (const locale of ["zh-CN", "zh-TW", "en"]) test("actual " + locale + " page 
   const tree = f.fill(); assert.equal(f.find(tree, "delete-account-submit").props.disabled, false);
   assert.ok(f.find(tree, "delete-account-shared-warning"));
   f.find(tree, "delete-account-submit").props.onPress(); await settle();
-  assert.deepEqual(f.routes, ["/login"]); assert.equal(await f.auth.getToken(), null); assert.equal(deletions(f).length, 1);
+  assert.deepEqual(f.routes, []); assert.equal(await f.auth.getToken(), null); assert.equal(deletions(f).length, 1);
+  const completed=f.find(f.render(),"account-deleted-card");assert.ok(completed,"success card requires confirmed server deletion AND local cleanup");completed.props.primary.onPress();assert.deepEqual(f.routes,["/welcome"]);
 });
 
 test("actual page and object detail code: wrong current password preserves the session and never clears", async () => {
@@ -183,6 +189,15 @@ for (const [status, result] of [[404, { detail: "not found" }], [503, { detail: 
   const f = fixture({ status, result }); await f.auth.setToken("account-A"); await f.mount(); f.submit(); await settle();
   assert.equal(await f.auth.getToken(), "account-A"); assert.deepEqual(f.clearCalls, []); assert.deepEqual(f.routes, []);
   assert.ok(f.find(f.render(), "delete-account-message"));
+});
+
+test("latest-main subscription cancellation failure is explicit and leaves the account signed in", async () => {
+  const f = fixture({ status: 503, result: { detail: { code: "SUBSCRIPTION_CANCEL_FAILED", deletion_state: "not_started" } } });
+  await f.auth.setToken("account-A"); await f.mount(); f.submit(); await settle();
+  assert.equal(await f.auth.getToken(), "account-A");
+  assert.deepEqual(f.clearCalls, []); assert.deepEqual(f.routes, []);
+  assert.match(f.find(f.render(), "delete-account-message").props.children, /subscription cancellation was not confirmed.*account was not deleted/i);
+  assert.match(f.find(f.render(), "delete-account-billing-scope").props.children, /Apple subscriptions/);
 });
 
 test("transport timeout/abort is unconfirmed, not deleted, and preserves local credentials", async () => {
@@ -230,7 +245,7 @@ test("confirmed server deletion + Keychain failure exposes real local-only CAS r
   assert.equal(f.values.get("auth_token"), "account-A"); assert.deepEqual(f.routes, []);
   const retry = f.find(f.render(), "delete-account-retry-local"); assert.ok(retry); assert.equal(retry.props.disabled, false);
   f.allowRemoval(); retry.props.onPress(); await settle();
-  assert.equal(f.values.has("auth_token"), false); assert.deepEqual(f.routes, ["/login"]); assert.equal(deletions(f).length, 1);
+  assert.equal(f.values.has("auth_token"), false); assert.deepEqual(f.routes, []); assert.equal(deletions(f).length, 1);assert.ok(f.find(f.render(),"account-deleted-card"));
   assert.deepEqual(f.clearCalls, [{ expectedToken: "account-A", forceLocal: true }, { expectedToken: "account-A", forceLocal: true }]);
 });
 

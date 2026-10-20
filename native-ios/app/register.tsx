@@ -1,3 +1,4 @@
+import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -26,7 +27,7 @@ import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
@@ -41,6 +42,7 @@ export default function Register() {
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const [email, setEmail] = useState(isPreviewMode ? "preview@nuri.app" : "");
+  const [nickname, setNickname] = useState("");
   const [password, setPassword] = useState(isPreviewMode ? "preview" : "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -106,6 +108,7 @@ export default function Register() {
       // No token comes back: the server mails a code, and the next screen
       // trades it for the session.
       const res = await api.register({
+        nickname: nickname.trim(),
         email: email.trim().toLowerCase(),
         password,
         language: locale,
@@ -133,109 +136,19 @@ export default function Register() {
     return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
   }
 
-  return (
-    <LinearGradient
-      colors={["#FFFFFF", "#FFF8FB", "#C0AEF5"]}
-      locations={[0, 0.38, 1]}
-      style={styles.gradient}
-    >
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={headerHeight} style={styles.safe}>
-          <View style={styles.header}>
-            <Pressable
-              onPress={() => router.push("/login")}
-              style={({ pressed }) => [styles.loginLink, pressed && styles.pressed]}
-              testID="register-go-login"
-            >
-              <Text style={styles.loginText}>{t("已有账号，登陆")}</Text>
-              <Ionicons name="arrow-forward" size={14} color="#3A2F5A" />
-            </Pressable>
-          </View>
-
-          <ScrollView
-            contentContainerStyle={styles.content}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <Image source={wordmark} style={styles.wordmark} resizeMode="contain" />
-            <Text style={styles.welcome}>
-              {t("欢迎来到NURI:")} <Text style={styles.village}>Village</Text>
-              {t("大家庭")}
-            </Text>
-            <Text style={styles.tagline}>{t("让我们一起探索孩子的未来。")}</Text>
-
-            <View style={styles.form} testID="register-step-account">
-              <Text style={styles.title}>{t("创建账号")}</Text>
-              <Text style={styles.description}>
-                {t("用真实邮箱注册，我们会发一个验证码确认是你本人，保护你的家人和隐私数据。")}
-              </Text>
-
-              <Field label={t("邮箱")}>
-                <TextInput
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="you@example.com"
-                  placeholderTextColor="rgba(58, 47, 90, 0.6)"
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  autoComplete="email"
-                  style={styles.input}
-                  testID="register-email"
-                />
-              </Field>
-              <Field label={t("密码（至少6位）")}>
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="******"
-                  placeholderTextColor="rgba(58, 47, 90, 0.6)"
-                  secureTextEntry
-                  autoComplete="new-password"
-                  style={styles.input}
-                  testID="register-password"
-                />
-              </Field>
-
-              {error ? (
-                <View style={styles.errorBox} testID="register-error">
-                  <Ionicons name="alert-circle-outline" size={16} color="#C3454C" />
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
-
-              <View style={styles.ctaRow}>
-                <Pressable
-                  onPress={submit}
-                  disabled={!canNext || submitting}
-                  style={({ pressed }) => [
-                    styles.cta,
-                    canNext && !submitting && styles.ctaActive,
-                    pressed && canNext && styles.pressed,
-                  ]}
-                  testID="register-next-btn"
-                >
-                  <Text style={styles.ctaText}>{submitting ? t("创建中...") : t("下一步")}</Text>
-                  <Ionicons name="arrow-forward" size={16} color="#3A2F5A" />
-                </Pressable>
-              </View>
-              <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-        </View>
-      </SafeAreaView>
-    </LinearGradient>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
-      {children}
+  return <AuthFrame testID="register-step-account">
+    <FormTabs active="register" />
+    <NuriText style={{fontSize:14}}>{locale === "en" ? "Start with a lighter conversation." : translate(locale, "从一次轻松的对话开始。")}</NuriText>
+    <View style={{gap:16}}>
+      <NuriField label={locale === "en" ? "Your name" : translate(locale, "称呼")} value={nickname} onChangeText={setNickname} placeholder={locale === "en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} testID="register-nickname" />
+      <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="register-email" />
+      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder={locale==="en"?"At least 6 characters":translate(locale, "至少 6 位")} secureTextEntry autoComplete="new-password" testID="register-password" />
     </View>
-  );
+    <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can read our privacy policy before continuing. AI permission is a separate choice after signing in.":translate(locale, "继续前可查看隐私说明，AI 许可将在登录后单独选择。")}</NuriText>
+    {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="register-error">{error}</NuriText>:null}
+    <NuriButton label={submitting?t("创建中..."):t("创建账号")} busy={submitting} disabled={!canNext||submitting} onPress={submit} testID="register-next-btn" />
+    <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
+  </AuthFrame>;
 }
 
 const styles = StyleSheet.create({

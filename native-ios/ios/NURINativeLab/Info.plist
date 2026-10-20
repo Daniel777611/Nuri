@@ -8,6 +8,12 @@
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
     <string>Nuri</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+      <string>en</string>
+      <string>zh-Hans</string>
+      <string>zh-Hant</string>
+    </array>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -39,7 +45,7 @@
       </dict>
     </array>
     <key>CFBundleVersion</key>
-    <string>1009</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>GIDClientID</key>
     <string>22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com</string>
     <key>GIDServerClientID</key>

@@ -10,6 +10,14 @@ export function load(path, dependencies = {}) {
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
     if (name.startsWith("@/assets/")) return "fixture-image";
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiux48/Theme")return {useNuriTheme:()=>({mode:"Morning",ink:"#3d3340",secondary:"#5d5060",token:()=>""})};
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+    if(name==="@/src/uiux48/Composer")return {NuriComposer:"NuriComposer"};
+    if(name==="@/src/components/nativeNavigation")return {requestGuardedNativeNavigation:()=>false};
+    if(name==="../chat/[id]")return {default:"ChatConversation",__esModule:true};
+    if(name==="@/src/uiux48/chatDraft")return load("../src/uiux48/chatDraft.ts",{"@/src/api":dependencies["@/src/api"]});
     assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, module, module.exports);
@@ -25,7 +33,7 @@ const response = (value, status = 200) => ({ ok: status < 400, status,
   json: async () => value, text: async () => JSON.stringify(value) });
 const dailyCard = (owner) => ({ id: "daily-" + owner, card_id: "source-" + owner, nickname: owner,
   headline: owner + " private daily headline", concern: "fixture concern", basis: "conversation", audience: "parent",
-  platform: "facebook", author_kind: "parent_post", takeaways: ["Existing parent practice"], excerpt: "Existing excerpt",
+  platform: "facebook", author_kind: "parent_post", summary_source: "post", takeaways: ["Existing parent practice"], excerpt: "Existing excerpt",
   excerpt_lang: "en", source_label: "Fixture source", source_url: "https://source.invalid/" + owner });
 const readyDetail = () => ({ id: "stored-card", title: "Stored guide", summary: "Stored summary", body: "Stored body",
   type: "tip", content_category: "authority", resource_readiness: "ready", resource_pair_complete: true, resources: [
@@ -56,9 +64,10 @@ export function fixture() {
   };
   globalThis.fetch = async (url, init = {}) => {
     assert.ok(url.startsWith("https://daily-home-test.invalid/"), "real network is forbidden");
-    const path = url.replace("https://daily-home-test.invalid/api", "");
+    const rawPath = url.replace("https://daily-home-test.invalid/api", "");
+    const [path, search=""] = rawPath.split("?");
     const owner = init.headers?.Authorization?.replace("Bearer account-", "") || "none";
-    calls.push({ path, owner, init });
+    calls.push({ path, search, owner, init });
     const custom = f.responder && await f.responder(path, init, owner);
     if (custom) return custom;
     if (path === "/auth/me") return response({ id: "user-" + owner, nickname: owner });
@@ -196,7 +205,7 @@ test("Home and post page display brief AI search previews with disclosure, not v
     home = page(f, "home"); home.render(); await tick(); home.render();
     assert.ok(home.find("home-daily-post-card"));
     const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: card.concern });
-    assert.equal(home.find("home-daily-post-question").props.children, "AI_SEARCH_QUESTION?");
+    assert.match(home.visible(), /AI_SEARCH_HEADLINE/); // UIUX48 shows the concise headline; the full AI preview remains on the detail card.
     assert.doesNotMatch(home.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
     post = page(f); post.render(); await tick(); post.render();
     assert.ok(post.find("daily-post-question")); assert.ok(post.find("daily-post-source"));
@@ -385,7 +394,7 @@ for (const stage of ["preview", "creation"]) test("Home tap's held " + stage + "
     f.responder = (path) => path === "/chat/main/preview"
       ? stage === "preview" ? { ...response(null), json: heldBody } : response({ has_conversation: false, session_id: null })
       : stage === "creation" && path === "/chat/sessions" ? { ...response(null), json: heldBody } : null;
-    const pending = p.find("home-nuri-card").props.onPress(); await tick();
+    const pending = p.find("home-nuri-action").props.onPress(); await tick();
     assert.equal(barrierReached, true, "tap must reach the held response body before blur");
     p.blur(); held.resolve(stage === "preview" ? { has_conversation: true, session_id: "old-blurred-A" } : { id: "old-blurred-A" });
     await pending; assert.deepEqual(p.routes, []);
@@ -396,14 +405,14 @@ for (const [status, kind] of [[401, "session"], [503, "service"]]) test("Home wa
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.equal(p.find("home-nuri-action-label").props.children, "继续对话");
+    assert.equal(p.find("home-nuri-action").props.label, "Open full conversation");
     f.responder = (path) => path === "/chat/main/preview" ? response({ detail: "private failure" }, status) : null;
     p.blur(); p.focus(); await tick(); p.render();
     const words = load("../src/requestFailure.ts").requestFailureCopy("en", kind);
     assert.equal(p.find("home-nuri-memo").props.children, words.title);
-    assert.equal(p.find("home-nuri-action-label").props.children, words.action);
+    assert.equal(p.find("home-nuri-action").props.label, words.action);
     const before = f.calls.filter((call) => call.path === "/chat/main/preview").length;
-    f.responder = null; await p.find("home-nuri-card").props.onPress(); await tick(); p.render();
+    f.responder = null; await p.find("home-nuri-action").props.onPress(); await tick(); p.render();
     if (status === 401) { assert.deepEqual(p.routes, ["/login"]); assert.equal(f.calls.filter((call) => call.path === "/chat/main/preview").length, before); }
     else {
       // Retry continues the user's original open-chat action with a fresh

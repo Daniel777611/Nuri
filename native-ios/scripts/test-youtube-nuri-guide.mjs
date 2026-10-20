@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -12,7 +13,10 @@ function load(path, dependencies = {}) {
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
-    assert.ok(name in dependencies, "unexpected dependency " + name);
+    // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
+   assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, module, module.exports);
   return module.exports;
@@ -72,7 +76,7 @@ function page(params = { id: "video-A" }) {
     react: r.react, "react/jsx-runtime": runtime,
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView",
       StyleSheet: { create: (value) => value }, useWindowDimensions: () => ({ width: 390 }) },
-    "@/src/api": { api, aiConsent: { getState: () => p.permission } }, "@/src/i18n": { useT: () => ({ t }) },
+    "@/src/api": { api, aiConsent: { getState: () => p.permission } }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t,locale:"zh-CN" }) },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: p.permission }) },
     "@/src/resourceSummary": summaryModule,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
@@ -115,7 +119,7 @@ test("actual video screen keeps original topic guide independent of actual sourc
     const expected = guideModule.nuriResourceGuide({ concern: "睡眠" }, t);
     assert.equal(p.find("daily-video-guide-headline").props.children, expected.headline);
     assert.equal(p.find("daily-video-guide-intro").props.children, expected.intro);
-    for (let index = 0; index < 3; index++) assert.ok(p.find(`daily-video-guide-action-${index}`));
+    for (let index = 0; index < 3; index++) assert.equal(p.find(`daily-video-guide-action-${index}`), undefined);
     assert.equal(p.find("daily-video-guide-action-3"), undefined);
     assert.match(JSON.stringify(p.find("daily-video-guide-disclosure").props.children), /不是原文或完整视频摘要/);
     assert.ok(p.find("daily-video-nuri-guide")); assert.equal(p.kinds("WebView").length, 0); assert.equal(p.kinds("Image").length, 0);
@@ -129,7 +133,7 @@ test("Home card shows its own topic headline and guide CTA, with unchanged navig
   const guideInputs = [], selected = [];
   const component = load("../src/components/DailyVideoCard.tsx", {
     "react/jsx-runtime": runtime, "react-native": { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: (value) => value } },
-    "@/src/i18n": { useT: () => ({ t }) }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t }) }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" },
     "@/src/nuriResourceGuide": { nuriResourceGuide: (input, translate) => { guideInputs.push(input); return guideModule.nuriResourceGuide(input, translate); } },
     "@/src/resourceSummary": summaryModule,
   }).default;
@@ -279,7 +283,7 @@ test("video source and optional NURI chat preserve exact existing handoffs", asy
     assert.deepEqual(p.external, ["https://www.youtube.com/watch?v=ScMzIvxBSi4"]);
     p.find("daily-video-chat").props.onPress(); await tick();
     assert.ok(p.calls.some(([operation, body]) => operation === "startSession" && body.card_id === "dailyvideo:video-A"));
-    assert.deepEqual(p.routes, ["/chat/created-A"]);
+    assert.deepEqual(p.routes, [{pathname:"/source-preview",params:{kind:"video",id:"video-A"}},"/chat/created-A"]);
   } finally { p.unmount(); }
 });
 

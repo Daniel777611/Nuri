@@ -5,6 +5,7 @@ export function aiPermissionReturnPath(value: unknown): string | null {
   if (["/(tabs)", "/(tabs)/chats", "/(tabs)/profile", "/(tabs)/tasks", "/knowledge", "/daily-post", "/daily-video"].includes(value)) return value;
   // Preserve only an owned-video locator, never arbitrary query parameters.
   if (/^\/daily-video\?id=[a-zA-Z0-9_-]{1,128}$/.test(value)) return value;
+  if (/^\/daily-post\?id=[a-zA-Z0-9_-]{1,128}(?:&uiState=takeaway&point=[01])?$/.test(value)) return value;
   if (/^\/(chat|detail)\/[a-zA-Z0-9_-]{1,128}$/.test(value)) return value;
   return null;
 }

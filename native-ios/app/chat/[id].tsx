@@ -1,3 +1,11 @@
+import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, AuthFrame, NuriButton, NuriField, MenuRow } from "@/src/uiux48/Primitives";
+import { MediaPanel } from "@/src/uiux48/MediaPanel";
+import { NuriComposer } from "@/src/uiux48/Composer";
+import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
+import { useNuriTheme } from "@/src/uiux48/Theme";
+import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
+import { auth } from "@/src/api";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCallback, useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -25,7 +33,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
-import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
+import { registerNativeNavigationGuard, type NativeNavigationAction } from "@/src/components/nativeNavigation";
 import Toast from "@/src/components/Toast";
 import VoiceWaveform from "@/src/components/VoiceWaveform";
 import { ApiError, api, isStreamUnsupported } from "@/src/api";
@@ -44,7 +52,7 @@ import {
   type VoiceRecording,
 } from "@/src/chatVoiceInput";
 import { colors, radius, spacing, type } from "@/src/theme";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { shortResourceSummary } from "@/src/resourceSummary";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
@@ -213,14 +221,11 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
       : t("这些内容来自已恢复的家庭记忆，不是聊天记录。");
 
   return (
-    <View style={styles.memoryContextCard} testID="chat-memory-context">
+    <GlassSurface kind="message" contentStyle={{padding:16,gap:8}} style={{marginBottom:8}} testID="chat-memory-context">
       <View style={styles.memoryContextHeader}>
-        <View style={styles.memoryContextIcon}>
-          <Ionicons name="albums-outline" size={18} color={colors.brand} />
-        </View>
-        <Text style={styles.memoryContextTitle}>{t("已恢复的家庭记忆")}</Text>
+        <NuriText style={{fontSize:17,lineHeight:22,fontWeight:"500"}}>{t("已恢复的家庭记忆")}</NuriText>
       </View>
-      <Text style={styles.memoryContextNotice}>{notice}</Text>
+      <NuriText secondary style={{fontSize:12,lineHeight:16}}>{notice}</NuriText>
       {items.length ? (
         <View style={styles.memoryContextItems}>
           {items.map((item, index) => (
@@ -229,18 +234,17 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
               style={styles.memoryContextItem}
               testID={`chat-memory-context-item-${index}`}
             >
-              <View style={styles.memoryContextBullet} />
-              <Text style={styles.memoryContextText}>{item.text}</Text>
+              <NuriText style={{flex:1,fontSize:17,lineHeight:26}}>{item.text}</NuriText>
             </View>
           ))}
         </View>
       ) : null}
-    </View>
+    </GlassSurface>
   );
 }
 
 // ── Main screen ────────────────────────────────────────────────────────────────
-export default function ChatDetail() {
+export default function ChatDetail({ sessionId, embedded = false, initialDraft, initialAction, onExpand }: { sessionId?:string; embedded?:boolean; initialDraft?:string; initialAction?:"send"|"attach"|"mic"|"focus"; onExpand?:()=>void } = {}) {
   const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
@@ -248,14 +252,30 @@ export default function ChatDetail() {
   const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string }>();
+  const id = sessionId ?? params.id;
+  const safeInsets = useSafeAreaInsets();
+  const composerRef = useRef<TextInput>(null);
+  const launchAction = useRef(initialAction);
+  const theme48 = useNuriTheme();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [historyLoadState, setHistoryLoadState] = useState<
     "loading" | "ready" | "error"
   >("loading");
   const [input, setInput] = useState("");
+  const initialDraftOwner=useRef(generation);
+  const initialDraftUsed=useRef(false);
+  const draftWriteScope=useRef<{id:string;generation:number}|null>(null);
+  useEffect(() => {
+    // Hydrate the bridge before the first write. Otherwise a fresh empty input
+    // would erase the draft handed over by the still-mounted Home screen.
+    if(draftWriteScope.current?.id!==id||draftWriteScope.current.generation!==generation){draftWriteScope.current={id,generation};return;}
+    writeChatDraft(id, input, generation);
+  }, [id, input, generation]);
   const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
   const [imageMenuVisible, setImageMenuVisible] = useState(false);
+  const [mediaState,setMediaState]=useState<"cameraPermission"|"voicePermission"|"voice"|"voiceReview"|"imagePreview"|null>(null);
+  const [mediaError,setMediaError]=useState("");
   const [processingImage, setProcessingImage] = useState(false);
   const [voiceState, setVoiceState] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
   const [voiceSeconds, setVoiceSeconds] = useState(0);
@@ -286,7 +306,7 @@ export default function ChatDetail() {
   // that intent and navigate only after the server returns the durable turn;
   // otherwise Home's NURI preview can read the conversation before it lands.
   const pendingHomeReturnRef = useRef(false);
-  const pendingHeaderNavigationRef = useRef<"notifications" | null>(null);
+  const pendingHeaderNavigationRef = useRef<NativeNavigationAction | null>(null);
   const [typing, setTyping] = useState(false);
   // Reply text accumulated from the SSE stream, rendered as a live bubble until
   // the persisted message arrives and replaces it.
@@ -372,9 +392,13 @@ export default function ChatDetail() {
     }
   }, [id, router, capture, current, setMessages, setHistoryLoadState]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(useCallback(() => {
+    void load();
+    const draft=!initialDraftUsed.current&&initialDraftOwner.current===generation
+      ? initialDraft??readChatDraft(id) : readChatDraft(id);
+    initialDraftUsed.current=true;
+    setInput(draft);
+  }, [load,id,setInput,initialDraft,generation]));
 
   useEffect(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
@@ -387,8 +411,20 @@ export default function ChatDetail() {
     router.dismissTo("/(tabs)");
   }, [router, capture]);
 
+  const navigateFromChat = useCallback((action: NativeNavigationAction) => {
+    if (capture() === null) return;
+    // Back restores the actual source stack (video/post/saved/Home); Home is
+    // a separate explicit Tab action. Do not discard the resource context.
+    if (action === "back") {
+      if (router.canGoBack()) router.back();
+      else router.dismissTo("/(tabs)");
+    } else if (action === "home") returnHome();
+    else router.navigate(({notifications:"/notifications",chat:"/(tabs)/chats",community:"/community",profile:"/(tabs)/profile"}[action]) as never);
+  }, [router, capture, returnHome]);
+
   const requestHomeReturn = useCallback(() => {
     if (capture() === null) return;
+    if(voiceRecordingRef.current){showToast(t("请先结束录音，再离开对话。"));return;}
     pendingHeaderNavigationRef.current = null;
     if (sendingRef.current) {
       if (!pendingHomeReturnRef.current) {
@@ -400,17 +436,18 @@ export default function ChatDetail() {
     returnHome();
   }, [returnHome, showToast, t, capture]);
 
-  useFocusEffect(useCallback(() => registerNativeNavigationGuard(`/chat/${id}`, (action) => {
+  useFocusEffect(useCallback(() => registerNativeNavigationGuard(embedded?"/":`/chat/${id}`, (action) => {
     if (capture() === null) return;
-    if (action !== "notifications") { requestHomeReturn(); return; }
+    if (action === "home") { requestHomeReturn(); return; }
+    if(voiceRecordingRef.current){showToast(locale==="en"?"Finish recording before leaving.":translate(locale, "请先结束录音，再离开对话。"));return;}
     if (sendingRef.current) {
       pendingHomeReturnRef.current = false;
-      pendingHeaderNavigationRef.current = "notifications";
-      showToast(locale === "en" ? "Saving this reply before opening notification settings…" : locale === "zh-TW" ? "正在儲存這輪對話，完成後會開啟通知設定…" : "正在保存这轮对话，完成后会打开通知设置…");
+      pendingHeaderNavigationRef.current = action;
+      showToast(locale === "en" ? "Saving this reply before leaving…" : translate(locale, "正在保存这轮对话，完成后会离开…"));
     } else {
-      router.push("/notification-settings" as never);
+      navigateFromChat(action);
     }
-  }), [id, locale, requestHomeReturn, router, showToast, capture]));
+  }), [id, embedded, locale, requestHomeReturn, navigateFromChat, showToast, capture]));
 
   const send = async (textOverride?: string, imageBase64?: string | null) => {
     const ticket = capture();
@@ -468,9 +505,10 @@ export default function ChatDetail() {
         ...res.ai_messages,
       ]);
       failedSendRef.current = null;
-      if (pendingHeaderNavigationRef.current === "notifications") {
+      if (pendingHeaderNavigationRef.current) {
+        const action=pendingHeaderNavigationRef.current;
         pendingHeaderNavigationRef.current = null;
-        router.push("/notification-settings" as never);
+        navigateFromChat(action);
       } else if (pendingHomeReturnRef.current) {
         pendingHomeReturnRef.current = false;
         returnHome();
@@ -532,6 +570,7 @@ export default function ChatDetail() {
       voiceRecordingRef.current = null;
       setVoiceState("idle");
       setVoiceSeconds(0);
+      setMediaState(null);setImageMenuVisible(false);setMediaError("");
     };
   }, [clearVoiceTimer, setVoiceState, setVoiceSeconds]));
 
@@ -554,6 +593,7 @@ export default function ChatDetail() {
 
   const explainVoiceError = (error: unknown) => {
     const code = error instanceof VoiceInputError ? error.code : "failed";
+    setMediaError(code==="permission_denied"?(locale==="en"?"Microphone access was not granted. You can use text instead.":translate(locale, "麦克风权限未获允许，可以改用文字。")):locale==="en"?"Voice input was not confirmed. Please retry or use text.":translate(locale, "语音输入未确认成功，请重试或改用文字。"));
     if (code === "unsupported") showToast(t("当前浏览器不支持语音输入"));
     else if (code === "permission_denied") showToast(t("需要麦克风权限才能语音输入，请在系统设置中允许"));
     else if (code === "no_microphone") showToast(t("没有找到可用的麦克风"));
@@ -577,12 +617,14 @@ export default function ChatDetail() {
       if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       const spoken = (text || "").trim();
       if (!spoken) {
+        setMediaState("voicePermission");setMediaError(locale==="en"?"No speech was recognized. Please retry.":translate(locale, "没有听清，请再说一次。"));
         showToast(t("没有听清，请再说一次"));
         return;
       }
       setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
+      setMediaState("voiceReview");
     } catch (error) {
-      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) explainVoiceError(error);
+      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) {setMediaState("voicePermission");explainVoiceError(error);}
     } finally {
       if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) {
         setVoiceState("idle");
@@ -605,6 +647,7 @@ export default function ChatDetail() {
     if (ticket === null) return;
     if (voiceState !== "idle" || voiceStartInFlightRef.current) return;
     if (!isVoiceInputSupported()) {
+      setMediaError(locale==="en"?"Voice input is unavailable on this device. Use text instead.":translate(locale, "此设备暂不支持语音输入，可以改用文字。"));
       showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
       return;
     }
@@ -621,6 +664,7 @@ export default function ChatDetail() {
     } catch (error) {
       if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       setVoiceState("idle");
+      setMediaState("voicePermission");
       explainVoiceError(error);
       return;
     } finally {
@@ -629,6 +673,7 @@ export default function ChatDetail() {
     setVoiceSeconds(0);
     setVoiceMetered(voiceRecordingRef.current.level() !== null);
     setVoiceState("recording");
+    setMediaState("voice");setMediaError("");
     const startedAt = Date.now();
     voiceTimerRef.current = setInterval(() => {
       const seconds = Math.floor((Date.now() - startedAt) / 1000);
@@ -658,6 +703,7 @@ export default function ChatDetail() {
       const prepared = await prepareChatImage(asset);
       if (!current(ticket)) return;
       setPendingImage(prepared);
+      setMediaState("imagePreview");setMediaError("");
     } catch (error) {
       if (!current(ticket)) return;
       explainImageError(error);
@@ -722,6 +768,7 @@ export default function ChatDetail() {
   const deferNativePickerUntilModalCloses = (source: "camera" | "library") => {
     if (capture() === null) return;
     pendingNativePickerRef.current = source;
+    setMediaState(null);
     setImageMenuVisible(false);
     // onDismiss is reliable on iOS. Android does not consistently emit it for
     // every RN Modal implementation, so use a guarded fallback after the fade.
@@ -739,6 +786,7 @@ export default function ChatDetail() {
       // file header before allocating any full-resolution image surface.
       const pendingAsset = pickWebChatImageFile();
       setImageMenuVisible(false);
+      setMediaState(null);
       const asset = await pendingAsset;
       if (asset && current(ticket)) await acceptPickerResult({ canceled: false, assets: [asset] }, ticket);
     } catch (error) {
@@ -768,10 +816,7 @@ export default function ChatDetail() {
     // The iOS app is a WKWebView shell. Its browser-owned file chooser already
     // offers Camera and Photo Library, so opening a NURI menu first only adds a
     // redundant extra step and can break Safari's required user gesture.
-    if (Platform.OS === "web") {
-      void openSafeWebPicker();
-      return;
-    }
+    setMediaState(null);setMediaError("");
     setImageMenuVisible(true);
   };
 
@@ -798,274 +843,52 @@ export default function ChatDetail() {
     // acceptPickerResult implementation is sufficient for the recovered file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return (
-    <LinearGradient
-      colors={GRADIENT}
-      start={{ x: 1, y: 0 }}
-      end={{ x: 0, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-        <View style={[styles.phoneCanvas, { width: phoneWidth }]}>
-        <Image source={blurredTaskBackground} style={styles.backgroundImage} contentFit="cover" />
-        <View pointerEvents="none" style={styles.haloBlue} />
-        <View pointerEvents="none" style={styles.haloRed} />
-        <BlurView pointerEvents="none" intensity={100} tint="light" style={StyleSheet.absoluteFill} />
-        <Stack.Screen options={{ gestureEnabled: !sending }} />
-        <View style={styles.header} onLayout={(event) => setPageHeaderHeight(event.nativeEvent.layout.height)}>
-          <Pressable
-            onPress={requestHomeReturn}
-            style={[styles.backBtn, Platform.OS !== "web" && { display: "none" }]}
-            accessibilityRole="button"
-            accessibilityLabel={t("返回首页并更新推荐")}
-            accessibilityState={{ busy: sending }}
-            testID="chat-back-btn"
-          >
-            <Ionicons name="chevron-back" size={26} color="#3A2F5A" />
-          </Pressable>
-          <Text style={styles.headerName}>{t("我的对话")}</Text>
-        </View>
-
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={headerHeight + pageHeaderHeight}
-          style={{ flex: 1 }}
-        >
-          <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={styles.scroll}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
-            testID="chat-scroll"
-          >
-            {historyLoadState === "loading" ? (
-              <View style={styles.historyStatus} testID="chat-history-loading">
-                <ActivityIndicator color={colors.brand} />
-                <Text style={styles.historyStatusText}>{t("正在加载对话…")}</Text>
-              </View>
-            ) : null}
-            {historyLoadState === "error" ? (
-              <Pressable
-                onPress={() => void load()}
-                style={styles.historyStatus}
-                testID="chat-history-retry"
-              >
-                <Ionicons name="refresh" size={20} color={colors.brand} />
-                <Text style={styles.historyStatusText}>
-                  {t("对话未能打开，点此重试")}
-                </Text>
-              </Pressable>
-            ) : null}
-            {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                msg={m}
-                actionsEnabled={!m.id.startsWith("tmp-")}
-                feedbackSaving={feedbackSavingIds.has(m.id)}
-                onCopy={copyResponse}
-                onFeedback={rateResponse}
-              />
-            ))}
-            {streamingText ? (
-              <MessageBubble
-                msg={{ id: "__streaming__", role: "ai", text: streamingText }}
-                actionsEnabled={false}
-              />
-            ) : null}
-            {typing ? <TypingDots /> : null}
-          </ScrollView>
-
-          <View style={styles.composer} testID="chat-composer">
-            {processingImage ? (
-              <View style={styles.imageProcessing} testID="chat-image-processing">
-                <ActivityIndicator size="small" color={colors.brand} />
-                <Text style={styles.imageProcessingText}>{t("正在准备图片…")}</Text>
-              </View>
-            ) : null}
-            {voiceState === "recording" ? (
-              <View style={styles.voiceBanner} testID="chat-voice-recording">
-                <View style={styles.voiceDot} accessibilityLabel={t("正在录音")} />
-                {voiceMetered ? (
-                  <VoiceWaveform level={readVoiceLevel} testID="chat-voice-waveform" />
-                ) : (
-                  <Text style={styles.voiceBannerText}>
-                    {t("正在录音")} {Math.floor(voiceSeconds / 60)}:{String(voiceSeconds % 60).padStart(2, "0")}
-                  </Text>
-                )}
-                <Text style={styles.voiceBannerHint}>{t("再点一次结束")}</Text>
-                <Pressable
-                  onPress={cancelVoice}
-                  style={styles.imageRemove}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("取消录音")}
-                  testID="chat-voice-cancel"
-                >
-                  <Ionicons name="close" size={20} color="#3A2F5A" />
-                </Pressable>
-              </View>
-            ) : null}
-            {voiceState === "transcribing" ? (
-              <View style={styles.imageProcessing} testID="chat-voice-transcribing">
-                <ActivityIndicator size="small" color={colors.brand} />
-                <Text style={styles.imageProcessingText}>{t("正在识别语音…")}</Text>
-              </View>
-            ) : null}
-            {pendingImage ? (
-              <View style={styles.imagePreview} testID="chat-image-preview">
-                <Image
-                  source={{ uri: pendingImage.previewUri }}
-                  style={styles.imagePreviewThumb}
-                  contentFit="cover"
-                />
-                <View style={styles.imagePreviewCopy}>
-                  <Text style={styles.imagePreviewTitle}>{t("已添加图片")}</Text>
-                  <Text style={styles.imagePreviewHint}>{t("可以补充文字，让 NURI 更准确地理解")}</Text>
-                </View>
-                <Pressable
-                  onPress={() => setPendingImage(null)}
-                  style={styles.imageRemove}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("移除图片")}
-                  testID="chat-image-remove"
-                >
-                  <Ionicons name="close" size={20} color="#3A2F5A" />
-                </Pressable>
-              </View>
-            ) : null}
-            <View style={styles.inputPill}>
-              <Pressable
-                onPress={openImageInput}
-                style={styles.iconBtn}
-                disabled={sending || processingImage}
-                accessibilityRole="button"
-                accessibilityLabel={t("添加图片")}
-                testID="chat-image-btn"
-              >
-                <Ionicons name="add" size={26} color="#3A2F5A" />
-              </Pressable>
-              <TextInput
-                value={input}
-                onChangeText={setInput}
-                placeholder={t("说点什么...")}
-                placeholderTextColor={colors.muted}
-                style={styles.input}
-                editable={historyLoadState === "ready" && !sending}
-                multiline
-                returnKeyType="send"
-                blurOnSubmit={false}
-                onSubmitEditing={() => {
-                  if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
-                }}
-                onKeyPress={(e: any) => {
-                  if (e.nativeEvent?.key === "Enter" && !e.nativeEvent?.shiftKey) {
-                    e.preventDefault?.();
-                    if ((input.trim() || pendingImage) && !sending && !processingImage) void send();
-                  }
-                }}
-                testID="chat-input"
-              />
-              {voiceState === "recording" ? (
-                <Pressable
-                  onPress={() => void stopVoice()}
-                  style={[styles.micBtn, styles.recordingBtn]}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("结束录音")}
-                  testID="chat-voice-stop"
-                >
-                  <Ionicons name="stop" size={18} color="#fff" />
-                </Pressable>
-              ) : (
-                <Pressable
-                  onPress={() => {
-                    if (input.trim() || pendingImage) void send();
-                    else void startVoice();
-                  }}
-                  disabled={sending || processingImage || voiceState !== "idle"}
-                  style={[styles.micBtn, (input.trim() || pendingImage) && styles.sendBtn]}
-                  accessibilityRole="button"
-                  accessibilityLabel={(input.trim() || pendingImage) ? t("发送") : t("语音输入")}
-                  testID={(input.trim() || pendingImage) ? "chat-send-btn" : "chat-voice-btn"}
-                >
-                  {voiceState === "starting" || voiceState === "transcribing" ? (
-                    <ActivityIndicator size="small" color="#3A2F5A" />
-                  ) : (
-                    <Ionicons
-                      name={(input.trim() || pendingImage) ? "send" : "mic-outline"}
-                      size={21}
-                      color={(input.trim() || pendingImage) ? "#fff" : "#3A2F5A"}
-                    />
-                  )}
-                </Pressable>
-              )}
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-
-        <Modal
-          visible={imageMenuVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setImageMenuVisible(false)}
-          onDismiss={flushNativePicker}
-        >
-          <View style={styles.imageMenuOverlay}>
-            <Pressable
-              style={StyleSheet.absoluteFill}
-              onPress={() => setImageMenuVisible(false)}
-              accessibilityLabel={t("关闭图片菜单")}
-            />
-            <View style={[styles.imageMenu, { width: Math.min(phoneWidth - 32, 370) }]} accessibilityViewIsModal>
-              <View style={styles.imageMenuHandle} />
-              <Text style={styles.imageMenuTitle}>{t("添加图片")}</Text>
-              <Text style={styles.imageMenuHint}>
-                {Platform.OS === "web"
-                  ? t("浏览器会打开设备支持的相机或图片文件选择器")
-                  : t("选择一种添加方式")}
-              </Text>
-              <Text style={styles.imagePrivacyHint}>
-                {t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}
-              </Text>
-              <Pressable
-                onPress={() => void takePhoto()}
-                style={styles.imageMenuAction}
-                testID="chat-image-camera"
-              >
-                <View style={styles.imageMenuIcon}>
-                  <Ionicons name="camera-outline" size={22} color={colors.brand} />
-                </View>
-                <Text style={styles.imageMenuActionText}>
-                  {Platform.OS === "web" ? t("拍照或选择图片") : t("拍照")}
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-              </Pressable>
-              {Platform.OS !== "web" ? <Pressable
-                onPress={() => void choosePhoto()}
-                style={styles.imageMenuAction}
-                testID="chat-image-library"
-              >
-                <View style={styles.imageMenuIcon}>
-                  <Ionicons name="images-outline" size={22} color={colors.brand} />
-                </View>
-                <Text style={styles.imageMenuActionText}>
-                  {t("从相册选择")}
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
-              </Pressable> : null}
-              <Pressable
-                onPress={() => setImageMenuVisible(false)}
-                style={styles.imageMenuCancel}
-                testID="chat-image-cancel"
-              >
-                <Text style={styles.imageMenuCancelText}>{t("取消")}</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
-        <Toast message={toastMsg} />
-        </View>
-      </SafeAreaView>
-    </LinearGradient>
-  );
+  useEffect(() => {
+    if (historyLoadState !== "ready" || !launchAction.current) return;
+    if(initialDraftOwner.current!==generation){launchAction.current=undefined;return;}
+    const action = launchAction.current;
+    launchAction.current = undefined;
+    if (action === "send" && initialDraft?.trim()) void send(initialDraft);
+    else if (action === "attach") openImageInput();
+    else if (action === "mic") setMediaState("voicePermission");
+    else composerRef.current?.focus();
+  }, [historyLoadState, id]);
+  const content = <View style={{flex:1,minHeight:0}}>
+    {!embedded ? <Stack.Screen options={{ gestureEnabled: !sending }} /> : null}
+    <ScrollView ref={scrollRef} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={()=>scrollRef.current?.scrollToEnd({animated:false})} onContentSizeChange={()=>scrollRef.current?.scrollToEnd({animated:false})} testID="chat-scroll">
+      {historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
+      {historyLoadState==="error"?<Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
+      {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} />)}
+      {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
+      {typing?<TypingDots />:null}
+    </ScrollView>
+    <View style={{paddingHorizontal:embedded?0:24,paddingBottom:embedded?0:12}}>
+      {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{t("正在准备图片…")}</NuriText></View>:null}
+      {voiceState==="recording"?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-voice-recording">{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="chat-voice-waveform" />:<NuriText>{t("正在录音")} {Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText>}<Pressable onPress={cancelVoice} style={{minHeight:44,justifyContent:"center"}} testID="chat-voice-cancel"><NuriText>{t("取消")}</NuriText></Pressable></GlassSurface>:null}
+      {voiceState==="transcribing"?<View testID="chat-voice-transcribing"><ActivityIndicator /><NuriText secondary>{t("正在识别语音…")}</NuriText></View>:null}
+      {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1,fontSize:13}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} testID="chat-image-remove" /></GlassSurface>:null}
+      <NuriComposer value={input} onChangeText={setInput} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>{if(voiceState==="recording")void stopVoice();else {setMediaError("");setMediaState("voicePermission");}}} busy={sending||processingImage||voiceState==="starting"||voiceState==="transcribing"} disabled={historyLoadState!=="ready"} recording={voiceState==="recording"} hasAttachment={!!pendingImage} testID={embedded?"home-chat":"chat"} />
+    </View>
+      <MediaPanel visible={imageMenuVisible||mediaState!==null} title={imageMenuVisible?(locale==="en"?"Add content":translate(locale, "添加内容")):({cameraPermission:locale==="en"?"Show Nuri a photo":translate(locale, "拍照给 Nuri 看"),voicePermission:locale==="en"?"Use microphone":translate(locale, "使用麦克风"),voice:locale==="en"?"Listening":translate(locale, "正在聆听"),voiceReview:locale==="en"?"Review voice input":translate(locale, "确认语音内容"),imagePreview:locale==="en"?"Review photo":translate(locale, "确认照片")}[mediaState??"voicePermission"])} onClose={()=>{cancelVoice();setMediaState(null);setImageMenuVisible(false);}} onDismiss={flushNativePicker}>
+        <AuthFrame testID={imageMenuVisible?"attachments-card":`media-${mediaState}-card`} contentGap={24}>
+          {imageMenuVisible?<><MenuRow label={locale==="en"?"Take a photo":translate(locale, "拍照")} onPress={()=>{setImageMenuVisible(false);setMediaState("cameraPermission");}} testID="chat-image-camera" /><MenuRow label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} testID="chat-image-library" /><NuriText secondary style={{fontSize:12,lineHeight:16}}>{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText><NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" /></>:null}
+          {mediaState==="cameraPermission"?<><NuriText>{locale==="en"?"Allow camera access to photograph what you would like to discuss.":translate(locale, "允许相机后，可以拍下你想聊的内容。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Preview or remove the photo before sending.":translate(locale, "发送前，你可以预览或移除照片。")}</NuriText><NuriButton label={locale==="en"?"Continue to camera":translate(locale, "继续拍照")} onPress={takePhoto} testID="camera-permission-continue" /><NuriButton secondary label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} /></>:null}
+          {mediaState==="voicePermission"?<><NuriText>{locale==="en"?"Allow microphone access to speak directly to Nuri.":translate(locale, "允许麦克风后，你可以直接对 Nuri 说话。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Only audio you actively record is used for voice input.":translate(locale, "只有你主动录制的音频才用于语音输入。")}</NuriText><NuriButton label={locale==="en"?"Continue with voice":translate(locale, "继续使用语音")} busy={voiceState==="starting"} onPress={()=>void startVoice()} testID="voice-permission-continue" /><NuriButton secondary label={locale==="en"?"Use text instead":translate(locale, "改用文字")} disabled={voiceState==="starting"} onPress={()=>{setMediaState(null);composerRef.current?.focus();}} testID="voice-permission-text" /></>:null}
+          {mediaState==="voice"?<><NuriIcon name="mic" />{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="media-voice-waveform" />:null}<NuriText>{Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText><NuriText>{locale==="en"?"Take your time. Nuri is listening.":translate(locale, "慢慢说，Nuri 在听。")}</NuriText><NuriButton label={voiceState==="transcribing"?(locale==="en"?"Transcribing…":translate(locale, "正在识别语音…")):(locale==="en"?"Finish recording":translate(locale, "完成录音"))} busy={voiceState==="transcribing"} onPress={()=>void stopVoice()} testID="media-voice-finish" /><NuriButton secondary label={locale==="en"?"Cancel recording":translate(locale, "取消录音")} onPress={()=>{cancelVoice();setMediaState(null);}} testID="media-voice-cancel" /></>:null}
+          {mediaState==="voiceReview"||mediaState==="imagePreview"?<>
+            {mediaState==="imagePreview"&&pendingImage?<Image source={{uri:pendingImage.previewUri}} style={{width:"100%",height:220,borderRadius:28}} contentFit="contain" testID="media-review-photo" />:null}
+            <NuriText secondary style={{fontSize:mediaState==="voiceReview"?12:16,lineHeight:mediaState==="voiceReview"?16:22}}>{mediaState==="voiceReview"?(locale==="en"?"Your voice is now text. Edit it before sending.":translate(locale, "语音已转成文字，你可以修改后发送。")):(locale==="en"?"Add a note so Nuri understands your question.":translate(locale, "添加一句说明，让 Nuri 更了解你想问什么。"))}</NuriText>
+            <NuriField label={locale==="en"?"Your content":translate(locale, "你的内容")} value={input} onChangeText={setInput} multiline style={{height:96,paddingTop:14,textAlignVertical:"top"}} testID="media-review-input" />
+            <View style={{flexDirection:"row",justifyContent:"space-between"}}><IconAction name="plus" label={locale==="en"?"Add photo":translate(locale, "添加照片")} onPress={()=>{setMediaState(null);setImageMenuVisible(true);}} testID="media-review-plus" /><IconAction name="mic" label={locale==="en"?"Continue voice input":translate(locale, "继续语音输入")} onPress={()=>setMediaState("voicePermission")} testID="media-review-mic" /></View>
+            <NuriButton label={mediaState==="imagePreview"?(locale==="en"?"Send photo":translate(locale, "发送照片")):(locale==="en"?"Send to Nuri":translate(locale, "发送给 Nuri"))} disabled={sending||(!input.trim()&&!pendingImage)} onPress={()=>{setMediaState(null);void send();}} testID="media-review-send" />
+            <NuriButton secondary label={mediaState==="imagePreview"?(locale==="en"?"Choose again":translate(locale, "重新选择")):(locale==="en"?"Continue voice input":translate(locale, "继续语音输入"))} onPress={()=>{if(mediaState==="imagePreview"){setMediaState(null);setImageMenuVisible(true);}else setMediaState("voicePermission");}} testID="media-review-again" />
+          </>:null}
+          {mediaError?<NuriText accessibilityLiveRegion="assertive" testID="media-error">{mediaError}</NuriText>:null}
+        </AuthFrame>
+      </MediaPanel>
+    <Toast message={toastMsg} />
+  </View>;
+  return embedded ? content : <NuriKeyboardFrame>{content}</NuriKeyboardFrame>;
 }
 
 // ── Sub-component: message bubble (text, image, transitions) ────────────────
@@ -1083,6 +906,8 @@ function MessageBubble({
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
 }) {
   const { t } = useT();
+  const palette = useNuriTheme();
+  const [actionsVisible,setActionsVisible] = useState(false);
   const router = useRouter();
   const { capture } = useAccountScope();
   const isAI = msg.role === "ai";
@@ -1119,86 +944,9 @@ function MessageBubble({
     );
   }
 
-  // A plan the parent agreed to, already saved. There is no "add" button on
-  // purpose: the card exists because they said yes in the conversation, and a
-  // second confirmation here would make the one in the conversation meaningless.
-  // What the reply says out loud is how to change or cancel it (spec §11.2).
-  if (msg.transition?.kind === "task_card") {
-    const card = msg.transition;
-    const tasks: any[] = Array.isArray(card.tasks) ? card.tasks : [];
-    const criteria: string[] = Array.isArray(card.completion_criteria)
-      ? card.completion_criteria
-      : [];
-    return (
-      <View style={[styles.row, { justifyContent: "flex-start" }]}>
-        <View style={styles.avatarSlot}>
-          <NuriAvatar size={30} />
-        </View>
-        <View style={styles.planCard} testID="chat-task-card">
-          <View style={styles.planHead}>
-            <Ionicons name="bookmark" size={14} color={colors.brand} />
-            <Text style={styles.planBadge}>
-              {card.action === "create" ? t("已存成计划") : t("已更新计划")}
-            </Text>
-          </View>
-          <Text style={styles.planTitle}>{card.title || card.core_goal}</Text>
-          {card.core_goal && card.title !== card.core_goal ? (
-            <Text style={styles.planGoal}>{card.core_goal}</Text>
-          ) : null}
-          {tasks.map((task, index) => (
-            <View key={`${msg.id}-task-${index}`} style={styles.planTask}>
-              <Text style={styles.planAction}>{index + 1}. {task.action}</Text>
-              {task.timing || task.trigger ? (
-                <Text style={styles.planMeta}>{task.timing || task.trigger}</Text>
-              ) : null}
-              {task.completion_criterion ? (
-                <Text style={styles.planMeta}>
-                  {t("做到这样就算成功：")}{task.completion_criterion}
-                </Text>
-              ) : null}
-              {task.fallback ? (
-                <Text style={styles.planMeta}>{t("卡住时：")}{task.fallback}</Text>
-              ) : null}
-            </View>
-          ))}
-          {criteria.length ? (
-            <Text style={styles.planMeta}>
-              {t("整体完成标准：")}{criteria.join("；")}
-            </Text>
-          ) : null}
-          <Text style={styles.planFoot}>{t("已同步到「我的任务」")}</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (msg.transition?.kind === "hospital_card") {
-    return (
-      <View style={[styles.row, { justifyContent: "flex-start" }]}>
-        <View style={styles.avatarSlot}>
-          <NuriAvatar size={30} />
-        </View>
-        <View style={styles.hospitalCard} testID="chat-hospital-card">
-          <Text style={styles.hospitalText}>{msg.text}</Text>
-          <View style={styles.hospitalDivider} />
-          <View style={styles.hospitalRow}>
-            <Ionicons name="medkit-outline" size={16} color={colors.error} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.hospitalName}>{"Stanford Children's ER"}</Text>
-              <Text style={styles.hospitalMeta}>2.4 mi · 24h · (650) 555-0911</Text>
-            </View>
-          </View>
-          <View style={styles.hospitalRow}>
-            <Ionicons name="call-outline" size={16} color={colors.brand} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.hospitalName}>Nurse Hotline</Text>
-              <Text style={styles.hospitalMeta}>{t("免费 · 24h · (800) 555-0144")}</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-    );
-  }
+  // Historical task/medical transitions remain server data, not new UI actions.
+  // Never display invented hospital names, distances or phone numbers.
+  if ((msg.transition?.kind === "task_card" || msg.transition?.kind === "hospital_card") && !msg.text) return null;
 
   return (
     <View
@@ -1207,11 +955,8 @@ function MessageBubble({
         { justifyContent: isAI ? "flex-start" : "flex-end" },
       ]}
     >
-      <View
-        style={[styles.bubble, isAI ? styles.bubbleAI : styles.bubbleUser]}
-        testID={`bubble-${msg.role}`}
-      >
-        {isAI && <Text style={styles.senderLabel}>NURI</Text>}
+      <GlassSurface kind={isAI ? "message" : "user"} style={{maxWidth:isAI?"100%":"84%",width:isAI?"100%":undefined}} contentStyle={{padding:16}} testID={`bubble-${msg.role}`}>
+        {isAI ? <Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{flexDirection:"row",alignItems:"center",gap:8,minHeight:24,marginBottom:8}} hitSlop={10}><View style={{width:24,height:24}}><View style={{transform:[{scale:24/34}],transformOrigin:"top left"}}><SceneAvatar /></View></View><NuriText style={{fontSize:16,lineHeight:24}}>Nuri</NuriText></Pressable>:null}
         {msg.image_base64 ? (
           <Image
             source={{ uri: msg.image_base64 }}
@@ -1220,7 +965,7 @@ function MessageBubble({
           />
         ) : null}
         {msg.text && !post && !video ? (
-          <Text style={[styles.bubbleText, !isAI && { color: "#fff" }]}>
+          <Text style={[styles.bubbleText, {color:palette.ink,fontSize:17,lineHeight:26,fontWeight:"400"}]}>
             {isAI ? (
               <RichText text={msg.text} />
             ) : (
@@ -1235,25 +980,25 @@ function MessageBubble({
             accessibilityRole="button"
             testID="chat-daily-post-card"
           >
-            <Text style={styles.postCardEyebrow}>{t("每日精选")}</Text>
-            <Text style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</Text>
-            {postPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</Text> : null}
+            <NuriText secondary style={styles.postCardEyebrow}>{t("每日精选")}</NuriText>
+            <NuriText style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</NuriText>
+            {postPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</NuriText> : null}
             <View style={styles.postCardCta}>
-              <Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text>
-              <Ionicons name="arrow-forward" size={14} color={colors.brand} />
+              <NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText>
+              <NuriIcon name="arrowRight" />
             </View>
           </Pressable>
         ) : null}
         {video ? <Pressable style={styles.postCard}
           onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
           accessibilityRole="button" testID="chat-daily-video-card">
-          <Text style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</Text>
-          <Text style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</Text>
-          {videoPreview ? <Text style={styles.postCardCtaText} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</Text> : null}
-          <Text style={styles.postCardCtaText}>{t("AI 检索摘要 · 非完整视频摘要")}</Text>
-          <View style={styles.postCardCta}><Text style={styles.postCardCtaText}>{t("查看摘要与来源")}</Text><Ionicons name="arrow-forward" size={14} color={colors.brand} /></View>
+          <NuriText secondary style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</NuriText>
+          <NuriText style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</NuriText>
+          {videoPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</NuriText> : null}
+          <NuriText secondary style={styles.postCardEyebrow}>{t("AI 检索摘要 · 非完整视频摘要")}</NuriText>
+          <View style={styles.postCardCta}><NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText><NuriIcon name="arrowRight" /></View>
         </Pressable> : null}
-        {isAI && actionsEnabled && msg.text && !post && !video ? (
+        {isAI && actionsVisible && actionsEnabled && msg.text && !post && !video ? (
           <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
             <Pressable
               onPress={() => onCopy?.(msg)}
@@ -1290,13 +1035,15 @@ function MessageBubble({
             </Pressable>
           </View>
         ) : null}
-      </View>
+      </GlassSurface>
     </View>
   );
 }
 
 // ── Sub-component: animated "typing…" indicator ─────────────────────────────
 function TypingDots() {
+  const palette=useNuriTheme();
+  const {locale}=useT();
   const dot1 = useRef(new Animated.Value(0)).current;
   const dot2 = useRef(new Animated.Value(0)).current;
   const dot3 = useRef(new Animated.Value(0)).current;
@@ -1336,22 +1083,21 @@ function TypingDots() {
   }, [dot1, dot2, dot3]);
 
   return (
-    <View style={[styles.row, { justifyContent: "flex-start" }]}>
-      <View style={styles.avatarSlot}>
-        <NuriAvatar size={30} />
+    <GlassSurface kind="message" contentStyle={{padding:16,gap:8}} style={{width:"100%"}} testID="chat-typing">
+      <View style={{flexDirection:"row",alignItems:"center",gap:8}}>
+        <View style={{width:24,height:24}}><View style={{transform:[{scale:24/34}],transformOrigin:"top left"}}><SceneAvatar /></View></View>
+        <NuriText style={{fontSize:15,lineHeight:22,fontWeight:"600"}}>Nuri</NuriText>
       </View>
-      <View style={[styles.bubble, styles.bubbleAI, styles.typingBubble]}>
-        <Text style={styles.senderLabel}>NURI</Text>
-        <View style={styles.dotsRow}>
+      <NuriText accessibilityLiveRegion="polite" style={{fontSize:17,lineHeight:26}}>{locale==="en"?"Nuri is replying…":translate(locale, "Nuri 正在回复…")}</NuriText>
+        <View style={{flexDirection:"row",gap:5,alignItems:"center",height:16}}>
           {[dot1, dot2, dot3].map((dot, i) => (
             <Animated.View
               key={i}
-              style={[styles.dot, { transform: [{ translateY: dot }] }]}
+              style={{width:7,height:7,borderRadius:3.5,backgroundColor:palette.ink,opacity:.85,transform:[{translateY:dot}]}}
             />
           ))}
         </View>
-      </View>
-    </View>
+    </GlassSurface>
   );
 }
 
@@ -1467,19 +1213,15 @@ const styles = StyleSheet.create({
   },
   cardDividerLine: { flex: 1, height: 1, backgroundColor: colors.border },
   postCard: {
-    marginTop: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: "rgba(100, 76, 195, 0.24)",
-    backgroundColor: "rgba(250, 248, 255, 0.94)",
-    gap: 6,
+    minHeight: 44,
+    gap: 8,
   },
-  postCardEyebrow: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
-  postCardTitle: { fontSize: 16, lineHeight: 22, fontWeight: "700", color: "#241C3F" },
+  postCardEyebrow: { fontSize: 12, lineHeight:16 },
+  postCardTitle: { fontSize: 17, lineHeight: 22, fontWeight: "500" },
+  postCardSummary: {fontSize:17,lineHeight:26},
   postCardLine: { fontSize: type.sm, lineHeight: 19, color: colors.onSurfaceTertiary },
   postCardCta: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
-  postCardCtaText: { fontSize: type.sm, color: colors.brand, fontWeight: "600" },
+  postCardCtaText: { fontSize: 15, lineHeight:22, fontWeight: "500" },
   videoThumbWrap: { borderRadius: 12, overflow: "hidden", aspectRatio: 16 / 9, backgroundColor: "#000000", marginBottom: 4 },
   videoThumb: { width: "100%", height: "100%" },
   cardDividerLabel: {
@@ -1540,9 +1282,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: spacing.sm,
-    padding: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: "rgba(238, 233, 255, 0.72)",
+    paddingVertical: 8,
   },
   memoryContextBullet: {
     width: 6,

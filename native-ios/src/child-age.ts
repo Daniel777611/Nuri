@@ -71,3 +71,32 @@ export function completedAgeMonths(value: string, today = localDateOnly()): numb
   if (today.day < anniversaryDay) months -= 1;
   return Math.max(0, months);
 }
+
+// Matches latest-main's backend family_store contract. Future birth_date
+// values are due dates, never zero-month-old children.
+export const PREGNANCY_DAYS = 280;
+
+function daysBetween(from: DateOnly, to: DateOnly): number {
+  // UTC is only used for calendar-day arithmetic (not parsing user input).
+  // setUTCFullYear also preserves literal years 1–99 instead of adding 1900.
+  const ordinal = (value: DateOnly) => {
+    const date = new Date(0);
+    date.setUTCFullYear(value.year, value.month - 1, value.day);
+    return date.getTime() / 86400000;
+  };
+  return ordinal(to) - ordinal(from);
+}
+
+export function isValidDueDate(value: string, today = localDateOnly()): boolean {
+  const due = parseDateOnly(value);
+  if (!due) return false;
+  const daysLeft = daysBetween(today, due);
+  return daysLeft > 0 && daysLeft <= PREGNANCY_DAYS;
+}
+
+/** Estimated completed pregnancy weeks from the saved due date, else null. */
+export function pregnancyWeeks(value: string, today = localDateOnly()): number | null {
+  const due = parseDateOnly(value);
+  if (!due || !isValidDueDate(value, today)) return null;
+  return Math.floor((PREGNANCY_DAYS - daysBetween(today, due)) / 7);
+}

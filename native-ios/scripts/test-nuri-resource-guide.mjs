@@ -20,6 +20,13 @@ const visible = (guide) => [guide.headline, guide.intro, ...guide.actions, guide
 const substitute = (text, vars = {}) => text.replace(/\{(\w+)\}/g, (whole, key) => key in vars ? String(vars[key]) : whole);
 
 const en = {
+  "聊聊「{concern}」": "Talk about {concern}",
+  "想聊的时候，Nuri 都在": "Nuri is here when you want to talk",
+  "孩子正处在{stage}，关于「{concern}」，你最在意什么？可以从最近的一件事聊起。": "At {stage}, what matters to you about {concern}? We can start with something recent.",
+  "关于「{concern}」，你最在意什么？想聊的时候可以直接告诉 Nuri，不需要先整理。": "What matters to you about {concern}? Tell Nuri whenever you like, no preparation needed.",
+  "孩子正处在{stage}，你最近感觉怎么样？不需要先准备问题。": "With your child at {stage}, how have you been? No prepared questions needed.",
+  "不需要先查资料或整理问题。想聊的时候，直接说说最近的情况就好。": "No research or prepared questions needed. Tell Nuri how things have been, whenever you like.",
+  "这是可选的聊天邀请，不是原文或完整视频摘要。": "This is optional, not the original text or a full video summary.",
   "NURI 阅读导读": "NURI reading guide",
   "关于「{concern}」的 NURI 导读": "A NURI reading guide to {concern}",
   "你可以结合孩子目前的阶段（{stage}），围绕「{concern}」阅读原站内容，并核对哪些信息与你家有关。": "With your child's current stage ({stage}) in mind, read the source about {concern} and check what relates to your family.",
@@ -32,20 +39,20 @@ const en = {
   "这是 NURI 根据你的关注点提供的导读，不是原文或完整视频摘要。": "This is a NURI reading guide based on your interests, not the original text or a full video summary.",
 };
 
-test("default guide is useful authored copy with three reading actions and disclosure", () => {
+test("QA Oct18: optional conversation invitation has no homework checklist", () => {
   const guide = nuriResourceGuide();
   assert.deepEqual(Object.keys(guide).sort(), ["actions", "disclosure", "headline", "intro"]);
-  assert.equal(guide.headline, "NURI 阅读导读");
-  assert.equal(guide.actions.length, 3);
-  assert.equal(guide.disclosure, "这是 NURI 根据你的关注点提供的导读，不是原文或完整视频摘要。");
-  assert.match(guide.actions[0], /作者、发布日期/);
-  assert.match(guide.actions[1], /问题/);
-  assert.match(guide.actions[2], /NURI/);
+  assert.equal(guide.headline, "想聊的时候，Nuri 都在");
+  assert.equal(guide.actions.length, 0);
+  assert.equal(guide.disclosure, "这是可选的聊天邀请，不是原文或完整视频摘要。");
+  assert.doesNotMatch(visible(guide), /到原站核对作者|记下与你家|把你的问题和观察带回/);
+  assert.ok(guide.intro.length < 80);
+  assert.match(guide.intro, /不需要/);
 });
 
 test("Chinese default interpolates the family's concern and stage without placeholders", () => {
   const guide = nuriResourceGuide({ concern: "睡眠", stage: "11个月" });
-  assert.equal(guide.headline, "关于「睡眠」的 NURI 导读");
+  assert.equal(guide.headline, "聊聊「睡眠」");
   assert.match(guide.intro, /11个月.*睡眠/);
   assert.doesNotMatch(visible(guide), /\{(?:concern|stage)\}/);
 });
@@ -58,7 +65,7 @@ test("English translator receives only Chinese keys and sanitized concern/stage 
     return substitute(en[key], vars);
   };
   const guide = nuriResourceGuide({ concern: "sleep", stage: "11 months" }, t);
-  assert.equal(guide.headline, "A NURI reading guide to sleep");
+  assert.equal(guide.headline, "Talk about sleep");
   assert.match(guide.intro, /11 months.*sleep/);
   assert.doesNotMatch(visible(guide), /[一-鿿]|\{(?:concern|stage)\}/);
   assert.deepEqual(plain(calls[0].vars), { concern: "sleep" });
@@ -69,9 +76,15 @@ test("concern-only, stage-only and empty branches have complete translated sente
   const t = (key, vars) => substitute(en[key], vars);
   for (const input of [{ concern: "sleep" }, { stage: "11 months" }, {}]) {
     const guide = nuriResourceGuide(input, t);
-    assert.equal(guide.actions.length, 3);
+    assert.equal(guide.actions.length, 0);
     assert.doesNotMatch(visible(guide), /undefined|null|\{(?:concern|stage)\}|[一-鿿]/);
   }
+});
+test("untranslated Chinese labels cannot leak into the English invitation",()=>{
+ const t=(key,vars)=>substitute(en[key]??key,vars);
+ const guide=nuriResourceGuide({concern:"7个月 · 饮食",stage:"7个月"},t,"en");
+ assert.doesNotMatch(visible(guide),/[一-鿿]/);assert.equal(guide.headline,en["想聊的时候，Nuri 都在"]);
+ assert.equal(guide.actions.length,0,"fallback is an invitation, not fabricated translated advice");
 });
 
 test("empty and non-text labels cannot stringify unknown objects into UI", () => {
@@ -87,7 +100,7 @@ test("HTML, links, control and bidirectional characters are removed before inter
     concern: "<script>RAW_SCRIPT</script><b>睡眠</b> https://private.example/RAW_URL\u202e\u0000",
     stage: "<em>11个月</em>\n\t",
   });
-  assert.equal(guide.headline, "关于「睡眠」的 NURI 导读");
+  assert.equal(guide.headline, "聊聊「睡眠」");
   assert.match(guide.intro, /11个月.*睡眠/);
   assert.doesNotMatch(visible(guide), /RAW_|<|>|https|\u202e|\u0000/);
 });

@@ -215,7 +215,7 @@ function testStaleConversationLinksHealToTheCanonicalSession() {
   );
   assert.match(
     chat,
-    /historyLoadState === "error"[\s\S]*testID="chat-history-retry"/,
+    /historyLoadState\s*===\s*"error"[\s\S]*testID="chat-history-retry"/,
     "a non-recoverable history failure needs a visible retry instead of a blank chat",
   );
   const openStart = home.indexOf("const openNuriChat = async () => {");
