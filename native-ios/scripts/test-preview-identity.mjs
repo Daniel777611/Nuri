@@ -38,4 +38,8 @@ test('Preview keeps mature two-tab scope and excludes unverified remote notifica
  assert.doesNotMatch(read('app/(tabs)/profile.tsx'),/<MenuRow label=\{copy\("通知设置"/);
  assert.match(read('src/components/GoogleSignInButton.tsx'),/com.ordashtech.nuri.preview" && !available\) return null/);
  assert.deepEqual(config.ios.infoPlist.CFBundleLocalizations,['en','zh-Hans','zh-Hant']);
+ for(const lang of ['en','zh-Hans','zh-Hant']){
+  assert.equal(JSON.parse(read('locales/'+lang+'.json')).CFBundleDisplayName,'Nuri Preview');
+  assert.match(read('ios/NURINativeLab/Supporting/'+lang+'.lproj/InfoPlist.strings'),/CFBundleDisplayName = "Nuri Preview";/);
+ }
 });
