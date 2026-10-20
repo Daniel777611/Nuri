@@ -16,6 +16,16 @@ test("drafts survive Home/full-chat bridge but never cross account epochs or sta
  epoch=3;assert.equal(d.readChatDraft("chat"),"");d.writeChatDraft("chat","A again",3);d.writeChatDraft("chat","",3);assert.equal(d.readChatDraft("chat"),"");
 });
 const nodes=n=>!n||typeof n!=="object"?[]:Array.isArray(n)?n.flatMap(nodes):[n,...nodes(n.props?.children)];
+test("native media modal respects measured root safe area and localizes Back without acting on render",()=>{
+ for(const top of [59,62])for(const locale of ["zh-CN","zh-TW","en"]){
+  const calls=[],jsx=(type,props)=>({type,props});
+  const Component=load("../src/uiux48/MediaPanel.tsx",{"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{Modal:"Modal",Platform:{OS:"ios"},View:"View"},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top,bottom:34,left:0,right:0})},"@/src/i18n":{useT:()=>({t:key=>_translateForI18nFixture(locale,key)})},"./Primitives":{IconAction:"IconAction",NuriText:"Text"},"./Scene":{NuriScene:"Scene"},"./Shell":{NuriTabBar:"TabBar"},"./Theme":{useNuriTheme:()=>({night:true})}}).MediaPanel;
+  const tree=Component({visible:true,title:"permission",children:"fixture only",onClose:()=>calls.push("close"),onDismiss:()=>calls.push("dismiss")}),all=nodes(tree);
+  assert.equal(all.find(n=>n.props?.testID==="media-header-safe-area").props.style.paddingTop,top);
+  const back=all.find(n=>n.props?.testID==="media-back");assert.equal(back.props.label,locale==="en"?"Back":"返回");assert.deepEqual(calls,[]);
+  back.props.onPress();assert.deepEqual(calls,["close"]);tree.props.onDismiss();assert.deepEqual(calls,["close","dismiss"]);
+ }
+});
 let sequence=0;
 function composer(initial={},night=false,locale="en"){
  const slots=[];let cursor=0;let tree;const calls=[];let props={value:"",onChangeText:v=>{props.value=v;},onSend:()=>calls.push("send"),onAttach:()=>calls.push("attach"),onMic:()=>calls.push("mic"),testID:"qa",...initial};
