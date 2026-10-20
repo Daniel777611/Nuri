@@ -5,6 +5,7 @@
 // Every key is quoted: the source strings contain full-width punctuation
 // (，。？！) that is not a valid JavaScript identifier.
 export const en: Record<string, string> = {
+  "首页": "Home",
   "聊聊「{concern}」": "Talk about {concern}",
   "想聊的时候，Nuri 都在": "Nuri is here when you want to talk",
   "孩子正处在{stage}，关于「{concern}」，你最在意什么？可以从最近的一件事聊起。": "At your child's current stage ({stage}), what matters most to you about {concern}? We can start with something that happened recently.",

@@ -15,10 +15,12 @@ test('Traditional aliases, persisted identifier and all three language labels re
 });
 test('public static copy uses the Traditional dictionary, not an English/Simplified-only branch',()=>{
  const keys=new Set(),unwrapped=[];
- const files=[...walk('app'),...walk('src/uiux48'),...walk('src/components')].filter(p=>/\.tsx$/.test(p)&&!/(?:\/admin[/.]|\/dev\/|__tests__|GalleryUnavailable|TaskCard)/.test(p));
+ const files=[...walk('app'),...walk('src/uiux48'),...walk('src/components'),'src/appStoreRelease.ts'].filter(p=>/\.tsx?$/.test(p)&&!/(?:\/admin[/.]|\/dev\/|__tests__|GalleryUnavailable|TaskCard)/.test(p));
  for(const path of files){const sf=ts.createSourceFile(path,read(path),99,true,ts.ScriptKind.TSX);function visit(n){
   if(ts.isConditionalExpression(n)&&/^(?:en|locale\s*===\s*["']en["'])$/.test(n.condition.getText(sf))&&ts.isStringLiteral(n.whenFalse)&&/\p{Script=Han}/u.test(n.whenFalse.text))unwrapped.push(path+': '+n.whenFalse.text);
   if(ts.isCallExpression(n)){const name=n.expression.getText(sf),index=name==='translate'?1:0;const key=n.arguments[index];if(['t','copy','translate'].includes(name)&&key&&ts.isStringLiteral(key)&&/\p{Script=Han}/u.test(key.text))keys.add(key.text);}
+  // Navigation/state tables carry static copy outside direct t() calls.
+  if(ts.isPropertyAssignment(n)&&['cn','zhCN'].includes(n.name.getText(sf))&&ts.isStringLiteral(n.initializer)&&/\p{Script=Han}/u.test(n.initializer.text))keys.add(n.initializer.text);
   ts.forEachChild(n,visit);
  }visit(sf);}
  assert.deepEqual(unwrapped,[]);assert.ok(keys.size>500);
@@ -29,6 +31,7 @@ test('translation is static and never rewrites user/API content; interpolation p
  assert.equal(translate('zh-TW','欢迎，{nickname}！',{nickname:'Daniel 简体名字'}),'歡迎，Daniel 简体名字！');
  assert.equal(translate('zh-TW','用户的原始消息，不在静态词典中'),'用户的原始消息，不在静态词典中');
  assert.equal(translate('zh-CN','通知设置'),'通知设置');assert.equal(translate('en','发送'),'Send');
+ assert.equal(translate('zh-TW','首页'),'首頁');assert.equal(translate('en','首页'),'Home');
  assert.match(read('src/uiux48/Primitives.tsx'),/locale!=="zh-CN"\?undefined/);
  assert.match(read('src/uiux48/Theme.tsx'),/lang === "zh-TW"/);
 });
