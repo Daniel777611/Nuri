@@ -1042,6 +1042,8 @@ function MessageBubble({
 
 // ── Sub-component: animated "typing…" indicator ─────────────────────────────
 function TypingDots() {
+  const palette=useNuriTheme();
+  const {locale}=useT();
   const dot1 = useRef(new Animated.Value(0)).current;
   const dot2 = useRef(new Animated.Value(0)).current;
   const dot3 = useRef(new Animated.Value(0)).current;
@@ -1081,22 +1083,21 @@ function TypingDots() {
   }, [dot1, dot2, dot3]);
 
   return (
-    <View style={[styles.row, { justifyContent: "flex-start" }]}>
-      <View style={styles.avatarSlot}>
-        <NuriAvatar size={30} />
+    <GlassSurface kind="message" contentStyle={{padding:16,gap:8}} style={{width:"100%"}} testID="chat-typing">
+      <View style={{flexDirection:"row",alignItems:"center",gap:8}}>
+        <View style={{width:24,height:24}}><View style={{transform:[{scale:24/34}],transformOrigin:"top left"}}><SceneAvatar /></View></View>
+        <NuriText style={{fontSize:15,lineHeight:22,fontWeight:"600"}}>Nuri</NuriText>
       </View>
-      <View style={[styles.bubble, styles.bubbleAI, styles.typingBubble]}>
-        <Text style={styles.senderLabel}>NURI</Text>
-        <View style={styles.dotsRow}>
+      <NuriText accessibilityLiveRegion="polite" style={{fontSize:17,lineHeight:26}}>{locale==="en"?"Nuri is replying…":"Nuri 正在回复…"}</NuriText>
+        <View style={{flexDirection:"row",gap:5,alignItems:"center",height:16}}>
           {[dot1, dot2, dot3].map((dot, i) => (
             <Animated.View
               key={i}
-              style={[styles.dot, { transform: [{ translateY: dot }] }]}
+              style={{width:7,height:7,borderRadius:3.5,backgroundColor:palette.ink,opacity:.85,transform:[{translateY:dot}]}}
             />
           ))}
         </View>
-      </View>
-    </View>
+    </GlassSurface>
   );
 }
 

@@ -98,6 +98,23 @@ test("expanded input waits for native Modal mounting before focusing so its keyb
  input.props.ref.current={focus:()=>p.calls.push("focus-expanded")};
  assert.deepEqual(p.calls,[]);p.kind("Modal").props.onShow();assert.deepEqual(p.calls,["focus-expanded"]);
 });
+test("actual native typing indicator uses shared glass, approved avatar and theme ink in CN and EN",()=>{
+ const source=readFileSync(new URL("../app/chat/[id].tsx",import.meta.url),"utf8");
+ const ast=ts.createSourceFile("chat.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const component=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="TypingDots");assert.ok(component);
+ const code=ts.transpileModule(component.getText(ast)+"\nmodule.exports=TypingDots;",{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+ for(const locale of ["en","zh-CN"])for(const ink of ["#3d3340","#f8f2f8"]){
+  const jsx=(type,props)=>({type,props}),module={exports:{}};
+  const Animated={Value:class{},loop:()=>({start(){},stop(){}}),sequence:x=>x,delay:x=>x,timing:()=>({}),View:"AnimatedView"};
+  new Function("require","module","exports","useNuriTheme","useT","useRef","useEffect","Animated","Easing","View","GlassSurface","NuriText","SceneAvatar",code)(()=>({jsx,jsxs:jsx}),module,module.exports,()=>({ink}),()=>({locale}),x=>({current:x}),cb=>cb(),Animated,{inOut:x=>x,out:x=>x,in:x=>x,quad:"quad"},"View","GlassSurface","NuriText","SceneAvatar");
+  const tree=module.exports(),all=nodes(tree);
+  assert.equal(tree.type,"GlassSurface");assert.equal(tree.props.kind,"message");
+  assert.equal(all.filter(n=>n.type==="SceneAvatar").length,1);
+  assert.equal(all.filter(n=>n.type==="AnimatedView").length,3);
+  for(const dot of all.filter(n=>n.type==="AnimatedView"))assert.equal(dot.props.style.backgroundColor,ink);
+  assert.ok(all.find(n=>n.props?.accessibilityLiveRegion==="polite").props.children.includes(locale==="en"?"replying":"正在回复"));
+ }
+});
 test("all 112 theme and 54 layout tokens retain three design modes",()=>{
  const t=load("../src/uiux48/tokens.ts");assert.equal(Object.keys(t.THEME48).length,112);assert.equal(Object.keys(t.LAYOUT48).length,54);
  for(const values of Object.values(t.THEME48))assert.deepEqual(Object.keys(values).sort(),["Afternoon","Morning","Night"]);
