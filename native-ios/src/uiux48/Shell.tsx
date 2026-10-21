@@ -48,6 +48,6 @@ export function NuriTabBar() {
     if(active===tab.name)return;
     if(requestGuardedNativeNavigation(path,tab.name))return;
     router.navigate(tab.route as never);
-  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:translate(locale,tab.cn)} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?(t.night?"rgba(166,125,153,.26)":"rgba(166,125,153,.19)"):"transparent"}]}><NuriIcon name={tab.name} /><Text numberOfLines={1} style={{fontSize:9,lineHeight:12,color:t.ink}}>{locale==="en"?tab.en:translate(locale,tab.cn)}</Text></Pressable>)}</GlassSurface></View>;
+  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:translate(locale,tab.cn)} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?(t.night?"rgba(166,125,153,.26)":"rgba(166,125,153,.19)"):"transparent"}]}><NuriIcon name={tab.name} /><Text numberOfLines={1} style={{fontSize:12,lineHeight:16,fontWeight:"500",color:t.ink}}>{locale==="en"?tab.en:translate(locale,tab.cn)}</Text></Pressable>)}</GlassSurface></View>;
 }
-const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:16},tabs:{flexDirection:"row",height:54,padding:3},tab:{flex:1,minHeight:48,borderRadius:24,alignItems:"center",justifyContent:"center",gap:2}});
+const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:10},tabs:{flexDirection:"row",height:64,padding:8},tab:{flex:1,height:48,borderRadius:24,alignItems:"center",justifyContent:"center",gap:4}});

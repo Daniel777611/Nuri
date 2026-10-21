@@ -16,10 +16,12 @@ const MAX_HEIGHT = 26;
 export default function VoiceWaveform({
   level,
   testID,
+  color = colors.brand,
 }: {
   /** Current loudness 0–1, or null when it can't be measured. */
   level: () => number | null;
   testID?: string;
+  color?: string;
 }) {
   const [history, setHistory] = useState<number[]>(() => Array(BARS).fill(0));
 
@@ -39,6 +41,7 @@ export default function VoiceWaveform({
           key={i}
           style={[
             styles.bar,
+            { backgroundColor: color },
             { height: MIN_HEIGHT + value * (MAX_HEIGHT - MIN_HEIGHT) },
           ]}
         />

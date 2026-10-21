@@ -29,7 +29,7 @@ test("native media modal respects measured root safe area and localizes Back wit
 let sequence=0;
 function composer(initial={},night=false,locale="en"){
  const slots=[];let cursor=0;let tree;const calls=[];let props={value:"",onChangeText:v=>{props.value=v;},onSend:()=>calls.push("send"),onAttach:()=>calls.push("attach"),onMic:()=>calls.push("mic"),testID:"qa",...initial};
- const react={useRef(value){const i=cursor++;return slots[i]??={current:value};},useId(){const i=cursor++;return slots[i]??= "composer-"+(++sequence);},useState(value){const i=cursor++;if(!(i in slots))slots[i]=value;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
+ const react={useEffect(){cursor++;},useRef(value){const i=cursor++;return slots[i]??={current:value};},useId(){const i=cursor++;return slots[i]??= "composer-"+(++sequence);},useState(value){const i=cursor++;if(!(i in slots))slots[i]=value;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
  const jsx=(type,props)=>({type,props});
  const keyboard=load("../src/uiux48/keyboard.ts").iosKeyboard48(night);
  const Component=load("../src/uiux48/Composer.tsx",{react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{InputAccessoryView:"Accessory",Keyboard:{dismiss(){calls.push("dismiss-keyboard");}},KeyboardAvoidingView:"KAV",Modal:"Modal",Platform:{OS:"ios"},Pressable:"Pressable",StyleSheet:{create:x=>x},TextInput:"Input",View:"View",useWindowDimensions:()=>({width:402,height:874})},"react-native-safe-area-context":{useSafeAreaInsets:()=>({top:62,bottom:34})},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale})},"./Theme":{useNuriTheme:()=>({secondary:"#aaa",ink:"#333",coral:"#eb8183",composer:"#fff",night,keyboard})},"./Primitives":{GlassSurface:"Glass",IconAction:"IconAction",NuriButton:"Button",NuriText:"Text"}}).NuriComposer;
@@ -64,7 +64,7 @@ test("one-to-three-line composer clamp, expansion draft continuity and unique iO
  a.find("qa-expand").props.onPress();a.render();assert.equal(a.kind("Modal").props.visible,true);assert.ok(a.kind("KAV"));assert.equal(a.find("qa-expanded-input").props.value,"draft");
  assert.ok(a.find("qa-expanded-attach"));assert.ok(a.find("qa-expanded-mic"));assert.ok(a.find("qa-expanded-send-btn"));
  assert.notEqual(a.find("qa-input").props.inputAccessoryViewID,a.find("qa-expanded-input").props.inputAccessoryViewID);
- a.find("qa-expanded-attach").props.onPress();a.find("qa-expanded-mic").props.onPress();assert.deepEqual(a.calls,["attach","mic"]);
+ a.find("qa-expanded-attach").props.onPress();a.find("qa-expanded-mic").props.onPress();assert.deepEqual(a.calls,["dismiss-keyboard"],"No system media UI is presented over the expanded Modal");a.render();assert.equal(a.kind("Modal").props.visible,false);a.kind("Modal").props.onDismiss();assert.deepEqual(a.calls,["dismiss-keyboard","attach"],"Only the first queued media action runs after dismissal");a.kind("Modal").props.onDismiss();assert.equal(a.calls.length,2);
  a.find("qa-expanded-input").props.onChangeText("expanded draft");a.find("qa-expanded-done").props.onPress();a.render();assert.equal(a.find("qa-input").props.value,"expanded draft");assert.equal(a.kind("Modal").props.visible,false);
 });
 test("glass has role/theme strength and composer remains the opaque input tier",()=>{

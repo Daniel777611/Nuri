@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { InputAccessoryView, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useT, translate } from "@/src/i18n";
@@ -13,6 +13,8 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const compactRef = inputRef ?? localInput;
   const expandedInput = useRef<TextInput>(null);
   const dismissAfterModal = useRef(false);
+  const pendingMedia = useRef<(() => void) | null>(null);
+  const mediaDismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const t=useNuriTheme(); const {locale}=useT(); const safe=useSafeAreaInsets(); const en=locale==="en";
   const window = useWindowDimensions();
   const accessoryId=`nuri-composer-${useId()}`;
@@ -22,6 +24,22 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
     // iOS restores the presenting field's focus when its Modal disappears.
     // Honour Done again after that restoration, without clearing the draft.
     if(dismissAfterModal.current){dismissAfterModal.current=false;blurAndDismiss();setFocused(false);}
+    const action=pendingMedia.current;
+    pendingMedia.current=null;
+    if(mediaDismissTimer.current){clearTimeout(mediaDismissTimer.current);mediaDismissTimer.current=null;}
+    action?.();
+  };
+  useEffect(()=>()=>{if(mediaDismissTimer.current)clearTimeout(mediaDismissTimer.current);pendingMedia.current=null;},[]);
+  const openMedia=(action:()=>void,large:boolean)=>{
+    if(disabled||busy)return;
+    if(!large){action();return;}
+    if(pendingMedia.current)return;
+    // Close the expanded native Modal before presenting the system photo
+    // picker or starting inline dictation on the underlying conversation.
+    pendingMedia.current=action;
+    blurAndDismiss();setFocused(false);setExpanded(false);
+    if(Platform.OS==="web")onExpandedDismiss(); // Preserve the browser user gesture.
+    else if(Platform.OS==="android")mediaDismissTimer.current=setTimeout(onExpandedDismiss,350);
   };
   const send=()=>{if(disabled||busy||recording||(!value.trim()&&!hasAttachment))return false;onSend();return true;};
   const input=(large=false)=><TextInput
@@ -39,9 +57,9 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const controls=(large=false)=>{
     const prefix=`${testID}${large?"-expanded":""}`;
     return <>
-      <IconAction name="plus" label={en?"Camera or upload photo":translate(locale, "拍照或上传图片")} onPress={onAttach} disabled={disabled||busy} testID={`${prefix}-attach`} />
+      <IconAction name="plus" label={en?"Camera or upload photo":translate(locale, "拍照或上传图片")} onPress={()=>openMedia(onAttach,large)} disabled={disabled||busy} testID={`${prefix}-attach`} />
       {large?<View style={{flex:1}} />:input()}
-      <IconAction name="mic" label={recording?(en?"Stop recording":translate(locale, "停止录音")):(en?"Record a voice message":translate(locale, "录音"))} onPress={onMic} disabled={disabled||busy} testID={`${prefix}-mic`} />
+      <IconAction name="mic" label={recording?(en?"Stop recording":translate(locale, "停止录音")):(en?"Record a voice message":translate(locale, "录音"))} onPress={()=>openMedia(onMic,large)} disabled={disabled||busy} testID={`${prefix}-mic`} />
       {value.trim()||hasAttachment?<Pressable onPress={()=>{if(send()&&large)setExpanded(false);}} disabled={disabled||busy||recording} style={({pressed})=>[s.send,{opacity:disabled||busy||recording?.4:pressed?.6:1}]} testID={`${prefix}-send-btn`} accessibilityRole="button" accessibilityLabel={en?"Send":translate(locale, "发送")}>
         {busy?<NuriText>…</NuriText>:<NuriIcon name="send" />}
       </Pressable>:null}

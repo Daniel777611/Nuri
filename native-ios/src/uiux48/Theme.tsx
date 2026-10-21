@@ -5,9 +5,10 @@ import { THEME48, type NuriMode } from "./tokens";
 import { useT } from "@/src/i18n";
 import { DefaultTheme, DarkTheme, ThemeProvider as NavigationThemeProvider } from "@react-navigation/native";
 import { iosKeyboard48 } from "./keyboard";
+import { ACTIVE_THEMES49, hourTheme49, normalizeTheme49 } from "@/src/uiux49/spec";
 
-const MODES: NuriMode[] = ["Morning", "Afternoon", "Night"];
-const hourMode = (): NuriMode => { const h = new Date().getHours(); return h < 12 && h >= 5 ? "Morning" : h < 19 && h >= 12 ? "Afternoon" : "Night"; };
+const MODES: readonly NuriMode[] = ACTIVE_THEMES49;
+const hourMode = (): NuriMode => hourTheme49(new Date().getHours());
 const Context = createContext({ mode: "Morning" as NuriMode, setMode: (_mode: NuriMode) => {} });
 
 export function NuriThemeProvider({ children }: { children: ReactNode }) {
@@ -27,7 +28,8 @@ export function NuriThemeProvider({ children }: { children: ReactNode }) {
       // production never reads it and no server preference is changed.
       const query = Platform.OS === "web" && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1"
         ? new URLSearchParams(globalThis.location?.search).get("theme") : null;
-      const selected = MODES.find(m => m === String(query)) ?? MODES.find(m => m === String(saved));
+      const raw = query ?? saved;
+      const selected = raw === "Afternoon" ? normalizeTheme49(raw) : MODES.find(m => m === String(raw));
       if (active && selected) update(selected);
       if (active && Platform.OS === "web" && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1") {
         const lang = new URLSearchParams(globalThis.location?.search).get("lang");
@@ -37,15 +39,16 @@ export function NuriThemeProvider({ children }: { children: ReactNode }) {
     return () => { active = false; };
   }, [setLocale]);
   const value = useMemo(() => ({ mode, setMode: (next: NuriMode) => {
-    update(next);
-    void storage.setItem("nuri_uiux48_theme", next).catch(() => {});
+    const normalized = normalizeTheme49(next);
+    update(normalized);
+    void storage.setItem("nuri_uiux48_theme", normalized).catch(() => {});
   } }), [mode]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
 export function useNuriTheme() {
   const { mode, setMode } = useContext(Context);
-  const token = (name: keyof typeof THEME48) => THEME48[name][mode];
+  const token = (name: keyof typeof THEME48) => name === "color/text/primary" ? mode === "Night" ? "#FFFFFF" : "#4A454D" : name === "color/text/card-secondary" ? mode === "Night" ? "#E5DFEA" : "#706A74" : THEME48[name][mode];
   return { mode, setMode, night: mode === "Night", keyboard: iosKeyboard48(mode === "Night"), token,
     ink: String(token("color/text/primary")), secondary: String(token("color/text/card-secondary")),
     glass: String(token("color/glass/unified-card-27")),

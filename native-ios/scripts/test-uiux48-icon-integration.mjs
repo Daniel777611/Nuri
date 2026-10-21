@@ -12,6 +12,7 @@ const receipt=JSON.parse(readFileSync(handoff+"/mac-icon-import-receipt.json","u
 const names={home:"home",chat:"chat",notifications:"notifications",person:"person",chevronRight:"chevron-right",arrowRight:"arrow-right",play:"play",camera:"camera",image:"image",send:"send",mic:"microphone",plus:"plus",expand:"expand",collapse:"collapse",close:"close",back:"back",settings:"settings",community:"community"};
 const assets=[];
 function load(path,deps={}){
+ if(path==="src/uiux48/Primitives.tsx")deps={"./GlassLighting":{GlassLighting:"GlassLighting"},"@/src/uiux49/spec":load("src/uiux49/spec.ts"),...deps};
  deps={"@/src/uiux48/StateCard":{StateCard:"StateCard"},...deps};
  const output=ts.transpileModule(readFileSync(path,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const module={exports:{}};new Function("require","module","exports",output)(name=>{
