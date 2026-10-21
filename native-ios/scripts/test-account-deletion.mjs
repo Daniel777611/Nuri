@@ -92,7 +92,7 @@ function fixture({ status = 200, result = confirmed, locale = "en" } = {}) {
       ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView", Linking: { openURL: async (url) => links.push(url) }, Platform: { OS: "ios" },
       Pressable: "Pressable", ScrollView: "ScrollView", StyleSheet: { create: (styles) => styles }, Text: "Text", TextInput: "TextInput", View: "View",
     },
-    "expo-router": { useRouter: () => ({ replace: (route) => routes.push(route),setParams:()=>{} }), useFocusEffect: (callback) => focus.push(callback) },
+    "expo-router": { useRouter: () => ({ replace: (route) => routes.push(route), push: (route) => routes.push(route), setParams:()=>{} }), useFocusEffect: (callback) => focus.push(callback) },
     "@react-navigation/elements": { useHeaderHeight: () => 64 },
     "@/src/api": client, "@/src/accountDeletion": helper,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
@@ -121,6 +121,16 @@ function fixture({ status = 200, result = confirmed, locale = "en" } = {}) {
   };
 }
 const deletions = (f) => f.requests.filter((request) => request.path === "/auth/account");
+
+for (const locale of ["zh-CN", "zh-TW", "en"]) test(locale + ": Google-only users can reach existing password setup without triggering deletion", async () => {
+  const f = fixture({ locale }); await f.auth.setToken("account-A"); await f.mount();
+  const tree = f.render();
+  assert.ok(f.find(tree, "delete-account-provider-help"));
+  f.find(tree, "delete-account-reset-password").props.onPress();
+  assert.deepEqual(f.routes, ["/forgot-password"]);
+  assert.deepEqual(deletions(f), []);
+  assert.equal(await f.auth.getToken(), "account-A");
+});
 
 test("strict DELETE confirmation and UTF-8 bcrypt bound execute before any irreversible transport", async () => {
   const calls = [];

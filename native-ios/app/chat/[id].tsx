@@ -1,5 +1,6 @@
 import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, NuriButton, MenuRow } from "@/src/uiux48/Primitives";
 import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
+import { SafetyReportCard } from "@/src/uiux48/SafetyReportCard";
 import { NuriComposer } from "@/src/uiux48/Composer";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
@@ -881,7 +882,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     <ScrollView ref={scrollRef} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={()=>scrollRef.current?.scrollToEnd({animated:false})} onContentSizeChange={()=>scrollRef.current?.scrollToEnd({animated:false})} testID="chat-scroll">
       {historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
       {historyLoadState==="error"?<Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
-      {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} />)}
+      {messages.map(m=><MessageBubble key={m.id} msg={m} conversationId={id} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} />)}
       {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
       {typing?<TypingDots />:null}
     </ScrollView>
@@ -912,20 +913,23 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 // ── Sub-component: message bubble (text, image, transitions) ────────────────
 function MessageBubble({
   msg,
+  conversationId,
   actionsEnabled = true,
   feedbackSaving = false,
   onCopy,
   onFeedback,
 }: {
   msg: Msg;
+  conversationId?: string;
   actionsEnabled?: boolean;
   feedbackSaving?: boolean;
   onCopy?: (message: Msg) => void;
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
 }) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const palette = useNuriTheme();
   const [actionsVisible,setActionsVisible] = useState(false);
+  const [reportVisible, setReportVisible] = useState(false);
   const router = useRouter();
   const { capture } = useAccountScope();
   const isAI = msg.role === "ai";
@@ -1053,7 +1057,13 @@ function MessageBubble({
             </Pressable>
           </View>
         ) : null}
+        {isAI && actionsEnabled && msg.text && !post && !video ? <Pressable
+          onPress={() => { if (capture() !== null) setReportVisible(true); }}
+          style={{ minHeight: 44, justifyContent: "center", alignSelf: "flex-start" }} accessibilityRole="button" testID={`chat-report-${msg.id}`}>
+          <NuriText secondary style={{ fontSize: 12 }}>{locale === "en" ? "Report a content concern" : locale === "zh-TW" ? "回報內容問題" : "报告内容问题"}</NuriText>
+        </Pressable> : null}
       </GlassSurface>
+      {reportVisible ? <SafetyReportCard conversationId={conversationId} messageId={msg.id} onClose={() => setReportVisible(false)} /> : null}
     </View>
   );
 }

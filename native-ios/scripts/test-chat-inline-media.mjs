@@ -51,6 +51,7 @@ function fixture(options = {}) {
     "@/src/i18n": { useT: () => ({ t: key => translate(options.locale ?? "en", key), locale: options.locale ?? "en" }), translate },
     "@/src/uiux48/Primitives": Object.fromEntries(["NuriKeyboardFrame", "GlassSurface", "NuriText", "NuriIcon", "IconAction", "NuriButton", "MenuRow"].map(n => [n, n])),
     "@/src/uiux48/VoiceInputBar": { VoiceInputBar: "VoiceInputBar" },
+    "@/src/uiux48/SafetyReportCard": { SafetyReportCard: "SafetyReportCard" },
     "@/src/uiux48/Composer": { NuriComposer: "NuriComposer" },
     "@/src/uiux48/Scene": { NuriAvatar: "SceneAvatar" },
     "@/src/uiux48/Theme": { useNuriTheme: () => ({ mode: "Night", ink: "#fff" }) },
