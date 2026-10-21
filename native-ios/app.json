@@ -15,7 +15,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.ordashtech.nuri.nativelab",
-      "buildNumber": "1014",
+      "buildNumber": "1016",
       "appleTeamId": "6PL6HQYU7P",
       "supportsTablet": false,
       "entitlements": { "aps-environment": "production" },

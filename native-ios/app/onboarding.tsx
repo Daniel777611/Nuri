@@ -1,6 +1,6 @@
-import { AuthFrame, ChoiceChip, GlassSurface, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
+import { AuthFrame, ChoiceChip, GlassSurface, MenuRow, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useNuriTheme } from "@/src/uiux48/Theme";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
@@ -35,6 +35,7 @@ import {
   isValidDueDate,
   parseDateOnly,
 } from "@/src/child-age";
+import { childDraftsFromServer, childFingerprint, ChildSaveError, newChildSaveProgress, onboardingChildCopy, persistOnboardingChildren, type ChildDraft, type ChildSaveProgress } from "@/src/onboardingChildren";
 
 const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
@@ -57,6 +58,7 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 export default function Onboarding() {
   const { capture, current } = useAccountScope();
   const { t, locale } = useT();
+  const childCopy = onboardingChildCopy(locale);
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
   const recoverExpiredCredentials = recovery.recover;
@@ -83,24 +85,32 @@ export default function Onboarding() {
   const [infoSource, setInfoSource] = useState("");
   const [frequency, setFrequency] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [existingChild, setExistingChild] = useState<any>(null);
+  const [childDrafts, setChildDrafts] = useState<ChildDraft[]>([]);
+  const [editingKey, setEditingKey] = useState<string | null>("new-1");
+  const [loaded, setLoaded] = useState(false);
+  const [reload, setReload] = useState(0);
+  const nextDraft = useRef(1);
+  const saveAction = useRef(false);
+  const saveProgress = useRef<{ ticket: number; value: ChildSaveProgress } | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const hasUnconfirmedCreate = saveProgress.current?.ticket === capture() && !!saveProgress.current?.value.pending;
 
   // UI-only route state drives the existing shared header, never a save.
   useEffect(()=>{router.setParams({uiState:page===0?"setupParent":page===1?"setupChild":"setupConcerns"});},[page,router]);
   useFocusEffect(useCallback(()=>{
     if(page===0&&!pickerOpen)return;
     return registerNativeNavigationGuard("/onboarding",action=>{
-      if(capture()===null||saving||action!=="back")return;
-      if(pickerOpen)setPickerOpen(false);else setPage(value=>Math.max(0,value-1));
+      if(capture()===null||saveAction.current||action!=="back")return;
+      if(pickerOpen)setPickerOpen(false);else if(page===1&&editingKey&&childDrafts.length)setEditingKey(null);else setPage(value=>Math.max(0,value-1));
     });
-  },[page,pickerOpen,saving,capture,setPage,setPickerOpen]));
+  },[page,pickerOpen,saving,editingKey,childDrafts.length,capture,setPage,setPickerOpen,setEditingKey]));
 
   useEffect(() => {
     const ticket = capture();
     if (ticket === null) return;
     let cancelled = false;
+    setLoaded(false);
     (async () => {
       const requestToken = await auth.getToken();
       try {
@@ -115,12 +125,13 @@ export default function Onboarding() {
         setConcernOther(me?.concern_other || "");
         setHobbies(me?.hobbies || ""); setHelpPref(me?.help_preference || "");
         setInfoSource(me?.info_source || ""); setFrequency(me?.content_frequency || "");
-        if (kids?.[0]) {
-          const child = kids[0]; const born = parseDateOnly(child.birth_date || "");
-          setExistingChild(child); setChildName(child.nickname || ""); setChildGender(child.gender || "other");
-          if (born) { setBirthYear(born.year); setBirthMonth(born.month); setBirthDay(born.day); }
-          setExpecting(isValidDueDate(child.birth_date || ""));
-        }
+        const drafts = childDraftsFromServer(kids);
+        const progress = newChildSaveProgress();
+        for (const child of drafts) progress.confirmed.set(child.key, { id: child.id!, fingerprint: childFingerprint(child) });
+        saveProgress.current = { ticket, value: progress };
+        setChildDrafts(drafts); setEditingKey(drafts.length ? null : "new-1");
+        setChildName(""); setChildGender("other"); setBirthYear(null); setBirthMonth(null); setBirthDay(null); setExpecting(false);
+        setSyncError(""); setLoaded(true);
       } catch (error) {
         if (cancelled || !current(ticket)) return;
         if (isAuthError(error)) {
@@ -134,7 +145,7 @@ export default function Onboarding() {
       }
     })();
     return () => { cancelled = true; };
-  }, [router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setExistingChild, setChildName, setBirthYear, setBirthMonth, setBirthDay, setExpecting, setSyncError]);
+  }, [reload, router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setChildDrafts, setEditingKey, setLoaded, setChildName, setChildGender, setBirthYear, setBirthMonth, setBirthDay, setExpecting, setSyncError]);
 
   const stepNumber = page < 3 ? page + 1 : 4;
   const birthDate = birthYear && birthMonth && birthDay
@@ -151,7 +162,10 @@ export default function Onboarding() {
     if (value === expecting) return;
     setExpecting(value); setBirthYear(null); setBirthMonth(null); setBirthDay(null); setSkipChild(false);
   };
-  const canNext = !syncError && (page === 0 ? !!nickname.trim() && !!parentRole : page === 1 ? skipChild || (!!childName.trim() && validBirthDate) : true);
+  const editorValid = !!childName.trim() && validBirthDate;
+  const editingIndex = childDrafts.findIndex(row => row.key === editingKey);
+  const childOrdinal = editingIndex >= 0 ? editingIndex + 1 : childDrafts.length + 1;
+  const canNext = loaded && (page === 0 ? !!nickname.trim() && !!parentRole : page === 1 ? editingKey ? editorValid : skipChild || childDrafts.length > 0 : true);
   const birthLabel = birthDate
     ? // All three are set whenever birthDate is, but that is a fact about
       // formatDateOnly rather than something the type system can see.
@@ -162,30 +176,55 @@ export default function Onboarding() {
       })
     : expecting ? t("请选择预产期") : t("请选择孩子的出生年、月、日");
 
+  const editChild = (child: ChildDraft) => {
+    if (capture() === null || saveAction.current || hasUnconfirmedCreate) return;
+    const date = parseDateOnly(child.birth_date);
+    setEditingKey(child.key); setChildName(child.nickname); setChildGender(child.gender); setExpecting(child.expecting);
+    setBirthYear(date?.year ?? null); setBirthMonth(date?.month ?? null); setBirthDay(date?.day ?? null); setSkipChild(false);
+  };
+  const commitEditor = (): ChildDraft[] | null => {
+    if (capture() === null || saveAction.current || hasUnconfirmedCreate || !editingKey || !editorValid) return null;
+    const existing = childDrafts.find(row => row.key === editingKey);
+    const draft: ChildDraft = { key: editingKey, id: existing?.id, nickname: childName.trim(), birth_date: birthDate,
+      gender: childGender as ChildDraft["gender"], allergies: existing?.allergies ?? [], notes: existing?.notes ?? "", expecting };
+    const rows = existing ? childDrafts.map(row => row.key === editingKey ? draft : row) : [...childDrafts, draft];
+    setChildDrafts(rows); setSkipChild(false); setEditingKey(null); setSyncError("");
+    return rows;
+  };
+  const addAnother = () => {
+    if (capture() === null || saveAction.current || hasUnconfirmedCreate || !loaded) return;
+    if (editingKey && !commitEditor()) return;
+    nextDraft.current += 1;
+    setEditingKey(`new-${nextDraft.current}`); setChildName(""); setChildGender("other");
+    setBirthYear(null); setBirthMonth(null); setBirthDay(null); setExpecting(false); setSkipChild(false);
+  };
+
   const save = async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (saving) return;
-    if (!skipChild && (!childName.trim() || !validBirthDate)) {
+    if (saveAction.current || !loaded) return;
+    if (!skipChild && childDrafts.length === 0) {
       setPage(1);
       return;
     }
-    setSaving(true);
+    saveAction.current = true; setSaving(true);
     setSyncError("");
-    const requestToken = await auth.getToken();
-    if (!current(ticket)) return;
+    let requestToken: string | null = null;
     try {
-      const child = { nickname: childName.trim(), birth_date: birthDate, gender: childGender, allergies: existingChild?.allergies || [], notes: existingChild?.notes || "" };
-      if (!skipChild) {
-        const saved: any = existingChild?.id ? await api.updateChild(existingChild.id, child) : await api.addChild(child);
-        if (saved?.birth_date !== birthDate) throw new Error("Child birthday was not persisted");
-      }
+      requestToken = await auth.getToken();
+      if (!requestToken || !current(ticket)) return;
+      if (saveProgress.current?.ticket !== ticket) saveProgress.current = { ticket, value: newChildSaveProgress() };
+      await persistOnboardingChildren(childDrafts, { api, progress: saveProgress.current.value,
+        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket),
+        onConfirmed: (key, id) => setChildDrafts(rows => rows.map(row => row.key === key ? { ...row, id } : row)),
+      });
       // The next write must not continue under a login that replaced the
       // session which submitted the child. Capture directly before that call.
       const profileRequestToken = await auth.getToken();
       if (profileRequestToken !== requestToken || !current(ticket)) return;
-      await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
+      const profile: any = await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
       if (!current(ticket)) return;
+      if (profile?.onboarding_completed !== true) throw new Error("Onboarding completion was not confirmed");
       if (!await auth.setOnboarded(true, { expectedToken: requestToken, expectedGeneration: ticket })) return;
       if (await auth.getToken() !== requestToken || !current(ticket)) return;
       router.replace("/(tabs)");
@@ -195,11 +234,16 @@ export default function Onboarding() {
         await recoverExpiredCredentials(error, requestToken);
         return;
       }
-      setSyncError(t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));
-    } finally { setSaving(false); }
+      setSyncError(error instanceof ChildSaveError && error.code === "unconfirmed" ? childCopy.unconfirmed : t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));
+    } finally { saveAction.current = false; setSaving(false); }
   };
 
-  const next = () => page === 2 ? save() : setPage((p) => p + 1);
+  const next = () => {
+    if (capture() === null || saveAction.current || !canNext) return;
+    if (page === 2) { void save(); return; }
+    if (page === 1 && editingKey && !commitEditor()) return;
+    setPage((p) => p + 1);
+  };
   const skip = () => page === 2 ? setPage(3) : save();
   const goBack = () => page > 0 && setPage((p) => p - 1);
   const toggleConcern = (key: string) => setConcerns((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
@@ -210,29 +254,45 @@ export default function Onboarding() {
   return <View style={{flex:1}}>
     <AuthFrame testID="onboarding-card">
       {syncError?<NuriText style={{color:"#9a606a",fontSize:13}}>{syncError}</NuriText>:null}
+      {!loaded?<><NuriText secondary>{childCopy.loading}</NuriText>{syncError?<NuriButton secondary label={childCopy.reload} testID="onboarding-reload" onPress={()=>{if(capture()!==null&&!saveAction.current)setReload(value=>value+1);}} />:null}</>:null}
       {page===0?<>
-        <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
+        <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} editable={loaded&&!saving} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
         <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Your role":translate(locale, "你的角色")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{PARENT_ROLES.map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={parentRole===key} onPress={()=>setParentRole(key)} testID={`onboarding-role-${key}`} />)}</View>
         <NuriField label={locale==="en"?"City (optional)":translate(locale, "居住城市（可选）")} value={city} onChangeText={setCity} placeholder={locale==="en"?"You can add this later":translate(locale, "稍后再填")} testID="onboarding-city" />
       </>:page===1?<>
-        <NuriField label={locale==="en"?"Child's nickname":translate(locale, "宝宝的昵称")} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
+        <NuriText role="H2" testID="onboarding-children-title">{childCopy.title}</NuriText>
+        <NuriText secondary testID="onboarding-children-guide">{childCopy.guide}</NuriText>
+        <View style={{gap:8}} testID="onboarding-children-list">{childDrafts.map((child,index)=><View key={child.key} style={{gap:4}}>
+          <MenuRow label={`${index+1}. ${child.nickname}`} detail={`${child.birth_date} · ${child.id?childCopy.edit:childCopy.draft}`} onPress={()=>editChild(child)} disabled={saving||hasUnconfirmedCreate} testID={`onboarding-child-row-${child.key}`} />
+          {!child.id?<Pressable accessibilityRole="button" disabled={saving||hasUnconfirmedCreate} testID={`onboarding-remove-draft-${child.key}`} style={{minHeight:44,justifyContent:"center"}} onPress={()=>{if(capture()!==null&&!saveAction.current&&!hasUnconfirmedCreate){setChildDrafts(rows=>rows.filter(row=>row.key!==child.key));if(editingKey===child.key)setEditingKey(null);}}}><NuriText secondary>{childCopy.removeDraft}</NuriText></Pressable>:null}
+        </View>)}</View>
+        {editingKey?<>
+        <NuriText role="H3" testID="onboarding-editor-title">{childCopy.child} {childOrdinal}{editingIndex>=0?` · ${childCopy.edit}`:""}</NuriText>
+        <NuriField label={childCopy.nickname} editable={!saving} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
         <NuriText secondary style={{fontSize:12}}>{t("宝宝出生了吗？")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
         <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期"):t("孩子的出生日期")}</NuriText>
-        <Pressable accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker"><View pointerEvents="none"><NuriField value={birthLabel} editable={false} accessible={false} /></View></Pressable>
+        <Pressable disabled={saving} accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker"><View pointerEvents="none"><NuriField value={birthLabel} editable={false} accessible={false} /></View></Pressable>
         {birthDateError?<NuriText style={{fontSize:12,color:"#9a606a"}}>{birthDateError}</NuriText>:null}
         <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} onPress={()=>setChildGender(key)} />)}</View>
+        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} disabled={saving} onPress={()=>setChildGender(key)} />)}</View>
+        </>:null}
+        <NuriButton secondary label={editingKey?childCopy.saveAndAdd:childCopy.addAnother} disabled={!loaded||saving||hasUnconfirmedCreate||!!editingKey&&!editorValid} onPress={addAnother} testID="onboarding-add-another" />
+        {editingKey&&childDrafts.length>0?<NuriButton secondary label={childCopy.cancelNew} disabled={saving} onPress={()=>{if(capture()!==null&&!saveAction.current)setEditingKey(null);}} testID="onboarding-close-child-editor" />:null}
+        <NuriText secondary testID="onboarding-manage-children-later">{childCopy.manageLater}</NuriText>
+        <NuriText secondary style={{fontSize:12}}>{t("这些信息用于个性化 AI 建议。使用 AI 功能时，相关信息可能由第三方 AI 服务处理；详情请参阅隐私政策。")}</NuriText>
       </>:<>
+        <NuriText testID="onboarding-children-summary">{childCopy.summary}: {childDrafts.length}</NuriText>
+        <NuriButton secondary label={childCopy.editChildren} disabled={saving} onPress={()=>{if(capture()!==null&&!saveAction.current){setEditingKey(childDrafts.length?null:"new-1");setPage(1);}}} testID="onboarding-review-children" />
         <NuriText>{locale==="en"?"Choose a few topics to discuss with Nuri. You can change them later.":translate(locale, "选几个你想和 Nuri 聊的话题，之后可以修改。")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{CONCERNS.filter(([key])=>["sleep","emotion","food","parenting","development","other"].includes(key)).map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={concerns.includes(key)} onPress={()=>toggleConcern(key)} testID={`onboarding-concern-${key}`} />)}</View>
         {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":translate(locale, "其他话题")} value={concernOther} onChangeText={setConcernOther} />:null}
       </>}
       <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":translate(locale, "进入 NURI")):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
-      {page===0?<NuriButton secondary disabled={!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
-      {page===1?<NuriButton secondary label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{setSkipChild(true);setPage(2);}} testID="onboarding-skip-child" />:null}
-      {page>0?<NuriButton secondary label={t("返回")} onPress={goBack} />:null}
+      {page===0?<NuriButton secondary disabled={!loaded||!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
+      {page===1&&childDrafts.length===0?<NuriButton secondary disabled={!loaded||saving} label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{if(capture()!==null&&!saveAction.current){setSkipChild(true);setEditingKey(null);setPage(2);}}} testID="onboarding-skip-child" />:null}
+      {page>0?<NuriButton secondary disabled={saving} label={t("返回")} onPress={goBack} />:null}
     </AuthFrame>
     {pickerOpen?<BirthPicker expecting={expecting} year={birthYear} month={birthMonth} day={birthDay} close={()=>setPickerOpen(false)} confirm={(year:number|null,month:number|null,day:number|null)=>{setBirthYear(year);setBirthMonth(month);setBirthDay(day);setSkipChild(false);setPickerOpen(false);}} />:null}
   </View>;
@@ -252,14 +312,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function BirthPicker({ expecting, year, month, day, close, confirm }: { expecting: boolean; year: number|null; month: number|null; day: number|null; close:()=>void; confirm:(year:number|null,month:number|null,day:number|null)=>void }) {
   const { t, locale } = useT();
   const theme = useNuriTheme();
+  const copy = onboardingChildCopy(locale);
   const currentYear = new Date().getFullYear();
-  const years = expecting ? [currentYear, currentYear + 1] : Array.from({length:9},(_,i)=>currentYear-i);
+  const [yearStart, setYearStart] = useState(Math.min(currentYear, (year ?? currentYear) + 12));
+  // Bounded pages avoid thousands of native views or a nested VirtualizedList
+  // inside the card's ScrollView. Every historical year remains reachable,
+  // including direct numeric input for distant years.
+  const years = expecting ? [currentYear, currentYear + 1] : Array.from({length:Math.min(24,yearStart)},(_,i)=>yearStart-i);
   const [draftYear, setDraftYear] = useState<number | null>(year);
+  const [yearText, setYearText] = useState(year === null ? "" : String(year));
   const [draftMonth, setDraftMonth] = useState<number | null>(month);
   const [draftDay, setDraftDay] = useState<number | null>(day);
   const dayCount = draftYear && draftMonth ? daysInMonth(draftYear, draftMonth) : 31;
   const days = Array.from({ length: dayCount }, (_, i) => i + 1);
   const updateYear = (value: number) => {
+    setYearText(String(value));
     setDraftYear(value);
     if (draftMonth) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(value, draftMonth)));
   };
@@ -270,7 +337,6 @@ function BirthPicker({ expecting, year, month, day, close, confirm }: { expectin
   const selected = draftYear && draftMonth && draftDay ? formatDateOnly({year:draftYear,month:draftMonth,day:draftDay}) : "";
   const valid = expecting ? isValidDueDate(selected) : isValidBirthDate(selected);
   const columns = [
-    {name:"year",values:years,value:draftYear,change:updateYear,label:(value:number)=>locale==="en"?String(value):t("{value} 年",{value})},
     {name:"month",values:MONTHS,value:draftMonth,change:updateMonth,label:(value:number)=>locale==="en"?String(value):t("{value} 月",{value})},
     {name:"day",values:days,value:draftDay,change:setDraftDay,label:(value:number)=>locale==="en"?String(value):t("{value} 日",{value})},
   ];
@@ -278,7 +344,19 @@ function BirthPicker({ expecting, year, month, day, close, confirm }: { expectin
     <AuthFrame testID="onboarding-date-card" contentGap={16}>
       <NuriText style={{fontSize:20,lineHeight:28,fontWeight:"500"}}>{expecting?t("选择预产期"):t("选择出生日期")}</NuriText>
       <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期要在今天之后的 40 周内"):t("请选择完整的出生年、月、日")}</NuriText>
-      <View style={{flexDirection:"row",gap:8,height:184}}>{columns.map(column=><ScrollView key={column.name} style={{flex:1}} showsVerticalScrollIndicator={false} testID={`birth-picker-${column.name}`} keyboardShouldPersistTaps="handled">{column.values.map(value=><Pressable key={value} accessibilityRole="button" accessibilityState={{selected:column.value===value}} accessibilityLabel={`${column.name}: ${value}`} testID={`birth-picker-${column.name}-${value}`} onPress={()=>column.change(value)} style={{minHeight:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:column.value===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{column.label(value)}</NuriText></Pressable>)}</ScrollView>)}</View>
+      <NuriField label={copy.year} testID="birth-picker-year-input" value={yearText} keyboardType="number-pad" maxLength={4} placeholder="YYYY" selectTextOnFocus onChangeText={text=>{
+        if(!/^\d{0,4}$/.test(text))return;setYearText(text);const value=Number(text);
+        if(value>=1&&value<=9999){setDraftYear(value);setYearStart(Math.min(currentYear,value+12));if(draftMonth)setDraftDay(current=>current===null?null:Math.min(current,daysInMonth(value,draftMonth)));}else setDraftYear(null);
+      }} />
+      {!expecting?<NuriText secondary style={{fontSize:12}}>{copy.yearHint}</NuriText>:null}
+      <View style={{flexDirection:"row",gap:8,height:184}}>
+        <ScrollView style={{flex:1}} showsVerticalScrollIndicator testID="birth-picker-year" keyboardShouldPersistTaps="handled">
+          {!expecting&&yearStart<currentYear?<Pressable accessibilityRole="button" testID="birth-picker-newer-years" onPress={()=>setYearStart(value=>Math.min(currentYear,value+24))} style={{minHeight:44,alignItems:"center",justifyContent:"center"}}><NuriText secondary>{copy.newerYears}</NuriText></Pressable>:null}
+          {years.map(value=><Pressable key={value} accessibilityRole="button" accessibilityState={{selected:draftYear===value}} accessibilityLabel={`year: ${value}`} testID={`birth-picker-year-${value}`} onPress={()=>updateYear(value)} style={{height:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:draftYear===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{locale==="en"?String(value):t("{value} 年",{value})}</NuriText></Pressable>)}
+          {!expecting&&yearStart>24?<Pressable accessibilityRole="button" testID="birth-picker-earlier-years" onPress={()=>setYearStart(value=>Math.max(1,value-24))} style={{minHeight:44,alignItems:"center",justifyContent:"center"}}><NuriText secondary>{copy.earlierYears}</NuriText></Pressable>:null}
+        </ScrollView>
+        {columns.map(column=><ScrollView key={column.name} style={{flex:1}} showsVerticalScrollIndicator={false} testID={`birth-picker-${column.name}`} keyboardShouldPersistTaps="handled">{column.values.map(value=><Pressable key={value} accessibilityRole="button" accessibilityState={{selected:column.value===value}} accessibilityLabel={`${column.name}: ${value}`} testID={`birth-picker-${column.name}-${value}`} onPress={()=>column.change(value)} style={{minHeight:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:column.value===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{column.label(value)}</NuriText></Pressable>)}</ScrollView>)}
+      </View>
       <NuriText testID="birth-picker-selection" style={{fontSize:14}}>{selected||"YYYY-MM-DD"}</NuriText>
       <NuriButton label={t("确定")} disabled={!valid} onPress={()=>confirm(draftYear,draftMonth,draftDay)} testID="birth-picker-confirm" />
       <NuriButton secondary label={locale==="en"?"Cancel":translate(locale, "取消")} onPress={close} testID="birth-picker-cancel" />
