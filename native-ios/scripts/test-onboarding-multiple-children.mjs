@@ -84,6 +84,11 @@ function componentFixture({kids=[],locale='en',loadFails=false}={}){
   date:(year,month,day)=>{h.find('onboarding-birth-picker').props.onPress();h.render(Component);h.nodes().find(n=>n.type===loaded.Picker).props.confirm(year,month,day);h.render(Component);}});
 }
 async function ready(f){f.render();await f.settle();f.find('onboarding-next-btn').props.onPress();f.render();}
+test('date trigger is a single accessible button, not a readonly text input intercepting taps',async()=>{
+ const f=componentFixture();await ready(f);const button=f.find('onboarding-birth-picker');
+ assert.equal(button.props.accessibilityRole,'button');assert.equal(button.props.children.type,'NuriText');
+ button.props.onPress();f.render();assert.ok(f.nodes().some(n=>n.type===f.Picker));
+});
 function fillChild(f,name,year){f.find('onboarding-child-name').props.onChangeText(name);f.render();f.date(year,5,6);}
 test('actual onboarding: add two children older than 2018, review both, then write each once on explicit completion',async()=>{
  const f=componentFixture();await ready(f);assert.ok(f.find('onboarding-children-guide'));fillChild(f,'Older fixture child',2010);

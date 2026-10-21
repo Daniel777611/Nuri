@@ -58,6 +58,7 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 export default function Onboarding() {
   const { capture, current } = useAccountScope();
   const { t, locale } = useT();
+  const theme = useNuriTheme();
   const childCopy = onboardingChildCopy(locale);
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
@@ -273,7 +274,7 @@ export default function Onboarding() {
         <NuriText secondary style={{fontSize:12}}>{t("宝宝出生了吗？")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
         <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期"):t("孩子的出生日期")}</NuriText>
-        <Pressable disabled={saving} accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker"><View pointerEvents="none"><NuriField value={birthLabel} editable={false} accessible={false} /></View></Pressable>
+        <Pressable disabled={saving} accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker" style={{minHeight:50,paddingHorizontal:16,paddingVertical:12,borderRadius:10,borderWidth:1,borderColor:theme.outline,backgroundColor:theme.composer,justifyContent:"center"}}><NuriText style={{fontSize:16,lineHeight:24}}>{birthLabel}</NuriText></Pressable>
         {birthDateError?<NuriText style={{fontSize:12,color:"#9a606a"}}>{birthDateError}</NuriText>:null}
         <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} disabled={saving} onPress={()=>setChildGender(key)} />)}</View>
