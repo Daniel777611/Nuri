@@ -1,5 +1,5 @@
-import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, AuthFrame, NuriButton, NuriField, MenuRow } from "@/src/uiux48/Primitives";
-import { MediaPanel } from "@/src/uiux48/MediaPanel";
+import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, NuriButton, MenuRow } from "@/src/uiux48/Primitives";
+import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
 import { NuriComposer } from "@/src/uiux48/Composer";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
@@ -13,6 +13,7 @@ import {
   Animated,
   AppState,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -35,7 +36,6 @@ import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import { registerNativeNavigationGuard, type NativeNavigationAction } from "@/src/components/nativeNavigation";
 import Toast from "@/src/components/Toast";
-import VoiceWaveform from "@/src/components/VoiceWaveform";
 import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
@@ -274,10 +274,10 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   }, [id, input, generation]);
   const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
   const [imageMenuVisible, setImageMenuVisible] = useState(false);
-  const [mediaState,setMediaState]=useState<"cameraPermission"|"voicePermission"|"voice"|"voiceReview"|"imagePreview"|null>(null);
   const [mediaError,setMediaError]=useState("");
   const [processingImage, setProcessingImage] = useState(false);
   const [voiceState, setVoiceState] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
+  const voicePhaseRef = useRef<typeof voiceState>("idle");
   const [voiceSeconds, setVoiceSeconds] = useState(0);
   // Whether this browser lets us read the mic level; without it the banner
   // falls back to the elapsed-time counter.
@@ -289,6 +289,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const readVoiceLevel = useCallback(() => voiceRecordingRef.current?.level() ?? null, []);
   const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingNativePickerRef = useRef<"camera" | "library" | null>(null);
+  const nativePickerInFlightRef = useRef(false);
   const nativePickerFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sending, setSending] = useState(false);
   // Mirrors `sending` for the re-entrancy check: state updates are async, so
@@ -556,6 +557,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     clearVoiceTimer();
     voiceRecordingRef.current?.cancel();
     voiceRecordingRef.current = null;
+    voicePhaseRef.current = "idle";
   }, [generation, clearVoiceTimer]);
 
   // Stack keeps covered screens mounted. Blur, background, and a late
@@ -568,9 +570,11 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       clearVoiceTimer();
       voiceRecordingRef.current?.cancel();
       voiceRecordingRef.current = null;
+      voicePhaseRef.current = "idle";
       setVoiceState("idle");
       setVoiceSeconds(0);
-      setMediaState(null);setImageMenuVisible(false);setMediaError("");
+      setImageMenuVisible(false);setMediaError("");
+      pendingNativePickerRef.current = null;
     };
   }, [clearVoiceTimer, setVoiceState, setVoiceSeconds]));
 
@@ -585,6 +589,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       clearVoiceTimer();
       voiceRecordingRef.current?.cancel();
       voiceRecordingRef.current = null;
+      voicePhaseRef.current = "idle";
       setVoiceState("idle");
       setVoiceSeconds(0);
     });
@@ -601,7 +606,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     else showToast(t("语音识别失败，请重试"));
   };
 
-  const stopVoice = async () => {
+  const stopVoice = async (intent: "draft" | "send" = "draft") => {
     const ticket = capture();
     if (ticket === null) return;
     const recording = voiceRecordingRef.current;
@@ -609,24 +614,34 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     const version = voiceStartVersionRef.current;
     voiceRecordingRef.current = null;
     clearVoiceTimer();
+    voicePhaseRef.current = "transcribing";
     setVoiceState("transcribing");
     try {
       const clip = await recording.stop();
-      if (!current(ticket)) return;
+      if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       const { text } = await api.transcribeVoice(clip, locale);
       if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       const spoken = (text || "").trim();
       if (!spoken) {
-        setMediaState("voicePermission");setMediaError(locale==="en"?"No speech was recognized. Please retry.":translate(locale, "没有听清，请再说一次。"));
+        setMediaError(locale==="en"?"No speech was recognized. Please retry.":translate(locale, "没有听清，请再说一次。"));
         showToast(t("没有听清，请再说一次"));
         return;
       }
-      setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken));
-      setMediaState("voiceReview");
+      // Recording locks the editor; append to the exact draft that was visible
+      // when Stop/Send was tapped. Never send from a React state updater.
+      const draft = input.trim() ? `${input.trimEnd()} ${spoken}` : spoken;
+      setInput(draft);
+      setMediaError("");
+      if (intent === "send") {
+        voicePhaseRef.current = "idle";
+        setVoiceState("idle");
+        await send(draft);
+      }
     } catch (error) {
-      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) {setMediaState("voicePermission");explainVoiceError(error);}
+      if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) explainVoiceError(error);
     } finally {
       if (current(ticket) && voiceActiveRef.current && version === voiceStartVersionRef.current) {
+        voicePhaseRef.current = "idle";
         setVoiceState("idle");
         setVoiceSeconds(0);
       }
@@ -638,6 +653,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     clearVoiceTimer();
     voiceRecordingRef.current?.cancel();
     voiceRecordingRef.current = null;
+    voicePhaseRef.current = "idle";
     setVoiceState("idle");
     setVoiceSeconds(0);
   };
@@ -645,12 +661,15 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const startVoice = async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (voiceState !== "idle" || voiceStartInFlightRef.current) return;
+    if (voicePhaseRef.current !== "idle" || voiceStartInFlightRef.current || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
     if (!isVoiceInputSupported()) {
       setMediaError(locale==="en"?"Voice input is unavailable on this device. Use text instead.":translate(locale, "此设备暂不支持语音输入，可以改用文字。"));
       showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
       return;
     }
+    setMediaError("");
+    Keyboard.dismiss();
+    voicePhaseRef.current = "starting";
     setVoiceState("starting");
     voiceStartInFlightRef.current = true;
     const version = ++voiceStartVersionRef.current;
@@ -664,7 +683,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     } catch (error) {
       if (!current(ticket) || !voiceActiveRef.current || version !== voiceStartVersionRef.current) return;
       setVoiceState("idle");
-      setMediaState("voicePermission");
+      voicePhaseRef.current = "idle";
       explainVoiceError(error);
       return;
     } finally {
@@ -673,7 +692,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     setVoiceSeconds(0);
     setVoiceMetered(voiceRecordingRef.current.level() !== null);
     setVoiceState("recording");
-    setMediaState("voice");setMediaError("");
+    voicePhaseRef.current = "recording";
+    setMediaError("");
     const startedAt = Date.now();
     voiceTimerRef.current = setInterval(() => {
       const seconds = Math.floor((Date.now() - startedAt) / 1000);
@@ -703,18 +723,19 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       const prepared = await prepareChatImage(asset);
       if (!current(ticket)) return;
       setPendingImage(prepared);
-      setMediaState("imagePreview");setMediaError("");
+      setMediaError("");
     } catch (error) {
       if (!current(ticket)) return;
       explainImageError(error);
     } finally {
-      setProcessingImage(false);
+      if (current(ticket)) setProcessingImage(false);
     }
   };
 
   const openNativePicker = async (source: "camera" | "library") => {
     const ticket = capture();
-    if (ticket === null) return;
+    if (ticket === null || !voiceActiveRef.current || nativePickerInFlightRef.current) return;
+    nativePickerInFlightRef.current = true;
     try {
       if (source === "camera") {
         const permission = await ImagePicker.requestCameraPermissionsAsync();
@@ -734,12 +755,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
         return;
       }
 
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!current(ticket)) return;
-      if (!permission.granted) {
-        showToast(t("需要相册权限才能选择图片，请在系统设置中允许"));
-        return;
-      }
+      // iOS PHPicker grants access only to the selected image. Broad Photo
+      // Library authorization is not needed for this system selection UI.
       await acceptPickerResult(await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsEditing: false,
@@ -751,6 +768,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     } catch {
       if (!current(ticket)) return;
       showToast(t(source === "camera" ? "无法打开相机，请重试" : "无法读取图片，请重试"));
+    } finally {
+      nativePickerInFlightRef.current = false;
     }
   };
 
@@ -766,9 +785,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   };
 
   const deferNativePickerUntilModalCloses = (source: "camera" | "library") => {
-    if (capture() === null) return;
+    if (capture() === null || pendingNativePickerRef.current || nativePickerInFlightRef.current) return;
     pendingNativePickerRef.current = source;
-    setMediaState(null);
     setImageMenuVisible(false);
     // onDismiss is reliable on iOS. Android does not consistently emit it for
     // every RN Modal implementation, so use a guarded fallback after the fade.
@@ -786,7 +804,6 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       // file header before allocating any full-resolution image surface.
       const pendingAsset = pickWebChatImageFile();
       setImageMenuVisible(false);
-      setMediaState(null);
       const asset = await pendingAsset;
       if (asset && current(ticket)) await acceptPickerResult({ canceled: false, assets: [asset] }, ticket);
     } catch (error) {
@@ -812,11 +829,13 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   };
 
   const openImageInput = () => {
-    if (capture() === null) return;
-    // The iOS app is a WKWebView shell. Its browser-owned file chooser already
-    // offers Camera and Photo Library, so opening a NURI menu first only adds a
-    // redundant extra step and can break Safari's required user gesture.
-    setMediaState(null);setMediaError("");
+    if (capture() === null || voicePhaseRef.current !== "idle" || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
+    setMediaError("");
+    if (Platform.OS === "web") {
+      void openSafeWebPicker();
+      return;
+    }
+    Keyboard.dismiss();
     setImageMenuVisible(true);
   };
 
@@ -850,7 +869,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     launchAction.current = undefined;
     if (action === "send" && initialDraft?.trim()) void send(initialDraft);
     else if (action === "attach") openImageInput();
-    else if (action === "mic") setMediaState("voicePermission");
+    else if (action === "mic") void startVoice();
     else composerRef.current?.focus();
   }, [historyLoadState, id]);
   const content = <View style={{flex:1,minHeight:0}}>
@@ -864,28 +883,23 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     </ScrollView>
     <View style={{paddingHorizontal:embedded?0:24,paddingBottom:embedded?0:12}}>
       {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{t("正在准备图片…")}</NuriText></View>:null}
-      {voiceState==="recording"?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-voice-recording">{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="chat-voice-waveform" />:<NuriText>{t("正在录音")} {Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText>}<Pressable onPress={cancelVoice} style={{minHeight:44,justifyContent:"center"}} testID="chat-voice-cancel"><NuriText>{t("取消")}</NuriText></Pressable></GlassSurface>:null}
-      {voiceState==="transcribing"?<View testID="chat-voice-transcribing"><ActivityIndicator /><NuriText secondary>{t("正在识别语音…")}</NuriText></View>:null}
-      {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1,fontSize:13}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} testID="chat-image-remove" /></GlassSurface>:null}
-      <NuriComposer value={input} onChangeText={setInput} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>{if(voiceState==="recording")void stopVoice();else {setMediaError("");setMediaState("voicePermission");}}} busy={sending||processingImage||voiceState==="starting"||voiceState==="transcribing"} disabled={historyLoadState!=="ready"} recording={voiceState==="recording"} hasAttachment={!!pendingImage} testID={embedded?"home-chat":"chat"} />
+      {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} disabled={voiceState!=="idle"||sending} testID="chat-image-remove" /></GlassSurface>:null}
+      {voiceState!=="idle"?<VoiceInputBar phase={voiceState} seconds={voiceSeconds} metered={voiceMetered} level={readVoiceLevel} onCancel={cancelVoice} onStop={()=>void stopVoice("draft")} onSend={()=>void stopVoice("send")} />:
+        <NuriComposer value={input} onChangeText={setInput} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>void startVoice()} busy={sending||processingImage} disabled={historyLoadState!=="ready"} hasAttachment={!!pendingImage} testID={embedded?"home-chat":"chat"} />}
+      {mediaError?<View style={{flexDirection:"row",alignItems:"center",gap:8,paddingTop:8}} testID="chat-media-error"><NuriText accessibilityLiveRegion="assertive" style={{flex:1}}>{mediaError}</NuriText><IconAction name="close" label={t("关闭")} onPress={()=>setMediaError("")} /></View>:null}
     </View>
-      <MediaPanel visible={imageMenuVisible||mediaState!==null} title={imageMenuVisible?(locale==="en"?"Add content":translate(locale, "添加内容")):({cameraPermission:locale==="en"?"Show Nuri a photo":translate(locale, "拍照给 Nuri 看"),voicePermission:locale==="en"?"Use microphone":translate(locale, "使用麦克风"),voice:locale==="en"?"Listening":translate(locale, "正在聆听"),voiceReview:locale==="en"?"Review voice input":translate(locale, "确认语音内容"),imagePreview:locale==="en"?"Review photo":translate(locale, "确认照片")}[mediaState??"voicePermission"])} onClose={()=>{cancelVoice();setMediaState(null);setImageMenuVisible(false);}} onDismiss={flushNativePicker}>
-        <AuthFrame testID={imageMenuVisible?"attachments-card":`media-${mediaState}-card`} contentGap={24}>
-          {imageMenuVisible?<><MenuRow label={locale==="en"?"Take a photo":translate(locale, "拍照")} onPress={()=>{setImageMenuVisible(false);setMediaState("cameraPermission");}} testID="chat-image-camera" /><MenuRow label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} testID="chat-image-library" /><NuriText secondary style={{fontSize:12,lineHeight:16}}>{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText><NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" /></>:null}
-          {mediaState==="cameraPermission"?<><NuriText>{locale==="en"?"Allow camera access to photograph what you would like to discuss.":translate(locale, "允许相机后，可以拍下你想聊的内容。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Preview or remove the photo before sending.":translate(locale, "发送前，你可以预览或移除照片。")}</NuriText><NuriButton label={locale==="en"?"Continue to camera":translate(locale, "继续拍照")} onPress={takePhoto} testID="camera-permission-continue" /><NuriButton secondary label={locale==="en"?"Choose from photos":translate(locale, "从照片中选择")} onPress={choosePhoto} /></>:null}
-          {mediaState==="voicePermission"?<><NuriText>{locale==="en"?"Allow microphone access to speak directly to Nuri.":translate(locale, "允许麦克风后，你可以直接对 Nuri 说话。")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Only audio you actively record is used for voice input.":translate(locale, "只有你主动录制的音频才用于语音输入。")}</NuriText><NuriButton label={locale==="en"?"Continue with voice":translate(locale, "继续使用语音")} busy={voiceState==="starting"} onPress={()=>void startVoice()} testID="voice-permission-continue" /><NuriButton secondary label={locale==="en"?"Use text instead":translate(locale, "改用文字")} disabled={voiceState==="starting"} onPress={()=>{setMediaState(null);composerRef.current?.focus();}} testID="voice-permission-text" /></>:null}
-          {mediaState==="voice"?<><NuriIcon name="mic" />{voiceMetered?<VoiceWaveform level={readVoiceLevel} testID="media-voice-waveform" />:null}<NuriText>{Math.floor(voiceSeconds/60)}:{String(voiceSeconds%60).padStart(2,"0")}</NuriText><NuriText>{locale==="en"?"Take your time. Nuri is listening.":translate(locale, "慢慢说，Nuri 在听。")}</NuriText><NuriButton label={voiceState==="transcribing"?(locale==="en"?"Transcribing…":translate(locale, "正在识别语音…")):(locale==="en"?"Finish recording":translate(locale, "完成录音"))} busy={voiceState==="transcribing"} onPress={()=>void stopVoice()} testID="media-voice-finish" /><NuriButton secondary label={locale==="en"?"Cancel recording":translate(locale, "取消录音")} onPress={()=>{cancelVoice();setMediaState(null);}} testID="media-voice-cancel" /></>:null}
-          {mediaState==="voiceReview"||mediaState==="imagePreview"?<>
-            {mediaState==="imagePreview"&&pendingImage?<Image source={{uri:pendingImage.previewUri}} style={{width:"100%",height:220,borderRadius:28}} contentFit="contain" testID="media-review-photo" />:null}
-            <NuriText secondary style={{fontSize:mediaState==="voiceReview"?12:16,lineHeight:mediaState==="voiceReview"?16:22}}>{mediaState==="voiceReview"?(locale==="en"?"Your voice is now text. Edit it before sending.":translate(locale, "语音已转成文字，你可以修改后发送。")):(locale==="en"?"Add a note so Nuri understands your question.":translate(locale, "添加一句说明，让 Nuri 更了解你想问什么。"))}</NuriText>
-            <NuriField label={locale==="en"?"Your content":translate(locale, "你的内容")} value={input} onChangeText={setInput} multiline style={{height:96,paddingTop:14,textAlignVertical:"top"}} testID="media-review-input" />
-            <View style={{flexDirection:"row",justifyContent:"space-between"}}><IconAction name="plus" label={locale==="en"?"Add photo":translate(locale, "添加照片")} onPress={()=>{setMediaState(null);setImageMenuVisible(true);}} testID="media-review-plus" /><IconAction name="mic" label={locale==="en"?"Continue voice input":translate(locale, "继续语音输入")} onPress={()=>setMediaState("voicePermission")} testID="media-review-mic" /></View>
-            <NuriButton label={mediaState==="imagePreview"?(locale==="en"?"Send photo":translate(locale, "发送照片")):(locale==="en"?"Send to Nuri":translate(locale, "发送给 Nuri"))} disabled={sending||(!input.trim()&&!pendingImage)} onPress={()=>{setMediaState(null);void send();}} testID="media-review-send" />
-            <NuriButton secondary label={mediaState==="imagePreview"?(locale==="en"?"Choose again":translate(locale, "重新选择")):(locale==="en"?"Continue voice input":translate(locale, "继续语音输入"))} onPress={()=>{if(mediaState==="imagePreview"){setMediaState(null);setImageMenuVisible(true);}else setMediaState("voicePermission");}} testID="media-review-again" />
-          </>:null}
-          {mediaError?<NuriText accessibilityLiveRegion="assertive" testID="media-error">{mediaError}</NuriText>:null}
-        </AuthFrame>
-      </MediaPanel>
+      <Modal visible={imageMenuVisible} transparent animationType="fade" onRequestClose={()=>setImageMenuVisible(false)} onDismiss={flushNativePicker}>
+        <View style={{flex:1,justifyContent:"flex-end",paddingHorizontal:24,paddingBottom:Math.max(safeInsets.bottom,16),backgroundColor:"rgba(20,16,24,.28)"}} testID="chat-attachment-sheet">
+          <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button" accessibilityLabel={t("取消")} onPress={()=>setImageMenuVisible(false)} />
+          <GlassSurface contentStyle={{padding:24,gap:16}} testID="attachments-card">
+            <NuriText role="H2">{locale==="en"?"Add photo":translate(locale,"添加照片")}</NuriText>
+            <MenuRow label={locale==="en"?"Take a photo":translate(locale,"拍照")} onPress={takePhoto} testID="chat-image-camera" />
+            <MenuRow label={locale==="en"?"Choose from photos":translate(locale,"从照片中选择")} onPress={choosePhoto} testID="chat-image-library" />
+            <NuriText secondary role="Caption">{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText>
+            <NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" />
+          </GlassSurface>
+        </View>
+      </Modal>
     <Toast message={toastMsg} />
   </View>;
   return embedded ? content : <NuriKeyboardFrame>{content}</NuriKeyboardFrame>;

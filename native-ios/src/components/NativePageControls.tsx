@@ -16,7 +16,8 @@ import { NuriAvatar } from "@/src/uiux48/Scene";
 export default function NativePageControls() {
   const router = useRouter();
   const pathname = usePathname();
-  const {uiState}=useGlobalSearchParams<{uiState?:string}>();
+  const {uiState,flowTitle}=useGlobalSearchParams<{uiState?:string;flowTitle?:string}>();
+  const prototypeTitle=process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"&&(pathname==="/community"||pathname==="/notifications")&&typeof flowTitle==="string"&&flowTitle.length<=160?flowTitle:null;
   const { t, locale } = useT();
   const { state } = useAIConsent();
   const aiCopy = aiConsentCopy(locale);
@@ -43,7 +44,7 @@ export default function NativePageControls() {
     <View style={styles.row}>
       <IconAction name="back" label={t("返回")} onPress={() => navigate("back")} testID="native-header-back" />
       {pathname.startsWith("/chat/")||pathname==="/chats"?<NuriAvatar />:null}
-      <NuriText style={{fontSize:20,lineHeight:26,fontWeight:"500",flex:1,marginLeft:4}}>{t(title)}</NuriText>
+      <NuriText role="H2" style={{flex:1,marginLeft:4}}>{prototypeTitle??t(title)}</NuriText>
       {authenticated?<IconAction name="settings" label={locale==="en"?"Profile & settings":translate(locale, "个人资料与设置")} onPress={()=>{if(!requestGuardedNativeNavigation(pathname,"profile"))router.push("/(tabs)/profile");}} testID="native-header-settings" />:null}
     </View>
       {(pathname.startsWith("/chat")||pathname==="/daily-post"||pathname==="/daily-video"||pathname==="/knowledge"||pathname.startsWith("/detail/")) && ["not_allowed", "error"].includes(state.status) ? <Pressable onPress={openPermission} style={styles.banner} accessibilityRole="button" testID="native-ai-permission-blocked"><NuriText style={{fontSize:12,lineHeight:18}}>{state.status === "error" ? (state.failure === "session" ? requestFailureCopy(locale, "session").detail : aiCopy.loadError) : aiCopy.banner}</NuriText></Pressable> : null}

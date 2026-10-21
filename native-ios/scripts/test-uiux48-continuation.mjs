@@ -43,8 +43,8 @@ test("Metro excludes gallery graph in all release combinations, even an accident
   const p=spawnSync(process.execPath,["-e",`const c=require('./metro.config.js');console.log(c.resolver.resolveRequest({dev:${dev}},'nuri-uiux48-fixture-gallery','ios').filePath);`],{encoding:"utf8",env:{...process.env,EXPO_NO_DOTENV:"1",EXPO_PUBLIC_PREVIEW_MODE:preview,EXPO_PUBLIC_UIUX48_GALLERY:flag}});assert.equal(p.status,0,p.stderr);assert.equal(p.stdout.trim().endsWith("src/dev/uiux48/Gallery.tsx"),dev&&preview==="1"&&flag==="1");
  }
 });
-test("media entry and review remain explicit, preserve exact adapters and never send from effects",()=>{
- const source=read("app/chat/[id].tsx");assert.match(source,/setMediaState\("voiceReview"\)/);assert.match(source,/voice-permission-continue/);assert.match(source,/camera-permission-continue/);assert.match(source,/media-review-plus/);assert.match(source,/media-review-mic/);assert.match(source,/onDismiss=\{flushNativePicker\}/);assert.match(source,/await api\.transcribeVoice\(clip, locale\)/);assert.match(source,/startVoiceRecording\(\)/);assert.match(source,/launchCameraAsync/);assert.match(source,/media-review-send/);
+test("user-approved inline media removes redundant permission/review pages while retaining real adapters",()=>{
+ const source=read("app/chat/[id].tsx");assert.doesNotMatch(source,/setMediaState|voice-permission-continue|camera-permission-continue|media-review-send/);assert.match(source,/onStop=\{\(\)=>void stopVoice\("draft"\)\}/);assert.match(source,/onSend=\{\(\)=>void stopVoice\("send"\)\}/);assert.match(source,/onDismiss=\{flushNativePicker\}/);assert.match(source,/await api\.transcribeVoice\(clip, locale\)/);assert.match(source,/startVoiceRecording\(\)/);assert.match(source,/launchCameraAsync/);assert.match(source,/testID="chat-image-preview"/);
  const state=read("src/uiux48/StateCard.tsx");assert.doesNotMatch(state,/useEffect|from ["'][^"']*(?:api|auth)["']/);assert.match(state,/onPress=\{primary.onPress\}/);
 });
 
@@ -53,12 +53,13 @@ test("release Community entries are localized coming-soon surfaces, with no comp
  for(const locale of ["zh-CN","zh-TW","en"]){
   let params={},tree;const routes=[];
   const Component=load("app/community.tsx",{
+   "nuri-ux49-flow-preview":{FLOW_PREVIEW_ENABLED:false,default:"DisabledPrototype",__esModule:true},
    "react/jsx-runtime":{jsx,jsxs:jsx},
    "expo-router":{useLocalSearchParams:()=>params,useRouter:()=>({push:href=>routes.push(href),replace:href=>routes.push(href),canGoBack:()=>false})},
    "@/src/i18n":{useT:()=>({locale})},
    "@/src/uiux48/Primitives":{CardList:"CardList",MenuRow:"MenuRow",NuriText:"NuriText"},
    "@/src/uiux48/StateCard":{StateCard:"StateCard"},
-  }).default;
+  }).UnavailableCommunity;
   const status=locale==="en"?"Coming soon":locale==="zh-TW"?"未上線":"未上线";
   tree=Component();assert.equal(all(tree).find(n=>n.props?.testID==="community-launch-status").props.children,status);
   for(const [id,screen] of [["community-ask","ask"],["community-find","find"],["community-inbox","inbox"]]){
