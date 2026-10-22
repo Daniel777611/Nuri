@@ -13,7 +13,7 @@ const icons = {
   home: require("@/assets/uiux48/approved-icons/home.svg"), chat: require("@/assets/uiux48/approved-icons/chat.svg"),
   notifications: require("@/assets/uiux48/approved-icons/notifications.svg"), community: require("@/assets/uiux48/approved-icons/community.svg"),
   settings: require("@/assets/uiux48/approved-icons/settings.svg"), plus: require("@/assets/uiux48/approved-icons/plus.svg"),
-  mic: require("@/assets/uiux48/approved-icons/microphone.svg"), expand: require("@/assets/uiux48/approved-icons/expand.svg"),
+  mic: require("@/assets/community-redesign/microphone.svg"), expand: require("@/assets/uiux48/approved-icons/expand.svg"),
   collapse: require("@/assets/uiux48/approved-icons/collapse.svg"), send: require("@/assets/uiux48/approved-icons/send.svg"),
   back: require("@/assets/uiux48/approved-icons/back.svg"), play: require("@/assets/uiux48/approved-icons/play.svg"),
   person: require("@/assets/uiux48/approved-icons/person.svg"), chevronRight: require("@/assets/uiux48/approved-icons/chevron-right.svg"),
@@ -22,8 +22,10 @@ const icons = {
 };
 export type NuriIconName = keyof typeof icons;
 export function NuriIcon({ name }: { name: NuriIconName }) {
-  const { ink } = useNuriTheme();
-  return <Image source={icons[name]} style={{ width: 24, height: 24 }} contentFit="contain" tintColor={ink} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
+  const { ink, night } = useNuriTheme();
+  // Figma 127:24534: original outline SVG, no material or backing plate.
+  // Preserve its daytime artwork; Night is a white alpha-mask tint only.
+  return <Image source={icons[name]} style={{ width: 24, height: 24 }} contentFit="contain" tintColor={name === "mic" ? night ? "#FFFFFF" : undefined : ink} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
 }
 export function IconAction({ name, label, onPress, testID, disabled }: { name: NuriIconName; label: string; onPress: () => void; testID?: string; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} disabled={disabled} testID={testID} style={({ pressed }) => [s.iconTarget, { opacity: disabled ? .4 : pressed ? .6 : 1 }]}><NuriIcon name={name} /></Pressable>;

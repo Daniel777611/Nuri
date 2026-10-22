@@ -1,0 +1,6 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="NURI / Icons / Microphone">
+<path id="Microphone / Outline capsule" d="M12 2.5C13.933 2.5 15.5 4.067 15.5 6V10C15.5 11.933 13.933 13.5 12 13.5C10.067 13.5 8.5 11.933 8.5 10V6C8.5 4.067 10.067 2.5 12 2.5Z" stroke-linejoin="round" stroke="#5C5662"/>
+<path id="Microphone / Outline cradle and stem" d="M5 10V12C5 15.866 8.134 19 12 19M12 19C15.866 19 19 15.866 19 12V10M12 19V22M12 22H9M12 22H15" stroke="#5C5662"/>
+</g>
+</svg>

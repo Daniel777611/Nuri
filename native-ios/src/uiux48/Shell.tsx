@@ -3,6 +3,7 @@ import { Keyboard, Platform, Pressable, StyleSheet, Text, View, type KeyboardEve
 import { usePathname, useRouter, useSegments, useGlobalSearchParams } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { Image } from "expo-image";
 import { useT, translate } from "@/src/i18n";
 import NativePageControls from "@/src/components/NativePageControls";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
@@ -26,17 +27,18 @@ export function NuriShell({ children }: { children: ReactNode }) {
   },[]);
   const panelTop=Platform.OS==="ios"&&keyboard?keyboardPanelTop(keyboardFrame,rootFrame):null;
   const welcome=path==="/welcome";
-  const {uiState}=useGlobalSearchParams<{uiState?:string}>();
+  const {uiState,communityBackdrop,communityHideTabs}=useGlobalSearchParams<{uiState?:string;communityBackdrop?:string;communityHideTabs?:string}>();
+  const community=path==="/community"&&process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1";
   const signedOutResult=path==="/account-deletion"&&uiState==="deleted";
   const home=segments[0]==="(tabs)"&&path==="/";
   const auth=/^\/(welcome|login|register|verify-email|forgot-password|onboarding|ai-permission)$/.test(path);
   return <View ref={root} onLayout={()=>root.current?.measureInWindow((_x,y,width,height)=>setRootFrame(previous=>previous.y===y&&previous.width===width&&previous.height===height?previous:{y,width,height}))} testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
     <StatusBar style={night?"light":"dark"} />
-    <NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />
+    {community?<><Image source={communityBackdrop==="bottle"?require("@/assets/community-redesign/bottle-flow-background.png"):communityBackdrop==="hub"?require("@/assets/community-redesign/bottle-background.png"):require("@/assets/community-redesign/cafe-background.png")} contentFit="cover" style={StyleSheet.absoluteFill} testID="community-approved-background" />{night?<View pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:"rgba(35,28,57,.76)"}]} />:null}</>:<NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />}
     {panelTop!==null?<View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="nuri-keyboard-backplate" style={{position:"absolute",top:panelTop,left:0,right:0,bottom:0,borderTopLeftRadius:28,borderTopRightRadius:28,backgroundColor:keyboardTheme.surface}} />:null}
     {!welcome?<SafeAreaView edges={["top"]} style={Platform.OS==="web"?{paddingTop:62}:undefined}>{home?null:<NativePageControls />}</SafeAreaView>:null}
     <SafeAreaView edges={auth&&!welcome?["bottom"]:[]} style={{flex:1,minHeight:0,paddingBottom:Platform.OS==="web"&&auth&&!welcome?34:0}}>{children}</SafeAreaView>
-    {!auth&&!welcome&&!keyboard&&!signedOutResult?<NuriTabBar />:null}
+    {!auth&&!welcome&&!keyboard&&!signedOutResult&&!(community&&communityHideTabs==="1")?<NuriTabBar />:null}
   </View>;
 }
 

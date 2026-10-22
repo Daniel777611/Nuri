@@ -8,11 +8,21 @@ import { NuriComposer } from "@/src/uiux48/Composer";
 import { FLOW_SCREENS, type FlowBlock, type FlowCopy } from "./screens";
 import { canChat49, createFlow49, draftSlot49, flowReducer49, type FlowEvent49 } from "./model";
 import { FLOW_TW49 } from "./traditional";
+import CommunityRedesign from "./CommunityRedesign";
+import { useAccountScope } from "@/src/useAccountState";
 
 export const FLOW_PREVIEW_ENABLED = true;
 /** TestFlight-only local prototype. The Metro alias excludes this whole graph
  * from ordinary release builds. Real features keep their existing adapters. */
 export default function FlowPreview({entry}:{entry:"community"|"notifications"}) {
+  // A session boundary remounts all ephemeral sample drafts immediately;
+  // private text must not reappear when another tester account signs in.
+  const { generation } = useAccountScope();
+  return entry === "community" ? <CommunityRedesign key={generation} /> : <LegacyFlowPreview key={generation} entry={entry} />;
+}
+/** Kept for the notification prototype and regression of the previous pure
+ * presentation model; Community's real entry uses the new design above. */
+export function LegacyFlowPreview({entry}:{entry:"community"|"notifications"}) {
   const [state,dispatch]=useReducer(flowReducer49,entry,createFlow49);
   const [showStates,setShowStates]=useState(false);
   const latest=useRef(state);latest.current=state;

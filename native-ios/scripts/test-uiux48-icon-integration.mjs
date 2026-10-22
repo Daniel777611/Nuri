@@ -16,7 +16,7 @@ function load(path,deps={}){
  deps={"@/src/uiux48/StateCard":{StateCard:"StateCard"},...deps};
  const output=ts.transpileModule(readFileSync(path,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const module={exports:{}};new Function("require","module","exports",output)(name=>{
-  if(name.startsWith("@/assets/uiux48/approved-icons/"))return name;
+  if(name.startsWith("@/assets/uiux48/approved-icons/")||name==="@/assets/community-redesign/microphone.svg")return name;
   assert.ok(name in deps,"unexpected import "+name);return deps[name];
  },module,module.exports);return module.exports;
 }
@@ -33,12 +33,12 @@ test("all 18 original SVGs retain exact hashes, root24 geometry and approved1px 
   assets.push({file:a.file,sha256:sha(output),bytes:output.length,width:24,height:24,source_node:a.nodeId});
  }
 });
-test("shared icon component maps every supplied file, uses theme ink and24px artwork inside44pt actions",()=>{
- let ink="#49404f";const jsx=(type,props)=>({type,props});
+test("shared icons retain24px/44pt geometry; latest Figma microphone preserves day artwork and Night white",()=>{
+ let ink="#49404f",night=false;const jsx=(type,props)=>({type,props});
  const rn={ActivityIndicator:"Activity",KeyboardAvoidingView:"KAV",Platform:{OS:"ios"},Pressable:"Pressable",ScrollView:"ScrollView",StyleSheet:{create:x=>x},Switch:"Switch",Text:"Text",TextInput:"Input",View:"View"};
- const p=load("src/uiux48/Primitives.tsx",{react:{forwardRef:x=>x},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-blur":{BlurView:"Blur"},"expo-image":{Image:"Image"},"expo-linear-gradient":{LinearGradient:"Gradient"},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale:"en"})},"expo-router":{},"./Theme":{useNuriTheme:()=>({ink})},"./materials":load("src/uiux48/materials.ts")});
- for(const color of ["#49404f","#f9f1e8"]){ink=color;for(const [name,file]of Object.entries(names)){
-  const el=p.NuriIcon({name});assert.equal(el.props.source,"@/assets/uiux48/approved-icons/"+file+".svg");assert.deepEqual(el.props.style,{width:24,height:24});assert.equal(el.props.tintColor,color);assert.equal(el.props.accessible,false);
+ const p=load("src/uiux48/Primitives.tsx",{react:{forwardRef:x=>x},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-blur":{BlurView:"Blur"},"expo-image":{Image:"Image"},"expo-linear-gradient":{LinearGradient:"Gradient"},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale:"en"})},"expo-router":{},"./Theme":{useNuriTheme:()=>({ink,night})},"./materials":load("src/uiux48/materials.ts")});
+ for(const color of ["#49404f","#f9f1e8"]){ink=color;night=color==="#f9f1e8";for(const [name,file]of Object.entries(names)){
+  const el=p.NuriIcon({name});assert.equal(el.props.source,name==="mic"?"@/assets/community-redesign/microphone.svg":"@/assets/uiux48/approved-icons/"+file+".svg");assert.deepEqual(el.props.style,{width:24,height:24});assert.equal(el.props.tintColor,name==="mic"?night?"#FFFFFF":undefined:color);assert.equal(el.props.accessible,false);
   let pressed=0;const action=p.IconAction({name,label:name,onPress:()=>pressed++});const target=action.props.style({pressed:false})[0];assert.equal(target.width,44);assert.equal(target.height,44);action.props.onPress();assert.equal(pressed,1);
  }}
  const composer=readFileSync("src/uiux48/Composer.tsx","utf8");assert.match(composer,/<NuriIcon name="send"/);assert.match(composer,/<IconAction name="collapse"/);assert.match(composer,/keyboardAccessory/);
