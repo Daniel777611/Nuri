@@ -228,7 +228,7 @@ try {
 
 // The affected consumers must invoke the guarded helper for every old 401
 // branch, block forms after cleanup failure, and never invoke strict logout.
-for (const [path, count] of [["../app/onboarding.tsx", 2], ["../app/child/[id].tsx", 3], ["../app/register.tsx", 1]]) {
+for (const [path, count] of [["../app/onboarding.tsx", 4], ["../app/child/[id].tsx", 3], ["../app/register.tsx", 1]]) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
   assert.equal((source.match(/await recoverExpiredCredentials\((?:error|err), (?:requestToken|token)\)/g) || []).length, count);
   assert.doesNotMatch(source, /auth\.clearToken\(/);

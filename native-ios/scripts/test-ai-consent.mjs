@@ -121,10 +121,9 @@ test("fresh/restored account has no assumed permission; auto greeting and home e
   assert.equal(f.aiConsent.getState().status, "not_allowed");
 });
 
-test("every actual profile/text/audio/image/context adapter is fail-closed, not only composer UI", async () => {
+test("every actual AI text/audio/image/context adapter is fail-closed, not only composer UI", async () => {
   const f = fixture(); await f.auth.setToken("account-A");
   const operations = [
-    () => f.api.addChild({ nickname: "mock" }), () => f.api.updateChild("child", { birth_date: "2020-01-01" }), () => f.api.updateMe({ nickname: "mock" }),
     () => f.api.sendMessage("session", { text: "mock" }), () => f.api.sendMessage("session", { text: "", image_base64: "data:image/jpeg;base64,bW9jaw==" }),
     () => f.api.streamMessage("session", { text: "mock" }, () => {}), () => f.api.transcribeVoice("bW9jaw==", "en"),
     () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardResearch("card"),
@@ -133,6 +132,21 @@ test("every actual profile/text/audio/image/context adapter is fail-closed, not 
   ];
   for (const run of operations) await assert.rejects(run(), blocked);
   assert.deepEqual(aiCalls(f), []);
+});
+
+test("pure account/child persistence works without AI permission and never grants it", async () => {
+  const f=fixture(); await f.auth.setToken("account-A");
+  await f.api.addChild({nickname:"isolated fixture",birth_date:"2017-01-18",gender:"other",allergies:[],notes:""});
+  await f.api.updateChild("fixture-child",{birth_date:"2010-01-01"});
+  await f.api.updateMe({onboarding_completed:true});
+  assert.deepEqual(f.calls.map(c=>[c.method,c.path]),[["POST","/children"],["PUT","/children/fixture-child"],["PUT","/auth/me"]]);
+  assert.equal(f.writes.length,0,"profile storage cannot record AI consent");
+  assert.notEqual(f.aiConsent.getState().status,"allowed");
+  await assert.rejects(f.api.sendMessage("session",{text:"fixture"}),blocked);
+  await assert.rejects(f.api.transcribeVoice("bW9jaw==","en"),blocked);
+  await assert.rejects(f.api.getDailyPost(),blocked);
+  assert.equal(f.calls.filter(c=>c.path.startsWith('/chat')||c.path.startsWith('/feed')).length,0);
+  assert.equal(policy.requiresAIConsent('/children/fixture/generate',{method:'POST'}),true,"no broad child-prefix exemption");
 });
 
 test("exact GET read allowlist permits actual preview/feed/search/detail/saved-daily adapters without asking for AI permission", async () => {

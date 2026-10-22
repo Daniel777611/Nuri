@@ -36,6 +36,13 @@ export class AIConsentError extends Error {
 export function requiresAIConsent(path: string, init?: RequestInit): boolean {
   const route = path.split("?")[0];
   const method = (init?.method || "GET").toUpperCase();
+  // Audited backend/main.py update_me/add_child/update_child only persist
+  // account-owned profile fields and invalidate caches. They do not invoke an
+  // AI provider. A parent can finish setup/manage their records without
+  // granting third-party AI permission; later generation is still gated.
+  if (route === "/auth/me" && method === "PUT"
+      || route === "/children" && method === "POST"
+      || /^\/children\/[^/]+$/.test(route) && method === "PUT") return false;
   if (method === "GET" && (["/feed", "/feed/search", "/feed/alt", "/chat/main/preview"].includes(route)
       || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
       || /^\/feed\/daily-(?:post|video)\/[a-zA-Z0-9_-]+$/.test(route))) return false;

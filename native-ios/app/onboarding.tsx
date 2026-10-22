@@ -35,7 +35,8 @@ import {
   isValidDueDate,
   parseDateOnly,
 } from "@/src/child-age";
-import { childDraftsFromServer, childFingerprint, ChildSaveError, newChildSaveProgress, onboardingChildCopy, persistOnboardingChildren, type ChildDraft, type ChildSaveProgress } from "@/src/onboardingChildren";
+import { childDraftsFromServer, childFingerprint, ChildSaveError, deleteOnboardingChild, newChildSaveProgress, onboardingChildCopy, persistOnboardingChildren, refreshOnboardingChildren, removeOnboardingDraft, validChildDraft, type ChildDraft, type ChildSaveProgress } from "@/src/onboardingChildren";
+import ConfirmDialog from "@/src/components/ConfirmDialog";
 
 const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
 const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
@@ -95,6 +96,7 @@ export default function Onboarding() {
   const saveProgress = useRef<{ ticket: number; value: ChildSaveProgress } | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<ChildDraft | null>(null);
   const hasUnconfirmedCreate = saveProgress.current?.ticket === capture() && !!saveProgress.current?.value.pending;
 
   // UI-only route state drives the existing shared header, never a save.
@@ -103,9 +105,9 @@ export default function Onboarding() {
     if(page===0&&!pickerOpen)return;
     return registerNativeNavigationGuard("/onboarding",action=>{
       if(capture()===null||saveAction.current||action!=="back")return;
-      if(pickerOpen)setPickerOpen(false);else if(page===1&&editingKey&&childDrafts.length)setEditingKey(null);else setPage(value=>Math.max(0,value-1));
+      if(confirmDelete)setConfirmDelete(null);else if(pickerOpen)setPickerOpen(false);else if(page===1&&editingKey&&childDrafts.length)setEditingKey(null);else setPage(value=>Math.max(0,value-1));
     });
-  },[page,pickerOpen,saving,editingKey,childDrafts.length,capture,setPage,setPickerOpen,setEditingKey]));
+  },[page,pickerOpen,saving,editingKey,childDrafts.length,confirmDelete,capture,setPage,setPickerOpen,setEditingKey,setConfirmDelete]));
 
   useEffect(() => {
     const ticket = capture();
@@ -178,13 +180,13 @@ export default function Onboarding() {
     : expecting ? t("请选择预产期") : t("请选择孩子的出生年、月、日");
 
   const editChild = (child: ChildDraft) => {
-    if (capture() === null || saveAction.current || hasUnconfirmedCreate) return;
+    if (capture() === null || saveAction.current) return;
     const date = parseDateOnly(child.birth_date);
     setEditingKey(child.key); setChildName(child.nickname); setChildGender(child.gender); setExpecting(child.expecting);
     setBirthYear(date?.year ?? null); setBirthMonth(date?.month ?? null); setBirthDay(date?.day ?? null); setSkipChild(false);
   };
   const commitEditor = (): ChildDraft[] | null => {
-    if (capture() === null || saveAction.current || hasUnconfirmedCreate || !editingKey || !editorValid) return null;
+    if (capture() === null || saveAction.current || !editingKey || !editorValid) return null;
     const existing = childDrafts.find(row => row.key === editingKey);
     const draft: ChildDraft = { key: editingKey, id: existing?.id, nickname: childName.trim(), birth_date: birthDate,
       gender: childGender as ChildDraft["gender"], allergies: existing?.allergies ?? [], notes: existing?.notes ?? "", expecting };
@@ -193,18 +195,70 @@ export default function Onboarding() {
     return rows;
   };
   const addAnother = () => {
-    if (capture() === null || saveAction.current || hasUnconfirmedCreate || !loaded) return;
+    if (capture() === null || saveAction.current || !loaded) return;
     if (editingKey && !commitEditor()) return;
     nextDraft.current += 1;
     setEditingKey(`new-${nextDraft.current}`); setChildName(""); setChildGender("other");
     setBirthYear(null); setBirthMonth(null); setBirthDay(null); setExpecting(false); setSkipChild(false);
   };
 
-  const save = async () => {
+  const refreshChildren = async () => {
+    const ticket = capture();
+    if (ticket === null || saveAction.current || !loaded || saveProgress.current?.ticket !== ticket) return;
+    saveAction.current = true; setSaving(true); setSyncError("");
+    let requestToken: string | null = null;
+    try {
+      requestToken = await auth.getToken();
+      const rows = await refreshOnboardingChildren(childDrafts, { api, progress: saveProgress.current.value,
+        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket),
+        onConfirmed: () => {},
+      });
+      if (!current(ticket)) return;
+      setChildDrafts(rows);
+      setSyncError(saveProgress.current.value.pending ? childCopy.unconfirmed : childCopy.recovered);
+    } catch (error) {
+      if (!current(ticket)) return;
+      if (isAuthError(error)) { await recoverExpiredCredentials(error, requestToken); return; }
+      setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
+    } finally { saveAction.current = false; setSaving(false); }
+  };
+  const removeDraft = (child: ChildDraft) => {
+    const ticket = capture();
+    if (ticket === null || saveAction.current || child.id) return;
+    const progress = saveProgress.current?.ticket === ticket ? saveProgress.current.value : null;
+    const unconfirmed = progress?.pending?.key === child.key;
+    if (progress) removeOnboardingDraft(child.key, progress);
+    const rows = childDrafts.filter(row => row.key !== child.key);
+    setChildDrafts(rows); setSkipChild(rows.length === 0);
+    if (editingKey === child.key) setEditingKey(null);
+    setSyncError(unconfirmed ? childCopy.removedUnknown : "");
+  };
+  const removeSavedChild = async () => {
+    const child = confirmDelete, ticket = capture();
+    if (!child?.id || ticket === null || saveAction.current || saveProgress.current?.ticket !== ticket) return;
+    setConfirmDelete(null); saveAction.current = true; setSaving(true); setSyncError("");
+    let requestToken: string | null = null;
+    try {
+      requestToken = await auth.getToken();
+      await deleteOnboardingChild(child.id, { api, progress: saveProgress.current.value,
+        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket), onConfirmed: () => {},
+      });
+      if (!current(ticket)) return;
+      const rows = childDrafts.filter(row => row.id !== child.id);
+      setChildDrafts(rows); setSkipChild(rows.length === 0);
+      if (editingKey === child.key) setEditingKey(null);
+    } catch (error) {
+      if (!current(ticket)) return;
+      if (isAuthError(error)) { await recoverExpiredCredentials(error, requestToken); return; }
+      setSyncError(childCopy.deleteFailed);
+    } finally { saveAction.current = false; setSaving(false); }
+  };
+
+  const save = async (deferChildren = false) => {
     const ticket = capture();
     if (ticket === null) return;
     if (saveAction.current || !loaded) return;
-    if (!skipChild && childDrafts.length === 0) {
+    if (!deferChildren && !skipChild && childDrafts.length === 0) {
       setPage(1);
       return;
     }
@@ -215,7 +269,7 @@ export default function Onboarding() {
       requestToken = await auth.getToken();
       if (!requestToken || !current(ticket)) return;
       if (saveProgress.current?.ticket !== ticket) saveProgress.current = { ticket, value: newChildSaveProgress() };
-      await persistOnboardingChildren(childDrafts, { api, progress: saveProgress.current.value,
+      await persistOnboardingChildren(deferChildren ? [] : childDrafts, { api, progress: saveProgress.current.value,
         owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket),
         onConfirmed: (key, id) => setChildDrafts(rows => rows.map(row => row.key === key ? { ...row, id } : row)),
       });
@@ -255,6 +309,7 @@ export default function Onboarding() {
   return <View style={{flex:1}}>
     <AuthFrame testID="onboarding-card">
       {syncError?<NuriText style={{color:"#9a606a",fontSize:13}}>{syncError}</NuriText>:null}
+      {loaded&&(syncError||hasUnconfirmedCreate)?<NuriButton secondary label={childCopy.refresh} disabled={saving} busy={saving} onPress={()=>void refreshChildren()} testID="onboarding-reconcile-children" />:null}
       {!loaded?<><NuriText secondary>{childCopy.loading}</NuriText>{syncError?<NuriButton secondary label={childCopy.reload} testID="onboarding-reload" onPress={()=>{if(capture()!==null&&!saveAction.current)setReload(value=>value+1);}} />:null}</>:null}
       {page===0?<>
         <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} editable={loaded&&!saving} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
@@ -265,8 +320,8 @@ export default function Onboarding() {
         <NuriText role="H2" testID="onboarding-children-title">{childCopy.title}</NuriText>
         <NuriText secondary testID="onboarding-children-guide">{childCopy.guide}</NuriText>
         <View style={{gap:8}} testID="onboarding-children-list">{childDrafts.map((child,index)=><View key={child.key} style={{gap:4}}>
-          <MenuRow label={`${index+1}. ${child.nickname}`} detail={`${child.birth_date} · ${child.id?childCopy.edit:childCopy.draft}`} onPress={()=>editChild(child)} disabled={saving||hasUnconfirmedCreate} testID={`onboarding-child-row-${child.key}`} />
-          {!child.id?<Pressable accessibilityRole="button" disabled={saving||hasUnconfirmedCreate} testID={`onboarding-remove-draft-${child.key}`} style={{minHeight:44,justifyContent:"center"}} onPress={()=>{if(capture()!==null&&!saveAction.current&&!hasUnconfirmedCreate){setChildDrafts(rows=>rows.filter(row=>row.key!==child.key));if(editingKey===child.key)setEditingKey(null);}}}><NuriText secondary>{childCopy.removeDraft}</NuriText></Pressable>:null}
+          <MenuRow label={`${index+1}. ${child.nickname||childCopy.child}`} detail={`${child.birth_date||childCopy.incomplete} · ${saveProgress.current?.value.pending?.key===child.key?childCopy.pending:!validChildDraft(child)?childCopy.incomplete:child.id?childCopy.edit:childCopy.draft}`} onPress={()=>editChild(child)} disabled={saving} testID={`onboarding-child-row-${child.key}`} />
+          <Pressable accessibilityRole="button" disabled={saving} testID={child.id?`onboarding-delete-child-${child.key}`:`onboarding-remove-draft-${child.key}`} style={{minHeight:44,justifyContent:"center"}} onPress={()=>{if(capture()!==null&&!saveAction.current){if(child.id)setConfirmDelete(child);else removeDraft(child);}}}><NuriText secondary>{child.id?childCopy.deleteAction:childCopy.removeDraft}</NuriText></Pressable>
         </View>)}</View>
         {editingKey?<>
         <NuriText role="H3" testID="onboarding-editor-title">{childCopy.child} {childOrdinal}{editingIndex>=0?` · ${childCopy.edit}`:""}</NuriText>
@@ -279,7 +334,7 @@ export default function Onboarding() {
         <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
         <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} disabled={saving} onPress={()=>setChildGender(key)} />)}</View>
         </>:null}
-        <NuriButton secondary label={editingKey?childCopy.saveAndAdd:childCopy.addAnother} disabled={!loaded||saving||hasUnconfirmedCreate||!!editingKey&&!editorValid} onPress={addAnother} testID="onboarding-add-another" />
+        <NuriButton secondary label={editingKey?childCopy.saveAndAdd:childCopy.addAnother} disabled={!loaded||saving||!!editingKey&&!editorValid} onPress={addAnother} testID="onboarding-add-another" />
         {editingKey&&childDrafts.length>0?<NuriButton secondary label={childCopy.cancelNew} disabled={saving} onPress={()=>{if(capture()!==null&&!saveAction.current)setEditingKey(null);}} testID="onboarding-close-child-editor" />:null}
         <NuriText secondary testID="onboarding-manage-children-later">{childCopy.manageLater}</NuriText>
         <NuriText secondary style={{fontSize:12}}>{t("这些信息用于个性化 AI 建议。使用 AI 功能时，相关信息可能由第三方 AI 服务处理；详情请参阅隐私政策。")}</NuriText>
@@ -291,11 +346,13 @@ export default function Onboarding() {
         {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":translate(locale, "其他话题")} value={concernOther} onChangeText={setConcernOther} />:null}
       </>}
       <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":translate(locale, "进入 NURI")):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
+      {page===2?<><NuriText secondary style={{fontSize:12}}>{childCopy.deferHint}</NuriText><NuriButton secondary label={childCopy.defer} disabled={!loaded||saving} onPress={()=>void save(true)} testID="onboarding-defer-children" /></>:null}
       {page===0?<NuriButton secondary disabled={!loaded||!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
       {page===1&&childDrafts.length===0?<NuriButton secondary disabled={!loaded||saving} label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{if(capture()!==null&&!saveAction.current){setSkipChild(true);setEditingKey(null);setPage(2);}}} testID="onboarding-skip-child" />:null}
       {page>0?<NuriButton secondary disabled={saving} label={t("返回")} onPress={goBack} />:null}
     </AuthFrame>
     {pickerOpen?<BirthPicker expecting={expecting} year={birthYear} month={birthMonth} day={birthDay} close={()=>setPickerOpen(false)} confirm={(year:number|null,month:number|null,day:number|null)=>{setBirthYear(year);setBirthMonth(month);setBirthDay(day);setSkipChild(false);setPickerOpen(false);}} />:null}
+    <ConfirmDialog visible={!!confirmDelete} title={childCopy.deleteTitle} message={childCopy.deleteBody} confirmText={childCopy.deleteConfirm} danger onConfirm={()=>void removeSavedChild()} onCancel={()=>setConfirmDelete(null)} />
   </View>;
 }
 
