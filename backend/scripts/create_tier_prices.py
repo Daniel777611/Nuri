@@ -82,7 +82,10 @@ def main() -> int:
     # accounts and restricted keys can't use.
     existing: dict[str, object] = {}
     for product in client.v1.products.list(params={"active": True, "limit": 100}).auto_paging_iter():
-        tier = (product.metadata or {}).get("nuri_tier")
+        meta = product.metadata
+        # A StripeObject, not a dict: it has no .get().
+        meta = meta.to_dict() if hasattr(meta, "to_dict") else (meta or {})
+        tier = meta.get("nuri_tier")
         if tier in TIER_NAMES and tier not in existing:
             existing[tier] = product
     env_lines = []
