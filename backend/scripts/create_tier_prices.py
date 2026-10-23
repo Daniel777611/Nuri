@@ -78,12 +78,16 @@ def main() -> int:
         return 0
 
     client = stripe.StripeClient(api_key=key)
+    # Listed and filtered here rather than through products.search, which some
+    # accounts and restricted keys can't use.
+    existing: dict[str, object] = {}
+    for product in client.v1.products.list(params={"active": True, "limit": 100}).auto_paging_iter():
+        tier = (product.metadata or {}).get("nuri_tier")
+        if tier in TIER_NAMES and tier not in existing:
+            existing[tier] = product
     env_lines = []
     for tier in ("plus", "unlimited"):
-        found = client.v1.products.search(params={
-            "query": f"metadata['nuri_tier']:'{tier}' AND active:'true'",
-        })
-        product = found.data[0] if found.data else client.v1.products.create(params={
+        product = existing.get(tier) or client.v1.products.create(params={
             "name": TIER_NAMES[tier],
             "metadata": {"nuri_tier": tier},
         })
