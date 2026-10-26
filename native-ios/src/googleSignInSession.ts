@@ -19,6 +19,9 @@ export async function signInWithNativeGoogle(options: {
   setLocale: (locale: string) => Promise<unknown>;
   navigate: (onboarded: boolean) => void;
   retryLocalFailure?: boolean;
+  /** Where the Google ID token comes from: the native SDK by default; the web
+   *  build passes Google's button (browser) or the Android shell's sheet. */
+  obtainCredential?: (shouldContinue: () => boolean) => Promise<string | null>;
 }): Promise<GoogleSignInOutcome> {
   if (loginBusy) throw new NativeGoogleAuthError("in-progress");
   if (!options.current(options.ticket)) return "stale";
@@ -26,7 +29,8 @@ export async function signInWithNativeGoogle(options: {
   try {
     const existing = await auth.getToken();
     if (!options.current(options.ticket) || existing && !options.retryLocalFailure) return "stale";
-    const credential = await obtainNativeGoogleCredential(() => options.current(options.ticket));
+    const obtain = options.obtainCredential ?? obtainNativeGoogleCredential;
+    const credential = await obtain(() => options.current(options.ticket));
     if (!options.current(options.ticket)) return "stale";
     if (!credential) return "cancelled";
     const response = await api.googleLogin({ credential, language: options.language });

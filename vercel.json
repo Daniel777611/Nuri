@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd frontend && npm ci --legacy-peer-deps && npm run build:web",
-  "outputDirectory": "frontend/dist",
+  "buildCommand": "cd native-ios && npx -y pnpm@11.25.0 install --frozen-lockfile && npx expo export --platform web",
+  "outputDirectory": "native-ios/dist",
   "functions": {
     "api/backend.py": {
       "maxDuration": 300

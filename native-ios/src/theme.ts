@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 // Design tokens centralized — keeps screens consistent with design_guidelines.json.
 export const colors = {
   surface: "transparent",
@@ -52,4 +53,6 @@ export const type = {
 const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, "");
 
 // Native builds have no web origin. Keep all requests on the existing backend.
-export const API = backendUrl ? `${backendUrl}/api` : "https://nurifam.app/api";
+// The web build is served by the backend's own deployment, so it stays on its
+// origin (nurifam.app, nuri-xi.vercel.app or a preview alike).
+export const API = backendUrl ? `${backendUrl}/api` : Platform.OS === "web" ? "/api" : "https://nurifam.app/api";

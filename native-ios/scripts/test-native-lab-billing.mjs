@@ -143,7 +143,7 @@ test("web checkout and portal behavior remains enabled", async () => {
   assert.equal(subscribe.props.disabled, false);
   await subscribe.props.onPress();
   await f.find(tree, "billing-history-btn").props.onPress();
-  assert.deepEqual(f.checkoutCalls, [["month", "web"]]);
+  assert.deepEqual(f.checkoutCalls, [["plus", "month", "web"]]);
   assert.deepEqual(f.portalCalls, [["web"]]);
 });
 

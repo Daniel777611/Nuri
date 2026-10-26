@@ -1198,12 +1198,37 @@ export const api = {
 
   // Billing (backend/billing.py). Checkout and the Portal are Stripe-hosted:
   // these only return the URL to send the browser to.
-  billingStatus: () => req<BillingStatus>(`/billing/status`, undefined, 20000),
-  billingCheckout: (interval: BillingInterval, returnTo: "web" | "app" = "web") =>
+  /** Just today's allowance; cheap enough to read on every chat turn. */
+  billingUsage: () => {
+    const tz = deviceTimeZone();
+    return req<BillingUsage>(`/billing/usage${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`);
+  },
+  /** What NURI remembers about this family; `standing` rows apply to every reply. */
+  listMemories: () =>
+    req<{ id: string; child_id: string | null; standing: boolean; text: string; updated_at: string }[]>(
+      `/memories`,
+    ),
+  forgetMemory: (memoryId: string) =>
+    req<void>(`/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
+  billingStatus: () => {
+    const tz = deviceTimeZone();
+    return req<BillingStatus>(
+      `/billing/status${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 20000,
+    );
+  },
+  billingCheckout: (tier: PaidTier, interval: BillingInterval, returnTo: "web" | "app" = "web") =>
     req<{ url: string }>(
       `/billing/checkout`,
-      { method: "POST", body: JSON.stringify({ interval, return_to: returnTo }) },
+      { method: "POST", body: JSON.stringify({ tier, interval, return_to: returnTo }) },
       20000,
+    ),
+  // Moves an existing member to another paid plan. An upgrade is charged the
+  // prorated difference right away; a 402 PAYMENT_FAILED leaves the plan as is.
+  billingChange: (tier: PaidTier, interval: BillingInterval) =>
+    req<BillingStatus>(
+      `/billing/change`,
+      { method: "POST", body: JSON.stringify({ tier, interval }) },
+      30000,
     ),
   billingPortal: (returnTo: "web" | "app" = "web") =>
     req<{ url: string }>(
@@ -1214,23 +1239,58 @@ export const api = {
 };
 
 export type BillingInterval = "month" | "year";
+/** Cheapest first. `basic` is every account without a paid subscription. */
+export type BillingTier = "basic" | "plus" | "unlimited";
+export type PaidTier = Exclude<BillingTier, "basic">;
 
 export type BillingPlan = {
+  tier: PaidTier;
   interval: BillingInterval;
   price_id: string;
   unit_amount: number | null;
   currency: string | null;
 };
 
+/** Today's chat allowance (backend/quota.py). Spent in tokens, set in
+ *  conversation turns of `tokens_per_turn` each. `limit` null = none. */
+export type BillingUsage = {
+  tier: BillingTier;
+  limit: number | null;
+  used: number;
+  remaining: number | null;
+  exhausted: boolean;
+  limit_turns: number | null;
+  tokens_per_turn: number;
+  /** This account has its own allowance (e.g. a sponsored account). */
+  override: boolean;
+  resets_at: string;
+  enforced: boolean;
+};
+
 export type BillingStatus = {
   enabled: boolean;
   entitled: boolean;
+  tier: BillingTier;
   has_customer: boolean;
   plans: BillingPlan[];
+  /** Conversation turns a day per tier; null = unlimited. */
+  allowances?: Partial<Record<BillingTier, number | null>>;
+  usage?: BillingUsage | null;
   subscription: null | {
     status: string;
+    tier?: PaidTier | null;
     interval: BillingInterval | null;
     current_period_end: string | null;
     cancel_at_period_end: boolean;
   };
 };
+
+/** Turns left today, or null when the allowance is unlimited. */
+export function turnsLeftOf(usage: BillingUsage | null | undefined) {
+  if (!usage?.limit_turns) return null;
+  const total = usage.limit_turns;
+  const left = usage.remaining == null || !usage.tokens_per_turn
+    ? total
+    : Math.ceil(usage.remaining / usage.tokens_per_turn);
+  return { left: Math.max(0, Math.min(left, total)), total };
+}

@@ -35,6 +35,8 @@
       "edgeToEdgeEnabled": true
     },
     "web": {
+      "name": "NURI",
+      "shortName": "NURI",
       "bundler": "metro",
       "output": "single",
       "favicon": "./assets/images/favicon.png"
