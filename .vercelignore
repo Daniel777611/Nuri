@@ -3,4 +3,7 @@ app.py
 design-qa.md
 test_reports/
 android/
-native-ios/
+# The web is built from native-ios; only its Xcode project and test docs stay out.
+native-ios/ios/
+native-ios/e2e/
+native-ios/docs/
