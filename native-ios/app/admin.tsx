@@ -14,6 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Link } from "expo-router";
 import { Collapsible, Note } from "@/src/admin/AdminParts";
 import UsageDashboard from "@/src/admin/UsageDashboard";
+import QuotaPanel from "@/src/admin/QuotaPanel";
 import { colors, radius, spacing } from "@/src/theme";
 
 // ── Backend base URL ──────────────────────────────────────────────────────────
@@ -561,6 +562,8 @@ export default function AdminPage() {
         </Collapsible>
 
         {/* "#fix" 白名单 */}
+        <QuotaPanel backend={BACKEND} adminKey={key} />
+
         <Collapsible
           title="#fix 白名单"
           summary={reviewersLoading ? "加载中…" : `${reviewers.length} 人`}
