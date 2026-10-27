@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { View, AppState } from "react-native";
+import { View, AppState, Platform } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { api, type NotificationPreferences } from "@/src/api";
 import { useAccountState, useAccountScope } from "@/src/useAccountState";
@@ -7,6 +7,9 @@ import { useT, translate } from "@/src/i18n";
 import { getReminderSettings, openNotificationSettings, requestNotificationPermission, type NativeReminderSettings } from "@/src/nativePush";
 import { CardList, CenteredCard, NuriButton, NuriText, NuriField, MenuRow, ToggleRow, InlineState } from "@/src/uiux48/Primitives";
 import { StateCard } from "@/src/uiux48/StateCard";
+
+/** Only the native app can read and ask for this device's notification access. */
+const DEVICE_SETTINGS = Platform.OS !== "web";
 const preferenceKeys: (keyof NotificationPreferences)[]=["enabled","reminders_enabled","chat_enabled","care_enabled","quiet_hours_start","quiet_hours_end","time_zone","max_per_day","show_preview"];
 
 /** Uses the existing GET/PATCH contract rather than conflating device access,
@@ -24,9 +27,11 @@ export default function NotificationSettings() {
  const copy=(cn:string,english:string)=>en?english:translate(locale,cn);
  const reload=useCallback(async()=>{
   const owner=capture();setLoading(true);
-  const results=await Promise.allSettled([getReminderSettings(),api.getNotificationPreferences(),api.getPrivacy()]);
+  // The web has no device module: the shells own system permission, so the
+  // page only reads and saves the account preferences there.
+  const results=await Promise.allSettled([DEVICE_SETTINGS?getReminderSettings():Promise.resolve(null),api.getNotificationPreferences(),api.getPrivacy()]);
   if(!active.current)return;
-  if(results[0].status==="fulfilled")setDevice(results[0].value);
+  if(results[0].status==="fulfilled"&&results[0].value)setDevice(results[0].value);
   if(current(owner)){
    if(results[1].status==="fulfilled"&&!dirty.current)setPrefs(results[1].value);
    if(results[2].status==="fulfilled"&&!dirty.current){setDaily(results[2].value?.daily_push===true);setDailyLoaded(true);}
@@ -62,8 +67,8 @@ export default function NotificationSettings() {
   <NuriButton secondary label={copy("暂不开启","Not now")} disabled={busy} onPress={()=>router.replace("/notification-settings")} testID="notification-permission-skip" /></View>
  </CenteredCard>;
  return <CardList testID="notification-settings-card">
-  <MenuRow label={copy("这台设备的通知权限","Notification access on this device")} detail={permission} onPress={()=>{if(state==="not_determined")router.push({pathname:"/notification-settings",params:{uiState:"permission"}});else void openNotificationSettings().catch(()=>setError(copy("系统设置未能打开。","Could not open system settings.")));}} testID="notification-system-settings" />
-  {state==="not_determined"?<NuriButton label={copy("允许通知","Allow notifications")} disabled={busy} onPress={()=>router.push({pathname:"/notification-settings",params:{uiState:"permission"}})} testID="notification-request-permission" />:null}
+  {DEVICE_SETTINGS?<MenuRow label={copy("这台设备的通知权限","Notification access on this device")} detail={permission} onPress={()=>{if(state==="not_determined")router.push({pathname:"/notification-settings",params:{uiState:"permission"}});else void openNotificationSettings().catch(()=>setError(copy("系统设置未能打开。","Could not open system settings.")));}} testID="notification-system-settings" />:null}
+  {DEVICE_SETTINGS&&state==="not_determined"?<NuriButton label={copy("允许通知","Allow notifications")} disabled={busy} onPress={()=>router.push({pathname:"/notification-settings",params:{uiState:"permission"}})} testID="notification-request-permission" />:null}
   {loading?<InlineState busy message={copy("正在读取设置…","Loading settings…")} />:null}
   <ToggleRow label={copy("Nuri 的关怀提醒","Nuri care reminders")} value={prefs?.care_enabled===true} disabled={!prefs||busy} onChange={care_enabled=>patch({care_enabled})} testID="notification-care" />
   <ToggleRow label={copy("每日精选内容","Daily featured content")} value={daily} disabled={!dailyLoaded||busy} onChange={v=>{dirty.current=true;setDailyDirty(true);setDaily(v);}} testID="remote-daily-push-toggle" />
