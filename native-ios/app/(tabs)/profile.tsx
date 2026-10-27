@@ -19,8 +19,9 @@ import { api, auth } from "@/src/api";
 import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import MemoriesSection from "@/src/components/MemoriesSection";
+import AndroidDownloadSection from "@/src/components/AndroidDownloadSection";
 import { LOCALE_LABELS, LOCALES, useT, translate } from "@/src/i18n";
-import { usePurchaseAllowed } from "@/src/nativeShell";
+import { shellKind, usePurchaseAllowed } from "@/src/nativeShell";
 import { openNotificationSettings } from "@/src/nativePush";
 import { colors, radius, spacing, type } from "@/src/theme";
 
@@ -227,7 +228,7 @@ export default function Profile() {
   const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:translate(locale,cn);
   const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch{if(current(ticket))setActionError(copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
-  const titles:Record<string,string>={memories:copy("NURI 记得的事","What NURI remembers"),personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
+  const titles:Record<string,string>={android:copy("下载安卓 App","Get the Android app"),memories:copy("NURI 记得的事","What NURI remembers"),personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
@@ -238,7 +239,7 @@ export default function Profile() {
     {section==="main"?<CardStack testID="profile-card-stack">
       <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:14,flexDirection:"row",gap:16,alignItems:"center"}}><NuriAvatar size={56} /><View style={{flex:1}}><NuriText style={{fontSize:20,fontWeight:"500"}}>{me?.nickname||copy("个人资料","Your profile")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{copy("和 Nuri 一起照顾每一天","Care for each day with Nuri")}</NuriText></View></GlassSurface>
       <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("我的收藏","Favorites"),"favorites")}{row(copy("家庭偏好","Family preferences"),"preferences")}{row(copy("NURI 记得的事","What NURI remembers"),"memories")}</GlassSurface>
-      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{Platform.OS==="web"&&purchaseAllowed?<MenuRow label={copy("会员与今日额度","Membership & today's allowance")} onPress={()=>router.push("/billing")} testID="profile-membership" />:null}<MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI 许可","Privacy & AI permission"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}</GlassSurface>
+      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{Platform.OS==="web"&&purchaseAllowed?<MenuRow label={copy("会员与今日额度","Membership & today's allowance")} onPress={()=>router.push("/billing")} testID="profile-membership" />:null}{Platform.OS==="web"&&!shellKind()?row(copy("下载安卓 App","Get the Android app"),"android"):null}<MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI 许可","Privacy & AI permission"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}</GlassSurface>
     </CardStack>:<CardList>
       <NuriText style={{fontSize:20,fontWeight:"500"}}>{titles[section]||copy("设置","Settings")}</NuriText>
       {notice}
@@ -267,6 +268,7 @@ export default function Profile() {
         <MenuRow label={copy("隐私政策","Privacy policy")} onPress={linkPolicy} testID="profile-privacy-policy" />{policyError?<NuriText>{policyError}</NuriText>:null}
       </>:null}
       {section==="memories"?<MemoriesSection />:null}
+      {section==="android"?<AndroidDownloadSection />:null}
       {section==="language"?<>{LOCALES.map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{(privacy.language==="zh"?"zh-CN":privacy.language)===locale?copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language."):copy("本机界面已使用所选语言，Nuri 的云端内容语言尚未同步。","Pages use your selected language on this device. Nuri’s cloud content language has not been synced.")}</NuriText></>:null}
       {section==="account"?<>
         <NuriText secondary>{copy("登录邮箱","Sign-in email")}</NuriText><NuriText>{me?.email||"—"}</NuriText>

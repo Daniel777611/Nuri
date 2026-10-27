@@ -125,7 +125,7 @@ function page(path, f, options = {}) {
     "@/src/resourceSummary":load("../src/resourceSummary.ts"),
     "../chat/[id]": {default:"ChatConversation",__esModule:true},
   };
-  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "DailyVideoCard", "RequestFailureNotice", "GoogleSignInButton", "MemoriesSection"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
+  for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "DailyVideoCard", "RequestFailureNotice", "GoogleSignInButton", "MemoriesSection", "AndroidDownloadSection"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
   const component = load(path, dep)[options.exportName ?? (path.endsWith("/tasks.tsx") ? "LegacyTasks" : "default")];
   let tree;
   function expand(node) {
