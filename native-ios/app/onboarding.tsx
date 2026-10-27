@@ -22,8 +22,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
-import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
-import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
+import { TEXT_FONTS } from "@/src/textFonts";
 
 import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
@@ -67,7 +66,7 @@ export default function Onboarding() {
   const headerHeight = useHeaderHeight();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
-  const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
+  const [fontsLoaded] = useFonts(TEXT_FONTS);
   // 0/1/2 = Figma 注册流程 2/4/5；3–6 = 注册流程 6/6.1/6.2/6.3。
   const [page, setPage] = useState(0);
   const [childName, setChildName] = useState("");

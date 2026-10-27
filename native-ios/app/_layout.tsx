@@ -1,10 +1,6 @@
 import { Stack } from "expo-router";
-import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
-import { NotoSansSC_500Medium } from "@expo-google-fonts/noto-sans-sc/500Medium";
-import { NotoSansSC_600SemiBold } from "@expo-google-fonts/noto-sans-sc/600SemiBold";
-import { NotoSansSC_700Bold } from "@expo-google-fonts/noto-sans-sc/700Bold";
-import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 import { useFonts } from "expo-font";
+import { TEXT_FONTS } from "@/src/textFonts";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import { Platform, View } from "react-native";
@@ -24,13 +20,7 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [iconFontsLoaded, iconFontsError] = useIconFonts();
-  const [textFontsLoaded, textFontsError] = useFonts({
-    NotoSansSC_400Regular,
-    NotoSansSC_500Medium,
-    NotoSansSC_600SemiBold,
-    NotoSansSC_700Bold,
-    NotoSansSC_900Black,
-  });
+  const [textFontsLoaded, textFontsError] = useFonts(TEXT_FONTS);
   const fontsReady =
     (iconFontsLoaded || Boolean(iconFontsError)) &&
     (textFontsLoaded || Boolean(textFontsError));

@@ -20,8 +20,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
-import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
-import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
+import { TEXT_FONTS } from "@/src/textFonts";
 
 import { api, apiErrorDetail, auth } from "@/src/api";
 import {
@@ -46,7 +45,7 @@ export default function VerifyEmail() {
   const headerHeight = useHeaderHeight();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
-  const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
+  const [fontsLoaded] = useFonts(TEXT_FONTS);
   const [email, setEmail] = useState<string | null>(null);
   const [resendAt, setResendAt] = useState(0);
   const [code, setCode] = useState("");
