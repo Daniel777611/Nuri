@@ -81,12 +81,14 @@ function BillingPage({ checkout }: { checkout?: string }) {
   const { t, locale } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
-  const nativeLabReadOnly = Platform.OS === "ios";
+  // Native apps only show membership: iOS until its payment return exists,
+  // Android until Google Play Billing is in (Play forbids other checkouts).
+  const nativeLabReadOnly = Platform.OS !== "web";
   const readOnlyNotice = locale === "en"
-    ? "Nuri shows membership status only. Payment return links are not yet configured for this app, so starting subscriptions, managing subscriptions and viewing payment history are unavailable in this iOS app."
+    ? `Nuri shows membership status only. Payment return links are not yet configured for this app, so starting subscriptions, managing subscriptions and viewing payment history are unavailable in this ${Platform.OS === "android" ? "Android" : "iOS"} app.`
     : locale === "zh-TW"
-      ? "Nuri 僅供查看會員狀態。付款返回連結尚未適配此應用程式，因此此 iOS 應用程式暫不支援開通或管理訂閱，也不支援查看付款紀錄。"
-      : "Nuri 仅供查看会员状态。支付返回链接尚未适配此应用，因此此 iOS 应用暂不支持开通或管理订阅，也不支持查看付款记录。";
+      ? `Nuri 僅供查看會員狀態。付款返回連結尚未適配此應用程式，因此此 ${Platform.OS === "android" ? "Android" : "iOS"} 應用程式暫不支援開通或管理訂閱，也不支援查看付款紀錄。`
+      : `Nuri 仅供查看会员状态。支付返回链接尚未适配此应用，因此此${Platform.OS === "android" ? "安卓" : " iOS "}应用暂不支持开通或管理订阅，也不支持查看付款记录。`;
   const checkoutResult = !nativeLabReadOnly && (checkout === "success" || checkout === "cancel") ? checkout : null;
 
   const [status, setStatus] = useAccountState<BillingStatus | null>(null);
@@ -161,7 +163,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
   }, [load, pollUntilMember]));
 
   const subscribe = async (interval: BillingInterval) => {
-    if (Platform.OS === "ios") return;
+    if (Platform.OS !== "web") return;
     setBusy(interval);
     setActionError("");
     try {
@@ -184,7 +186,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
   };
 
   const manage = async () => {
-    if (Platform.OS === "ios") return;
+    if (Platform.OS !== "web") return;
     setBusy("portal");
     setActionError("");
     try {

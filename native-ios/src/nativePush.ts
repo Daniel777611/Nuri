@@ -1,5 +1,6 @@
 import { Linking, NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { parseNativeToken, type NativePushState } from "./nativePushRuntime";
+import { androidPushBridge, subscribeAndroidPush } from "./androidPushBridge";
 
 export type { NativePushState } from "./nativePushRuntime";
 export const MAX_LOCAL_REMINDER_INTERVAL_SECONDS = 31_536_000;
@@ -25,6 +26,7 @@ export type NativePushBridge = {
 };
 
 export function getNativePushBridge(): NativePushBridge | null {
+  if (Platform.OS === "android") return androidPushBridge;
   return Platform.OS === "ios" ? NativeModules.NuriPushBridge || null : null;
 }
 
@@ -38,6 +40,7 @@ export function subscribeNativePush(
   onState: (state: unknown) => void,
   onRoute: (route: unknown) => void,
 ): () => void {
+  if (Platform.OS === "android") return subscribeAndroidPush(onState, onRoute);
   const bridge = requireBridge();
   const emitter = new NativeEventEmitter(bridge);
   const state = emitter.addListener("nuriPushStateChanged", onState);

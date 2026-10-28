@@ -28,10 +28,14 @@
       }
     },
     "android": {
+      "package": "com.ordashtech.nuri",
+      "versionCode": 3,
+      "icon": "./assets/images/native-lab-icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "foregroundImage": "./assets/images/native-lab-icon.png",
+        "backgroundColor": "#E9E4F7"
       },
+      "googleServicesFile": "./google-services.json",
       "edgeToEdgeEnabled": true
     },
     "web": {
@@ -45,6 +49,7 @@
       "expo-router",
       "expo-secure-store",
       "./plugins/withNuriNative",
+      "./plugins/withNuriAndroid",
       ["./plugins/withNuriGoogleSignIn", {
         "iosClientId": "22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com",
         "webClientId": "22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com"

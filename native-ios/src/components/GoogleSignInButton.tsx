@@ -70,11 +70,11 @@ export default function GoogleSignInButton({ disabled = false, returnTo, acquire
   // This native lab intentionally does not load the web GIS script or DOM.
   return <View style={styles.wrap} testID="google-signin">
     <Text style={[styles.dividerText,{color:theme.secondary,marginBottom:12}]}>{locale==="en"?"Or sign in with":translate(locale, "或使用以下方式登录")}</Text>
-    <Pressable style={{minHeight:44,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}} disabled={disabled||busy||!available||Platform.OS!=="ios"} onPress={submit} testID="google-signin-native-button" accessibilityRole="button" accessibilityLabel={t("用 Google 继续")}>
+    <Pressable style={{minHeight:44,flexDirection:"row",alignItems:"center",justifyContent:"center",gap:10}} disabled={disabled||busy||!available||Platform.OS==="web"} onPress={submit} testID="google-signin-native-button" accessibilityRole="button" accessibilityLabel={t("用 Google 继续")}>
       <Image source={require("@/assets/uiux48/google-sdk-logo.png")} style={{width:20,height:20}} contentFit="contain" />
       <Text style={{fontSize:16,lineHeight:22,color:theme.ink}}>{locale==="en"?"Sign in with Google":translate(locale, "使用 Google 登录")}</Text>
     </Pressable>
-    {!available&&Platform.OS==="ios"?<Text style={styles.note} testID="google-signin-unavailable">{t("Google 登录暂时不可用，请用邮箱登录。")}</Text>:null}
+    {!available&&Platform.OS!=="web"?<Text style={styles.note} testID="google-signin-unavailable">{t("Google 登录暂时不可用，请用邮箱登录。")}</Text>:null}
     {busy ? <ActivityIndicator style={styles.note} accessibilityLabel={t("正在登录…")} /> : null}
     {failure || error ? <Text style={styles.error} testID="google-signin-error" accessibilityLiveRegion="polite">{failure ? localFailureCopy[failure] : error}</Text> : null}
   </View>;
