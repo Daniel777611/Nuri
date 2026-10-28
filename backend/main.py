@@ -6256,6 +6256,38 @@ async def patch_notification_preferences(
     return {k: v for k, v in row.items() if k != "user_id"}
 
 
+#: Statuses that reached at least one phone. Queued, held or cancelled events
+#: never showed on a lock screen, so they are not history.
+_DELIVERED_STATUSES = ("sent", "partial")
+
+
+@api.get("/notifications")
+async def list_notifications(uid: str = Depends(_req_uid), limit: int = 30):
+    """The account's delivered notifications, newest first.
+
+    Only what a lock screen showed (title and body); a tap on one goes through
+    POST /notifications/{id}/open like a tap on the system notification.
+    """
+    sb = _require_push_storage()
+    limit = max(1, min(limit, 100))
+
+    def _load() -> list[dict]:
+        return sb.table("notification_events").select(
+            "id,type,title,body,data,scheduled_at"
+        ).eq("user_id", uid).in_("status", list(_DELIVERED_STATUSES)).order(
+            "scheduled_at", desc=True,
+        ).limit(limit).execute().data or []
+
+    rows = await anyio.to_thread.run_sync(_load)
+    return {"items": [{
+        "id": row["id"],
+        "kind": (row.get("data") or {}).get("kind") or row["type"],
+        "title": row["title"],
+        "body": row["body"],
+        "sent_at": row["scheduled_at"],
+    } for row in rows]}
+
+
 @api.get("/notifications/{notification_id}")
 async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
     """The full content behind a tapped notification.

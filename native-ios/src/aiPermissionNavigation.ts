@@ -7,6 +7,7 @@ export function aiPermissionReturnPath(value: unknown): string | null {
   if (/^\/daily-video\?id=[a-zA-Z0-9_-]{1,128}$/.test(value)) return value;
   if (/^\/daily-post\?id=[a-zA-Z0-9_-]{1,128}(?:&uiState=takeaway&point=[01])?$/.test(value)) return value;
   if (/^\/(chat|detail)\/[a-zA-Z0-9_-]{1,128}$/.test(value)) return value;
+  if (/^\/notifications\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return value;
   return null;
 }
 

@@ -768,6 +768,10 @@ export const en: Record<string, string> = {
   "这条通知不存在或已过期": "This notification no longer exists.",
   "回到首页": "Go to home",
   "加载失败，请稍后再试": "Couldn't load. Please try again.",
+  "需要先开启 AI 权限，才能打开这条通知": "Turn on AI permission to open this notification.",
+  "去开启": "Turn on",
+  "正在加载…": "Loading…",
+  "还没有收到推送。NURI 发来的提醒和每日精选会出现在这里。": "No notifications yet. NURI's check-ins and daily picks will show up here.",
   // ── Billing ────────────────────────────────────────────────────────────────
   "会员": "Membership",
   "NURI 会员": "NURI Membership",

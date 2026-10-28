@@ -404,6 +404,10 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   const method = init?.method || "GET";
   const body = bodyOf(init);
   const routePath = path.split("?")[0];
+  if(path==="/notifications"&&method==="GET")return {items:[
+    {id:"00000000-0000-4000-8000-000000000001",kind:"care",title:"睡前的节奏",body:"最近的睡前节奏辛苦了，今晚想聊聊吗？",sent_at:new Date(Date.now()-3600e3).toISOString()},
+    {id:"00000000-0000-4000-8000-000000000002",kind:"daily_post",title:"群里建议逐步自我安抚",body:"其他家长的做法：睡前固定流程。",sent_at:new Date(Date.now()-26*3600e3).toISOString()},
+  ]};
   if(path==="/notifications/preferences"&&method==="GET")return {...notificationPreferences};
   if(path==="/notifications/preferences"&&method==="PATCH")return notificationPreferences={...notificationPreferences,...body};
 

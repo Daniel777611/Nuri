@@ -360,3 +360,72 @@ def test_someone_elses_post_is_a_404(monkeypatch):
         headers={"Authorization": f"Bearer {main._make_token('u2')}"},
     )
     assert response.status_code == 404
+
+
+# ── History ───────────────────────────────────────────────────────────────────
+
+class _HistoryDb:
+    """notification_events, filtered the way list_notifications asks."""
+
+    def __init__(self, rows: list[dict]):
+        self.rows = rows
+
+    def table(self, _name):
+        rows = self.rows
+
+        class _T:
+            def __init__(self):
+                self.filters = []
+                self.cap = None
+
+            def select(self, *_a, **_k):
+                return self
+
+            def eq(self, key, value):
+                self.filters.append(lambda r: r[key] == value)
+                return self
+
+            def in_(self, key, values):
+                self.filters.append(lambda r: r[key] in values)
+                return self
+
+            def order(self, key, desc=False):
+                self.key, self.desc = key, desc
+                return self
+
+            def limit(self, n):
+                self.cap = n
+                return self
+
+            def execute(self):
+                kept = [r for r in rows if all(f(r) for f in self.filters)]
+                kept.sort(key=lambda r: r[self.key], reverse=self.desc)
+                return SimpleNamespace(data=kept[: self.cap])
+
+        return _T()
+
+
+def test_history_lists_only_this_accounts_delivered_notifications(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    def row(id_, uid, status, at, kind="care"):
+        return {"id": id_, "user_id": uid, "type": "follow_up", "status": status,
+                "title": f"t-{id_}", "body": f"b-{id_}", "data": {"kind": kind},
+                "scheduled_at": at}
+
+    db = _HistoryDb([
+        row("old", "u1", "sent", "2026-10-01T10:00:00+00:00"),
+        row("new", "u1", "partial", "2026-10-02T10:00:00+00:00", kind="daily_post"),
+        row("queued", "u1", "queued", "2026-10-03T10:00:00+00:00"),
+        row("cancelled", "u1", "cancelled", "2026-10-03T11:00:00+00:00"),
+        row("theirs", "u2", "sent", "2026-10-04T10:00:00+00:00"),
+    ])
+    monkeypatch.setattr(main, "_get_supabase", lambda: db)
+    response = TestClient(main.app).get(
+        "/api/notifications", headers={"Authorization": f"Bearer {main._make_token('u1')}"},
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [i["id"] for i in items] == ["new", "old"]
+    assert items[0] == {"id": "new", "kind": "daily_post", "title": "t-new",
+                        "body": "b-new", "sent_at": "2026-10-02T10:00:00+00:00"}
