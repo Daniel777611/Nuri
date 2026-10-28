@@ -209,6 +209,13 @@ export type NotificationPreferences = {
  enabled:boolean;reminders_enabled:boolean;chat_enabled:boolean;care_enabled:boolean;
  quiet_hours_start:string;quiet_hours_end:string;time_zone:string;max_per_day:number;show_preview:boolean;
 };
+export type NotificationHistoryItem = {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  sent_at: string;
+};
 export type OpenedNotification = {
   session_id: string;
   kind: "care" | "daily_post" | "daily_video";
@@ -1089,6 +1096,7 @@ export const api = {
     const token = sessionToken === undefined ? await getToken() : sessionToken;
     return deactivatePushInstallation(installationId, token || "");
   },
+  listNotifications: () => req<{ items: NotificationHistoryItem[] }>("/notifications"),
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),
