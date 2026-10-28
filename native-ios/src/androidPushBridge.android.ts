@@ -14,6 +14,15 @@ export const ANDROID_PACKAGE = "com.ordashtech.nuri";
 const CARE_CHANNEL_ID = "nuri_care";
 const INSTALLATION_KEY = "android_push_installation_id";
 
+// A message that arrives while NURI is open is handed to the app instead of
+// the tray, and expo-notifications drops it unless told otherwise. Show it,
+// as the iOS AppDelegate does with [.banner, .list, .sound].
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false,
+  }),
+});
+
 let channelReady: Promise<unknown> | null = null;
 function ensureChannel() {
   channelReady ??= Notifications.setNotificationChannelAsync(CARE_CHANNEL_ID, {
