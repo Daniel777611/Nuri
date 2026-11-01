@@ -6692,8 +6692,13 @@ async def internal_care_generate(
     }
     queued = {kind: 0 for kind in generators}
     skipped = {kind: 0 for kind in generators}
-    for uid in uids:
-        for kind, generate in generators.items():
+    # The search budget can run out partway down the list. The start moves each
+    # day so it isn't always the same accounts that miss out, and the video
+    # starts half a list later so those missing a post still tend to get one.
+    now = datetime.now(timezone.utc)
+    shifts = {"daily_video": len(uids) // 2}
+    for kind, generate in generators.items():
+        for uid in push_service.fair_order(uids, now, shift=shifts.get(kind, 0)):
             try:
                 event = await generate(sb, uid)
             except Exception as exc:  # noqa: BLE001 - one account must not stop the run
