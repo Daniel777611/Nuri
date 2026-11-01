@@ -307,6 +307,15 @@ async def generate_video_event(
     ))
 
 
+def fair_order(uids: list[str], now: datetime, *, shift: int = 0) -> list[str]:
+    """`uids` starting one place further along each day."""
+    ordered = sorted(uids)
+    if not ordered:
+        return []
+    start = (now.astimezone(timezone.utc).date().toordinal() + shift) % len(ordered)
+    return ordered[start:] + ordered[:start]
+
+
 # ── Test accounts ─────────────────────────────────────────────────────────────
 # Accounts listed in PUSH_TEST_EMAILS can get both notifications every half
 # hour (the /internal/push/test-accounts endpoint) so the team can watch the

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from backend import main, runtime
 from backend.feed import daily_post as dp
+from backend.feed import search_budget
 from backend.feed import signals as feed_signals
 from backend.nuri_core import family_store
 from backend.search_tavily import SearchUnavailable
@@ -531,6 +532,17 @@ def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monke
     # Recovery does not wait the three hours an empty day does.
     monkeypatch.setattr(dp, "find_candidates", lambda *_a: _found(world))
     assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
+
+
+def test_a_spent_search_budget_is_recorded_before_any_model_call(world, monkeypatch):
+    async def spent(_kind):
+        raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
+
+    monkeypatch.setattr(search_budget, "require_some_left", spent)
+    assert _get()["state"] == "empty"
+    row = world.db.tables["daily_post_cards"][0]
+    assert row["status"] == "failed" and "search limit" in row["error"]
+    assert world.conversation_calls == 0 and not world.searched
 
 
 def test_one_language_failing_keeps_the_other_languages_posts(monkeypatch):
