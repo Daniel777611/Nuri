@@ -24,7 +24,6 @@ watch it, and transcripts are not reachable from a server. The page says so.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -151,7 +150,7 @@ async def search_youtube(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    return await TavilySearchProvider().search(SearchRequest(
+    return await TavilySearchProvider().fetch(SearchRequest(
         query=query, lang="zh" if lang == "zh" else "en",
         include_domains=YOUTUBE_DOMAINS, max_results=SEARCH_RESULTS,
     ))
@@ -164,7 +163,7 @@ async def find_candidates(plan: dp.Plan, locale: str, exclude_urls: set[str]) ->
         searches.append(search_youtube(query_zh, "zh"))
     if query_en:
         searches.append(search_youtube(query_en, "en"))
-    batches = await asyncio.gather(*searches) if searches else []
+    batches = await dp.run_searches(searches)
     merged = []
     for i in range(max((len(b) for b in batches), default=0)):
         merged.extend(b[i] for b in batches if i < len(b))

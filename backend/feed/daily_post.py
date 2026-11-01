@@ -784,10 +784,21 @@ async def search_meta(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    return await TavilySearchProvider().search(SearchRequest(
+    return await TavilySearchProvider().fetch(SearchRequest(
         query=query, lang="zh" if lang == "zh" else "en",
         include_domains=META_DOMAINS, max_results=SEARCH_RESULTS,
     ))
+
+
+async def run_searches(searches: list) -> list[list]:
+    """Each search's results. One language failing costs only its results; every
+    search failing raises, because that is an outage and not a day with no post.
+    Five days of a spent Tavily quota once went unnoticed as `empty` cards."""
+    outcomes = await asyncio.gather(*searches, return_exceptions=True) if searches else []
+    batches = [o for o in outcomes if not isinstance(o, BaseException)]
+    if outcomes and not batches:
+        raise outcomes[0]
+    return batches
 
 
 async def find_candidates(plan: Plan, locale: str, exclude_urls: set[str]) -> list[Candidate]:
@@ -796,7 +807,7 @@ async def find_candidates(plan: Plan, locale: str, exclude_urls: set[str]) -> li
         searches.append(search_meta(plan.query_zh, "zh"))
     if plan.query_en:
         searches.append(search_meta(plan.query_en, "en"))
-    batches = await asyncio.gather(*searches) if searches else []
+    batches = await run_searches(searches)
     # Interleave the languages so neither crowds the other out of the cap.
     merged = []
     for i in range(max((len(b) for b in batches), default=0)):
