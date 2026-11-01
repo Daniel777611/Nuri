@@ -7648,6 +7648,7 @@ async def admin_usage_overview(
         raise HTTPException(503, f"usage data unavailable: {type(e).__name__}: {e}")
     return usage_dashboard.build_overview(
         sources, days=days, tz=zone, now=now, include_internal=include_internal,
+        test_emails=push_service.tester_emails(),
     )
 
 

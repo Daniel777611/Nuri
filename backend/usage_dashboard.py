@@ -22,7 +22,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from zoneinfo import ZoneInfo
 
 #: Beats arrive every 60s; a visit survives one lost beat plus some slack.
@@ -176,10 +176,15 @@ class Sources:
     truncated: list[str] = field(default_factory=list)
     #: daily_post_cards rows in the window; None when the table doesn't exist.
     daily_posts: Optional[list[dict]] = None
+    #: daily_video_cards rows in the window; None when the table doesn't exist.
+    daily_videos: Optional[list[dict]] = None
+    #: chat_turn_logs rows in the window where the router asked for a search.
+    search_turns: list[dict] = field(default_factory=list)
 
 
 def build_overview(
     src: Sources, *, days: int, tz: ZoneInfo, now: datetime, include_internal: bool = False,
+    test_emails: Sequence[str] = (),
 ) -> dict:
     day_list = window_days(days, tz, now)
     day_keys = [d.isoformat() for d in day_list]
@@ -305,6 +310,7 @@ def build_overview(
     today = daily[-1]
     return {
         "daily_posts": summarize_daily_posts(src.daily_posts, counted, day_keys),
+        "search_usage": summarize_search_usage(src, day_keys, day_of, test_emails),
         "tz": str(tz.key),
         "days": day_keys,
         "generated_at": now.isoformat(),
@@ -381,6 +387,72 @@ def summarize_daily_posts(rows: Optional[list[dict]], counted: dict, day_keys: l
         "recent": [row_out(r) for r in recent],
         "basis": dict(Counter(str(r.get("basis") or "") for r in ready)),
         "platforms": dict(Counter(str((r.get("card") or {}).get("platform") or "") for r in ready)),
+    }
+
+
+# ── Tavily searches ──────────────────────────────────────────────────────────
+
+#: Tavily refused every call on these days because the quota was spent, and the
+#: cards were saved as plain `empty` before refusals were told apart (a refusal
+#: now saves `failed`). They used no searches.
+_REFUSED_DAYS = ("2026-10-27", "2026-10-31")
+
+
+def card_searches(row: dict) -> int:
+    """Tavily requests behind one card, at the fewest: one plan, one request per
+    language. Fallback plans and same-day retries leave no trace in the row, so
+    the real number can only be higher."""
+    if row.get("status") == "failed":
+        return 0
+    if row.get("status") == "empty" and _REFUSED_DAYS[0] <= str(row.get("day")) <= _REFUSED_DAYS[1]:
+        return 0
+    if (row.get("card") or {}).get("locale") == "en":
+        return 1
+    query = row.get("query") or {}
+    return sum(1 for lang in ("zh", "en") if query.get(lang)) or 2
+
+
+def summarize_search_usage(src: Sources, day_keys: list[str], day_of, test_emails: Sequence[str]) -> Optional[dict]:
+    """Tavily requests per account. Every account counts, internal or not: the
+    quota doesn't care who is a tester, so these add up to what was spent."""
+    if src.daily_posts is None and src.daily_videos is None:
+        return None
+    in_window = set(day_keys)
+    counts: dict[str, Counter] = defaultdict(Counter)
+    for rows, column in ((src.daily_posts, "posts"), (src.daily_videos, "videos")):
+        for row in rows or []:
+            if str(row.get("day")) in in_window and row.get("user_id"):
+                counts[row["user_id"]][column] += card_searches(row)
+    for turn in src.search_turns:
+        moment = parse_ts(turn.get("created_at"))
+        if not turn.get("user_id") or turn.get("search_provider") != "tavily":
+            continue
+        if moment and day_of(moment) in in_window:
+            counts[turn["user_id"]]["chats"] += 2 if turn.get("search_scope") == "both" else 1
+
+    users = {u["id"]: u for u in src.users}
+    testers = {e.lower() for e in test_emails}
+    accounts = []
+    for uid, count in counts.items():
+        total = count["posts"] + count["videos"] + count["chats"]
+        if not total:
+            continue
+        user = users.get(uid, {})
+        email = user.get("email") or ""
+        accounts.append({
+            "id": uid,
+            "email": email,
+            "nickname": user.get("nickname") or "",
+            "is_test": is_internal(user) or email.lower() in testers,
+            "posts": count["posts"],
+            "videos": count["videos"],
+            "chats": count["chats"],
+            "total": total,
+        })
+    accounts.sort(key=lambda a: (-a["total"], a["email"]))
+    return {
+        "accounts": accounts,
+        "totals": {k: sum(a[k] for a in accounts) for k in ("posts", "videos", "chats", "total")},
     }
 
 
@@ -485,7 +557,7 @@ def fetch_sources(sb, since: datetime) -> Sources:
     try:
         daily_posts: Optional[list[dict]] = _page_through(
             lambda: sb.table("daily_post_cards")
-            .select("user_id,day,status,basis,platform,card,opened_at,source_clicked_at,"
+            .select("user_id,day,status,basis,platform,card,query,opened_at,source_clicked_at,"
                     "chat_started_at,updated_at")
             .gte("day", since.date().isoformat()).order("day"),
             "daily_post_cards", truncated,
@@ -495,11 +567,34 @@ def fetch_sources(sb, since: datetime) -> Sources:
             raise
         daily_posts = None
 
+    try:
+        daily_videos: Optional[list[dict]] = _page_through(
+            lambda: sb.table("daily_video_cards").select("user_id,day,status,card,query")
+            .gte("day", since.date().isoformat()).order("day"),
+            "daily_video_cards", truncated,
+        )
+    except Exception as exc:
+        if not _table_missing(exc):
+            raise
+        daily_videos = None
+
+    try:
+        search_turns = _page_through(
+            lambda: sb.table("chat_turn_logs").select("user_id,created_at,search_scope,search_provider")
+            .eq("needs_search", True).gte("created_at", since_iso).order("created_at"),
+            "chat_turn_logs", truncated,
+        )
+    except Exception as exc:
+        if not _table_missing(exc) and "needs_search" not in str(exc):
+            raise
+        search_turns = []
+
     return Sources(
         users=users, sessions=sessions, user_messages=user_messages,
         visits=visits, turn_topics=turn_topics,
         visits_available=visits_available, tracking_since=tracking_since,
-        truncated=truncated, daily_posts=daily_posts,
+        truncated=truncated, daily_posts=daily_posts, daily_videos=daily_videos,
+        search_turns=search_turns,
     )
 
 

@@ -193,6 +193,62 @@ def test_no_daily_card_table_is_not_zero_cards():
     assert out["daily_posts"] is None
 
 
+# ── Tavily searches ──────────────────────────────────────────────────────────
+
+def _card(uid, day, status="ready", **extra):
+    return {"user_id": uid, "day": f"2026-09-{day:02d}", "status": status,
+            "query": {"zh": "挑食 宝妈", "en": "picky moms"}, "card": {"locale": "zh-CN"}, **extra}
+
+
+def test_search_usage_adds_up_cards_and_chat_per_account():
+    src = _sources(
+        daily_posts=[_card("mom", 10), _card("mom", 9), _card("dad", 10, card={"locale": "en"})],
+        daily_videos=[_card("mom", 10), _card("dad", 10, status="failed")],
+        search_turns=[
+            {"user_id": "mom", "created_at": _la(10, 8), "search_scope": "both", "search_provider": "tavily"},
+            {"user_id": "mom", "created_at": _la(10, 9), "search_scope": "en", "search_provider": "tavily"},
+            {"user_id": "mom", "created_at": _la(10, 9), "search_scope": "en", "search_provider": "stub"},
+        ],
+    )
+    usage = ud.build_overview(src, days=7, tz=LA, now=NOW)["search_usage"]
+    assert [a["id"] for a in usage["accounts"]] == ["mom", "dad"]
+    # Two posts and a video in two languages, then chat; a failed video spent nothing.
+    assert usage["accounts"][0] | {"id": "", "email": "", "nickname": ""} == {
+        "id": "", "email": "", "nickname": "", "is_test": False,
+        "posts": 4, "videos": 2, "chats": 3, "total": 9,
+    }
+    assert usage["totals"] == {"posts": 5, "videos": 2, "chats": 3, "total": 10}
+
+
+def test_search_usage_counts_every_account_and_marks_the_test_ones():
+    src = _sources(daily_posts=[_card("bot", 10), _card("pending", 10), _card("mom", 10)])
+    out = ud.build_overview(src, days=7, tz=LA, now=NOW, test_emails=["MOM@realmail.com"])
+    accounts = {a["id"]: a for a in out["search_usage"]["accounts"]}
+    # Hidden from the tester numbers, but the quota still paid for them.
+    assert set(accounts) == {"bot", "pending", "mom"}
+    assert accounts["bot"]["is_test"] and accounts["mom"]["is_test"]
+    assert not accounts["pending"]["is_test"]
+
+
+def test_search_usage_stays_inside_the_window():
+    src = _sources(daily_posts=[_card("mom", 1), _card("mom", 10)], search_turns=[
+        {"user_id": "mom", "created_at": _la(1, 9), "search_scope": "en", "search_provider": "tavily"},
+    ])
+    usage = ud.build_overview(src, days=7, tz=LA, now=NOW)["search_usage"]
+    assert usage["totals"] == {"posts": 2, "videos": 0, "chats": 0, "total": 2}
+
+
+def test_empty_cards_during_the_tavily_refusal_spent_nothing():
+    assert ud.card_searches({"status": "empty", "day": "2026-10-27", "query": {"zh": "a", "en": "b"}}) == 0
+    assert ud.card_searches({"status": "empty", "day": "2026-10-31", "query": {"zh": "a", "en": "b"}}) == 0
+    assert ud.card_searches({"status": "empty", "day": "2026-10-26", "query": {"zh": "a", "en": "b"}}) == 2
+    assert ud.card_searches({"status": "empty", "day": "2026-11-01", "query": {"zh": "a", "en": "b"}}) == 2
+
+
+def test_no_card_tables_is_no_search_usage_rather_than_zero():
+    assert ud.build_overview(_sources(), days=7, tz=LA, now=NOW)["search_usage"] is None
+
+
 # ── Quota incidents ──────────────────────────────────────────────────────────
 
 QUOTA_ERR = (
