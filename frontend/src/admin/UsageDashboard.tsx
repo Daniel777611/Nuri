@@ -67,6 +67,7 @@ type Overview = {
   hours: { turns: number[]; visits: number[] };
   users: UsageUser[];
   daily_posts?: DailyPosts;
+  search_usage?: SearchUsage;
   topics: {
     categories: { key: string; label: string; turns: number; share: number }[];
     top: { topic: string; turns: number }[];
@@ -90,6 +91,12 @@ type DailyPosts = {
   recent: DailyPostRow[];
   basis: Record<string, number>;
   platforms: Record<string, number>;
+} | null;
+
+type SearchCounts = { posts: number; videos: number; chats: number; total: number };
+type SearchUsage = {
+  accounts: (SearchCounts & { id: string; email: string; nickname: string; is_test: boolean })[];
+  totals: SearchCounts;
 } | null;
 
 type SpendSplit = { key: "chat" | "cards" | "other"; label: string; tokens: number; share: number };
@@ -515,6 +522,17 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
             <Text style={styles.panelTitle}>每日家长经验卡片（近 {days} 天）</Text>
             <DailyPostsSection posts={data.daily_posts} tz={data.tz} />
           </View>
+
+          {/* ── What the daily cards and chat spend on Tavily ── */}
+          {data.search_usage ? (
+            <View style={styles.panelBlock} testID="usage-search-usage">
+              <Text style={styles.panelTitle}>按账号的 Tavily 搜索用量（近 {days} 天）</Text>
+              <Text style={styles.hint}>
+                包含所有账号。这是按卡片和聊天记录估算的下限：换搜索方向和重试没有记录，实际会多一些。被 Tavily 拒绝的不计入。
+              </Text>
+              <SearchUsageTable usage={data.search_usage} />
+            </View>
+          ) : null}
 
           {/* ── What they talk about / when ── */}
           <View style={styles.multiples}>
@@ -956,6 +974,40 @@ function DailyPostsSection({ posts, tz }: { posts: DailyPosts | undefined; tz: s
   );
 }
 
+function SearchUsageTable({ usage }: { usage: NonNullable<SearchUsage> }) {
+  if (!usage.accounts.length) {
+    return <Text style={styles.hint}>这段时间没有记录到搜索。</Text>;
+  }
+  const row = (key: string, name: string, counts: SearchCounts, bold = false) => (
+    <View key={key} style={styles.matrixRow}>
+      <Text style={[styles.td, styles.searchName, bold && styles.searchBold]} numberOfLines={1}>
+        {name}
+      </Text>
+      {([counts.posts, counts.videos, counts.chats, counts.total] as const).map((value, i) => (
+        <Text key={i} style={[styles.td, styles.searchCount, (bold || i === 3) && styles.searchBold]}>
+          {value}
+        </Text>
+      ))}
+    </View>
+  );
+  return (
+    <View>
+      <View style={styles.matrixHeader}>
+        <Text style={[styles.th, styles.searchName]}>账号</Text>
+        {["帖子", "视频", "聊天", "合计"].map((label) => (
+          <Text key={label} style={[styles.th, styles.searchCount]}>
+            {label}
+          </Text>
+        ))}
+      </View>
+      {usage.accounts.map((a) =>
+        row(a.id, `${a.email || a.nickname || a.id}${a.is_test ? "（测试账号）" : ""}`, a),
+      )}
+      {row("totals", "合计", usage.totals, true)}
+    </View>
+  );
+}
+
 function SpendBar({ split }: { split: SpendSplit[] }) {
   const parts = split.filter((s) => s.tokens > 0);
   if (!parts.length) return <Text style={styles.hint}>这段时间没有 token 记录。</Text>;
@@ -1261,6 +1313,9 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, alignItems: "center",
   },
   flagText: { fontSize: 11, color: INK_SECONDARY },
+  searchName: { flex: 1, paddingRight: spacing.sm },
+  searchCount: { width: 44, textAlign: "right" },
+  searchBold: { fontWeight: "700" },
 
   detailCard: {
     borderRadius: radius.md, borderWidth: 1, borderColor: colors.border,
