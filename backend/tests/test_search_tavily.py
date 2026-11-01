@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.search_tavily import TavilySearchProvider  # noqa: E402
+from backend.search_tavily import SearchUnavailable, TavilySearchProvider  # noqa: E402
 from backend.websearch import (  # noqa: E402
     NullSearchProvider,
     SearchRequest,
@@ -189,6 +189,20 @@ def test_unexpected_response_shapes_yield_nothing(body):
 def test_http_errors_return_no_results_rather_than_raising(status):
     p, patched = _provider(lambda r: httpx.Response(status, text="denied"))
     assert _search(p, patched, REQ) == []
+
+
+def test_fetch_reports_a_spent_quota_that_search_would_hide():
+    import backend.search_tavily as mod
+
+    body = {"detail": {"error": "This request exceeds your plan's set usage limit."}}
+    p, patched = _provider(lambda r: httpx.Response(432, json=body))
+    real = mod.httpx.AsyncClient
+    mod.httpx.AsyncClient = patched
+    try:
+        with pytest.raises(SearchUnavailable, match="432.*usage limit"):
+            asyncio.run(p.fetch(REQ))
+    finally:
+        mod.httpx.AsyncClient = real
 
 
 def test_a_network_error_returns_no_results():

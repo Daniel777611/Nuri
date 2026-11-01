@@ -18,8 +18,11 @@ from backend import main, runtime
 from backend.feed import daily_post as dp
 from backend.feed import signals as feed_signals
 from backend.nuri_core import family_store
+from backend.search_tavily import SearchUnavailable
 
 NOW = datetime(2026, 9, 11, 16, 0, tzinfo=timezone.utc)  # 09:00 in Los Angeles
+#: The `world` fixture replaces dp.find_candidates; these tests need the real one.
+REAL_FIND_CANDIDATES = dp.find_candidates
 
 
 # ── Post URLs ────────────────────────────────────────────────────────────────
@@ -495,6 +498,10 @@ def test_a_crashed_generation_is_taken_over(world):
     assert out["state"] == "ready" and out["card"]["id"] == "row-1"
 
 
+async def _found(world):
+    return [_cand(url=world.card_url)]
+
+
 def test_a_generation_failure_is_recorded_and_retried_soon(world, monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("provider down")
@@ -504,6 +511,42 @@ def test_a_generation_failure_is_recorded_and_retried_soon(world, monkeypatch):
     assert world.db.tables["daily_post_cards"][0]["status"] == "failed"
     monkeypatch.setattr(dp, "pick_post", lambda c, **_k: dp.validate_pick(_pick(), c))
     assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
+
+
+def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monkeypatch):
+    calls = []
+
+    async def refused(query, lang):
+        calls.append(query)
+        raise SearchUnavailable("tavily HTTP 432: usage limit")
+
+    monkeypatch.setattr(dp, "find_candidates", REAL_FIND_CANDIDATES)
+    monkeypatch.setattr(dp, "search_meta", refused)
+    world.external = False
+    assert _get()["state"] == "empty"
+    row = world.db.tables["daily_post_cards"][0]
+    assert row["status"] == "failed" and "432" in row["error"]
+    # One plan's two searches: the next plan would only be refused as well.
+    assert len(calls) == 2
+    # Recovery does not wait the three hours an empty day does.
+    monkeypatch.setattr(dp, "find_candidates", lambda *_a: _found(world))
+    assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
+
+
+def test_one_language_failing_keeps_the_other_languages_posts(monkeypatch):
+    async def half(query, lang):
+        if lang == "zh":
+            raise SearchUnavailable("tavily search failed: timeout")
+        return [SimpleNamespace(
+            url="https://www.facebook.com/groups/momsgroup123/posts/1", title="Picky toddler",
+            snippet="My toddler only ate rice for a month, and here is what finally helped us at home.",
+            lang="en", published_at="",
+        )]
+
+    monkeypatch.setattr(dp, "search_meta", half)
+    plan = dp.Plan(basis="profile", concern="挑食", query_zh="挑食 宝妈", query_en="picky moms")
+    found = asyncio.run(REAL_FIND_CANDIDATES(plan, "zh-CN", set()))
+    assert [c.url for c in found] == ["https://www.facebook.com/groups/momsgroup123/posts/1"]
 
 
 def test_switched_off_answers_disabled(monkeypatch):

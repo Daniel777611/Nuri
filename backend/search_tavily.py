@@ -37,6 +37,11 @@ TAVILY_TIMEOUT_S = float(os.getenv("TAVILY_TIMEOUT_S", str(DEFAULT_TIMEOUT_S)))
 _MAX_RESULTS_CAP = 20
 
 
+class SearchUnavailable(Exception):
+    """Tavily could not answer (quota, key, network), as opposed to answering
+    with no results."""
+
+
 class TavilySearchProvider:
     name = "tavily"
 
@@ -88,10 +93,11 @@ class TavilySearchProvider:
             ))
         return out
 
-    async def search(self, request: SearchRequest) -> list[SearchResult]:
+    async def fetch(self, request: SearchRequest) -> list[SearchResult]:
+        """Like :meth:`search`, but a failure raises SearchUnavailable, for a
+        caller that must tell "Tavily refused" from "Tavily found nothing"."""
         if not self.api_key:
-            print("[error] TAVILY_API_KEY is not set; no sources this turn")
-            return []
+            raise SearchUnavailable("TAVILY_API_KEY is not set")
         try:
             # A client per call rather than a module-level one: on serverless a
             # cached client outlives the event loop it was built for, and the
@@ -108,11 +114,18 @@ class TavilySearchProvider:
             if resp.status_code >= 400:
                 # Body, truncated, because Tavily explains quota and key
                 # problems there and the status alone doesn't distinguish them.
-                print(f"[error] tavily HTTP {resp.status_code}: {resp.text[:300]}")
-                return []
+                raise SearchUnavailable(f"tavily HTTP {resp.status_code}: {resp.text[:300]}")
             return self._parse(resp.json(), request)
+        except SearchUnavailable:
+            raise
         except Exception as e:
-            print(f"[error] tavily search failed: {type(e).__name__}: {e}")
+            raise SearchUnavailable(f"tavily search failed: {type(e).__name__}: {e}") from e
+
+    async def search(self, request: SearchRequest) -> list[SearchResult]:
+        try:
+            return await self.fetch(request)
+        except SearchUnavailable as e:
+            print(f"[error] {e}; no sources this turn")
             return []
 
 
