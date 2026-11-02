@@ -10,7 +10,7 @@ function load(path, deps, timers = {}) {
   const module = { exports: {} };
   new Function("require", "module", "exports", ...Object.keys(timers), code)(name => {
     if (name.includes("assets/")) return 1;
-    if (name === "@/src/uiuxfinal/Primitives") return { FinalSurface:"GlassSurface" };
+    if (name === "@/src/uiuxfinal/Primitives") return { FinalChatBubble:"ChatBubble" };
     assert.ok(name in deps, "unexpected import " + name);
     return deps[name];
   }, module, module.exports, ...Object.values(timers));

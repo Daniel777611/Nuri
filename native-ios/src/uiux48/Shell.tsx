@@ -11,7 +11,9 @@ import NativePageControls from "@/src/components/NativePageControls";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
 import { NuriScene } from "./Scene";
 import { useNuriTheme } from "./Theme";
-import { GlassSurface, NuriIcon } from "./Primitives";
+import { NuriIcon } from "./Primitives";
+import { FINAL_COLOR, FinalSurface } from "@/src/uiuxfinal/Primitives";
+import { FinalChatBackdrop } from "@/src/uiuxfinal/ChatBackdrop";
 import { keyboardPanelTop } from "./keyboard";
 
 export function NuriShell({ children }: { children: ReactNode }) {
@@ -33,11 +35,12 @@ export function NuriShell({ children }: { children: ReactNode }) {
   const community=path==="/community"&&process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1";
   const signedOutResult=path==="/account-deletion"&&uiState==="deleted";
   const home=segments[0]==="(tabs)"&&path==="/";
+  const chat=path==="/chats"||path.startsWith("/chat/");
   const auth=/^\/(welcome|login|register|verify-email|forgot-password|onboarding|ai-permission)$/.test(path);
   const settings=/^\/(profile|child|notification-settings|account-deletion|ai-permission)(\/|$)/.test(path)||community&&communityBackdrop==="settings";
   return <View ref={root} onLayout={()=>root.current?.measureInWindow((_x,y,width,height)=>setRootFrame(previous=>previous.y===y&&previous.width===width&&previous.height===height?previous:{y,width,height}))} testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
     <StatusBar style={night?"light":"dark"} />
-    {community?communityBackdrop==="plain"?<LinearGradient colors={["#FFFAF5","#F7ECE8","#FFFAF5"]} style={StyleSheet.absoluteFill}/>:<Image source={communityBackdrop==="final-bottle"?require("@/assets/final-flow-20261101/bottle-background.png"):require("@/assets/final-flow-20261101/community-background.png")} contentFit="cover" style={StyleSheet.absoluteFill} testID="community-approved-background" />:!auth&&!home?<LinearGradient colors={["#FFFAF5","#F9F5F2","#F2EEEE"]} style={StyleSheet.absoluteFill}/>:<NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />}
+    {community?communityBackdrop==="plain"?<LinearGradient colors={["#FFFAF5","#F7ECE8","#FFFAF5"]} style={StyleSheet.absoluteFill}/>:<Image source={communityBackdrop==="final-bottle"?require("@/assets/final-flow-20261101/bottle-background.png"):require("@/assets/final-flow-20261101/community-background.png")} contentFit="cover" style={StyleSheet.absoluteFill} testID="community-approved-background" />:chat?<FinalChatBackdrop/>:!auth&&!home?<LinearGradient colors={["#FFFAF5","#F9F5F2","#F2EEEE"]} style={StyleSheet.absoluteFill}/>:<NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />}
     {settings?<View pointerEvents="none" style={StyleSheet.absoluteFill}><Image source={require("@/assets/final-flow-20261101/settings-background.png")} contentFit="cover" style={StyleSheet.absoluteFill}/><View style={[StyleSheet.absoluteFill,{backgroundColor:"rgba(255,250,242,.78)"}]}/><BlurView tint="light" intensity={20} style={[StyleSheet.absoluteFill,{backgroundColor:"rgba(255,255,255,.5)"}]}/></View>:null}
     {panelTop!==null?<View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="nuri-keyboard-backplate" style={{position:"absolute",top:panelTop,left:0,right:0,bottom:0,borderTopLeftRadius:28,borderTopRightRadius:28,backgroundColor:keyboardTheme.surface}} />:null}
     {!welcome?<SafeAreaView edges={["top"]} style={Platform.OS==="web"?{paddingTop:62}:undefined}>{home?null:<NativePageControls />}</SafeAreaView>:null}
@@ -50,10 +53,10 @@ export function NuriTabBar() {
   const path=usePathname();const router=useRouter();const {locale}=useT();const t=useNuriTheme();const safe=useSafeAreaInsets();
   const active=path.startsWith("/chat")?"chat":path.startsWith("/notification")?"notifications":path.startsWith("/community")?"community":path==="/"?"home":null;
   const routes=[{name:"home",cn:"首页",en:"Home",route:"/(tabs)"},{name:"chat",cn:"对话",en:"Chat",route:"/(tabs)/chats"},{name:"community",cn:"社区",en:"Community",route:"/community"}] as const;
-  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><GlassSurface kind="pill" contentStyle={s.tabs} style={{width:268,maxWidth:"100%",alignSelf:"center"}}>{routes.map(tab=><Pressable key={tab.name} onPress={()=>{
+  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><FinalSurface material="navigation" contentStyle={s.tabs} style={{width:268,maxWidth:"100%",alignSelf:"center"}}>{routes.map(tab=><Pressable key={tab.name} onPress={()=>{
     if(active===tab.name)return;
     if(requestGuardedNativeNavigation(path,tab.name))return;
     router.navigate(tab.route as never);
-  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:translate(locale,tab.cn)} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?"rgba(255,255,255,.5)":"transparent"}]}><NuriIcon name={tab.name} size={20}/></Pressable>)}</GlassSurface></View>;
+  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:translate(locale,tab.cn)} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?"rgba(255,255,255,.4)":"transparent"}]}><NuriIcon name={tab.name} color={active===tab.name?FINAL_COLOR.coral:FINAL_COLOR.ink} size={20}/></Pressable>)}</FinalSurface></View>;
 }
-const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:10},tabs:{flexDirection:"row",height:56,paddingHorizontal:8,paddingVertical:4},tab:{flex:1,height:48,borderRadius:24,alignItems:"center",justifyContent:"center"}});
+const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:10},tabs:{flexDirection:"row",height:56,paddingHorizontal:8,paddingVertical:6},tab:{flex:1,height:44,borderRadius:22,alignItems:"center",justifyContent:"center"}});

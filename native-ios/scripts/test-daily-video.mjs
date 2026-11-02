@@ -315,7 +315,7 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     const code = ts.transpileModule(`${component.getText(ast)}\n${styles.getText(ast)}\nmodule.exports = MessageBubble;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     const scope = load("../src/useAccountState.ts", { react: r.react, "./api": f });
     const module = { exports: {} };
-    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar","NuriIcon","FinalSurface", code)(
+    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar","NuriIcon","FinalChatBubble", code)(
       () => ({ jsx, jsxs: jsx }), module, module.exports, () => ({ t: (value) => value }), () => ({ push: (href) => routes.push(href) }), scope.useAccountScope,
       "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" },
       load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar","NuriIcon","GlassSurface");

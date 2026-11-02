@@ -1,7 +1,7 @@
 import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, NuriButton, MenuRow } from "@/src/uiux48/Primitives";
 import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
 import { NuriComposer } from "@/src/uiux48/Composer";
-import { FinalSurface } from "@/src/uiuxfinal/Primitives";
+import { FinalChatBubble } from "@/src/uiuxfinal/Primitives";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
@@ -972,7 +972,7 @@ function MessageBubble({
       ]}
     >
       {isAI?<Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{width:36,minHeight:44,alignSelf:"flex-end",justifyContent:"center",marginRight:8}} hitSlop={4}><SceneAvatar size={36}/></Pressable>:null}
-      <FinalSurface style={{maxWidth:isAI?"88%":"92%",flexShrink:1}} contentStyle={{padding:16,backgroundColor:isAI?"transparent":"rgba(235,129,131,.18)"}} testID={`bubble-${msg.role}`}>
+      <FinalChatBubble incoming={isAI} style={{maxWidth:isAI?"88%":"92%",flexShrink:1}} testID={`bubble-${msg.role}`}>
         {msg.image_base64 ? (
           <Image
             source={{ uri: msg.image_base64 }}
@@ -1051,7 +1051,7 @@ function MessageBubble({
             </Pressable>
           </View>
         ) : null}
-      </FinalSurface>
+      </FinalChatBubble>
     </View>
   );
 }

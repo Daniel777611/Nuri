@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextProps, type ViewStyle } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextProps, type ViewStyle } from "react-native";
 import { BlurView } from "expo-blur";
 import { useT } from "@/src/i18n";
 export const FINAL_COLOR = { ink: "#4A454D", secondary: "#706A74", accent: "#735C84", selected: "#C1A0DD", coral: "#EB8183", base: "#FFFAF2" } as const;
@@ -11,21 +11,29 @@ export function FinalText({ children, size = 16, secondary = false, style, ...pr
     return <Text {...props} style={[{ fontSize: size, lineHeight: size >= 18 ? 28 : size <= 12 ? 16 : 24, color: secondary ? FINAL_COLOR.secondary : FINAL_COLOR.ink, fontFamily: locale === "zh-CN" ? "NotoSansSC_400Regular" : undefined, textAlign: "left" }, style]}>{children}</Text>;
 }
 /** The shadow is outside the rounded clip. Lists scroll inside the material. */
-export function FinalSurface({ children, style, contentStyle, fill = false, testID, radius=28 }: {
+export function FinalSurface({ children, style, contentStyle, fill = false, testID, radius=28, material="card" }: {
     children: ReactNode;
     style?: StyleProp<ViewStyle>;
     contentStyle?: StyleProp<ViewStyle>;
     fill?: boolean;
     testID?: string;
     radius?:number;
+    material?:"card"|"navigation";
 }) {
-    return <View testID={testID} style={[{ borderRadius: radius, boxShadow: "0px 1px 15px rgba(92,86,98,.18)", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }, style]}>
+    // Figma background-blur radii 40/20 export as CSS blur 20/10px. Expo's
+    // native intensity is a material strength, NOT a physical blur radius.
+    const navigation=material==="navigation";
+    return <View testID={testID} style={[{ borderRadius: radius, boxShadow: navigation?"0px 4px 10px rgba(0,0,0,.125)":"0px 1px 15px rgba(92,86,98,.18)", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }, style]}>
     <View style={{ borderRadius: radius, overflow: "hidden", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }}>
-      <BlurView tint="light" intensity={20} style={StyleSheet.absoluteFill} pointerEvents="none"/>
+      {Platform.OS==="web"?<View pointerEvents="none" style={[StyleSheet.absoluteFill,{backdropFilter:`blur(${navigation?10:20}px)`} as ViewStyle]}/>:<BlurView tint="light" intensity={navigation?20:40} style={StyleSheet.absoluteFill} pointerEvents="none"/>}
       <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,.5)" }]}/>
       <View style={[fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }, contentStyle]}>{children}</View>
     </View>
   </View>;
+}
+/** Message fills are opaque cream / translucent coral, not glass cards. */
+export function FinalChatBubble({children,incoming,style,testID}:{children:ReactNode;incoming:boolean;style?:StyleProp<ViewStyle>;testID?:string}){
+ return <View testID={testID} style={[{borderRadius:18,padding:16,boxShadow:"0px 0px 8px rgba(0,0,0,.1)",backgroundColor:incoming?FINAL_COLOR.base:"rgba(235,129,131,.15)",flexShrink:1},style]}>{children}</View>;
 }
 export function FinalButton({ label, onPress, secondary = false, disabled = false, testID, small = false }: {
     label: string;
