@@ -10,7 +10,7 @@ function load(path, deps, timers = {}) {
   const module = { exports: {} };
   new Function("require", "module", "exports", ...Object.keys(timers), code)(name => {
     if (name.includes("assets/")) return 1;
-    if (name === "@/src/uiuxfinal/Primitives") return { FinalChatBubble:"ChatBubble" };
+    if (name === "@/src/uiuxfinal/Primitives") return { FinalChatBubble:"ChatBubble",FinalText:"Text",FinalSurface:"Surface" };
     assert.ok(name in deps, "unexpected import " + name);
     return deps[name];
   }, module, module.exports, ...Object.values(timers));
@@ -24,7 +24,7 @@ const image = { previewUri: "fixture://thumbnail", dataUri: "data:image/jpeg;bas
 // Execute the actual Chat component, account hooks, callbacks and send path.
 // Only devices/transports are fixture adapters; no real account/network/audio.
 function fixture(options = {}) {
-  const slots = [], effects = [], intervals = new Set(), listeners = new Set(), calls = [];
+  const slots = [], effects = [], intervals = new Set(), listeners = new Set(), calls = [], keyboardListeners = new Map();
   let cursor = 0, pending = [], tree, epoch = 1, now = 0;
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const react = {
@@ -44,6 +44,8 @@ function fixture(options = {}) {
     streamMessage: async (id, payload) => { calls.push(["send", id, payload]); if (options.send) return options.send(payload); return { user_message: { id: "sent", role: "user", text: payload.text }, ai_messages: [] }; },
   };
   const jsx = (type, props) => ({ type, props });
+  const keyboard = { dismiss: () => calls.push(["keyboard-dismiss"]), isVisible: () => false, addListener: (name, fn) => { keyboardListeners.set(name, fn); return { remove: () => keyboardListeners.delete(name) }; } };
+  const safeArea = { useSafeAreaInsets: () => ({ top: 59, bottom: options.safeBottom ?? 34 }) };
   const deps = {
     react, "react/jsx-runtime": { jsx, jsxs: jsx },
     "@/src/useAccountState": load("../src/useAccountState.ts", { react, "./api": { auth } }),
@@ -52,6 +54,7 @@ function fixture(options = {}) {
     "@/src/uiux48/Primitives": Object.fromEntries(["NuriKeyboardFrame", "GlassSurface", "NuriText", "NuriIcon", "IconAction", "NuriButton", "MenuRow"].map(n => [n, n])),
     "@/src/uiux48/VoiceInputBar": { VoiceInputBar: "VoiceInputBar" },
     "@/src/uiux48/Composer": { NuriComposer: "NuriComposer" },
+    "@/src/uiux48/useComposerDock": load("../src/uiux48/useComposerDock.ts", { react, "react-native": { Keyboard: keyboard }, "react-native-safe-area-context": safeArea, "./composerLayout": load("../src/uiux48/composerLayout.ts", {}) }),
     "@/src/uiux48/Scene": { NuriAvatar: "SceneAvatar" },
     "@/src/uiux48/Theme": { useNuriTheme: () => ({ mode: "Night", ink: "#fff" }) },
     "@/src/uiux48/chatDraft": { readChatDraft: () => options.draft ?? "existing draft", writeChatDraft() {} },
@@ -66,7 +69,7 @@ function fixture(options = {}) {
     },
     "expo-router": { useRouter: () => ({}), useLocalSearchParams: () => ({ id: "fixture-chat" }), useFocusEffect: fn => react.useEffect(fn, [fn]), Stack: { Screen: "Screen" } },
     "react-native": { View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable", Modal: "Modal", ActivityIndicator: "ActivityIndicator", Platform: { OS: options.platform ?? "ios" }, AppState: { addEventListener: (_name, fn) => { listeners.add(fn); return { remove: () => listeners.delete(fn) }; } }, Keyboard: { dismiss: () => calls.push(["keyboard-dismiss"]) }, StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width: 390 }) },
-    "react-native-safe-area-context": { useSafeAreaInsets: () => ({ top: 59, bottom: 34 }) },
+    "react-native-safe-area-context": safeArea,
     "@react-navigation/elements": { useHeaderHeight: () => 60 },
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/nativeNavigation": { registerNativeNavigationGuard: () => () => {} },
@@ -85,6 +88,8 @@ function fixture(options = {}) {
     bar: () => f.kind("VoiceInputBar"),
     async ready() { f.render(); await tick(); f.render(); },
     emit: state => listeners.forEach(fn => fn(state)),
+    emitKeyboard: name => keyboardListeners.get(name)?.(),
+    keyboardListenerCount: () => keyboardListeners.size,
     advance(seconds) { now += seconds * 1000; [...intervals].forEach(fn => fn()); },
     changeAccount() { epoch++; f.render(); },
     unmount() { effects.forEach(effect => effect?.cleanup?.()); },
@@ -92,15 +97,29 @@ function fixture(options = {}) {
   return f;
 }
 
+test("page dock owns safe area once, removes it above keyboard and cleans every listener",async()=>{
+ for(const safeBottom of [0,21,34])for(const embedded of [false,true]){
+  const f=fixture({safeBottom,embedded});await f.ready();
+  assert.equal(f.find("chat-composer-dock").props.style.paddingBottom,embedded?0:Math.max(27,safeBottom+12));
+  assert.equal(f.keyboardListenerCount(),embedded?0:4);
+  const root=f.render(),content=embedded?root:root.props.children;content.props.onLayout({nativeEvent:{layout:{height:200}}});f.render();
+  assert.equal(f.composer().props.availableHeight,200);
+  for(const name of ["keyboardWillShow","keyboardDidShow"]){f.emitKeyboard(name);f.render();assert.equal(f.find("chat-composer-dock").props.style.paddingBottom,embedded?0:12);}
+  f.emitKeyboard("keyboardDidHide");f.render();assert.equal(f.find("chat-composer-dock").props.style.paddingBottom,embedded?0:Math.max(27,safeBottom+12));
+  assert.deepEqual(f.calls,[]);f.unmount();assert.equal(f.keyboardListenerCount(),0);
+ }
+});
 for (const embedded of [false, true]) test(`${embedded ? "Home" : "Chat"}: mic starts inline; Stop returns editable recognized text without sending`, async () => {
   const f = fixture({ embedded }); try {
     await f.ready(); assert.equal(f.calls.length, 0);
     const mic = f.composer().props.onMic; mic(); mic(); await tick(); f.render();
     assert.equal(f.calls.filter(c => c[0] === "start").length, 1);
     assert.equal(f.bar().props.phase, "recording"); assert.equal(f.composer(), undefined);
+    assert.equal(f.find("chat-composer-dock").props.style.paddingBottom,embedded?0:114,"Standalone voice capsule follows the Figma114pt bottom offset; embedded Home keeps its own layout");
     assert.equal(f.kind("Modal").props.visible, false);
     f.bar().props.onStop(); await tick(); f.render();
     assert.equal(f.composer().props.value, "existing draft recognized words");
+    assert.equal(f.find("chat-composer-dock").props.style.paddingBottom,embedded?0:46);
     assert.equal(f.calls.filter(c => c[0] === "send").length, 0);
   } finally { f.unmount(); }
 });
@@ -186,10 +205,10 @@ test("inline recording bar has Stop/Send/Cancel in all three languages and never
   const jsx = (type, props) => ({ type, props });
   for (const locale of ["zh-CN", "zh-TW", "en"]) {
     const calls = [];
-    const Bar = load("../src/uiux48/VoiceInputBar.tsx", { "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": { ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", View: "View" }, "@/src/i18n": { useT: () => ({ locale, t: key => translate(locale, key) }) }, "@/src/components/VoiceWaveform": { default: "Waveform", __esModule: true }, "./Theme": { useNuriTheme: () => ({ ink: "#fff" }) }, "./Primitives": { GlassSurface: "Glass", IconAction: "IconAction", NuriText: "Text" } }).VoiceInputBar;
+    const Bar = load("../src/uiux48/VoiceInputBar.tsx", {react:{}, "expo-image":{Image:"Image"}, "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": { ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", View: "View" }, "@/src/i18n": { useT: () => ({ locale, t: key => translate(locale, key) }) }, "@/src/components/VoiceWaveform": { default: "Waveform", __esModule: true }, "./Theme": { useNuriTheme: () => ({ ink: "#fff" }) }, "./Primitives": { GlassSurface: "Glass", IconAction: "IconAction", NuriText: "Text" } }).VoiceInputBar;
     const all = nodes(Bar({ phase: "recording", seconds: 9, metered: true, level: () => .2, onCancel: () => calls.push("cancel"), onStop: () => calls.push("stop"), onSend: () => calls.push("send") }));
-    assert.deepEqual(calls, []); assert.equal(all.find(n => n.props?.testID === "chat-voice-timer").props.children.join(""), "0:09");
-    for (const id of ["cancel", "stop", "send"]) { const control = all.find(n => n.props?.testID === "chat-voice-" + id); assert.ok(control); control.props.onPress(); }
+    assert.deepEqual(calls, []); assert.match(all.find(n => n.props?.testID === "chat-voice-cancel").props.accessibilityLabel,/0:09/);
+    for (const id of ["cancel", "stop", "send"]) { const control = all.find(n => n.props?.testID === "chat-voice-" + id); assert.ok(control); if(id==="cancel")control.props.onLongPress();else control.props.onPress(); }
     assert.deepEqual(calls, ["cancel", "stop", "send"]);
   }
 });

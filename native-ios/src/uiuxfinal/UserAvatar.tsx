@@ -13,11 +13,12 @@ export function UserAvatar({ displayName, photoURL, size = 32 }: {
     photoURL?: string | null;
     size?: number;
 }) {
+    const {locale}=useT();
     const uri = userPhotoURL(photoURL);
     const [loaded, setLoaded] = useState<string | null>(null);
     const initial = userInitial(displayName);
     return <View style={{ width: size, height: size, borderRadius: size / 2, overflow: "hidden", backgroundColor: "#735C84", alignItems: "center", justifyContent: "center" }} testID="user-avatar">
-    {initial ? <Text style={{ color: "white", fontSize: size === 32 ? 18 : 26, lineHeight: size === 32 ? 26 : 34, fontWeight: "500" }}>{initial}</Text> : <NuriIcon name="person"/>}
+    {initial ? <Text style={{ color: "white", fontSize: size === 32 ? 18 : 24, lineHeight: size === 32 ? 26 : 32, fontWeight: "500",fontFamily:locale==="zh-CN"?"NotoSansSC_500Medium":undefined }}>{initial}</Text> : <NuriIcon name="person"/>}
     {uri ? <Image key={uri} source={{ uri }} onLoad={() => setLoaded(uri)} onError={() => setLoaded(null)} contentFit="cover" style={[StyleSheet.absoluteFill, { opacity: loaded === uri ? 1 : 0 }]} accessibilityIgnoresInvertColors/> : null}
   </View>;
 }

@@ -1,0 +1,6 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Geometry / Fixed asset">
+<path id="Switch / Neutral track" d="M5.75 22C5.75 16.4772 10.2272 12 15.75 12L28.25 12C33.7728 12 38.25 16.4772 38.25 22V22C38.25 27.5229 33.7728 32 28.25 32L15.75 32C10.2271 32 5.75 27.5228 5.75 22V22Z" fill="#E1DEE5"/>
+<circle id="Switch / Knob off" cx="15.75" cy="22" r="8" fill="white"/>
+</g>
+</svg>

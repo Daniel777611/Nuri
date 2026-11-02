@@ -360,6 +360,7 @@ function headerFixture(f, locale) {
     "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
     "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
+    "@/src/uiuxfinal/Primitives": { FinalText: "FinalText" },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
   }, true).default;

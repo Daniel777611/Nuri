@@ -1,15 +1,12 @@
 import { useCallback, useRef } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
-import { CenteredCard, NuriText } from "@/src/uiux48/Primitives";
-import { FinalCardPage as CardList } from "@/src/uiuxfinal/Primitives";
+import { CenteredCard } from "@/src/uiux48/Primitives";
+import { FinalCardPage as CardList, FinalText as NuriText } from "@/src/uiuxfinal/Primitives";
 import { SettingsButton as NuriButton } from "@/src/uiuxfinal/Settings";
-import { Image } from "expo-image";
+import { FinalReadingPage, ReadingStep } from "@/src/uiuxfinal/Reading";
 import { api, aiConsent, type DailyVideoCard } from "@/src/api";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
-import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 import { isYouTubeVideoId, openYouTubeLink } from "@/src/components/YouTubePlayer";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
@@ -18,6 +15,7 @@ import { useT } from "@/src/i18n";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { resourceSummary } from "@/src/resourceSummary";
 import { useAIConsent } from "@/src/useAIConsent";
+import { youtubeVideoThumbnail } from "@/src/recommendationMedia";
 
 export default function DailyVideoScreen() {
   const { capture, current } = useAccountScope();
@@ -27,8 +25,6 @@ export default function DailyVideoScreen() {
   const params = useLocalSearchParams<{ id?: string }>();
   const id = typeof params.id === "string" ? params.id : undefined;
   const permissionReturn = id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/daily-video?id=${encodeURIComponent(id)}` : "/daily-video";
-  const { width } = useWindowDimensions();
-  const pageWidth = Math.min(width, 402);
   const [card, setCard] = useState<DailyVideoCard | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [failure, setFailure] = useState<RequestFailureKind | null>(null);
@@ -143,7 +139,6 @@ export default function DailyVideoScreen() {
     const opened = await openYouTubeLink(`https://www.youtube.com/watch?v=${card.video_id}`);
     if (current(ticket) && focused.current && request === sourceOperation.current) {
       sourceBusy.current = false; setOpeningSource(false); setSourceFailure(!opened);
-      router.push({pathname:opened?"/source-preview":"/content-unavailable",params:{kind:"video",...(id?{id}:{})}});
     }
   };
   const notice = failure ? <RequestFailureNotice error={failure}
@@ -157,26 +152,24 @@ export default function DailyVideoScreen() {
   const summary = card && summaryResult?.cardId === card.id ? summaryResult.text : null;
 
   if(state==="loading"||(card&&id!==undefined&&card.id!==id))return <CenteredCard><ActivityIndicator /></CenteredCard>;
-  return <CardList>
-    {notice}
-    {!card?<>{!failure?<NuriText>{t("这个视频暂时打不开，回首页再试试。")}</NuriText>:null}<NuriButton label={t("重试")} onPress={()=>setRetry(n=>n+1)} testID="daily-video-load-retry" /></>:<>
-      <NuriText style={{fontSize:20,lineHeight:28,fontWeight:"500"}} testID="daily-video-external-title">{guide?.headline||t("YouTube 育儿资源链接")}</NuriText>
-      <NuriText secondary style={{fontSize:12}}>YouTube</NuriText>
-      <Pressable accessibilityRole="link" accessibilityLabel={t("在YouTube打开")} onPress={()=>void openSource()} style={{height:188,borderRadius:24,overflow:"hidden",backgroundColor:"#F6EDE8"}}><Image source={require("@/assets/final-flow-20261101/article-illustration.png")} accessibilityLabel={locale==="en"?"Topic illustration":"主题插画"} contentFit="cover" style={{width:"100%",height:"100%"}}/></Pressable>
-      <NuriText secondary style={{fontSize:12}} testID="daily-video-external-notice">{t("视频请在 YouTube 原站观看。NURI 不在应用内播放或下载视频。")}</NuriText>
+  if(!card)return <CardList>{notice}{!failure?<NuriText>{t("这个视频暂时打不开，回首页再试试。")}</NuriText>:null}<NuriButton label={t("重试")} onPress={()=>setRetry(n=>n+1)} testID="daily-video-load-retry" /></CardList>;
+  return <FinalReadingPage key={card.id} kind="video"
+    title={guide?.headline||t("YouTube 育儿资源链接")} source="YouTube"
+    mediaUrl={youtubeVideoThumbnail(card.video_id)}
+    onSource={()=>void openSource()} sourceBusy={openingSource}
+    onTalk={()=>void talk()} busy={openingChat} talkLabel={t("和 NURI 聊聊育儿问题")}
+    allowSavePreview={process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"}
+    notice={<>{notice}{sourceFailure?<NuriText secondary testID="daily-video-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}</>}>
+      <NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Organized by Nuri · Refer to the original video for full details":t("Nuri 整理 · 完整说明以原视频为准")}</NuriText>
       <View testID="daily-video-summary-section" style={{gap:16}}>
-        <NuriText>{t("AI 检索摘要")}</NuriText>
-        {shortPoints?<NuriText testID="daily-video-key-points">{shortPoints}</NuriText>:null}
-        {summary?<NuriText testID="daily-video-summary">{summary}</NuriText>:null}
+        {shortPoints?<ReadingStep index={0}><NuriText style={{fontSize:18,lineHeight:26,fontWeight:"500"}} testID="daily-video-key-points">{shortPoints}</NuriText></ReadingStep>:null}
+        {summary?<ReadingStep index={shortPoints?1:0}><NuriText style={{fontSize:16,lineHeight:24}} testID="daily-video-summary">{summary}</NuriText></ReadingStep>:null}
         {summaryState==="loading"?<View testID="daily-video-summary-loading"><ActivityIndicator /><NuriText>{t("正在整理检索摘要…")}</NuriText></View>:null}
         {summaryState==="empty"?<><NuriText testID="daily-video-summary-empty">{t("暂无可用摘要，请到原站查看。")}</NuriText><NuriButton secondary label={t("重试摘要")} onPress={retrySummary} testID="daily-video-summary-retry" /></>:null}
         {summaryFailure?<View testID="daily-video-summary-error"><RequestFailureNotice error={summaryFailure} onRetry={retrySummary} onPermission={()=>router.push(aiPermissionHref(permissionReturn))} onLogin={()=>router.push("/login")} /></View>:null}
         <NuriText secondary style={{fontSize:12,lineHeight:18}} testID="daily-video-summary-disclosure">{t("根据标题和公开检索片段整理，未观看完整视频或获取字幕。请到原站核对。")}</NuriText>
       </View>
-      <NuriText secondary style={{fontSize:12}}>{t("外部视频内容不属于 NURI。请在原站判断内容是否适合你的情况。")}</NuriText>
-      <NuriButton label={openingSource?t("正在打开…"):t("在YouTube打开")} busy={openingSource} disabled={openingSource} onPress={()=>void openSource()} accessibilityRole="link" testID="daily-video-source" />
-      <NuriButton secondary label={openingChat?t("正在打开…"):t("和 NURI 聊聊育儿问题")} busy={openingChat} disabled={openingChat} onPress={()=>void talk()} testID="daily-video-chat" />
-      {sourceFailure?<NuriText secondary testID="daily-video-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}
-    </>}
-  </CardList>;
+      <NuriText secondary style={{fontSize:12,lineHeight:16}} testID="daily-video-external-notice">{t("视频请在 YouTube 原站观看。NURI 不在应用内播放或下载视频。")}</NuriText>
+      <NuriText secondary style={{fontSize:12,lineHeight:16}}>{t("外部视频内容不属于 NURI。请在原站判断内容是否适合你的情况。")}</NuriText>
+  </FinalReadingPage>;
 }

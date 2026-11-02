@@ -8,25 +8,35 @@ export function FinalText({ children, size = 16, secondary = false, style, ...pr
     secondary?: boolean;
 }) {
     const { locale } = useT();
-    return <Text {...props} style={[{ fontSize: size, lineHeight: size >= 18 ? 28 : size <= 12 ? 16 : 24, color: secondary ? FINAL_COLOR.secondary : FINAL_COLOR.ink, fontFamily: locale === "zh-CN" ? "NotoSansSC_400Regular" : undefined, textAlign: "left" }, style]}>{children}</Text>;
+    const resolved=StyleSheet.flatten(style),weight=resolved?.fontWeight;
+    const numericWeight=weight==="bold"?700:Number(weight)||400;
+    const fontFamily=locale!=="zh-CN"?undefined:numericWeight>=700?"NotoSansSC_700Bold":numericWeight>=600?"NotoSansSC_600SemiBold":numericWeight>=500?"NotoSansSC_500Medium":"NotoSansSC_400Regular";
+    const face=resolved?.fontFamily??fontFamily;
+    // Expo registers each named font face separately, with a normal CSS weight.
+    // Asking the browser to embolden that already-medium/bold face doubles it.
+    const namedWeight=face?.startsWith("NotoSansSC_");
+    return <Text {...props} style={[{ fontSize: size, lineHeight: size >= 18 ? 28 : size <= 12 ? 16 : 24, color: secondary ? FINAL_COLOR.secondary : FINAL_COLOR.ink, textAlign: "left" }, style, {fontFamily:face,...(namedWeight?{fontWeight:"400" as const}:null)}]}>{children}</Text>;
 }
 /** The shadow is outside the rounded clip. Lists scroll inside the material. */
-export function FinalSurface({ children, style, contentStyle, fill = false, testID, radius=28, material="card" }: {
+export function FinalSurface({ children, style, contentStyle, fill = false, testID, radius=28, material="card", surfaceColor, bordered=false }: {
     children: ReactNode;
     style?: StyleProp<ViewStyle>;
     contentStyle?: StyleProp<ViewStyle>;
     fill?: boolean;
     testID?: string;
     radius?:number;
-    material?:"card"|"navigation";
+    material?:"card"|"navigation"|"community-navigation"|"reading";
+    surfaceColor?:string;
+    bordered?:boolean;
 }) {
     // Figma background-blur radii 40/20 export as CSS blur 20/10px. Expo's
     // native intensity is a material strength, NOT a physical blur radius.
-    const navigation=material==="navigation";
-    return <View testID={testID} style={[{ borderRadius: radius, boxShadow: navigation?"0px 4px 10px rgba(0,0,0,.125)":"0px 1px 15px rgba(92,86,98,.18)", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }, style]}>
+    const communityNavigation=material==="community-navigation",navigation=material==="navigation"||communityNavigation,reading=material==="reading";
+    return <View testID={testID} style={[{ borderRadius: radius, boxShadow: communityNavigation?"0px 0px 8px rgba(0,0,0,.12)":navigation?"0px 4px 10px rgba(0,0,0,.125)":reading?"0px 1px 10px rgba(0,0,0,.1)":"0px 1px 15px rgba(92,86,98,.18)", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }, style]}>
     <View style={{ borderRadius: radius, overflow: "hidden", ...(fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }) }}>
-      {Platform.OS==="web"?<View pointerEvents="none" style={[StyleSheet.absoluteFill,{backdropFilter:`blur(${navigation?10:20}px)`} as ViewStyle]}/>:<BlurView tint="light" intensity={navigation?20:40} style={StyleSheet.absoluteFill} pointerEvents="none"/>}
-      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(255,255,255,.5)" }]}/>
+      {Platform.OS==="web"?<View pointerEvents="none" style={[StyleSheet.absoluteFill,{backdropFilter:`blur(${navigation||reading?10:20}px)`} as ViewStyle]}/>:<BlurView tint="light" intensity={navigation||reading?20:40} style={StyleSheet.absoluteFill} pointerEvents="none"/>}
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: surfaceColor??(communityNavigation?"rgba(255,255,255,.4)":"rgba(255,255,255,.5)") }]}/>
+      {reading||bordered?<View pointerEvents="none" style={[StyleSheet.absoluteFill,{borderRadius:radius,borderWidth:1,borderColor:"white"}]}/>:null}
       <View style={[fill ? { flex: 1, minHeight: 0 } : { flexShrink: 1 }, contentStyle]}>{children}</View>
     </View>
   </View>;

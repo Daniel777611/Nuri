@@ -9,6 +9,7 @@ function load(path,deps={}){
  const module={exports:{}};
  new Function('require','module','exports',code)(name=>{
   if(name.startsWith('@/assets/'))return name;
+  if(name==='./inputLayout')return load('src/uiux48/inputLayout.ts');
   assert.ok(name in deps,'Unexpected import '+name);return deps[name];
  },module,module.exports);return module.exports;
 }
@@ -17,7 +18,7 @@ const flatten=s=>!s?{}:Array.isArray(s)?Object.assign({},...s.map(flatten)):s;
 const nodes=n=>!n||typeof n!=='object'?[]:Array.isArray(n)?n.flatMap(nodes):[n,...nodes(n.props?.children)];
 function primitives(mode){
  const jsx=(type,props)=>({type,props});
- const theme={mode,night:mode==='Night',ink:'#49404f',glass:'rgba(255,248,242,.44)',message:'rgba(255,248,241,.76)',userMessage:'rgba(251,221,224,.6)',composer:'rgba(255,248,241,.92)',coral:'rgba(240,142,150,.7)',token:()=>mode==='Night'?'rgba(166,125,153,.26)':'rgba(242,171,179,.35)'};
+ const theme={mode,night:mode==='Night',keyboard:{appearance:mode==='Night'?'dark':'light'},ink:'#49404f',glass:'rgba(255,248,242,.44)',message:'rgba(255,248,241,.76)',userMessage:'rgba(251,221,224,.6)',composer:'rgba(255,248,241,.92)',coral:'rgba(240,142,150,.7)',token:()=>mode==='Night'?'rgba(166,125,153,.26)':'rgba(242,171,179,.35)'};
  return load('src/uiux48/Primitives.tsx',{
   react:{forwardRef:x=>x},'react/jsx-runtime':{jsx,jsxs:jsx},
   'react-native':{ActivityIndicator:'Activity',KeyboardAvoidingView:'KAV',Platform:{OS:'ios'},Pressable:'Pressable',ScrollView:'Scroll',Switch:'Switch',Text:'Text',TextInput:'Input',View:'View',StyleSheet:{create:x=>x,flatten,absoluteFill:{position:'absolute',left:0,right:0,top:0,bottom:0}}},
@@ -34,6 +35,14 @@ test('shared transparent glass never uses content-pixel legacy shadows; all role
   assert.equal(clip.overflow,'hidden');assert.equal(clip.borderRadius,style.borderRadius);
   assert.equal(blurClip.overflow,'hidden');assert.equal(blurClip.borderRadius,style.borderRadius);
   assert.equal(blur.props.intensity,materials.GLASS_BLUR48[mode][kind]);
+ }
+});
+test('shared fields vertically center one-line content without centering multiline notes',()=>{
+ const p=primitives('Morning'),onChangeText=()=>{},ref={current:null};
+ for(const multiline of [false,true]){
+  const tree=p.NuriField({value:'fixture',multiline,onChangeText,style:multiline?{height:96,paddingTop:14}:undefined},ref),input=nodes(tree).find(n=>n.type==='Input'),style=flatten(input.props.style);
+  assert.equal(style.textAlignVertical,multiline?'top':'center');assert.equal(style.paddingVertical,multiline?14:0);assert.equal(style.includeFontPadding,false);
+  assert.equal(input.props.onChangeText,onChangeText);assert.equal(input.props.ref,ref);assert.equal(input.props.value,'fixture');
  }
 });
 test('all nested choice chips, including all three languages, are flat without losing selection or callbacks',()=>{

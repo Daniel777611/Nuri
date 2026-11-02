@@ -16,6 +16,7 @@ function load(path,deps={}){
  deps={"@/src/uiux48/StateCard":{StateCard:"StateCard"},...deps};
  const output=ts.transpileModule(readFileSync(path,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const module={exports:{}};new Function("require","module","exports",output)(name=>{
+  if(name==="./inputLayout")return load("src/uiux48/inputLayout.ts");
   if(name.startsWith("@/assets/uiux48/approved-icons/")||name==="@/assets/community-redesign/microphone.svg")return name;
   assert.ok(name in deps,"unexpected import "+name);return deps[name];
  },module,module.exports);return module.exports;

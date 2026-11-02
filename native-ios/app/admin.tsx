@@ -620,6 +620,7 @@ const styles = StyleSheet.create({
   },
   gateTitle: { fontSize: 22, fontWeight: "700" as const, textAlign: "center", color: colors.onSurface },
   gateInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md,
     padding: spacing.md, fontSize: 16, color: colors.onSurface,
   },
@@ -656,6 +657,7 @@ const styles = StyleSheet.create({
   deleteText: { color: colors.error, fontSize: 12, fontWeight: "500" },
 
   miniInput: {
+    textAlignVertical:"top", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.sm, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },
@@ -667,6 +669,7 @@ const styles = StyleSheet.create({
   smallBtnText: { color: "#fff", fontWeight: "600", fontSize: 13 },
 
   input: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },

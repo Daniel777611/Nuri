@@ -37,7 +37,9 @@ function card(concern = "睡眠") {
     question: "AI_SEARCH_QUESTION?", headline: "AI_SEARCH_HEADLINE.", situation: "AI_SEARCH_SITUATION.",
     takeaways: ["AI_SEARCH_POINT_ONE.", "AI_SEARCH_POINT_TWO.", "AI_SEARCH_POINT_THREE."],
     why_this: "AI_SEARCH_REASON.", caution: "AI_SEARCH_CAUTION.", summary_source: "facebook_ai_summary" };
-  for (const key of ["excerpt", "body", "source_body", "transcript", "thumbnail_url", "image_url", "source_label"]) {
+  // Feed-supplied public thumbnail metadata is now allowed on detail. Source
+  // body, transcripts and author metadata remain excluded from summaries.
+  for (const key of ["excerpt", "body", "source_body", "transcript", "source_label"]) {
     Object.defineProperty(value, key, { get() { throw new Error("source content must not be read: " + key); } });
   }
   return value;

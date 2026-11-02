@@ -6,7 +6,8 @@ import { useAccountState, useAccountScope } from "@/src/useAccountState";
 import { useT, translate } from "@/src/i18n";
 import { getReminderSettings, openNotificationSettings, requestNotificationPermission, type NativeReminderSettings } from "@/src/nativePush";
 import { CenteredCard, NuriText, InlineState } from "@/src/uiux48/Primitives";
-import { SettingsPage as CardList, SettingsButton as NuriButton, SettingsField as NuriField, SettingsRow as MenuRow, SettingsToggle as ToggleRow, SettingsSpacer } from "@/src/uiuxfinal/Settings";
+import { SettingsPage as CardList, SettingsButton as NuriButton, SettingsField as NuriField, SettingsRow as MenuRow, SettingsToggle as ToggleRow, SettingsFormFooter, SettingsDivider } from "@/src/uiuxfinal/Settings";
+import { FinalText } from "@/src/uiuxfinal/Primitives";
 import { StateCard } from "@/src/uiux48/StateCard";
 const preferenceKeys: (keyof NotificationPreferences)[]=["enabled","reminders_enabled","chat_enabled","care_enabled","quiet_hours_start","quiet_hours_end","time_zone","max_per_day","show_preview"];
 
@@ -64,20 +65,21 @@ export default function NotificationSettings() {
   <NuriButton secondary label={copy("暂不开启","Not now")} disabled={busy} onPress={()=>router.replace("/notification-settings")} testID="notification-permission-skip" /></View>
  </CenteredCard>;
  return <CardList testID="notification-settings-card">
-  <MenuRow label={copy("系统通知","System notifications")} detail={permission} onPress={()=>{if(state==="not_determined")router.push({pathname:"/notification-settings",params:{uiState:"permission"}});else void openNotificationSettings().catch(()=>setError(copy("系统设置未能打开。","Could not open system settings.")));}} testID="notification-system-settings" />
+  <MenuRow label={copy("系统通知","System notifications")} onPress={()=>{if(state==="not_determined")router.push({pathname:"/notification-settings",params:{uiState:"permission"}});else void openNotificationSettings().catch(()=>setError(copy("系统设置未能打开。","Could not open system settings.")));}} testID="notification-system-settings" />
+  <FinalText size={12} secondary style={{fontWeight:"500",fontFamily:locale==="zh-CN"?"NotoSansSC_500Medium":undefined}} testID="notification-system-status">{(locale==="zh-TW"?"系統通知：":copy("系统通知：","System notifications: "))+permission}</FinalText><SettingsDivider/>
   {state==="not_determined"?<NuriButton label={copy("允许通知","Allow notifications")} disabled={busy} onPress={()=>router.push({pathname:"/notification-settings",params:{uiState:"permission"}})} testID="notification-request-permission" />:null}
   {loading?<InlineState busy message={copy("正在读取设置…","Loading settings…")} />:null}
   <ToggleRow label={copy("Nuri 关怀","Nuri care")} detail={copy("适时的一句问候","A thoughtful check-in")} value={prefs?.care_enabled===true} disabled={!prefs||busy} onChange={care_enabled=>patch({care_enabled})} testID="notification-care" />
   <ToggleRow label={copy("内容推荐","Content recommendations")} detail={copy("适合你家的育儿内容","Parenting content for your family")} value={daily} disabled={!dailyLoaded||busy} onChange={v=>{dirty.current=true;setDailyDirty(true);setDaily(v);}} testID="remote-daily-push-toggle" />
-  <ToggleRow label={copy("聊天通知","Chat notifications")} value={prefs?.chat_enabled===true} disabled={!prefs||busy} onChange={chat_enabled=>patch({chat_enabled})} testID="notification-chat" />
-  <MenuRow label={copy("通知记录","Notification history")} onPress={()=>router.push("/notifications")} testID="notification-history-entry" />
+  <ToggleRow label={copy("聊天通知","Chat notifications")} detail={locale==="zh-TW"?"Nuri 對話更新":copy("Nuri 对话更新","Nuri conversation updates")} value={prefs?.chat_enabled===true} disabled={!prefs||busy} onChange={chat_enabled=>patch({chat_enabled})} testID="notification-chat" />
   <MenuRow label={copy("更多通知设置","More notification settings")} onPress={()=>setAdvanced(v=>!v)} testID="notification-advanced" />
   {advanced?<>
+  <MenuRow label={copy("通知记录","Notification history")} onPress={()=>router.push("/notifications")} testID="notification-history-entry" />
   <ToggleRow label={copy("显示通知预览","Show notification previews")} value={prefs?.show_preview===true} disabled={!prefs||busy} onChange={show_preview=>patch({show_preview})} testID="notification-preview" />
   <NuriText>{copy("安静时段","Quiet hours")}</NuriText><View style={{flexDirection:"row",gap:12}}><View style={{flex:1}}><NuriField label={copy("开始","From")} value={prefs?.quiet_hours_start??""} onChangeText={quiet_hours_start=>patch({quiet_hours_start})} editable={!!prefs&&!busy} placeholder="22:00" testID="quiet-hours-start" /></View><View style={{flex:1}}><NuriField label={copy("结束","Until")} value={prefs?.quiet_hours_end??""} onChangeText={quiet_hours_end=>patch({quiet_hours_end})} editable={!!prefs&&!busy} placeholder="08:00" testID="quiet-hours-end" /></View></View><NuriText secondary style={{fontSize:12}}>{prefs?.time_zone||copy("时区未能读取","Time zone unavailable")}</NuriText>
+  <NuriButton secondary label={copy("重新读取","Reload")} disabled={busy} onPress={()=>{dirty.current=false;setDailyDirty(false);void reload();}} testID="notification-settings-retry" />
   </>:null}
   {error?<NuriText accessibilityLiveRegion="polite" testID="notification-settings-result">{error}</NuriText>:null}
-  <SettingsSpacer/><NuriButton label={copy("保存","Save")} disabled={busy||!prefs} busy={busy} onPress={()=>void save()} testID="notification-settings-save" />
-  <NuriButton secondary label={copy("重新读取","Reload")} disabled={busy} onPress={()=>{dirty.current=false;setDailyDirty(false);void reload();}} testID="notification-settings-retry" />
+  <SettingsFormFooter><NuriButton label={copy("保存","Save")} disabled={busy||!prefs} busy={busy} onPress={()=>void save()} testID="notification-settings-save" /></SettingsFormFooter>
  </CardList>;
 }

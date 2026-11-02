@@ -267,6 +267,10 @@ export type DailyPostCard = {
   platform: "facebook" | "instagram" | "threads";
   source_url: string;
   source_label: string;
+  /** Optional forward-compatible media. Current main omits these; do not
+   * replace missing source thumbnails with a design illustration or scrape. */
+  thumbnail_url?: string | null;
+  image_url?: string | null;
   published_at: string | null;
   question?: string;
   situation?: string;

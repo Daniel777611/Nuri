@@ -13,8 +13,12 @@ export function load(path, dependencies = {}) {
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow"].map(n=>[n,n]));
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
     if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
+    if(name==="@/src/uiuxfinal/HomeVideoThumbnail")return {HomeVideoThumbnail:"HomeVideoThumbnail"};
     if(name==="@/src/uiuxfinal/Primitives")return {FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FinalCardPage:"CardList",FINAL_COLOR:{accent:"#735C84"}};
     if(name==="@/src/uiuxfinal/Settings")return {SettingsButton:"NuriButton"};
+    if(name==="@/src/recommendationMedia")return load("../src/recommendationMedia.ts",{"./externalContent":load("../src/externalContent.ts")});
+    if(name==="./ReadingMedia")return load("../src/uiuxfinal/ReadingMedia.tsx",{...dependencies,"./Primitives":{FinalText:"NuriText"}});
+    if(name==="@/src/uiuxfinal/Reading"||name==="./Reading")return load("../src/uiuxfinal/Reading.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FINAL_COLOR:{accent:"#735C84"}}});
     if(name==="@/src/uiuxfinal/Article")return load("../src/uiuxfinal/Article.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FINAL_COLOR:{accent:"#735C84"}}});
     if(name==="@/src/uiux48/Theme")return {useNuriTheme:()=>({mode:"Morning",ink:"#3d3340",secondary:"#5d5060",token:()=>""})};
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
@@ -154,7 +158,7 @@ export function page(f, kind = "daily", params = {}) {
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ top: 0, bottom: 34 }) },
-    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" },
+    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" }, "expo-blur": { BlurView: "Blur" },
     "expo-web-browser": { openBrowserAsync: async (url) => external.push(url) }, "expo-clipboard": { setStringAsync: async () => true },
     "@/src/components/taskCardExport": { firstShareableResource: (resources) => resources?.find((resource) => /^https:\/\//.test(resource.url)) },
     "@/src/feedPreparation": load("../src/feedPreparation.ts", { "./api": f, "./sessionBoundary": f.boundary }),

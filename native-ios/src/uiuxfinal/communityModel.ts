@@ -7,9 +7,13 @@ export const FINAL_COMMUNITY_NODES = {
     compose: "188:59375", original: "188:59125", polished: "188:59250", preview: "188:60988", sending: "188:60127", sent: "188:60161",
     myQuestions: "188:60269", selection: "188:60337", close: "188:60550", delete: "188:60769", replies: "188:61074", replyExpanded: "188:61480", replyDetail: "188:61420", replyKeyboard: "188:61556", comments: "188:61619",
     received: "188:60178", receivedReplied: "188:60221", receivedLocked: "188:60245", respond: "188:60056", responseSent: "188:59991",
-    preferences: "188:62666", blocked: "188:62966", blockedEmpty: "188:62725", parentSettings: "188:63013", safetyConfirm: "188:63131",
+    preferences: "188:62666", blocked: "188:62966", blockedEmpty: "188:62725", profileSettings: "188:63013", safetyConfirm: "188:63131",
+    responsePrompt:"188:61687", inviteSent:"188:61884", incomingParent:"188:65771",
 } as const;
-export type FinalCommunityScreen = keyof typeof FINAL_COMMUNITY_NODES;
+/** This local safety menu has no corresponding design frame. Keep it out of
+ * the Figma node catalog instead of attributing the user's profile frame to it. */
+export const FINAL_COMMUNITY_LOCAL_SCREENS = ["parentSettings"] as const;
+export type FinalCommunityScreen = keyof typeof FINAL_COMMUNITY_NODES | typeof FINAL_COMMUNITY_LOCAL_SCREENS[number];
 export type ReceivedTab = "waiting" | "replied" | "locked";
 export type FixtureQuestion = {
     id: string;
@@ -44,6 +48,8 @@ export type FinalCommunityState = Location & {
     incoming: ReceivedQuestion[];
     nextQuestionID:number;
     contacts:FixtureParent[];
+    sentInvitations:FixtureParent[];
+    receivedInvitations:FixtureParent[];
     filters:{gender:number;distance:number};
     blocked: FixtureParent[];
     disconnected: FixtureParent[];
@@ -67,11 +73,11 @@ export type FinalCommunityState = Location & {
     }[];
     localReceipt: boolean;
 };
-export function isFinalCommunityScreen(value: unknown): value is FinalCommunityScreen { return typeof value === "string" && Object.hasOwn(FINAL_COMMUNITY_NODES, value); }
+export function isFinalCommunityScreen(value: unknown): value is FinalCommunityScreen { return typeof value === "string" && (Object.hasOwn(FINAL_COMMUNITY_NODES, value) || FINAL_COMMUNITY_LOCAL_SCREENS.some(screen=>screen===value)); }
 export function createFinalCommunity(screen: FinalCommunityScreen = "hub"): FinalCommunityState {
     const incoming:ReceivedQuestion[]=(["waiting","replied","locked"] as const).flatMap(status=>QUESTION_FIXTURES.filter(q=>q.id!=="sample-daycare-second").slice(0,status==="waiting"?3:2).map((q,i)=>({...q,id:`received-${status}-${i}`,status,closed:status==="locked",answer:status==="replied"?"A sample family experience / 示例家庭经验":undefined})));
     const receivedTab=screen==="receivedReplied"?"replied":screen==="receivedLocked"?"locked":"waiting";
-    return { screen, questionID: screen.startsWith("received")||screen==="respond"?incoming.find(q=>q.status===receivedTab)!.id:QUESTION_FIXTURES[0].id, person: "Maya", receivedTab, history: [], page: screen === "friends" ? 1 : 0, questions: QUESTION_FIXTURES.map(q => ({ ...q })),incoming,nextQuestionID:1,contacts:["Maya","Maria","Zoe"],filters:{gender:0,distance:0},blocked:[],disconnected:[],preferences:{discoverable:true,nearby:true,showAge:false},safetyAction:"block", drafts: {}, questionVersion: "original", showAge: false, anonymous: false, selected: [], intents: [1], ai: {}, messages: [], comments: [], localReceipt: false, replyTarget: "all" };
+    return { screen, questionID: screen.startsWith("received")||(screen==="respond"||screen==="responsePrompt")?incoming.find(q=>q.status===receivedTab)!.id:QUESTION_FIXTURES[0].id, person: screen==="incomingParent"?"Sonya":"Maya", receivedTab, history: [], page: screen === "friends" ? 1 : 0, questions: QUESTION_FIXTURES.map(q => ({ ...q })),incoming,nextQuestionID:1,contacts:["Maya","Maria","Zoe"],sentInvitations:["Dean"],receivedInvitations:["Sonya","Robin"],filters:{gender:0,distance:0},blocked:[],disconnected:[],preferences:{discoverable:true,nearby:false,showAge:true},safetyAction:"block", drafts: {}, questionVersion: screen==="polished"?"polished":"original", showAge: false, anonymous: false, selected: [], intents: [1], ai: {}, messages: [], comments: [], localReceipt: false, replyTarget: ["replyDetail","replyKeyboard","comments"].includes(screen)?"Maya":"all" };
 }
 export function selectedFinalQuestion(s:FinalCommunityState){return [...s.questions,...s.incoming].find(q=>q.id===s.questionID);}
 export function selectedQuestionText(s:FinalCommunityState){return (s.questionVersion==="polished"?s.drafts.polished:s.drafts.question)?.trim()??"";}
@@ -88,6 +94,8 @@ export type FinalCommunityEvent = {
     type:"openReceived";id:string;
 } | {
     type:"connect";
+} | {
+    type:"declineInvitation";
 } | {
     type:"filter";key:"gender"|"distance";index:number;
 } | {
@@ -125,7 +133,7 @@ export type FinalCommunityEvent = {
 } | {
     type: "person";
     person: FixtureParent;
-    screen: "parent" | "chat";
+    screen: "parent" | "chat" | "incomingParent";
 } | {
     type: "requestConsent";
 } | {
@@ -175,12 +183,21 @@ export function finalCommunityReducer(s: FinalCommunityState, e: FinalCommunityE
         case "toggle": return { ...s, [e.key]: !s[e.key] };
         case "intent": return { ...s, intents: s.intents.includes(e.index) ? s.intents.filter(n => n !== e.index) : [...s.intents, e.index] };
         case "openQuestion": return [...s.questions,...s.incoming].some(q => q.id === e.id) ? navigate(s, "replies", { questionID: e.id, replyTarget: "all" }) : s;
-        case "openReceived":{const q=s.incoming.find(q=>q.id===e.id);return q?navigate(s,q.status==="waiting"?"respond":"replies",{questionID:q.id,receivedTab:q.status,replyTarget:"all"}):s;}
+        case "openReceived":{const q=s.incoming.find(q=>q.id===e.id);return q?navigate(s,q.status==="waiting"?"responsePrompt":"replies",{questionID:q.id,receivedTab:q.status,replyTarget:"all"}):s;}
         case "select": return !s.questions.some(q => q.id === e.id) ? s : { ...s, selected: s.selected.includes(e.id) ? s.selected.filter(id => id !== e.id) : [...s.selected, e.id] };
         case "receivedTab": return { ...s, receivedTab: e.tab, screen: e.tab === "waiting" ? "received" : e.tab === "replied" ? "receivedReplied" : "receivedLocked" };
         case "person": return PARENT_FIXTURES.includes(e.person) ? navigate(s, e.screen==="chat"&&(s.blocked.includes(e.person)||s.disconnected.includes(e.person))?"parent":e.screen, { person: e.person }) : s;
-        case "connect":return s.screen!=="parent"||s.blocked.includes(s.person)?s:{...navigate(s,"connected"),disconnected:s.disconnected.filter(p=>p!==s.person),contacts:s.contacts.includes(s.person)?s.contacts:[...s.contacts,s.person],localReceipt:true};
-        case "filter":return e.index<0||e.index>2?s:{...s,filters:{...s.filters,[e.key]:e.index}};
+        case "connect":{
+            if(!["parent","incomingParent"].includes(s.screen)||s.blocked.includes(s.person))return s;
+            if(s.screen==="incomingParent"){
+                if(!s.receivedInvitations.includes(s.person))return s;
+                return {...navigate(s,"connected"),receivedInvitations:s.receivedInvitations.filter(p=>p!==s.person),contacts:s.contacts.includes(s.person)?s.contacts:[...s.contacts,s.person],disconnected:s.disconnected.filter(p=>p!==s.person),localReceipt:true};
+            }
+            if(s.contacts.includes(s.person)&&!s.disconnected.includes(s.person))return navigate(s,"connected");
+            return {...navigate(s,"inviteSent"),sentInvitations:s.sentInvitations.includes(s.person)?s.sentInvitations:[...s.sentInvitations,s.person],localReceipt:true};
+        }
+        case "declineInvitation":return s.screen!=="incomingParent"||!s.receivedInvitations.includes(s.person)?s:{...navigate(s,"invitations"),receivedInvitations:s.receivedInvitations.filter(p=>p!==s.person),localReceipt:true};
+        case "filter":return !Number.isInteger(e.index)||e.index<0||e.index>(e.key==="distance"?4:2)?s:{...s,filters:{...s.filters,[e.key]:e.index}};
         case "requestConsent": return s.blocked.includes(s.person)||s.disconnected.includes(s.person)||(s.screen !== "chat" && s.screen !== "chatOn") ? s : navigate(s, "consent");
         case "confirmConsent": return s.screen !== "consent" ? s : { ...s, screen:e.allowed?"chatOn":"chat",history:s.history.slice(0,-1),ai: { ...s.ai, [s.person]: e.allowed } };
         case "disableAI": return { ...s, screen: "chat", ai: { ...s.ai, [s.person]: false } };
@@ -211,7 +228,7 @@ export function finalCommunityReducer(s: FinalCommunityState, e: FinalCommunityE
             const text = s.drafts[`comment:${s.questionID}:${s.replyTarget}`]?.trim();
             if (!text || !selectedFinalQuestion(s) || selectedFinalQuestion(s)?.closed || !["replies", "replyExpanded", "replyDetail", "replyKeyboard", "comments"].includes(s.screen))
                 return s;
-            return { ...s, screen: "comments",replyTarget:"all", comments: [...s.comments, { questionID: s.questionID, target: s.replyTarget, text }], drafts: { ...s.drafts, [`comment:${s.questionID}:${s.replyTarget}`]: "" }, localReceipt: true };
+            return { ...s, screen: s.replyTarget==="all"?"replies":"comments", comments: [...s.comments, { questionID: s.questionID, target: s.replyTarget, text }], drafts: { ...s.drafts, [`comment:${s.questionID}:${s.replyTarget}`]: "" }, localReceipt: true };
         }
         case "sendResponse": {
             const text=s.drafts[`answer:${s.questionID}`]?.trim();

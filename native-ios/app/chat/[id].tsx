@@ -1,7 +1,8 @@
 import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, NuriButton, MenuRow } from "@/src/uiux48/Primitives";
 import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
 import { NuriComposer } from "@/src/uiux48/Composer";
-import { FinalChatBubble } from "@/src/uiuxfinal/Primitives";
+import { useComposerDockInset } from "@/src/uiux48/useComposerDock";
+import { FinalChatBubble, FinalText } from "@/src/uiuxfinal/Primitives";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
@@ -256,6 +257,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const params = useLocalSearchParams<{ id: string }>();
   const id = sessionId ?? params.id;
   const safeInsets = useSafeAreaInsets();
+  const dockBottom = useComposerDockInset(!embedded);
   const composerRef = useRef<TextInput>(null);
   const launchAction = useRef(initialAction);
   const theme48 = useNuriTheme();
@@ -883,7 +885,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
       {typing?<TypingDots />:null}
     </ScrollView>
-    <View style={{paddingHorizontal:embedded?0:24,paddingBottom:embedded?0:12}}>
+    <View testID="chat-composer-dock" style={{paddingHorizontal:embedded?0:24,paddingBottom:voiceState!=="idle"&&!embedded?Math.max(114,dockBottom):dockBottom}}>
       {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{t("正在准备图片…")}</NuriText></View>:null}
       {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} disabled={voiceState!=="idle"||sending} testID="chat-image-remove" /></GlassSurface>:null}
       {voiceState!=="idle"?<VoiceInputBar phase={voiceState} seconds={voiceSeconds} metered={voiceMetered} level={readVoiceLevel} onCancel={cancelVoice} onStop={()=>void stopVoice("draft")} onSend={()=>void stopVoice("send")} />:
@@ -972,7 +974,7 @@ function MessageBubble({
       ]}
     >
       {isAI?<Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{width:36,minHeight:44,alignSelf:"flex-end",justifyContent:"center",marginRight:8}} hitSlop={4}><SceneAvatar size={36}/></Pressable>:null}
-      <FinalChatBubble incoming={isAI} style={{maxWidth:isAI?"88%":"92%",flexShrink:1}} testID={`bubble-${msg.role}`}>
+      <FinalChatBubble incoming={isAI} style={{maxWidth:isAI?"88%":"92%",flexShrink:1,paddingHorizontal:16,paddingVertical:isAI?14:12}} testID={`bubble-${msg.role}`}>
         {msg.image_base64 ? (
           <Image
             source={{ uri: msg.image_base64 }}
@@ -981,13 +983,13 @@ function MessageBubble({
           />
         ) : null}
         {msg.text && !post && !video ? (
-          <Text style={[styles.bubbleText, {color:palette.ink,fontSize:16,lineHeight:24,fontWeight:"400"}]}>
+          <FinalText style={[styles.bubbleText, {color:palette.ink,fontSize:16,lineHeight:24,fontWeight:"400"}]}>
             {isAI ? (
               <RichText text={msg.text} />
             ) : (
               msg.text
             )}
-          </Text>
+          </FinalText>
         ) : null}
         {post ? (
           <Pressable

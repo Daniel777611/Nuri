@@ -2,6 +2,7 @@ import { NuriIcon, NuriText, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
 import { NuriAvatar } from "@/src/uiux48/Scene";
 import { CurrentUserAvatarAction } from "@/src/uiuxfinal/UserAvatar";
 import { FinalSurface, FinalText } from "@/src/uiuxfinal/Primitives";
+import { HomeVideoThumbnail } from "@/src/uiuxfinal/HomeVideoThumbnail";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
@@ -431,8 +432,8 @@ export default function Home() {
   const statusTitle=(status:DailyPostStatus,failure:RequestFailureKind|null)=>failure?requestFailureCopy(locale,failure).title:status==="loading"||status==="pending"?(en?"Finding something for you…":translate(locale, "正在为你整理推荐…")):status==="disabled"?(en?"This recommendation is not available":translate(locale, "这项推荐暂未开放")):status==="error"?(en?"Could not load — tap to retry":translate(locale, "加载失败，点此重试")):(en?"No recommendation yet":translate(locale, "暂时没有新的推荐"));
   const greeting=theme48.mode==="Morning"?(en?"Good morning":translate(locale, "早上好")):theme48.mode==="Afternoon"?(en?"Good afternoon":translate(locale, "下午好")):(en?"Good evening":translate(locale, "晚上好"));
   return <View style={{flex:1,minHeight:0}} testID="home-screen">
-    <View style={{height:60,paddingHorizontal:24,flexDirection:"row",alignItems:"center",gap:10}}>
-      <NuriAvatar /><NuriText style={{fontSize:20,lineHeight:28,fontWeight:"600",flex:1}}>{en?`Welcome, ${nickname}!`:t("欢迎，{nickname}！",{nickname})}</NuriText>
+    <View style={{height:60,paddingLeft:16,paddingRight:32,flexDirection:"row",alignItems:"center",gap:10}}>
+      <NuriAvatar /><FinalText size={20} secondary style={{lineHeight:28,fontWeight:"500",flex:1}}>{en?`Welcome, ${nickname}!`:t("欢迎，{nickname}！",{nickname})}</FinalText>
       <CurrentUserAvatarAction path="/" displayName={nickname} photoURL={avatarUrl} testID="home-settings" />
     </View>
     <NuriKeyboardFrame>
@@ -440,23 +441,23 @@ export default function Home() {
         <View style={{height:156}}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={342} decelerationRate="fast" contentContainerStyle={{paddingLeft:24,paddingRight:24,paddingTop:15,paddingBottom:22,gap:12}} testID="home-recommendations">
             <Pressable onPress={()=>dailyPost?openDailyPost(dailyPost):handleFailure(dailyFailure,()=>void loadDailyPost())} accessibilityRole="button" testID={dailyPost?"home-daily-post-card":"home-daily-post-empty"}>
-              <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:24,paddingTop:29,paddingBottom:18,justifyContent:"space-between"}}>
-                <FinalText size={18} numberOfLines={2} style={{fontWeight:"500"}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</FinalText>
-                <FinalText size={12} secondary>{en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
+              <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingTop:33,paddingBottom:20,justifyContent:"space-between"}}>
+                <FinalText size={18} numberOfLines={1} style={{fontWeight:"500",lineHeight:26}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</FinalText>
+                <FinalText size={12} secondary style={{fontWeight:"500"}}>{en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
               </FinalSurface>
             </Pressable>
             <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>
-              <FinalSurface style={{width:330}} contentStyle={{height:112,padding:12,flexDirection:"row",gap:12}}>
-                <View style={{width:72,height:80,borderRadius:16,overflow:"hidden"}}><Image source={require("@/assets/uiux48/imgThumbnailAfternoonScene.png")} style={{width:72,height:80}} resizeMode="cover" /><View style={{position:"absolute",left:4,bottom:4,width:30,height:30,borderRadius:15,backgroundColor:"rgba(161,139,182,.32)",alignItems:"center",justifyContent:"center"}}><NuriIcon name="play" /></View></View>
-                <View style={{flex:1,justifyContent:"space-between"}}><NuriText secondary style={{fontSize:12,lineHeight:16}}>YouTube {en?"video":translate(locale, "视频")}</NuriText><NuriText style={{fontSize:16,lineHeight:20,fontWeight:"600"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Parenting picks":translate(locale, "育儿精选")}</NuriText></View>
+              <FinalSurface surfaceColor="rgba(235,223,216,.75)" style={{width:330}} contentStyle={{height:112,paddingLeft:12,paddingRight:20,paddingVertical:16,flexDirection:"row",gap:12}}>
+                <HomeVideoThumbnail videoId={dailyVideo?.video_id}/>
+                <View style={{flex:1,minWidth:0,marginTop:-2,gap:6}}><FinalText size={12} style={{fontWeight:"500"}}>YouTube {en?"video":translate(locale, "视频")}</FinalText><FinalText size={18} numberOfLines={1} style={{lineHeight:26,fontWeight:"500"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</FinalText><FinalText size={12} style={{fontWeight:"500"}}>{en?"Parenting picks":translate(locale, "育儿精选")}</FinalText></View>
               </FinalSurface>
             </Pressable>
           </ScrollView>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel={nuriFailure?requestFailureCopy(locale,nuriFailure).action:en?"Open full conversation":translate(locale,"展开完整对话")} onPress={openNuriChat} style={{position:"absolute",left:24,right:24,bottom:9}} testID="home-nuri-action">
-          <FinalSurface contentStyle={{minHeight:169,paddingHorizontal:20,paddingVertical:20,gap:26}} testID="home-inline-chat-card">
-            <FinalText size={14} secondary>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</FinalText>
-            <FinalText size={18} style={{lineHeight:28}} testID="home-nuri-memo">{nuriMemo}</FinalText>
+          <FinalSurface bordered contentStyle={{minHeight:169,paddingHorizontal:20,paddingTop:16,paddingBottom:46,gap:7}} testID="home-inline-chat-card">
+            <View style={{height:44,justifyContent:"center"}}><FinalText size={14} secondary style={{lineHeight:26,fontWeight:"500"}}>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</FinalText></View>
+            <FinalText size={18} numberOfLines={2} style={{lineHeight:28,fontWeight:"500"}} testID="home-nuri-memo">{nuriMemo}</FinalText>
           </FinalSurface>
         </Pressable>
       </View>

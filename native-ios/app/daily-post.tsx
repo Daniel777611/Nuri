@@ -20,6 +20,7 @@ import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
+import {socialPostThumbnail} from "@/src/recommendationMedia";
 
 export default function DailyPostScreen() {
   const { capture, current } = useAccountScope();
@@ -28,6 +29,7 @@ export default function DailyPostScreen() {
   const [card, setCard] = useState<DailyPostCard | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [openingChat, setOpeningChat] = useState(false);
+  const [openingSource, setOpeningSource] = useState(false);
   const [failure, setFailure] = useState<RequestFailureKind | null>(null);
   const [failureSource, setFailureSource] = useState<"load" | "chat">("load");
   const [retry, setRetry] = useState(0);
@@ -35,6 +37,7 @@ export default function DailyPostScreen() {
   const focused = useRef(false);
   const chatOperation = useRef(0);
   const chatBusy = useRef(false);
+  const sourceOperation = useRef(0), sourceBusy = useRef(false);
   // Set when a care notification opens a specific card; otherwise today's.
   const { id, uiState, point } = useLocalSearchParams<{ id?: string; uiState?: string; point?: string }>();
   const validId = typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -48,9 +51,12 @@ export default function DailyPostScreen() {
     focused.current = true;
     chatOperation.current++;
     chatBusy.current = false;
+    sourceOperation.current++;
+    sourceBusy.current = false;
     setFailure(null);
     setSourceFailure(false);
     setOpeningChat(false);
+    setOpeningSource(false);
     if(id!==undefined&&!validId){setCard(null);setState("missing");return()=>{focused.current=false;};}
     setState((previous) => previous === "ready" && retry === 0 ? previous : "loading");
     (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
@@ -75,19 +81,25 @@ export default function DailyPostScreen() {
       focused.current = false;
       chatOperation.current++;
       chatBusy.current = false;
+      sourceOperation.current++;
+      sourceBusy.current = false;
     };
-  }, [id, validId, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setFailureSource, setSourceFailure]));
+  }, [id, validId, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setOpeningSource, setFailureSource, setSourceFailure]));
 
   const openSource = useCallback(async () => {
     const ticket = capture();
-    if (ticket === null || !focused.current || !card) return;
+    if (ticket === null || !focused.current || !card || sourceBusy.current) return;
     const source = externalSourceUrl(card.source_url);
-    if (!source) { setSourceFailure(true); router.push({pathname:"/content-unavailable",params:{kind:"post",...(id?{id:String(id)}:{})}}); return; }
+    if (!source) { setSourceFailure(true); return; }
+    const operation = ++sourceOperation.current;
+    const accepts = () => current(ticket) && focused.current && operation === sourceOperation.current;
+    sourceBusy.current = true; setOpeningSource(true);
     setSourceFailure(false);
     void api.dailyPostEvent(card.id, "source_click").catch(() => {});
-    try { await Linking.openURL(source); if(current(ticket)&&focused.current)router.push({pathname:"/source-preview",params:{kind:"post",...(id?{id:String(id)}:{})}}); }
-    catch { if (current(ticket) && focused.current) {setSourceFailure(true);router.push({pathname:"/content-unavailable",params:{kind:"post",...(id?{id:String(id)}:{})}});} }
-  }, [card, capture, current, setSourceFailure, id, router]);
+    try { await Linking.openURL(source); }
+    catch { if (accepts()) setSourceFailure(true); }
+    finally { if (accepts()) { sourceBusy.current = false; setOpeningSource(false); } }
+  }, [card, capture, current, setSourceFailure, setOpeningSource]);
 
   const talkItThrough = useCallback(async () => {
     const ticket = capture();
@@ -156,15 +168,17 @@ export default function DailyPostScreen() {
       }}
     />;
   }
-  return <FinalArticle
+  return <FinalArticle key={card.id}
     title={sourceAvailable?card.headline:guide.headline}
     source={dailyPostTag(t,card)}
+    mediaUrl={socialPostThumbnail(card.thumbnail_url,card.source_url)||socialPostThumbnail(card.image_url,card.source_url)}
     summary={situation||question}
     points={takeaways}
     notes={[t(RESOURCE_SUMMARY_DISCLOSURE),card.locale&&card.locale!==locale?t("此内容保留原语言，尚未提供当前语言的翻译。"):"",caution||""]}
     onSource={()=>void openSource()}
     onTalk={talkItThrough}
     busy={openingChat}
+    sourceBusy={openingSource}
     notice={<>{failureNotice}{sourceFailure?<NuriText secondary testID="daily-post-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}</>}
     allowSavePreview={process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"}
   />;
