@@ -1,9 +1,8 @@
-import ChatConversation from "../chat/[id]";
-import { GlassSurface, IconAction, NuriIcon, NuriText, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
-import { NuriComposer } from "@/src/uiux48/Composer";
+import { NuriIcon, NuriText, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
 import { NuriAvatar } from "@/src/uiux48/Scene";
+import { CurrentUserAvatarAction } from "@/src/uiuxfinal/UserAvatar";
+import { FinalSurface, FinalText } from "@/src/uiuxfinal/Primitives";
 import { useNuriTheme } from "@/src/uiux48/Theme";
-import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { resourceLanguageMismatch, hasPostSummarySource } from "@/src/resourceSummary";
@@ -38,7 +37,7 @@ import Toast from "@/src/components/Toast";
 import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
 import DailyVideoCard from "@/src/components/DailyVideoCard";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 
@@ -85,12 +84,6 @@ export default function Home() {
   const { t, locale } = useT();
   const router = useRouter();
   const theme48 = useNuriTheme();
-  const [homeDraft,setHomeDraft] = useState("");
-  const homeDraftHydration=useRef(true);
-  const [inlineSessionId,setInlineSessionId] = useState<string|null>(null);
-  const [inlineAction,setInlineAction] = useState<"send"|"attach"|"mic"|"focus"|undefined>(undefined);
-  const [inlineActive,setInlineActive] = useState(false);
-  const [bodyHeight,setBodyHeight] = useState(500);
   const insets = useSafeAreaInsets();
   const isHomeFocused = useIsFocused();
   const { width: viewportWidth } = useWindowDimensions();
@@ -278,10 +271,6 @@ export default function Home() {
         preview?.has_conversation && typeof preview.session_id === "string"
           ? preview.session_id
           : null;
-      if(homeDraftHydration.current){
-        homeDraftHydration.current=false;
-        setHomeDraft(sessionId?readChatDraft(sessionId):"");
-      }
       const lastUserMessage = preview?.last_user_message?.text || "";
       // Only the backend-authored display text is shown. category/key remain
       // internal provenance and must never leak into parent-facing copy.
@@ -304,7 +293,7 @@ export default function Home() {
         setNuriPreviewStatus("error");
       }
     }
-  }, [capture, current, setNuriPreview, setNuriPreviewStatus, setNuriFailure, setHomeDraft]);
+  }, [capture, current, setNuriPreview, setNuriPreviewStatus, setNuriFailure]);
 
   const handleFailure = (failure: RequestFailureKind | null, retry: () => void) => {
     if (failure === "permission") router.push(aiPermissionHref("/(tabs)"));
@@ -313,7 +302,6 @@ export default function Home() {
   };
 
   const openNuriChat = async () => {
-    if(inlineActive&&requestGuardedNativeNavigation("/","chat"))return;
     const ticket = capture();
     if (ticket === null || !homeActive.current) return;
     if (nuriPreviewStatus === "loading" || openingNuriChat.current) return;
@@ -337,7 +325,6 @@ export default function Home() {
           ? { id: preview.session_id }
           : await api.getOrStartMainSession();
       if (!acceptsResult()) return;
-      if (!inlineActive) writeChatDraft(session.id, homeDraft, generation);
       router.push(`/chat/${session.id}`);
       navigated = true;
     } catch (error) {
@@ -388,7 +375,6 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       homeActive.current = true;
-      homeDraftHydration.current=true;
       void loadNuriPreview();
       void loadCheckin();
       return () => {
@@ -441,58 +427,38 @@ export default function Home() {
           ? t("从这里聊起")
           : t("和我聊聊");
 
-  const beginInline = async (action:"send"|"attach"|"mic"|"focus") => {
-    const ticket = capture();
-    if (ticket === null || !homeActive.current || openingNuriChat.current) return;
-    openingNuriChat.current = true;
-    const operation = ++chatOperation.current;
-    try {
-      const preview = await api.getMainConversationPreview();
-      if (!current(ticket) || !homeActive.current || operation !== chatOperation.current) return;
-      const session = preview.has_conversation && preview.session_id ? {id:preview.session_id} : await api.getOrStartMainSession();
-      if (!current(ticket) || !homeActive.current || operation !== chatOperation.current) return;
-      setInlineSessionId(session.id);setInlineAction(action);setInlineActive(true);
-    } catch (error) {
-      if (current(ticket) && homeActive.current && operation === chatOperation.current) {
-        const failure=requestFailureKind(error);setNuriFailure(failure);setNuriPreviewStatus("error");
-        if(failure==="permission"||failure==="session")handleFailure(failure,()=>{});else showToast(requestFailureCopy(locale,failure).title);
-      }
-    } finally { if(current(ticket)&&operation===chatOperation.current)openingNuriChat.current=false; }
-  };
   const en=locale==="en";
-  const statusTitle=(status:DailyPostStatus,failure:RequestFailureKind|null)=>failure?requestFailureCopy(locale,failure).title:status==="loading"||status==="pending"?(en?"Finding something for you…":"正在为你整理推荐…"):status==="disabled"?(en?"This recommendation is not available":"这项推荐暂未开放"):status==="error"?(en?"Could not load — tap to retry":"加载失败，点此重试"):(en?"No recommendation yet":"暂时没有新的推荐");
-  const greeting=theme48.mode==="Morning"?(en?"Good morning":"早上好"):theme48.mode==="Afternoon"?(en?"Good afternoon":"下午好"):(en?"Good evening":"晚上好");
+  const statusTitle=(status:DailyPostStatus,failure:RequestFailureKind|null)=>failure?requestFailureCopy(locale,failure).title:status==="loading"||status==="pending"?(en?"Finding something for you…":translate(locale, "正在为你整理推荐…")):status==="disabled"?(en?"This recommendation is not available":translate(locale, "这项推荐暂未开放")):status==="error"?(en?"Could not load — tap to retry":translate(locale, "加载失败，点此重试")):(en?"No recommendation yet":translate(locale, "暂时没有新的推荐"));
+  const greeting=theme48.mode==="Morning"?(en?"Good morning":translate(locale, "早上好")):theme48.mode==="Afternoon"?(en?"Good afternoon":translate(locale, "下午好")):(en?"Good evening":translate(locale, "晚上好"));
   return <View style={{flex:1,minHeight:0}} testID="home-screen">
     <View style={{height:60,paddingHorizontal:24,flexDirection:"row",alignItems:"center",gap:10}}>
-      <NuriAvatar /><NuriText style={{fontSize:20,lineHeight:28,fontWeight:"600",flex:1}}>{en?`Welcome, ${nickname}!`:`欢迎，${nickname}！`}</NuriText>
-      <IconAction name="settings" label={en?"Profile & settings":"个人资料与设置"} onPress={()=>{if(!requestGuardedNativeNavigation("/","profile"))router.push("/(tabs)/profile");}} testID="home-settings" />
+      <NuriAvatar /><NuriText style={{fontSize:20,lineHeight:28,fontWeight:"600",flex:1}}>{en?`Welcome, ${nickname}!`:t("欢迎，{nickname}！",{nickname})}</NuriText>
+      <CurrentUserAvatarAction path="/" displayName={nickname} photoURL={avatarUrl} testID="home-settings" />
     </View>
     <NuriKeyboardFrame>
-      <View style={{flex:1,minHeight:0}} onLayout={e=>setBodyHeight(e.nativeEvent.layout.height)}>
+      <View style={{flex:1,minHeight:0}} >
         <View style={{height:156}}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={342} decelerationRate="fast" contentContainerStyle={{paddingLeft:24,paddingRight:24,paddingTop:22,paddingBottom:22,gap:12}} testID="home-recommendations">
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} snapToInterval={342} decelerationRate="fast" contentContainerStyle={{paddingLeft:24,paddingRight:24,paddingTop:15,paddingBottom:22,gap:12}} testID="home-recommendations">
             <Pressable onPress={()=>dailyPost?openDailyPost(dailyPost):handleFailure(dailyFailure,()=>void loadDailyPost())} accessibilityRole="button" testID={dailyPost?"home-daily-post-card":"home-daily-post-empty"}>
-              <GlassSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingVertical:12,justifyContent:"space-between"}}>
-                <NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Social picks":"社交推荐"}</NuriText>
-                <NuriText style={{fontSize:17,lineHeight:22,fontWeight:"600"}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</NuriText>
-                <NuriText secondary style={{fontSize:12,lineHeight:16}}>Facebook · Threads</NuriText>
-              </GlassSurface>
+              <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:24,paddingTop:29,paddingBottom:18,justifyContent:"space-between"}}>
+                <FinalText size={18} numberOfLines={2} style={{fontWeight:"500"}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</FinalText>
+                <FinalText size={12} secondary>{en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
+              </FinalSurface>
             </Pressable>
             <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>
-              <GlassSurface style={{width:330}} contentStyle={{height:112,padding:12,flexDirection:"row",gap:12}}>
+              <FinalSurface style={{width:330}} contentStyle={{height:112,padding:12,flexDirection:"row",gap:12}}>
                 <View style={{width:72,height:80,borderRadius:16,overflow:"hidden"}}><Image source={require("@/assets/uiux48/imgThumbnailAfternoonScene.png")} style={{width:72,height:80}} resizeMode="cover" /><View style={{position:"absolute",left:4,bottom:4,width:30,height:30,borderRadius:15,backgroundColor:"rgba(161,139,182,.32)",alignItems:"center",justifyContent:"center"}}><NuriIcon name="play" /></View></View>
-                <View style={{flex:1,justifyContent:"space-between"}}><NuriText secondary style={{fontSize:12,lineHeight:16}}>YouTube {en?"video":"视频"}</NuriText><NuriText style={{fontSize:16,lineHeight:20,fontWeight:"600"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Parenting picks":"育儿精选"}</NuriText></View>
-              </GlassSurface>
+                <View style={{flex:1,justifyContent:"space-between"}}><NuriText secondary style={{fontSize:12,lineHeight:16}}>YouTube {en?"video":translate(locale, "视频")}</NuriText><NuriText style={{fontSize:16,lineHeight:20,fontWeight:"600"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{en?"Parenting picks":translate(locale, "育儿精选")}</NuriText></View>
+              </FinalSurface>
             </Pressable>
           </ScrollView>
         </View>
-        <GlassSurface kind="message" style={{position:"absolute",left:24,right:24,bottom:16,...(inlineActive?{height:Math.max(160,Math.min(360,bodyHeight-24))}:{})}} contentStyle={{paddingHorizontal:20,paddingVertical:16,...(inlineActive?{flex:1,minHeight:0}:{gap:8})}} testID="home-inline-chat-card">
-          <View style={{flexDirection:"row",alignItems:"center"}}><NuriText style={{fontSize:17,lineHeight:22,fontWeight:"500",flex:1}}>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</NuriText><IconAction name="expand" label={nuriFailure?requestFailureCopy(locale,nuriFailure).action:en?"Open full conversation":"展开完整对话"} onPress={openNuriChat} testID="home-nuri-action" /></View>
-          {inlineActive&&inlineSessionId?<ChatConversation sessionId={inlineSessionId} embedded initialDraft={homeDraft} initialAction={inlineAction} onExpand={()=>void openNuriChat()} />:<>
-            <NuriText secondary style={{fontSize:17,lineHeight:22}} testID="home-nuri-memo">{nuriMemo}</NuriText>
-            <NuriComposer value={homeDraft} onChangeText={v=>{homeDraftHydration.current=false;setHomeDraft(v);if(nuriPreview?.sessionId)writeChatDraft(nuriPreview.sessionId,v,generation);}} onSend={()=>void beginInline("send")} onAttach={()=>void beginInline("attach")} onMic={()=>void beginInline("mic")} testID="home" />
-          </>}
-        </GlassSurface>
+        <Pressable accessibilityRole="button" accessibilityLabel={nuriFailure?requestFailureCopy(locale,nuriFailure).action:en?"Open full conversation":translate(locale,"展开完整对话")} onPress={openNuriChat} style={{position:"absolute",left:24,right:24,bottom:9}} testID="home-nuri-action">
+          <FinalSurface contentStyle={{minHeight:169,paddingHorizontal:20,paddingVertical:20,gap:26}} testID="home-inline-chat-card">
+            <FinalText size={14} secondary>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</FinalText>
+            <FinalText size={18} style={{lineHeight:28}} testID="home-nuri-memo">{nuriMemo}</FinalText>
+          </FinalSurface>
+        </Pressable>
       </View>
     </NuriKeyboardFrame>
     <Toast message={toastMsg} />

@@ -1,9 +1,9 @@
 // Voice input for the chat composer.
 //
-// Every client runs the web build (the iOS app is a WKWebView shell), so the
-// clip is recorded with the browser's own MediaRecorder rather than a native
-// module. The recording is posted to /chat/transcribe and the text comes back
-// into the composer for the parent to check before sending.
+// Browser transport only. React Native resolves chatVoiceInput.native.ts to
+// the Expo Audio adapter; the iOS app does not record through a WKWebView.
+// Both adapters post a bounded clip to /chat/transcribe. The composer decides
+// whether to retain the recognized text for editing or send it explicitly.
 
 import { Platform } from "react-native";
 

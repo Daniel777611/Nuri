@@ -209,6 +209,10 @@ export type NotificationPreferences = {
  enabled:boolean;reminders_enabled:boolean;chat_enabled:boolean;care_enabled:boolean;
  quiet_hours_start:string;quiet_hours_end:string;time_zone:string;max_per_day:number;show_preview:boolean;
 };
+/** Existing main list_notifications contract; listing has no open/send effect. */
+export type NotificationHistoryItem = {
+  id:string; kind:string; title:string; body:string; sent_at:string;
+};
 export type OpenedNotification = {
   session_id: string;
   kind: "care" | "daily_post" | "daily_video";
@@ -1092,6 +1096,7 @@ export const api = {
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),
+  listNotifications: (limit=30) => req<{items:NotificationHistoryItem[]}>(`/notifications?limit=${Math.max(1,Math.min(100,Math.trunc(Number.isFinite(limit)?limit:30)))}`),
   setNotificationPreferences: (patch: Partial<NotificationPreferences>) =>
     req<NotificationPreferences>("/notifications/preferences", {method:"PATCH",body:JSON.stringify(patch)}),
   // A model turn can legitimately run past the 12s default. Aborting early

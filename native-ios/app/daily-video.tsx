@@ -3,7 +3,10 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWi
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { CardList, CenteredCard, NuriButton, NuriText } from "@/src/uiux48/Primitives";
+import { CenteredCard, NuriText } from "@/src/uiux48/Primitives";
+import { FinalCardPage as CardList } from "@/src/uiuxfinal/Primitives";
+import { SettingsButton as NuriButton } from "@/src/uiuxfinal/Settings";
+import { Image } from "expo-image";
 import { api, aiConsent, type DailyVideoCard } from "@/src/api";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
@@ -159,6 +162,7 @@ export default function DailyVideoScreen() {
     {!card?<>{!failure?<NuriText>{t("这个视频暂时打不开，回首页再试试。")}</NuriText>:null}<NuriButton label={t("重试")} onPress={()=>setRetry(n=>n+1)} testID="daily-video-load-retry" /></>:<>
       <NuriText style={{fontSize:20,lineHeight:28,fontWeight:"500"}} testID="daily-video-external-title">{guide?.headline||t("YouTube 育儿资源链接")}</NuriText>
       <NuriText secondary style={{fontSize:12}}>YouTube</NuriText>
+      <Pressable accessibilityRole="link" accessibilityLabel={t("在YouTube打开")} onPress={()=>void openSource()} style={{height:188,borderRadius:24,overflow:"hidden",backgroundColor:"#F6EDE8"}}><Image source={require("@/assets/final-flow-20261101/article-illustration.png")} accessibilityLabel={locale==="en"?"Topic illustration":"主题插画"} contentFit="cover" style={{width:"100%",height:"100%"}}/></Pressable>
       <NuriText secondary style={{fontSize:12}} testID="daily-video-external-notice">{t("视频请在 YouTube 原站观看。NURI 不在应用内播放或下载视频。")}</NuriText>
       <View testID="daily-video-summary-section" style={{gap:16}}>
         <NuriText>{t("AI 检索摘要")}</NuriText>
@@ -169,7 +173,6 @@ export default function DailyVideoScreen() {
         {summaryFailure?<View testID="daily-video-summary-error"><RequestFailureNotice error={summaryFailure} onRetry={retrySummary} onPermission={()=>router.push(aiPermissionHref(permissionReturn))} onLogin={()=>router.push("/login")} /></View>:null}
         <NuriText secondary style={{fontSize:12,lineHeight:18}} testID="daily-video-summary-disclosure">{t("根据标题和公开检索片段整理，未观看完整视频或获取字幕。请到原站核对。")}</NuriText>
       </View>
-      {guide?<View testID="daily-video-nuri-guide" style={{gap:16}}><NuriText>{t("一起想想")}</NuriText><NuriText testID="daily-video-guide-headline">{guide.headline}</NuriText><NuriText testID="daily-video-guide-intro">{guide.intro}</NuriText>{guide.actions.slice(0,3).map((text,index)=><NuriText key={index} testID={`daily-video-guide-action-${index}`}>{text}</NuriText>)}<NuriText secondary style={{fontSize:12}} testID="daily-video-guide-disclosure">{guide.disclosure}</NuriText></View>:null}
       <NuriText secondary style={{fontSize:12}}>{t("外部视频内容不属于 NURI。请在原站判断内容是否适合你的情况。")}</NuriText>
       <NuriButton label={openingSource?t("正在打开…"):t("在YouTube打开")} busy={openingSource} disabled={openingSource} onPress={()=>void openSource()} accessibilityRole="link" testID="daily-video-source" />
       <NuriButton secondary label={openingChat?t("正在打开…"):t("和 NURI 聊聊育儿问题")} busy={openingChat} disabled={openingChat} onPress={()=>void talk()} testID="daily-video-chat" />

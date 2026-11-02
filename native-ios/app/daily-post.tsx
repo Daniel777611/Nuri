@@ -9,6 +9,7 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { CardList, CenteredCard, NuriButton, NuriText, MenuRow } from "@/src/uiux48/Primitives";
+import { FinalArticle } from "@/src/uiuxfinal/Article";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { api, type DailyPostCard } from "@/src/api";
 import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
@@ -155,27 +156,16 @@ export default function DailyPostScreen() {
       }}
     />;
   }
-  return <CardList>
-    {failureNotice}<NuriText secondary style={{fontSize:12}}>{dailyPostTag(t,card)}</NuriText>
-    {card.locale&&card.locale!==locale?<NuriText secondary testID="daily-post-original-language">{t("此内容保留原语言，尚未提供当前语言的翻译。")}</NuriText>:null}
-    <NuriText style={{fontSize:20,fontWeight:"500",lineHeight:28}}>{sourceAvailable?card.headline:guide.headline}</NuriText>
-    <NuriText secondary testID="daily-post-greeting" style={{fontSize:12}}>{dailyPostGreeting(t,card.nickname,card.audience)}</NuriText>
-    <View testID="daily-post-ai-summary" style={{gap:16}}>
-      <NuriText secondary style={{fontSize:12}}>{t("AI 检索摘要")}</NuriText>
-      {hasSummary?<>{question?<NuriText testID="daily-post-summary-question">{question}</NuriText>:null}{situation?<NuriText testID="daily-post-summary-situation">{situation}</NuriText>:null}{takeaways.map((text,index)=><MenuRow key={index} label={text} onPress={()=>router.push({pathname:"/daily-post",params:{id:card.id,uiState:"takeaway",point:String(index)}})} testID={`daily-post-summary-point-${index}`} />)}</>:<NuriText testID="daily-post-summary-empty">{t("这条资源暂时没有可用摘要，请打开原站查看。")}</NuriText>}
-      <NuriText secondary style={{fontSize:12,lineHeight:18}} testID="daily-post-summary-disclosure">{t(RESOURCE_SUMMARY_DISCLOSURE)}</NuriText>
-      {card.summary_source==="facebook_ai_summary"?<NuriText secondary style={{fontSize:12}} testID="daily-post-summary-basis">{t("此摘要根据检索到的 Facebook AI 摘要再整理，不是原帖逐字引用。")}</NuriText>:null}
-    </View>
-    {reason?<NuriText secondary testID="daily-post-recommendation-reason">{reason}</NuriText>:null}
-    {caution?<NuriText secondary style={{fontSize:12}} testID="daily-post-summary-caution">{caution}</NuriText>:null}
-    <View testID="daily-post-question" style={{gap:16}}>
-      <NuriText>{t("一起想想")}</NuriText><NuriText testID="daily-post-guide-headline">{guide.headline}</NuriText><NuriText testID="daily-post-guide-intro">{guide.intro}</NuriText>
-      {guide.actions.map((action,index)=><NuriText key={index} testID={`daily-post-guide-action-${index}`}>{action}</NuriText>)}
-      <NuriText secondary style={{fontSize:12}} testID="daily-post-guide-disclosure">{guide.disclosure}</NuriText>
-    </View>
-    <NuriText secondary style={{fontSize:12}}>{t("原站的家长经验不代替专业建议。每个孩子都不一样，涉及健康或安全的问题请咨询合适的专业人员。")}</NuriText>
-    <NuriButton label={t("和NURI聊聊这个")} disabled={openingChat} busy={openingChat} onPress={talkItThrough} testID="daily-post-chat" />
-    <NuriButton secondary label={t("打开原站链接")} onPress={()=>void openSource()} accessibilityRole="link" testID="daily-post-source" />
-    {sourceFailure?<NuriText secondary testID="daily-post-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}
-  </CardList>;
+  return <FinalArticle
+    title={sourceAvailable?card.headline:guide.headline}
+    source={dailyPostTag(t,card)}
+    summary={situation||question}
+    points={takeaways}
+    notes={[t(RESOURCE_SUMMARY_DISCLOSURE),card.locale&&card.locale!==locale?t("此内容保留原语言，尚未提供当前语言的翻译。"):"",caution||""]}
+    onSource={()=>void openSource()}
+    onTalk={talkItThrough}
+    busy={openingChat}
+    notice={<>{failureNotice}{sourceFailure?<NuriText secondary testID="daily-post-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}</>}
+    allowSavePreview={process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"}
+  />;
 }

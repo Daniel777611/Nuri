@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -49,7 +50,7 @@ const mocks = {
   "@/src/components/DailyPostCard": { __esModule: true, default: "DailyPostCard" },
   "@/src/components/DailyVideoCard": { __esModule: true, default: "DailyVideoCard" },
   "@/src/components/RequestFailureNotice": { __esModule: true, default: "RequestFailureNotice" },
-  "@/src/i18n": { useT: () => ({ t: (text, variables = {}) => text.replace(/\{(\w+)\}/g, (_all, key) => String(variables[key] ?? key)), locale: "zh-CN" }) },
+  "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t: (text, variables = {}) => text.replace(/\{(\w+)\}/g, (_all, key) => String(variables[key] ?? key)), locale: "zh-CN" }) },
   "@/src/aiPermissionNavigation": loadHelper("../src/aiPermissionNavigation.ts"),
   "@/src/requestFailure": loadHelper("../src/requestFailure.ts"),
 };

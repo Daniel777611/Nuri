@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -43,7 +44,7 @@ function fixture({ platform = "ios", locale = "en", purchaseAllowed = true, inSh
       billingCheckout: async (...args) => { checkoutCalls.push(args); return { url: "https://checkout.invalid/fixture" }; },
       billingPortal: async (...args) => { portalCalls.push(args); return { url: "https://portal.invalid/fixture" }; },
     } },
-    "@/src/i18n": { useT: () => ({ locale, t: (key) => key }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (key) => key }) },
     "@/src/nativeShell": { isNativeShell: () => inShell, usePurchaseAllowed: () => purchaseAllowed, useOnReturnToApp: (callback) => { returned = callback; } },
     "@/src/theme": { colors: {}, radius: {}, spacing: {}, type: {} },
   };

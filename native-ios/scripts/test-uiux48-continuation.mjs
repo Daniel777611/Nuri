@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -11,7 +12,7 @@ function savedFixture({fail=false,initialCollection=null,existingDraft=""}={}){
  let epoch=1,renderEpoch=1,cursor=0,tree,focus,release;const slots=[],calls=[],routes=[],drafts=[],sessionRequests=[];let params={id:"fixture-card",uiState:"detail"};
  const state=initial=>{const index=cursor++,owner=renderEpoch;if(!(index in slots))slots[index]=initial;return[slots[index],v=>{if(owner===epoch)slots[index]=typeof v==="function"?v(slots[index]):v;}];};
  const jsx=(type,props)=>({type,props});
- const Component=load("app/saved/[id].tsx",{react:{useCallback:x=>x,useRef:v=>{const index=cursor++;return slots[index]??={current:v};}},"react/jsx-runtime":{jsx,jsxs:jsx},"expo-router":{useLocalSearchParams:()=>params,useRouter:()=>({setParams:p=>{params={...params,...p};},replace:p=>routes.push(p),push:p=>routes.push(p)}),useFocusEffect:fn=>{focus=fn;}},"@/src/api":{auth:{getToken:async()=>"fixture-token"},api:{listFavorites:async()=>[{id:"fixture-card",title:"Fixture bedtime",body:"Fixture body",collection_id:initialCollection}],listCollections:async()=>[{id:"fixture-collection",name:"Fixture sleep"}],saveFavorite:(...a)=>{calls.push(["save",...a]);return new Promise((yes,no)=>{release=()=>fail?no(Error("fixture offline")):yes({saved:true,card_id:"fixture-card",collection_id:"fixture-collection"});});},toggleFavorite:async(...a)=>calls.push(["remove",...a]),startSession:async payload=>{sessionRequests.push(payload);return {id:"fixture-chat"};}}},"@/src/useAccountState":{useAccountState:state,useAccountScope:()=>{const owner=renderEpoch;return{capture:()=>epoch===owner?owner:null,current:t=>t!==null&&t===epoch};}},"@/src/i18n":{useT:()=>({locale:"en"})},"@/src/uiux48/Primitives":Object.fromEntries(["AuthFrame","MenuRow","NuriButton","NuriField","NuriText"].map(n=>[n,n])),"@/src/uiux48/StateCard":{StateCard:"StateCard"},"@/src/collectionActions":load("src/collectionActions.ts"),"@/src/uiux48/chatDraft":{readChatDraft:()=>existingDraft,writeChatDraft:(...a)=>drafts.push(a)}}).default;
+ const Component=load("app/saved/[id].tsx",{react:{useCallback:x=>x,useRef:v=>{const index=cursor++;return slots[index]??={current:v};}},"react/jsx-runtime":{jsx,jsxs:jsx},"expo-router":{useLocalSearchParams:()=>params,useRouter:()=>({setParams:p=>{params={...params,...p};},replace:p=>routes.push(p),push:p=>routes.push(p)}),useFocusEffect:fn=>{focus=fn;}},"@/src/api":{auth:{getToken:async()=>"fixture-token"},api:{listFavorites:async()=>[{id:"fixture-card",title:"Fixture bedtime",body:"Fixture body",collection_id:initialCollection}],listCollections:async()=>[{id:"fixture-collection",name:"Fixture sleep"}],saveFavorite:(...a)=>{calls.push(["save",...a]);return new Promise((yes,no)=>{release=()=>fail?no(Error("fixture offline")):yes({saved:true,card_id:"fixture-card",collection_id:"fixture-collection"});});},toggleFavorite:async(...a)=>calls.push(["remove",...a]),startSession:async payload=>{sessionRequests.push(payload);return {id:"fixture-chat"};}}},"@/src/useAccountState":{useAccountState:state,useAccountScope:()=>{const owner=renderEpoch;return{capture:()=>epoch===owner?owner:null,current:t=>t!==null&&t===epoch};}},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale:"en"})},"@/src/uiux48/Primitives":Object.fromEntries(["AuthFrame","MenuRow","NuriButton","NuriField","NuriText"].map(n=>[n,n])),"@/src/uiux48/StateCard":{StateCard:"StateCard"},"@/src/collectionActions":load("src/collectionActions.ts"),"@/src/uiux48/chatDraft":{readChatDraft:()=>existingDraft,writeChatDraft:(...a)=>drafts.push(a)}}).default;
  return{calls,routes,drafts,sessionRequests,render(){cursor=0;renderEpoch=epoch;tree=Component();return tree;},find:id=>all(tree).find(n=>n.props?.testID===id),async focus(){focus();await tick();await tick();},finish:()=>release(),changeOwner(){epoch++;}};
 }
 test("saved detail and collection navigation have no mutation side effects",async()=>{
@@ -42,8 +43,8 @@ test("Metro excludes gallery graph in all release combinations, even an accident
   const p=spawnSync(process.execPath,["-e",`const c=require('./metro.config.js');console.log(c.resolver.resolveRequest({dev:${dev}},'nuri-uiux48-fixture-gallery','ios').filePath);`],{encoding:"utf8",env:{...process.env,EXPO_NO_DOTENV:"1",EXPO_PUBLIC_PREVIEW_MODE:preview,EXPO_PUBLIC_UIUX48_GALLERY:flag}});assert.equal(p.status,0,p.stderr);assert.equal(p.stdout.trim().endsWith("src/dev/uiux48/Gallery.tsx"),dev&&preview==="1"&&flag==="1");
  }
 });
-test("media entry and review remain explicit, preserve exact adapters and never send from effects",()=>{
- const source=read("app/chat/[id].tsx");assert.match(source,/setMediaState\("voiceReview"\)/);assert.match(source,/voice-permission-continue/);assert.match(source,/camera-permission-continue/);assert.match(source,/media-review-plus/);assert.match(source,/media-review-mic/);assert.match(source,/onDismiss=\{flushNativePicker\}/);assert.match(source,/await api\.transcribeVoice\(clip, locale\)/);assert.match(source,/startVoiceRecording\(\)/);assert.match(source,/launchCameraAsync/);assert.match(source,/media-review-send/);
+test("user-approved inline media removes redundant permission/review pages while retaining real adapters",()=>{
+ const source=read("app/chat/[id].tsx");assert.doesNotMatch(source,/setMediaState|voice-permission-continue|camera-permission-continue|media-review-send/);assert.match(source,/onStop=\{\(\)=>void stopVoice\("draft"\)\}/);assert.match(source,/onSend=\{\(\)=>void stopVoice\("send"\)\}/);assert.match(source,/onDismiss=\{flushNativePicker\}/);assert.match(source,/await api\.transcribeVoice\(clip, locale\)/);assert.match(source,/startVoiceRecording\(\)/);assert.match(source,/launchCameraAsync/);assert.match(source,/testID="chat-image-preview"/);
  const state=read("src/uiux48/StateCard.tsx");assert.doesNotMatch(state,/useEffect|from ["'][^"']*(?:api|auth)["']/);assert.match(state,/onPress=\{primary.onPress\}/);
 });
 
@@ -52,12 +53,13 @@ test("release Community entries are localized coming-soon surfaces, with no comp
  for(const locale of ["zh-CN","zh-TW","en"]){
   let params={},tree;const routes=[];
   const Component=load("app/community.tsx",{
+   "nuri-ux49-flow-preview":{FLOW_PREVIEW_ENABLED:false,default:"DisabledPrototype",__esModule:true},
    "react/jsx-runtime":{jsx,jsxs:jsx},
    "expo-router":{useLocalSearchParams:()=>params,useRouter:()=>({push:href=>routes.push(href),replace:href=>routes.push(href),canGoBack:()=>false})},
    "@/src/i18n":{useT:()=>({locale})},
    "@/src/uiux48/Primitives":{CardList:"CardList",MenuRow:"MenuRow",NuriText:"NuriText"},
    "@/src/uiux48/StateCard":{StateCard:"StateCard"},
-  }).default;
+  }).UnavailableCommunity;
   const status=locale==="en"?"Coming soon":locale==="zh-TW"?"未上線":"未上线";
   tree=Component();assert.equal(all(tree).find(n=>n.props?.testID==="community-launch-status").props.children,status);
   for(const [id,screen] of [["community-ask","ask"],["community-find","find"],["community-inbox","inbox"]]){

@@ -1,41 +1,59 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Keyboard, Platform, Pressable, StyleSheet, Text, View, type KeyboardEvent } from "react-native";
 import { usePathname, useRouter, useSegments, useGlobalSearchParams } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { useT } from "@/src/i18n";
+import { Image } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
+import { BlurView } from "expo-blur";
+import { useT, translate } from "@/src/i18n";
 import NativePageControls from "@/src/components/NativePageControls";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
 import { NuriScene } from "./Scene";
 import { useNuriTheme } from "./Theme";
 import { GlassSurface, NuriIcon } from "./Primitives";
+import { keyboardPanelTop } from "./keyboard";
 
 export function NuriShell({ children }: { children: ReactNode }) {
-  const path=usePathname(); const segments=useSegments(); const {night,mode}=useNuriTheme();
+  const path=usePathname(); const segments=useSegments(); const {night,mode,keyboard:keyboardTheme}=useNuriTheme();
   const [keyboard,setKeyboard]=useState(false);
-  useEffect(()=>{const show=Keyboard.addListener("keyboardWillShow",()=>setKeyboard(true));const hide=Keyboard.addListener("keyboardWillHide",()=>setKeyboard(false));const showAndroid=Keyboard.addListener("keyboardDidShow",()=>setKeyboard(true));const hideAndroid=Keyboard.addListener("keyboardDidHide",()=>setKeyboard(false));return()=>{show.remove();hide.remove();showAndroid.remove();hideAndroid.remove();};},[]);
+  const root=useRef<View>(null);
+  const [rootFrame,setRootFrame]=useState({y:0,width:0,height:0});
+  const [keyboardFrame,setKeyboardFrame]=useState<KeyboardEvent["endCoordinates"]|null>(null);
+  useEffect(()=>{
+    const show=(event:KeyboardEvent)=>{if(Platform.OS==="ios")Keyboard.scheduleLayoutAnimation(event);setKeyboard(true);setKeyboardFrame(event.endCoordinates);};
+    const hide=()=>{setKeyboard(false);setKeyboardFrame(null);};
+    const change=(event:KeyboardEvent)=>{Keyboard.scheduleLayoutAnimation(event);setKeyboardFrame(event.endCoordinates);};
+    const listeners=[Keyboard.addListener("keyboardWillShow",show),Keyboard.addListener("keyboardWillHide",hide),Keyboard.addListener("keyboardDidShow",show),Keyboard.addListener("keyboardDidHide",hide),Keyboard.addListener("keyboardWillChangeFrame",change)];
+    return()=>listeners.forEach(listener=>listener.remove());
+  },[]);
+  const panelTop=Platform.OS==="ios"&&keyboard?keyboardPanelTop(keyboardFrame,rootFrame):null;
   const welcome=path==="/welcome";
-  const {uiState}=useGlobalSearchParams<{uiState?:string}>();
+  const {uiState,communityBackdrop,communityHideTabs}=useGlobalSearchParams<{uiState?:string;communityBackdrop?:string;communityHideTabs?:string}>();
+  const community=path==="/community"&&process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1";
   const signedOutResult=path==="/account-deletion"&&uiState==="deleted";
   const home=segments[0]==="(tabs)"&&path==="/";
   const auth=/^\/(welcome|login|register|verify-email|forgot-password|onboarding|ai-permission)$/.test(path);
-  return <View testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
+  const settings=/^\/(profile|child|notification-settings|account-deletion|ai-permission)(\/|$)/.test(path)||community&&communityBackdrop==="settings";
+  return <View ref={root} onLayout={()=>root.current?.measureInWindow((_x,y,width,height)=>setRootFrame(previous=>previous.y===y&&previous.width===width&&previous.height===height?previous:{y,width,height}))} testID={`nuri-shell-${mode}`} style={{flex:1,backgroundColor:night?"#2d2942":"#f5edde"}}>
     <StatusBar style={night?"light":"dark"} />
-    <NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />
+    {community?communityBackdrop==="plain"?<LinearGradient colors={["#FFFAF5","#F7ECE8","#FFFAF5"]} style={StyleSheet.absoluteFill}/>:<Image source={communityBackdrop==="final-bottle"?require("@/assets/final-flow-20261101/bottle-background.png"):require("@/assets/final-flow-20261101/community-background.png")} contentFit="cover" style={StyleSheet.absoluteFill} testID="community-approved-background" />:!auth&&!home?<LinearGradient colors={["#FFFAF5","#F9F5F2","#F2EEEE"]} style={StyleSheet.absoluteFill}/>:<NuriScene welcome={welcome} mascot={home} focused={!welcome&&!home} />}
+    {settings?<View pointerEvents="none" style={StyleSheet.absoluteFill}><Image source={require("@/assets/final-flow-20261101/settings-background.png")} contentFit="cover" style={StyleSheet.absoluteFill}/><View style={[StyleSheet.absoluteFill,{backgroundColor:"rgba(255,250,242,.78)"}]}/><BlurView tint="light" intensity={20} style={[StyleSheet.absoluteFill,{backgroundColor:"rgba(255,255,255,.5)"}]}/></View>:null}
+    {panelTop!==null?<View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" testID="nuri-keyboard-backplate" style={{position:"absolute",top:panelTop,left:0,right:0,bottom:0,borderTopLeftRadius:28,borderTopRightRadius:28,backgroundColor:keyboardTheme.surface}} />:null}
     {!welcome?<SafeAreaView edges={["top"]} style={Platform.OS==="web"?{paddingTop:62}:undefined}>{home?null:<NativePageControls />}</SafeAreaView>:null}
     <SafeAreaView edges={auth&&!welcome?["bottom"]:[]} style={{flex:1,minHeight:0,paddingBottom:Platform.OS==="web"&&auth&&!welcome?34:0}}>{children}</SafeAreaView>
-    {!auth&&!welcome&&!keyboard&&!signedOutResult?<NuriTabBar />:null}
+    {!keyboard&&!signedOutResult&&(home||path==="/chats"||community&&communityHideTabs!=="1")?<NuriTabBar />:null}
   </View>;
 }
 
 export function NuriTabBar() {
   const path=usePathname();const router=useRouter();const {locale}=useT();const t=useNuriTheme();const safe=useSafeAreaInsets();
   const active=path.startsWith("/chat")?"chat":path.startsWith("/notification")?"notifications":path.startsWith("/community")?"community":path==="/"?"home":null;
-  const routes=[{name:"home",cn:"首页",en:"Home",route:"/(tabs)"},{name:"chat",cn:"对话",en:"Chat",route:"/(tabs)/chats"},{name:"notifications",cn:"推送",en:"Notifications",route:"/notifications"},{name:"community",cn:"社区",en:"Community",route:"/community"}] as const;
-  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><GlassSurface kind="pill" contentStyle={s.tabs} style={{width:"100%",maxWidth:500,alignSelf:"center"}}>{routes.map(tab=><Pressable key={tab.name} onPress={()=>{
+  const routes=[{name:"home",cn:"首页",en:"Home",route:"/(tabs)"},{name:"chat",cn:"对话",en:"Chat",route:"/(tabs)/chats"},{name:"community",cn:"社区",en:"Community",route:"/community"}] as const;
+  return <View style={[s.footer,{paddingBottom:Math.max(25,safe.bottom-9)}]} testID="nuri-tab-bar"><GlassSurface kind="pill" contentStyle={s.tabs} style={{width:268,maxWidth:"100%",alignSelf:"center"}}>{routes.map(tab=><Pressable key={tab.name} onPress={()=>{
     if(active===tab.name)return;
     if(requestGuardedNativeNavigation(path,tab.name))return;
     router.navigate(tab.route as never);
-  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:tab.cn} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?(t.night?"rgba(166,125,153,.26)":"rgba(166,125,153,.19)"):"transparent"}]}><NuriIcon name={tab.name} /><Text numberOfLines={1} style={{fontSize:9,lineHeight:12,color:t.ink}}>{locale==="en"?tab.en:tab.cn}</Text></Pressable>)}</GlassSurface></View>;
+  }} accessibilityRole="tab" accessibilityLabel={locale==="en"?tab.en:translate(locale,tab.cn)} accessibilityState={{selected:active===tab.name}} testID={`nuri-tab-${tab.name}`} style={[s.tab,{backgroundColor:active===tab.name?"rgba(255,255,255,.5)":"transparent"}]}><NuriIcon name={tab.name} size={20}/></Pressable>)}</GlassSurface></View>;
 }
-const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:16},tabs:{flexDirection:"row",height:54,padding:3},tab:{flex:1,minHeight:48,borderRadius:24,alignItems:"center",justifyContent:"center",gap:2}});
+const s=StyleSheet.create({footer:{paddingHorizontal:24,paddingTop:10},tabs:{flexDirection:"row",height:56,paddingHorizontal:8,paddingVertical:4},tab:{flex:1,height:48,borderRadius:24,alignItems:"center",justifyContent:"center"}});

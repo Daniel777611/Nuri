@@ -32,7 +32,7 @@ import {
   savePendingVerification,
   useCountdown,
 } from "@/src/authFlow";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 
@@ -149,11 +149,11 @@ export default function VerifyEmail() {
 
   return <AuthFrame testID="verify-email-step">
     <NuriText>{t("我们已向 {email} 发送了 6 位验证码，10 分钟内有效。",{email})}</NuriText>
-    <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"6-digit code":"6 位验证码"} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} onSubmitEditing={()=>canSubmit&&submit()} testID="verify-code" />
+    <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"6-digit code":translate(locale, "6 位验证码")} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} onSubmitEditing={()=>canSubmit&&submit()} testID="verify-code" />
     <Pressable onPress={resend} disabled={secondsLeft>0||resending} style={{minHeight:44,justifyContent:"center"}} testID="verify-resend"><NuriText style={{fontSize:16,opacity:secondsLeft>0?.5:1}}>{resending?t("发送中..."):secondsLeft>0?t("{n} 秒后可重新发送",{n:secondsLeft}):t("重新发送验证码")}</NuriText></Pressable>
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="verify-error">{error}</NuriText>:null}
     {notice?<NuriText secondary style={{fontSize:13}} testID="verify-notice">{notice}</NuriText>:null}
-    <NuriButton label={submitting?t("验证中..."):(locale==="en"?"Verify and continue":"验证并继续")} busy={submitting} disabled={!canSubmit} onPress={submit} testID="verify-submit-btn" />
+    <NuriButton label={submitting?t("验证中..."):(locale==="en"?"Verify and continue":translate(locale, "验证并继续"))} busy={submitting} disabled={!canSubmit} onPress={submit} testID="verify-submit-btn" />
     <Pressable onPress={switchEmail} style={{minHeight:44,justifyContent:"center"}} testID="verify-use-another-email"><NuriText secondary style={{fontSize:13}}>{t("换一个邮箱")}</NuriText></Pressable>
   </AuthFrame>;
 }

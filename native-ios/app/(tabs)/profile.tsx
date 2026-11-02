@@ -18,12 +18,14 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
-import { LOCALE_LABELS, LOCALES, useT } from "@/src/i18n";
+import { LOCALE_LABELS, LOCALES, useT, translate } from "@/src/i18n";
 import { usePurchaseAllowed } from "@/src/nativeShell";
 import { openNotificationSettings } from "@/src/nativePush";
 import { colors, radius, spacing, type } from "@/src/theme";
 
-import { CardList, CardStack, CenteredCard, GlassSurface, MenuRow, ToggleRow, NuriButton, NuriField, NuriText, ChoiceChip, InlineState } from "@/src/uiux48/Primitives";
+import { CardStack, CenteredCard, GlassSurface, NuriText, InlineState } from "@/src/uiux48/Primitives";
+import { SettingsPage as CardList, SettingsRow as MenuRow, SettingsToggle as ToggleRow, SettingsButton as NuriButton, SettingsField as NuriField, SettingsChoice as ChoiceChip, SettingsSpacer } from "@/src/uiuxfinal/Settings";
+import { UserAvatar } from "@/src/uiuxfinal/UserAvatar";
 import { NuriAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { StateCard } from "@/src/uiux48/StateCard";
@@ -41,10 +43,11 @@ export default function Profile() {
   const [loadState,setLoadState]=useAccountState<"loading"|"ready"|"error">("loading");
   const [actionError,setActionError]=useAccountState("");
   const [saving,setSaving]=useAccountState(false);
-  const [result,setResult]=useAccountState<"saved"|"cleared"|null>(null);
+  const [result,setResult]=useAccountState<"saved"|"language-local"|"cleared"|null>(null);
   const [confirmLogout,setConfirmLogout]=useState(false);
   const confirmIdentity=useRef(auth.getIdentityGeneration());
   const mutation=useRef(false);
+  const languageChoicePending=useRef(false);
   const [collectionName,setCollectionName]=useAccountState("");
   const [collectionTarget,setCollectionTarget]=useAccountState<string|null>(null);
   const [collectionDelete,setCollectionDelete]=useAccountState<string|null>(null);
@@ -56,7 +59,7 @@ export default function Profile() {
   const [help,setHelp]=useAccountState("");
 
   const { generation, capture, current, isMounted } = useAccountScope();
-  const { t, locale, setLocale } = useT();
+  const { t, locale, setLocale,languageMode,chooseLanguage } = useT();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const [children, setChildren] = useAccountState<any[]>([]);
@@ -125,7 +128,7 @@ export default function Profile() {
     }, [load])
   );
 
-  const updatePrivacy = async (patch: any) => {
+  const updatePrivacy = async (patch: any, localeAlreadySaved=false) => {
     const ticket = capture();
     if (ticket === null || privacyUnavailable || mutation.current) return;
     mutation.current=true;setSaving(true);setActionError("");
@@ -135,18 +138,28 @@ export default function Profile() {
     // their choice.
     const next = { ...privacy, language: locale, ...patch };
     setPrivacy(next);
-    if (patch.language) await setLocale(patch.language);
-    if (!current(ticket)){mutation.current=false;setSaving(false);return;}
     try {
+      if (patch.language&&!localeAlreadySaved) await setLocale(patch.language);
+      if (!current(ticket)) return;
       await api.setPrivacy(next);
       if(current(ticket))setResult("saved");
-    } catch {
+    } catch (failure) {
       if (!current(ticket)) return;
+      // A full PrivacySettings PUT preserves existing cloud flags. Its
+      // consent guard must not be bypassed or replaced with a partial body
+      // (the existing backend fills omitted flags with defaults). Keep the
+      // independently saved UI language, without claiming cloud sync or AI
+      // permission, when that unchanged full body requires consent.
+      if (Object.keys(patch).length === 1 && patch.language) {
+        setPrivacy(previous);setResult("language-local");return;
+      }
       // Do not leave a privacy toggle visually enabled/disabled when the
       // persisted setting did not actually save.
       setPrivacy(previous);
-      if (patch.language) await setLocale(locale);
-      setActionError(locale==="en"?"Not saved. Please retry.":"未能保存，请重试。");
+      if (patch.language) {
+        try { await setLocale(locale); } catch { /* Keep the failure explicit; never claim a save. */ }
+      }
+      setActionError(locale==="en"?"Not saved. Please retry.":translate(locale, "未能保存，请重试。"));
     } finally {mutation.current=false;if(current(ticket))setSaving(false);}
   };
 
@@ -211,36 +224,38 @@ export default function Profile() {
   };
 
 
-  const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:cn;
+  const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:translate(locale,cn);
   const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch{if(current(ticket))setActionError(copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
   const titles:Record<string,string>={personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
+  if(result==="language-local")return <StateCard testID="profile-language-local-card" title={copy("本机语言已更改","Language changed on this device")} message={copy("页面语言已保存在这台设备上。云端语言尚未同步。","The page language is saved on this device. The cloud language has not been synced.")} note={copy("更改本机语言不代表授权 AI。若之后允许相关 AI 功能，可再次选择语言以同步云端偏好。","Changing the device language does not grant AI permission. If you later allow the relevant AI features, select the language again to sync the cloud preference.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
   if(result==="cleared")return <StateCard testID="profile-cleared-card" title={copy("云端数据已清除","Cloud data cleared")} message={copy("你可以重新设置资料，或退出登录。","You can set up your profile again, or sign out.")} primary={{label:copy("重新设置","Set up again"),onPress:()=>{setResult(null);router.replace("/onboarding");}}} secondary={{label:copy("退出登录","Sign out"),onPress:()=>{setResult(null);setConfirmLogout(true);}}} error={logoutError??undefined} />;
   if(confirmLogout)return <StateCard testID="profile-logout-card" title={copy("退出登录？","Sign out?")} message={copy("随时重新登录，继续自己的对话。","Sign in again anytime to continue your conversations.")} primary={{label:copy("退出登录","Sign out"),onPress:()=>void logout(logoutFailureCode==="LOCAL_SIGNOUT_FAILED")}} secondary={{label:copy("取消","Cancel"),onPress:()=>setConfirmLogout(false)}} busy={signingOut} error={logoutError??undefined}>{logoutFailureCode==="PUSH_CLEANUP_PENDING"?<><NuriButton secondary label={copy("打开系统通知设置","Open notification settings")} onPress={()=>void openNotificationSettings().catch(()=>setLogoutError(copy("系统设置未能打开，请重试。","Could not open system settings.")))} /><NuriButton secondary label={copy("仅本机退出（可能仍收到旧账号通知）","Sign out locally (notifications may continue)")} disabled={signingOut} onPress={()=>void logout(true)} testID="profile-force-local-logout" /></>:null}</StateCard>;
   return <View style={{flex:1}}>
-    {section==="main"?<CardStack testID="profile-card-stack">
-      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:14,flexDirection:"row",gap:16,alignItems:"center"}}><NuriAvatar size={56} /><View style={{flex:1}}><NuriText style={{fontSize:20,fontWeight:"500"}}>{me?.nickname||copy("个人资料","Your profile")}</NuriText><NuriText secondary style={{fontSize:12,lineHeight:16}}>{copy("和 Nuri 一起照顾每一天","Care for each day with Nuri")}</NuriText></View></GlassSurface>
-      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}>{row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("我的收藏","Favorites"),"favorites")}{row(copy("家庭偏好","Family preferences"),"preferences")}</GlassSurface>
-      <GlassSurface kind="message" contentStyle={{paddingHorizontal:20,paddingVertical:10}}><MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI 许可","Privacy & AI permission"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}</GlassSurface>
-    </CardStack>:<CardList>
-      <NuriText style={{fontSize:20,fontWeight:"500"}}>{titles[section]||copy("设置","Settings")}</NuriText>
+    {section==="main"?<CardList testID="profile-card-stack" contentContainerStyle={{gap:0}}>
+      {row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("家庭偏好","Family preferences"),"preferences")}
+      <MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />
+      {row(copy("我的收藏","Favorites"),"favorites")}
+      <View style={{height:1,backgroundColor:"rgba(115,92,132,.15)",marginVertical:18}} />
+      <MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI","Privacy & AI"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}
+    </CardList>:<CardList>
       {notice}
       {section==="personal"?<>
+        <UserAvatar size={56} displayName={parentName} />
         <NuriField label={copy("称呼","Name")} value={parentName} onChangeText={setParentName} testID="profile-name" />
-        <NuriField label={copy("邮箱","Email")} value={me?.email||""} editable={false} />
         <NuriField label={copy("居住城市","City")} value={city} onChangeText={setCity} placeholder={copy("稍后填写","Add later")} />
         <NuriText secondary>{copy("照护角色","Caregiving role")}</NuriText><View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["mom",copy("妈妈","Mom")],["dad",copy("爸爸","Dad")],["other",copy("其他照护者","Other caregiver")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={role===key} onPress={()=>setRole(key)} />)}</View>
-        <NuriButton label={copy("保存资料","Save profile")} busy={saving} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({nickname:parentName.trim(),city:city.trim(),parent_role:role||undefined}))} />
+        <SettingsSpacer/><NuriButton label={copy("保存","Save")} busy={saving} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({nickname:parentName.trim(),city:city.trim(),parent_role:role||undefined}))} />
       </>:null}
-      {section==="children"?<>{children.map(c=><MenuRow key={c.id} label={c.nickname} detail={(({key,vars})=>t(key,vars))(ageLabel(c.birth_date))} onPress={()=>router.push(`/child/${c.id}`)} testID={`profile-child-${c.id}`} />)}{loadState==="ready"&&!children.length?<NuriText secondary>{copy("还没有添加孩子资料。","No child profiles added.")}</NuriText>:null}<NuriButton label={copy("添加孩子","Add a child")} onPress={()=>router.push("/child/new")} testID="profile-add-child" /></>:null}
+      {section==="children"?<>{children.map(c=><MenuRow key={c.id} label={c.nickname} detail={(({key,vars})=>t(key,vars))(ageLabel(c.birth_date))} onPress={()=>router.push({pathname:"/child/[id]",params:{id:c.id,uiState:"edit"}})} testID={`profile-child-${c.id}`} />)}{loadState==="ready"&&!children.length?<NuriText secondary>{copy("还没有添加孩子资料。","No child profiles added.")}</NuriText>:null}<NuriButton label={copy("添加孩子","Add a child")} onPress={()=>router.push("/child/new")} testID="profile-add-child" /></>:null}
       {section==="favorites"?<>{favorites.map(f=><MenuRow key={f.id} label={f.title} detail={f.type_label} onPress={()=>router.push(`/saved/${f.id}` as never)} testID={`profile-fav-${f.id}`} />)}{loadState==="ready"&&!favorites.length?<InlineState message={copy("这里还没有收藏。","No saved content yet.")} action={copy("回到首页","Go home")} onPress={()=>router.dismissTo("/(tabs)")} />:null}<MenuRow label={copy("管理收藏分类","Manage collections")} onPress={()=>go("collections")} /></>:null}
       {section==="collections"?<>{collections.map(c=><MenuRow key={c.id} label={c.name} onPress={()=>{setCollectionTarget(c.id);setCollectionName(c.name);}} />)}<NuriField label={collectionTarget?copy("编辑分类","Edit collection"):copy("新建分类","New collection")} value={collectionName} onChangeText={setCollectionName} /><NuriText secondary style={{fontSize:12,lineHeight:16}} testID="profile-collection-name-limit">{copy("分类名称最多 20 个字符。","Collection names can contain up to 20 characters.")}</NuriText><NuriButton label={copy("保存分类","Save collection")} disabled={saving||!validCollectionName(collectionName)||loadState!=="ready"} onPress={()=>{const name=validCollectionName(collectionName);if(!name)return;void run(async()=>{if(collectionTarget)await api.renameCollection(collectionTarget,name);else await api.createCollection(name);setCollectionName("");setCollectionTarget(null);});}} />{collectionTarget?<><NuriButton secondary label={copy("取消编辑","Cancel editing")} onPress={()=>{setCollectionTarget(null);setCollectionName("");}} /><NuriButton secondary label={copy("删除分类","Delete collection")} onPress={()=>setCollectionDelete(collectionTarget)} /></>:null}</>:null}
       {section==="preferences"?<>
         <NuriText secondary>{copy("最近关注","Current interests")}</NuriText><View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["sleep",copy("睡眠","Sleep")],["emotion",copy("情绪","Emotions")],["food",copy("饮食","Food")],["parenting",copy("亲子沟通","Communication")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={concerns.includes(key)} onPress={()=>setConcerns(v=>v.includes(key)?v.filter(x=>x!==key):[...v,key])} />)}</View>
-        <NuriField label={copy("兴趣与家庭习惯","Interests & family routines")} value={hobbies} onChangeText={setHobbies} multiline style={{height:100,paddingTop:14}} placeholder={copy("想让 Nuri 了解的日常","Routines to share with Nuri")} /><NuriText secondary>{copy("更希望得到","What helps you most")}</NuriText><View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["empathy",copy("先被理解","Being understood")],["solution",copy("一起想办法","Finding solutions")],["both",copy("两者都需要","Both")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={help===key} onPress={()=>setHelp(key)} />)}</View><NuriButton label={copy("保存偏好","Save preferences")} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({top_concerns:concerns,hobbies,help_preference:help}))} />
+        <NuriField label={copy("兴趣与家庭习惯","Interests & family routines")} value={hobbies} onChangeText={setHobbies} multiline style={{height:100,paddingTop:14}} placeholder={copy("想让 Nuri 了解的日常","Routines to share with Nuri")} /><NuriText secondary>{copy("更希望得到","What helps you most")}</NuriText><View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["empathy",copy("先被理解","Being understood")],["solution",copy("一起想办法","Finding solutions")],["both",copy("两者都需要","Both")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={help===key} onPress={()=>setHelp(key)} />)}</View><SettingsSpacer/><NuriButton label={copy("保存","Save")} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({top_concerns:concerns,hobbies,help_preference:help}))} />
       </>:null}
       {section==="privacy"?<>
         <MenuRow label={copy("第三方 AI 使用许可","Third-party AI permission")} detail={copy("可以随时管理和撤回","Manage or withdraw at any time")} onPress={()=>router.push("/ai-permission")} testID="profile-ai-permission" />
@@ -252,7 +267,12 @@ export default function Profile() {
         <NuriButton label={copy("保存设置","Save settings")} disabled={privacyUnavailable||saving} busy={saving} onPress={()=>void updatePrivacy(privacyDraft)} testID="privacy-save" />
         <MenuRow label={copy("隐私政策","Privacy policy")} onPress={linkPolicy} testID="profile-privacy-policy" />{policyError?<NuriText>{policyError}</NuriText>:null}
       </>:null}
-      {section==="language"?<>{LOCALES.filter(v=>v!=="zh-TW").map(value=><ChoiceChip key={value} label={LOCALE_LABELS[value]} selected={locale===value} onPress={()=>void updatePrivacy({language:value})} testID={`profile-language-${value}`} />)}<NuriText secondary>{copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language.")}</NuriText></>:null}
+      {section==="language"?<>
+        {(["system",...LOCALES] as const).map(value=><Pressable key={value} disabled={saving} accessibilityRole="radio" accessibilityState={{selected:languageMode==="system"?value==="system":value===locale}} style={{minHeight:52,flexDirection:"row",alignItems:"center",gap:12}} testID={`profile-language-${value}`} onPress={()=>{if(languageChoicePending.current||mutation.current)return;const owner=capture();if(owner===null)return;languageChoicePending.current=true;setSaving(true);void (async()=>{try{const next=await chooseLanguage(value);if(!current(owner))return;if(privacyUnavailable){setResult("language-local");return;}await updatePrivacy({language:next},true);}catch{if(current(owner))setActionError(copy("本机语言未能保存，请重试。","Could not save the device language. Please retry."));}finally{languageChoicePending.current=false;if(current(owner))setSaving(false);}})();}}>
+          <NuriText style={{flex:1}}>{value==="system"?copy("跟随系统","Follow system"):LOCALE_LABELS[value]}</NuriText>{(languageMode==="system"?value==="system":value===locale)?<NuriText style={{color:"#735C84"}}>✓</NuriText>:null}
+        </Pressable>)}
+        <NuriText secondary style={{fontSize:12}}>{(privacy.language==="zh"?"zh-CN":privacy.language)===locale?copy("页面与 Nuri 的内容会使用你选择的语言。","Pages and Nuri content will use your selected language."):copy("本机界面已使用所选语言，Nuri 的云端内容语言尚未同步。","Pages use your selected language on this device. Nuri’s cloud content language has not been synced.")}</NuriText>
+      </>:null}
       {section==="account"?<>
         <NuriText secondary>{copy("登录邮箱","Sign-in email")}</NuriText><NuriText>{me?.email||"—"}</NuriText>
         <MenuRow label={copy("设置或重设密码","Set or reset password")} onPress={()=>router.push("/forgot-password")} />

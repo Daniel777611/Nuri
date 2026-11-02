@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -98,7 +99,7 @@ function page(f, locale = "en") {
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@react-navigation/elements": { useHeaderHeight: () => 44 },
     "@expo/vector-icons": { Ionicons: "Icon" }, "@/src/theme": { colors: {}, spacing: {}, radius: {}, type: {} },
     "@/src/authFlow": { savePendingVerification: async () => {} },
-    "@/src/i18n": { useT: () => ({ locale, t: (key) => key, setLocale: async () => {} }) },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (key) => key, setLocale: async () => {} }) },
     "@/src/nativePushRuntime": { safeNotificationRoute: () => null },
     "@/src/components/GoogleSignInButton": { default: "GoogleSignInButton", __esModule: true },
   }).default;

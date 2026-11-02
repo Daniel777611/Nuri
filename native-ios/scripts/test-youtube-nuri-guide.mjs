@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -75,7 +76,7 @@ function page(params = { id: "video-A" }) {
     react: r.react, "react/jsx-runtime": runtime,
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView",
       StyleSheet: { create: (value) => value }, useWindowDimensions: () => ({ width: 390 }) },
-    "@/src/api": { api, aiConsent: { getState: () => p.permission } }, "@/src/i18n": { useT: () => ({ t,locale:"zh-CN" }) },
+    "@/src/api": { api, aiConsent: { getState: () => p.permission } }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t,locale:"zh-CN" }) },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: p.permission }) },
     "@/src/resourceSummary": summaryModule,
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
@@ -132,7 +133,7 @@ test("Home card shows its own topic headline and guide CTA, with unchanged navig
   const guideInputs = [], selected = [];
   const component = load("../src/components/DailyVideoCard.tsx", {
     "react/jsx-runtime": runtime, "react-native": { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: (value) => value } },
-    "@/src/i18n": { useT: () => ({ t }) }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t }) }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "@expo/vector-icons": { Ionicons: "Icon" },
     "@/src/nuriResourceGuide": { nuriResourceGuide: (input, translate) => { guideInputs.push(input); return guideModule.nuriResourceGuide(input, translate); } },
     "@/src/resourceSummary": summaryModule,
   }).default;

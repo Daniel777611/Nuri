@@ -27,7 +27,7 @@ import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
-import { useT } from "@/src/i18n";
+import { useT, translate } from "@/src/i18n";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
@@ -138,13 +138,13 @@ export default function Register() {
 
   return <AuthFrame testID="register-step-account">
     <FormTabs active="register" />
-    <NuriText style={{fontSize:14}}>{locale === "en" ? "Start with a lighter conversation." : "从一次轻松的对话开始。"}</NuriText>
+    <NuriText style={{fontSize:14}}>{locale === "en" ? "Start with a lighter conversation." : translate(locale, "从一次轻松的对话开始。")}</NuriText>
     <View style={{gap:16}}>
-      <NuriField label={locale === "en" ? "Your name" : "称呼"} value={nickname} onChangeText={setNickname} placeholder={locale === "en"?"What should Nuri call you?":"希望 Nuri 怎么称呼你？"} testID="register-nickname" />
+      <NuriField label={locale === "en" ? "Your name" : translate(locale, "称呼")} value={nickname} onChangeText={setNickname} placeholder={locale === "en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} testID="register-nickname" />
       <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="register-email" />
-      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder={locale==="en"?"At least 6 characters":"至少 6 位"} secureTextEntry autoComplete="new-password" testID="register-password" />
+      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder={locale==="en"?"At least 6 characters":translate(locale, "至少 6 位")} secureTextEntry autoComplete="new-password" testID="register-password" />
     </View>
-    <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can read our privacy policy before continuing. AI permission is a separate choice after signing in.":"继续前可查看隐私说明，AI 许可将在登录后单独选择。"}</NuriText>
+    <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can read our privacy policy before continuing. AI permission is a separate choice after signing in.":translate(locale, "继续前可查看隐私说明，AI 许可将在登录后单独选择。")}</NuriText>
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="register-error">{error}</NuriText>:null}
     <NuriButton label={submitting?t("创建中..."):t("创建账号")} busy={submitting} disabled={!canNext||submitting} onPress={submit} testID="register-next-btn" />
     <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />

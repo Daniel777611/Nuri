@@ -2,10 +2,15 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useT } from "@/src/i18n";
 import { CardList, MenuRow, NuriText } from "@/src/uiux48/Primitives";
 import { StateCard } from "@/src/uiux48/StateCard";
+import FlowPreview, { FLOW_PREVIEW_ENABLED } from "nuri-ux49-flow-preview";
 
 /** No MeFi endpoint is present in the verified local API contract. Keep the
  * design's destinations, but do not invent nearby parents, replies or sends. */
 export default function Community() {
+ if(FLOW_PREVIEW_ENABLED)return <FlowPreview entry="community" />;
+ return <UnavailableCommunity />;
+}
+export function UnavailableCommunity() {
  const {locale}=useT();const en=locale==="en";const tw=locale==="zh-TW";const router=useRouter();const {uiState:screen}=useLocalSearchParams<{uiState?:string}>();
  const go=(screen:string)=>router.push({pathname:"/community",params:{uiState:screen}});
  const launchStatus=en?"Coming soon":tw?"未上線":"未上线";

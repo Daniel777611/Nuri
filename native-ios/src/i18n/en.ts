@@ -5,6 +5,8 @@
 // Every key is quoted: the source strings contain full-width punctuation
 // (，。？！) that is not a valid JavaScript identifier.
 export const en: Record<string, string> = {
+  "首页": "Home",
+  "推送": "Notifications",
   "聊聊「{concern}」": "Talk about {concern}",
   "想聊的时候，Nuri 都在": "Nuri is here when you want to talk",
   "孩子正处在{stage}，关于「{concern}」，你最在意什么？可以从最近的一件事聊起。": "At your child's current stage ({stage}), what matters most to you about {concern}? We can start with something that happened recently.",
@@ -809,4 +811,9 @@ export const en: Record<string, string> = {
   "欢迎回来。想从哪里聊起？": "Welcome back. Where would you like to start?",
   "为你找到的育儿话题": "A parenting topic for you",
   "此内容保留原语言，尚未提供当前语言的翻译。": "This content is in its original language. A translation for your selected language is not available yet.",
+  "本机语言已更改": "Language changed on this device",
+  "页面语言已保存在这台设备上。云端语言尚未同步。": "The page language is saved on this device. The cloud language has not been synced.",
+  "更改本机语言不代表授权 AI。若之后允许相关 AI 功能，可再次选择语言以同步云端偏好。": "Changing the device language does not grant AI permission. If you later allow the relevant AI features, select the language again to sync the cloud preference.",
+  "本机界面已使用所选语言，Nuri 的云端内容语言尚未同步。": "Pages use your selected language on this device. Nuri’s cloud content language has not been synced.",
+  "关闭": "Close",
 };

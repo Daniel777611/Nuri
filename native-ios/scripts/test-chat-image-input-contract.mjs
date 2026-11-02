@@ -11,7 +11,7 @@ const imageInput = read("../src/chatImageInput.ts");
 const appConfig = JSON.parse(read("../app.json"));
 
 assert.match(chat, /requestCameraPermissionsAsync\(\)/, "camera use must request permission");
-assert.match(chat, /requestMediaLibraryPermissionsAsync\(\)/, "photo library use must request permission");
+assert.doesNotMatch(chat, /requestMediaLibraryPermissionsAsync\(\)/, "scoped system photo selection must not add a broad library authorization prompt");
 assert.match(chat, /launchCameraAsync\(/, "the action menu must support taking a photo");
 assert.match(chat, /launchImageLibraryAsync\(/, "the action menu must support choosing a photo");
 assert.match(chat, /Do not force capture=environment/, "web camera entry must avoid forced PWA capture");
@@ -24,7 +24,7 @@ assert.match(
   "the plus button must open the system picker directly on web and reserve the NURI menu for native builds",
 );
 assert.match(chat, /onAttach=\{openImageInput\}/, "the shared composer's plus button must use the direct picker dispatcher");
-assert.match(read("../src/uiux48/Composer.tsx"), /onPress=\{onAttach\}/, "the visible plus control must call the injected picker dispatcher");
+assert.match(read("../src/uiux48/Composer.tsx"), /openMedia\(onAttach,large\)/, "expanded plus must first dismiss its native Modal, then call the injected picker dispatcher");
 assert.match(chat, /prepareChatImage\(asset\)/, "selected photos must be resized and compressed");
 assert.match(chat, /setPendingImage\(prepared\)/, "a prepared photo must enter send-preview state");
 assert.match(chat, /testID="chat-image-preview"/, "the chosen photo must be visible before send");

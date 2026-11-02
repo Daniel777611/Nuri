@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import {test} from "node:test";
 import {readFileSync,writeFileSync} from "node:fs";
@@ -11,10 +12,11 @@ const receipt=JSON.parse(readFileSync(handoff+"/mac-icon-import-receipt.json","u
 const names={home:"home",chat:"chat",notifications:"notifications",person:"person",chevronRight:"chevron-right",arrowRight:"arrow-right",play:"play",camera:"camera",image:"image",send:"send",mic:"microphone",plus:"plus",expand:"expand",collapse:"collapse",close:"close",back:"back",settings:"settings",community:"community"};
 const assets=[];
 function load(path,deps={}){
+ if(path==="src/uiux48/Primitives.tsx")deps={"./GlassLighting":{GlassLighting:"GlassLighting"},"@/src/uiux49/spec":load("src/uiux49/spec.ts"),...deps};
  deps={"@/src/uiux48/StateCard":{StateCard:"StateCard"},...deps};
  const output=ts.transpileModule(readFileSync(path,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const module={exports:{}};new Function("require","module","exports",output)(name=>{
-  if(name.startsWith("@/assets/uiux48/approved-icons/"))return name;
+  if(name.startsWith("@/assets/uiux48/approved-icons/")||name==="@/assets/community-redesign/microphone.svg")return name;
   assert.ok(name in deps,"unexpected import "+name);return deps[name];
  },module,module.exports);return module.exports;
 }
@@ -31,12 +33,12 @@ test("all 18 original SVGs retain exact hashes, root24 geometry and approved1px 
   assets.push({file:a.file,sha256:sha(output),bytes:output.length,width:24,height:24,source_node:a.nodeId});
  }
 });
-test("shared icon component maps every supplied file, uses theme ink and24px artwork inside44pt actions",()=>{
- let ink="#49404f";const jsx=(type,props)=>({type,props});
+test("shared icons retain24px/44pt geometry; latest Figma microphone preserves day artwork and Night white",()=>{
+ let ink="#49404f",night=false;const jsx=(type,props)=>({type,props});
  const rn={ActivityIndicator:"Activity",KeyboardAvoidingView:"KAV",Platform:{OS:"ios"},Pressable:"Pressable",ScrollView:"ScrollView",StyleSheet:{create:x=>x},Switch:"Switch",Text:"Text",TextInput:"Input",View:"View"};
- const p=load("src/uiux48/Primitives.tsx",{react:{forwardRef:x=>x},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-blur":{BlurView:"Blur"},"expo-image":{Image:"Image"},"expo-linear-gradient":{LinearGradient:"Gradient"},"@/src/i18n":{useT:()=>({locale:"en"})},"expo-router":{},"./Theme":{useNuriTheme:()=>({ink})},"./materials":{GLASS_BLUR48:{}}});
- for(const color of ["#49404f","#f9f1e8"]){ink=color;for(const [name,file]of Object.entries(names)){
-  const el=p.NuriIcon({name});assert.equal(el.props.source,"@/assets/uiux48/approved-icons/"+file+".svg");assert.deepEqual(el.props.style,{width:24,height:24});assert.equal(el.props.tintColor,color);assert.equal(el.props.accessible,false);
+ const p=load("src/uiux48/Primitives.tsx",{react:{forwardRef:x=>x},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-blur":{BlurView:"Blur"},"expo-image":{Image:"Image"},"expo-linear-gradient":{LinearGradient:"Gradient"},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale:"en"})},"expo-router":{},"./Theme":{useNuriTheme:()=>({ink,night})},"./materials":load("src/uiux48/materials.ts")});
+ for(const color of ["#49404f","#f9f1e8"]){ink=color;night=color==="#f9f1e8";for(const [name,file]of Object.entries(names)){
+  const el=p.NuriIcon({name});assert.equal(el.props.source,name==="mic"?"@/assets/community-redesign/microphone.svg":"@/assets/uiux48/approved-icons/"+file+".svg");assert.deepEqual(el.props.style,{width:24,height:24});assert.equal(el.props.tintColor,name==="mic"?night?"#FFFFFF":undefined:color);assert.equal(el.props.accessible,false);
   let pressed=0;const action=p.IconAction({name,label:name,onPress:()=>pressed++});const target=action.props.style({pressed:false})[0];assert.equal(target.width,44);assert.equal(target.height,44);action.props.onPress();assert.equal(pressed,1);
  }}
  const composer=readFileSync("src/uiux48/Composer.tsx","utf8");assert.match(composer,/<NuriIcon name="send"/);assert.match(composer,/<IconAction name="collapse"/);assert.match(composer,/keyboardAccessory/);
@@ -50,7 +52,7 @@ function harness(path,dependencies){
  const state=initial=>{const i=cursor++;if(!(i in values))values[i]=typeof initial==="function"?initial():initial;return[values[i],v=>{values[i]=typeof v==="function"?v(values[i]):v;}];};
  const jsx=(type,props)=>({type,props});const router={replace:()=>{},setParams:()=>{},push:()=>{}};
  const rn={View:"View",AppState:{addEventListener:()=>({remove(){}})},Pressable:"Pressable",StyleSheet:{create:x=>x}};
- const component=load(path,{react:{useState:state,useCallback:x=>x,useRef:initial=>{const i=cursor++;return values[i]??={current:initial};}},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-router":{useRouter:()=>router,useLocalSearchParams:()=>({uiState:"permission"}),useFocusEffect:fn=>{focus=fn;}},"@/src/useAccountState":{useAccountState:state,useAccountScope:()=>({capture:()=>1,current:t=>t===1})},"@/src/i18n":{useT:()=>({locale:"en",t:x=>x})},"@/src/uiux48/Primitives":{AuthFrame:"AuthFrame",CenteredCard:"CenteredCard",CardList:"CardList",NuriText:"Text",NuriButton:"Button",NuriField:"Field",MenuRow:"Row",ToggleRow:"Toggle",InlineState:"State",ChoiceChip:"Choice"},"@react-navigation/elements":{useHeaderHeight:()=>60},"@expo/vector-icons":{},"@/src/components/NativeSafeAreaView":{},"@/src/theme":{colors:{},radius:{},spacing:{},type:{}},...dependencies}).default;
+ const component=load(path,{react:{useState:state,useCallback:x=>x,useRef:initial=>{const i=cursor++;return values[i]??={current:initial};}},"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":rn,"expo-router":{useRouter:()=>router,useLocalSearchParams:()=>({uiState:"permission"}),useFocusEffect:fn=>{focus=fn;}},"@/src/useAccountState":{useAccountState:state,useAccountScope:()=>({capture:()=>1,current:t=>t===1})},"@/src/i18n":{translate:_translateForI18nFixture,useT:()=>({locale:"en",t:x=>x})},"@/src/uiux48/Primitives":{AuthFrame:"AuthFrame",CenteredCard:"CenteredCard",CardList:"CardList",NuriText:"Text",NuriButton:"Button",NuriField:"Field",MenuRow:"Row",ToggleRow:"Toggle",InlineState:"State",ChoiceChip:"Choice"},"@react-navigation/elements":{useHeaderHeight:()=>60},"@expo/vector-icons":{},"@/src/components/NativeSafeAreaView":{},"@/src/theme":{colors:{},radius:{},spacing:{},type:{}},...dependencies}).default;
  return{router,render(){cursor=0;tree=component();return tree;},find:id=>nodes(tree).find(n=>n.props?.testID===id),text:()=>nodes(tree).filter(n=>n.type==="Text").map(n=>n.props.children).join(" "),focus:()=>focus()};
 }
 test("reset success waits for existing API confirmation, clears secrets and returns to login without silent sign-in",async()=>{

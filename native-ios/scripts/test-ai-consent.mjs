@@ -1,3 +1,4 @@
+import {translate as _translateForI18nFixture} from './i18n-test-utils.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -13,6 +14,7 @@ function load(path, dependencies = {}, jsx = false) {
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
    assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, loaded, loaded.exports);
@@ -120,10 +122,9 @@ test("fresh/restored account has no assumed permission; auto greeting and home e
   assert.equal(f.aiConsent.getState().status, "not_allowed");
 });
 
-test("every actual profile/text/audio/image/context adapter is fail-closed, not only composer UI", async () => {
+test("every actual AI text/audio/image/context adapter is fail-closed, not only composer UI", async () => {
   const f = fixture(); await f.auth.setToken("account-A");
   const operations = [
-    () => f.api.addChild({ nickname: "mock" }), () => f.api.updateChild("child", { birth_date: "2020-01-01" }), () => f.api.updateMe({ nickname: "mock" }),
     () => f.api.sendMessage("session", { text: "mock" }), () => f.api.sendMessage("session", { text: "", image_base64: "data:image/jpeg;base64,bW9jaw==" }),
     () => f.api.streamMessage("session", { text: "mock" }, () => {}), () => f.api.transcribeVoice("bW9jaw==", "en"),
     () => f.api.generateCards({ keywords: ["mock"] }), () => f.api.preparePersonalizedFeed([]), () => f.api.getCardResearch("card"),
@@ -132,6 +133,21 @@ test("every actual profile/text/audio/image/context adapter is fail-closed, not 
   ];
   for (const run of operations) await assert.rejects(run(), blocked);
   assert.deepEqual(aiCalls(f), []);
+});
+
+test("pure account/child persistence works without AI permission and never grants it", async () => {
+  const f=fixture(); await f.auth.setToken("account-A");
+  await f.api.addChild({nickname:"isolated fixture",birth_date:"2017-01-18",gender:"other",allergies:[],notes:""});
+  await f.api.updateChild("fixture-child",{birth_date:"2010-01-01"});
+  await f.api.updateMe({onboarding_completed:true});
+  assert.deepEqual(f.calls.map(c=>[c.method,c.path]),[["POST","/children"],["PUT","/children/fixture-child"],["PUT","/auth/me"]]);
+  assert.equal(f.writes.length,0,"profile storage cannot record AI consent");
+  assert.notEqual(f.aiConsent.getState().status,"allowed");
+  await assert.rejects(f.api.sendMessage("session",{text:"fixture"}),blocked);
+  await assert.rejects(f.api.transcribeVoice("bW9jaw==","en"),blocked);
+  await assert.rejects(f.api.getDailyPost(),blocked);
+  assert.equal(f.calls.filter(c=>c.path.startsWith('/chat')||c.path.startsWith('/feed')).length,0);
+  assert.equal(policy.requiresAIConsent('/children/fixture/generate',{method:'POST'}),true,"no broad child-prefix exemption");
 });
 
 test("exact GET read allowlist permits actual preview/feed/search/detail/saved-daily adapters without asking for AI permission", async () => {
@@ -322,7 +338,7 @@ function uiFixture(f, locale, { returnTo, canGoBack = false } = {}) {
     "@/src/api": f, "@/src/aiConsent": policy, "@/src/aiConsentCopy": copy, "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState(), refresh: f.aiConsent.refresh }) },
     "@/src/aiPermissionNavigation": navigation,
     "@/src/requestFailure": failureCopy,
-    "@/src/i18n": { useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale }) }, "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" }, "@/src/theme": { colors: {} },
   };
   const page = load("../app/ai-permission.tsx", dependencies, true).default;
   const render = () => { cursor = 0; const tree = page(); effects.splice(0).forEach((run) => run()); return tree; };
@@ -342,7 +358,7 @@ function headerFixture(f, locale) {
     "react-native": { Pressable: "Pressable", Text: "Text", View: "View", StyleSheet: { create: (styles) => styles } },
     "@expo/vector-icons": { Ionicons: "Icon" },
     "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
-    "@/src/i18n": { useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
