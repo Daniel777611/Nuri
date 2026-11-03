@@ -270,6 +270,9 @@ export type DailyPostCard = {
   platform: "facebook" | "instagram" | "threads";
   source_url: string;
   source_label: string;
+  /** Forward-compatible optional source media; never substitute design art. */
+  thumbnail_url?: string | null;
+  image_url?: string | null;
   published_at: string | null;
   question?: string;
   situation?: string;
@@ -1096,7 +1099,7 @@ export const api = {
     const token = sessionToken === undefined ? await getToken() : sessionToken;
     return deactivatePushInstallation(installationId, token || "");
   },
-  listNotifications: () => req<{ items: NotificationHistoryItem[] }>("/notifications"),
+  listNotifications: (limit = 30) => req<{ items: NotificationHistoryItem[] }>(`/notifications?limit=${Math.max(1, Math.min(100, Math.trunc(Number.isFinite(limit) ? limit : 30)))}`),
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),

@@ -79,12 +79,10 @@ test("stored AI video summary and source link are readable without generation pe
     assert.equal(p.find("daily-video-webview"), undefined); assert.equal(p.find("daily-video-summary").props.children, "Saved description summary");
     assert.equal(p.kind("WebView"), undefined);
     const guide = load("../src/nuriResourceGuide.ts").nuriResourceGuide({ concern: videoCard("A").concern });
-    assert.equal(p.find("daily-video-guide-headline").props.children, guide.headline);
-    assert.equal(p.find("daily-video-guide-intro").props.children, guide.intro);
-    assert.equal(p.find("daily-video-guide-disclosure").props.children, guide.disclosure);
-    assert.match(p.visible(), /Fixture sleep/, "own family topic is allowed in NURI's original reading prompts");
-    assert.match(p.find("daily-video-summary-disclosure").props.children, /未观看完整视频或获取字幕/);
-    assert.doesNotMatch(p.visible(), /Fixture pediatrician|A video title|A private video|ytimg\.com|youtube-nocookie/);
+    assert.equal(p.find("daily-video-guide-headline"),undefined,"The final single reading card removes the duplicated generic guide.");
+    assert.equal(p.find("daily-video-summary-disclosure"), undefined, "The requested lower disclosure footer is removed, not moved into the saved summary.");
+    assert.doesNotMatch(p.visible(), /Fixture pediatrician|A video title|A private video|youtube-nocookie/);
+    assert.deepEqual(p.find("daily-video-thumbnail").props.source,{uri:"https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg"},"Only the current video's public cover is allowed");
     assert.equal(f.calls.filter((call) => call.path.endsWith("/summary") || call.path === "/chat/sessions").length, 0);
     assert.deepEqual(p.external, [], "reading the card must never automatically launch an external site");
     p.appState("background"); p.render(); assert.equal(p.kind("WebView"), undefined);
@@ -177,14 +175,37 @@ test("actual Home and video screens restore brief AI summaries, never video titl
     assert.doesNotMatch(home.visible(), /A video title|A private video|Fixture pediatrician|i\.ytimg\.com/);
     video = page(f, "video", { id: "video-A" }); video.render(); await tick(); video.render(); await tick(); video.render();
     assert.equal(video.find("daily-video-external-title").props.children, guide.headline);
-    assert.ok(video.find("daily-video-external-notice"));
+    assert.equal(video.find("daily-video-external-notice"), undefined, "The requested lower YouTube notice is removed.");
     assert.equal(video.find("daily-video-title"), undefined); assert.equal(video.find("daily-video-guide-title"), undefined);
-    assert.equal(video.find("daily-video-guide-headline").props.children, guide.headline);
-    assert.equal(video.find("daily-video-guide-disclosure").props.children, guide.disclosure);
-    guide.actions.forEach((_action, index) => assert.ok(video.find(`daily-video-guide-action-${index}`)));
+    assert.equal(video.find("daily-video-guide-headline"),undefined,"No repeated generic guide beneath the supplied summary.");
     assert.equal(video.find("daily-video-summary").props.children, "Saved description summary"); assert.equal(video.find("daily-video-webview"), undefined);
-    assert.doesNotMatch(video.visible(), /A video title|A private video|Fixture pediatrician|i\.ytimg\.com/);
+    assert.doesNotMatch(video.visible(), /A video title|A private video|Fixture pediatrician/);
+    assert.deepEqual(video.find("daily-video-thumbnail").props.source,{uri:"https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg"});
   } finally { home?.unmount(); video?.unmount(); f.restore(); }
+});
+test("video removes exactly the three lower footers while retaining attribution, supplied summary/points, current cover and real source/chat actions", async () => {
+  const f=fixture();let p;
+  try {
+    await f.login("A");await f.permit();
+    f.responder=path=>path==="/feed/daily-video/video-A"?response({state:"ready",card:{...videoCard("A"),summary:"Saved summary for the current video.",key_points:"Saved key point for the current video."}}):null;
+    p=page(f,"video",{id:"video-A"});p.render();await tick();p.render();await tick();p.render();
+    for(const id of ["daily-video-summary-disclosure","daily-video-external-notice"])assert.equal(p.find(id),undefined,id);
+    assert.doesNotMatch(p.visible(),/根据标题和公开检索片段整理|未观看完整视频或获取字幕|视频请在 YouTube 原站观看|NURI 不在应用内播放或下载视频|外部视频内容不属于 NURI|Prepared from the title and public search snippets|Watch the video on YouTube\. NURI does not play|External videos are not NURI content/);
+    assert.match(p.visible(),/Organized by Nuri · Refer to the original video for full details/);
+    assert.equal(p.find("daily-video-summary").props.children,"Saved summary for the current video.");
+    assert.equal(p.find("daily-video-key-points").props.children,"Saved key point for the current video.");
+    assert.ok(p.find("daily-video-summary-section"));
+    assert.deepEqual(p.find("daily-video-thumbnail").props.source,{uri:"https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg"});
+    const source=p.find("daily-video-source"),chat=p.find("daily-video-chat");
+    assert.equal(source.props.accessibilityRole,"link");assert.equal(chat.props.accessibilityRole,"button");assert.equal(chat.props.disabled,false);
+    assert.deepEqual(p.external,[]);assert.deepEqual(p.routes,[]);assert.equal(f.calls.filter(call=>call.path==="/chat/sessions"||call.path.endsWith("/summary")||call.path.endsWith("/events")).length,0,"Removing copy cannot start source/chat/generation work");
+    source.props.onPress();await tick();p.render();
+    assert.deepEqual(p.external,["https://www.youtube.com/watch?v=ScMzIvxBSi4"]);
+    assert.equal(f.calls.filter(call=>call.path==="/feed/daily-video/video-A/events"&&JSON.parse(call.init.body).event==="source_click").length,1);
+    chat.props.onPress();await tick();p.render();
+    const starts=f.calls.filter(call=>call.path==="/chat/sessions");assert.equal(starts.length,1);assert.deepEqual(JSON.parse(starts[0].init.body),{card_id:"dailyvideo:video-A"});assert.deepEqual(p.routes,["/chat/created-A"]);
+    assert.equal(f.calls.filter(call=>call.path==="/feed/daily-video/video-A/events"&&JSON.parse(call.init.body).event==="chat").length,1);
+  } finally {p?.unmount();f.restore();}
 });
 test("Home ready checkin opens server session, never ordinary session POST", async () => {
   const f = fixture(); let p;
@@ -192,7 +213,7 @@ test("Home ready checkin opens server session, never ordinary session POST", asy
     await f.login("A"); await f.permit(); f.responder = (path) => path === "/chat/main/checkin" ? response({ state: "ready", id: "check-A", topic: "Sleep", line: "How was bedtime?", opened: false })
       : path === "/chat/main/checkin/check-A/open" ? response({ session_id: "checkin-session-A" }) : null;
     p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.equal(p.find("home-nuri-memo").props.children, "How was bedtime?"); assert.equal(p.find("home-nuri-action").props.label,"Open full conversation");
+    assert.equal(p.find("home-nuri-memo").props.children, "How was bedtime?"); assert.equal(p.find("home-nuri-action").props.accessibilityLabel,"Open full conversation");
     await p.find("home-nuri-action").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
   } finally { p?.unmount(); f.restore(); }
@@ -204,7 +225,7 @@ test("failed checkin open never silently creates another chat; retry repeats ope
     f.responder = (path) => path === "/chat/main/checkin" ? response({ state: "ready", id: "check-A", line: "Follow up" })
       : path === "/chat/main/checkin/check-A/open" ? response(fail ? {} : { session_id: "checkin-session-A" }, fail ? 503 : 200) : null;
     p = page(f, "home"); p.render(); await tick(); p.render(); await p.find("home-nuri-action").props.onPress(); p.render();
-    assert.equal(p.find("home-nuri-action").props.label,"Retry"); assert.deepEqual(p.routes, []);
+    assert.equal(p.find("home-nuri-action").props.accessibilityLabel,"Retry"); assert.deepEqual(p.routes, []);
     assert.equal(f.calls.filter((call) => call.path === "/chat/sessions").length, 0);
     fail = false; await p.find("home-nuri-action").props.onPress(); assert.deepEqual(p.routes, ["/chat/checkin-session-A"]);
   } finally { p?.unmount(); f.restore(); }
@@ -320,10 +341,10 @@ test("actual MessageBubble renders video transition, routes its card, and reject
     const code = ts.transpileModule(`${component.getText(ast)}\n${styles.getText(ast)}\nmodule.exports = MessageBubble;`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
     const scope = load("../src/useAccountState.ts", { react: r.react, "./api": f });
     const module = { exports: {} };
-    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar","NuriIcon", code)(
+    new Function("require", "module", "exports", "useT", "useRouter", "useAccountScope", "View", "Text", "Pressable", "Image", "Ionicons", "NuriAvatar", "RichText", "StyleSheet", "colors", "spacing", "radius", "type", "Platform", "shortResourceSummary","useNuriTheme","useState","GlassSurface","NuriText","SceneAvatar","NuriIcon","FinalChatBubble","FinalText", code)(
       () => ({ jsx, jsxs: jsx }), module, module.exports, () => ({ t: (value) => value }), () => ({ push: (href) => routes.push(href) }), scope.useAccountScope,
       "View", "Text", "Pressable", "Image", "Icon", "Avatar", "RichText", { create: (value) => value }, {}, {}, {}, {}, { OS: "ios" },
-      load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar","NuriIcon");
+      load("../src/resourceSummary.ts").shortResourceSummary,()=>({ink:"#3d3340"}),scope.useAccountState,"GlassSurface","NuriText","SceneAvatar","NuriIcon","GlassSurface","FinalText");
     const tree = r.render(() => module.exports({ msg: { id: "marker", role: "ai", text: "PRIVATE_RAW_TRANSITION_TEXT", transition: { kind: "card_opened", video: { id: "video-A", title: "Stored video", thumbnail_url: "https://i.ytimg.com/vi/ScMzIvxBSi4/hqdefault.jpg", channel: "Fixture channel", key_points: ["AI_SEARCH_VIDEO_POINT."], summary: "AI_SEARCH_VIDEO_SUMMARY.", transcript: "PRIVATE_SOURCE_TRANSCRIPT" } } } }));
     const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
     const card = nodes(tree).find((node) => node.props?.testID === "chat-daily-video-card"); assert.ok(card);

@@ -2,7 +2,7 @@ import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
 import { TEXT_FONTS } from "@/src/textFonts";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
@@ -15,10 +15,13 @@ import { usePushBridge } from "@/src/usePushBridge";
 import NativePageControls from "@/src/components/NativePageControls";
 import { NuriThemeProvider, NuriNavigationTheme } from "@/src/uiux48/Theme";
 import { NuriShell } from "@/src/uiux48/Shell";
+import { AppKeyboardProvider } from "@/src/keyboard/AppKeyboard";
+import { getIdentityGeneration, subscribeSessionBoundary } from "@/src/sessionBoundary";
 
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
+  const identity=useSyncExternalStore(subscribeSessionBoundary,getIdentityGeneration,getIdentityGeneration);
   const [iconFontsLoaded, iconFontsError] = useIconFonts();
   const [textFontsLoaded, textFontsError] = useFonts(TEXT_FONTS);
   const fontsReady =
@@ -39,12 +42,12 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <I18nProvider>
         <SafeAreaProvider>
-          <NuriThemeProvider><NuriNavigationTheme><NuriShell><Stack
+          <NuriThemeProvider><NuriNavigationTheme><AppKeyboardProvider ownerKey={identity}><NuriShell><Stack
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: "transparent" },
             }}
-          /></NuriShell></NuriNavigationTheme></NuriThemeProvider>
+          /></NuriShell></AppKeyboardProvider></NuriNavigationTheme></NuriThemeProvider>
         </SafeAreaProvider>
       </I18nProvider>
     </GestureHandlerRootView>

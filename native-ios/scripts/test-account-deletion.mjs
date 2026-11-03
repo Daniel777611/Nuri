@@ -5,11 +5,13 @@ import { test } from "node:test";
 import ts from "typescript";
 
 function load(path, dependencies = {}, jsx = false) {
+  dependencies={...dependencies,"@/src/uiuxfinal/ButtonMaterial":{FrostedPressable:dependencies["react-native"]?.Pressable??"Pressable",ButtonBackdrop:"ButtonBackdrop"}};
   const output = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: jsx ? ts.JsxEmit.ReactJSX : undefined },
   }).outputText;
   const result = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
+    if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:dependencies["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};

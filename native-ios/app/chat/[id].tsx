@@ -1,6 +1,13 @@
-import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction, NuriButton, MenuRow } from "@/src/uiux48/Primitives";
+import { FrostedPressable } from "@/src/uiuxfinal/ButtonMaterial";
+import { NuriKeyboardFrame, GlassSurface, NuriText, NuriIcon, IconAction } from "@/src/uiux48/Primitives";
 import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
 import { NuriComposer } from "@/src/uiux48/Composer";
+import { ChatAttachmentMenu } from "@/src/uiux48/ChatAttachmentMenu";
+import { ChatAttachmentPreview } from "@/src/uiux48/ChatAttachmentPreview";
+import type { ChatAttachmentAnchor, ChatDraftAttachment } from "@/src/chatAttachments";
+import { CHAT_MAX_ATTACHMENTS, prepareChatAttachment, pickWebChatMediaFiles, releaseChatAttachment, releaseChatPickerAssets } from "@/src/chatMediaInput";
+import { useComposerDockInset } from "@/src/uiux48/useComposerDock";
+import { FinalChatBubble, FinalText } from "@/src/uiuxfinal/Primitives";
 import { NuriAvatar as SceneAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
@@ -40,9 +47,6 @@ import { ApiError, api, isStreamUnsupported } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
   ChatImageInputError,
-  pickWebChatImageFile,
-  prepareChatImage,
-  type PreparedChatImage,
 } from "@/src/chatImageInput";
 import {
   MAX_VOICE_SECONDS,
@@ -245,16 +249,27 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
 
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function ChatDetail({ sessionId, embedded = false, initialDraft, initialAction, onExpand }: { sessionId?:string; embedded?:boolean; initialDraft?:string; initialAction?:"send"|"attach"|"mic"|"focus"; onExpand?:()=>void } = {}) {
-  const { generation, capture, current } = useAccountScope();
+  const { generation, capture: captureAccount, current: currentAccount } = useAccountScope();
   const { t, locale } = useT();
   const router = useRouter();
   const headerHeight = useHeaderHeight();
   const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const params = useLocalSearchParams<{ id: string }>();
   const id = sessionId ?? params.id;
+  // A covered native screen can be reused for another conversation without
+  // changing accounts. Bind every async callback to this exact render's route
+  // epoch as well as the account epoch, including an A → B → A transition.
+  const routeOwnerRef = useRef({ id, generation, version: 0 });
+  if (routeOwnerRef.current.id !== id || routeOwnerRef.current.generation !== generation) {
+    routeOwnerRef.current = { id, generation, version: routeOwnerRef.current.version + 1 };
+  }
+  const routeVersion = routeOwnerRef.current.version;
+  const capture = useCallback(() => routeOwnerRef.current.version === routeVersion ? captureAccount() : null, [captureAccount, routeVersion]);
+  const current = useCallback((ticket: number | null) => routeOwnerRef.current.version === routeVersion && currentAccount(ticket), [currentAccount, routeVersion]);
   const safeInsets = useSafeAreaInsets();
+  const dockBottom = useComposerDockInset(!embedded);
   const composerRef = useRef<TextInput>(null);
   const launchAction = useRef(initialAction);
   const theme48 = useNuriTheme();
@@ -263,6 +278,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     "loading" | "ready" | "error"
   >("loading");
   const [input, setInput] = useState("");
+  const [composerSpace,setComposerSpace] = useState<number|undefined>(undefined);
   const initialDraftOwner=useRef(generation);
   const initialDraftUsed=useRef(false);
   const draftWriteScope=useRef<{id:string;generation:number}|null>(null);
@@ -272,7 +288,17 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     if(draftWriteScope.current?.id!==id||draftWriteScope.current.generation!==generation){draftWriteScope.current={id,generation};return;}
     writeChatDraft(id, input, generation);
   }, [id, input, generation]);
-  const [pendingImage, setPendingImage] = useState<PreparedChatImage | null>(null);
+  const [attachments, setAttachments] = useState<ChatDraftAttachment[]>([]);
+  const attachmentOwnerRef = useRef<ChatDraftAttachment[]>([]);
+  attachmentOwnerRef.current = attachments;
+  const attachmentResourcesRef = useRef(new Set<ChatDraftAttachment>());
+  const attachmentWorkVersionRef = useRef(0);
+  const attachmentWorkInFlightRef = useRef(false);
+  const [previewAttachment, setPreviewAttachment] = useState<ChatDraftAttachment | null>(null);
+  const [attachmentAnchor, setAttachmentAnchor] = useState<ChatAttachmentAnchor | undefined>(undefined);
+  const attachmentAnchorRef = useRef<ChatAttachmentAnchor | undefined>(undefined);
+  const composerDockRef = useRef<View>(null);
+  const menuDockOffsetRef = useRef<number | null>(null);
   const [imageMenuVisible, setImageMenuVisible] = useState(false);
   const [mediaError,setMediaError]=useState("");
   const [processingImage, setProcessingImage] = useState(false);
@@ -316,6 +342,13 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const [feedbackSavingIds, setFeedbackSavingIds] = useState<Set<string>>(new Set());
   const feedbackSavingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<ScrollView>(null);
+  const scrollGeometry = useRef({viewportHeight:0,contentHeight:0});
+  const scrollToLatest = useCallback((animated=false) => {
+    // Native scrollToEnd can choose the horizontal axis when transient content
+    // is wider than its viewport. This conversation always scrolls vertically.
+    const {viewportHeight,contentHeight}=scrollGeometry.current;
+    scrollRef.current?.scrollTo({x:0,y:Math.max(0,contentHeight-viewportHeight),animated});
+  },[]);
   const showToast = useCallback((message: string) => {
     setToastMsg(message);
     setTimeout(() => setToastMsg(null), 1800);
@@ -402,8 +435,9 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   }, [load,id,setInput,initialDraft,generation]));
 
   useEffect(() => {
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-  }, [messages, typing, streamingText]);
+    const timer=setTimeout(() => scrollToLatest(true),100);
+    return () => clearTimeout(timer);
+  }, [messages, typing, streamingText, scrollToLatest]);
 
   // Home's daily card is fixed for the day, so a finished turn no longer
   // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
@@ -453,15 +487,23 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const send = async (textOverride?: string, imageBase64?: string | null) => {
     const ticket = capture();
     if (ticket === null) return;
-    if (!id || sendingRef.current) return;
+    if (!id || sendingRef.current || attachmentWorkInFlightRef.current) return;
     const text = (textOverride ?? input).trim();
+    // This TestFlight build exposes the complete local media draft flow. The
+    // verified transport sends one photo: never discard extra media, pretend
+    // to upload a video, or silently send its cover as the original clip.
+    if (!imageBase64 && (attachments.length > 1 || attachments.some(item => item.kind === "video"))) {
+      setMediaError(locale === "en" ? "This test build can send one photo at a time. Multiple photos and videos remain in your draft and have not been sent." : locale === "zh-TW" ? "此測試版暫時只能傳送一張照片。多張照片和影片已保留在草稿中，尚未傳送。" : "此测试版暂时只能发送一张照片。多张照片和视频已保留在草稿中，尚未发送。");
+      return;
+    }
+    const selectedAttachments = attachments;
     const selectedImage = imageBase64
       ? { previewUri: imageBase64, dataUri: imageBase64, width: 0, height: 0 }
-      : pendingImage;
+      : attachments[0]?.image;
     const normalizedImage = selectedImage?.dataUri || null;
     if (!text && !normalizedImage) return;
     setInput("");
-    setPendingImage(null);
+    setAttachments([]);
     sendingRef.current = true;
     setSending(true);
 
@@ -506,6 +548,10 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
         ...res.ai_messages,
       ]);
       failedSendRef.current = null;
+      selectedAttachments.forEach(item => {
+        releaseChatAttachment(item);
+        attachmentResourcesRef.current.delete(item);
+      });
       if (pendingHeaderNavigationRef.current) {
         const action=pendingHeaderNavigationRef.current;
         pendingHeaderNavigationRef.current = null;
@@ -522,7 +568,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       // a second response while the first request may still be running.
       failedSendRef.current = { text, imageBase64: normalizedImage, payload };
       if (text) setInput(text);
-      if (selectedImage) setPendingImage(selectedImage);
+      if (selectedAttachments.length) setAttachments(selectedAttachments);
       setMessages((p) => p.filter((m) => m.id !== optimistic.id));
       pendingHomeReturnRef.current = false;
       pendingHeaderNavigationRef.current = null;
@@ -546,6 +592,17 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   }, []);
 
   useEffect(() => {
+    attachmentWorkVersionRef.current++;
+    attachmentWorkInFlightRef.current = false;
+    setProcessingImage(false);
+    attachmentResourcesRef.current.forEach(releaseChatAttachment);
+    attachmentResourcesRef.current.clear();
+    attachmentOwnerRef.current = [];
+    setAttachments([]);
+    setPreviewAttachment(null);
+    setSending(false);
+    setTyping(false);
+    setStreamingText("");
     sendingRef.current = false;
     failedSendRef.current = null;
     pendingHomeReturnRef.current = false;
@@ -558,7 +615,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     voiceRecordingRef.current?.cancel();
     voiceRecordingRef.current = null;
     voicePhaseRef.current = "idle";
-  }, [generation, clearVoiceTimer]);
+  }, [generation, id, clearVoiceTimer]);
 
   // Stack keeps covered screens mounted. Blur, background, and a late
   // permission result must all release the microphone and reset the controls.
@@ -574,6 +631,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       setVoiceState("idle");
       setVoiceSeconds(0);
       setImageMenuVisible(false);setMediaError("");
+      setPreviewAttachment(null);
       pendingNativePickerRef.current = null;
     };
   }, [clearVoiceTimer, setVoiceState, setVoiceSeconds]));
@@ -704,31 +762,53 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 
   const explainImageError = (error: unknown) => {
     if (error instanceof ChatImageInputError && error.code === "too_large") {
-      showToast(t("图片太大，请选择另一张图片"));
+      showToast(locale === "en" ? "This file is too large. Choose a smaller file." : translate(locale, "文件过大，请选择小一些的照片或视频。"));
       return;
     }
     if (error instanceof ChatImageInputError && error.code === "unsupported") {
-      showToast(t("暂时只支持图片格式"));
+      showToast(locale === "en" ? "This media format cannot be opened." : translate(locale, "无法打开这个媒体格式，请重新选择。"));
       return;
     }
-    showToast(t("图片处理失败，请重试"));
+    showToast(locale === "en" ? "Could not prepare this media. Please try again." : translate(locale, "媒体准备失败，请重试。"));
   };
 
   const acceptPickerResult = async (result: ImagePicker.ImagePickerResult, ticket = capture()) => {
-    if (!current(ticket)) return;
     if (result.canceled || !result.assets?.length) return;
+    if (!current(ticket) || !voiceActiveRef.current || attachmentWorkInFlightRef.current) {
+      releaseChatPickerAssets(result.assets);
+      return;
+    }
+    const remaining = CHAT_MAX_ATTACHMENTS - attachmentOwnerRef.current.length;
+    if (remaining <= 0) { releaseChatPickerAssets(result.assets); return; }
+    const version = ++attachmentWorkVersionRef.current;
+    attachmentWorkInFlightRef.current = true;
     setProcessingImage(true);
+    const prepared: ChatDraftAttachment[] = [];
     try {
-      const asset = result.assets[0];
-      const prepared = await prepareChatImage(asset);
-      if (!current(ticket)) return;
-      setPendingImage(prepared);
+      // Bound and serialize image decoding/video thumbnails; never create six
+      // full-resolution bitmaps at once. Nothing uploads on selection.
+      for (const asset of result.assets.slice(0, remaining)) {
+        if (!current(ticket) || !voiceActiveRef.current || version !== attachmentWorkVersionRef.current) return;
+        const attachment = await prepareChatAttachment(asset);
+        prepared.push(attachment);
+      }
+      if (!current(ticket) || !voiceActiveRef.current || version !== attachmentWorkVersionRef.current) return;
+      const committed = prepared.slice();
+      committed.forEach(item => attachmentResourcesRef.current.add(item));
+      setAttachments(previous => [...previous, ...committed]);
+      attachmentOwnerRef.current = [...attachmentOwnerRef.current, ...committed];
+      prepared.length = 0; // Resources are now owned by this account's draft.
       setMediaError("");
     } catch (error) {
       if (!current(ticket)) return;
       explainImageError(error);
     } finally {
-      if (current(ticket)) setProcessingImage(false);
+      prepared.forEach(releaseChatAttachment);
+      releaseChatPickerAssets(result.assets);
+      if (current(ticket) && version === attachmentWorkVersionRef.current) {
+        attachmentWorkInFlightRef.current = false;
+        setProcessingImage(false);
+      }
     }
   };
 
@@ -745,22 +825,25 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
           return;
         }
         await acceptPickerResult(await ImagePicker.launchCameraAsync({
-          mediaTypes: ["images"],
+          mediaTypes: ["images", "videos"],
           cameraType: ImagePicker.CameraType.back,
           allowsEditing: false,
           base64: false,
           exif: false,
           quality: 0.68,
+          videoMaxDuration: 120,
         }), ticket);
         return;
       }
 
-      // iOS PHPicker grants access only to the selected image. Broad Photo
+      // iOS PHPicker grants access only to the selected media. Broad Photo
       // Library authorization is not needed for this system selection UI.
       await acceptPickerResult(await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
+        mediaTypes: ["images", "videos"],
         allowsEditing: false,
-        allowsMultipleSelection: false,
+        allowsMultipleSelection: true,
+        selectionLimit: Math.max(1, CHAT_MAX_ATTACHMENTS - attachmentOwnerRef.current.length),
+        orderedSelection: true,
         base64: false,
         exif: false,
         quality: 0.78,
@@ -795,26 +878,28 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     }
   };
 
-  const openSafeWebPicker = async () => {
+  const openSafeWebPicker = async (source: "camera" | "library") => {
     const ticket = capture();
-    if (ticket === null) return;
+    if (ticket === null || nativePickerInFlightRef.current) return;
+    nativePickerInFlightRef.current = true;
     try {
-      // Do not force capture=environment or use Expo's eager Web metadata
-      // decode. Safari owns the chooser transition and NURI validates the raw
-      // file header before allocating any full-resolution image surface.
-      const pendingAsset = pickWebChatImageFile();
+      // This stays in the user's icon press stack, so browsers retain their
+      // chooser gesture. Validate raw files before allocating image surfaces.
+      const pendingAssets = pickWebChatMediaFiles(source, CHAT_MAX_ATTACHMENTS - attachmentOwnerRef.current.length);
       setImageMenuVisible(false);
-      const asset = await pendingAsset;
-      if (asset && current(ticket)) await acceptPickerResult({ canceled: false, assets: [asset] }, ticket);
+      const assets = await pendingAssets;
+      if (assets.length) await acceptPickerResult({ canceled: false, assets }, ticket);
     } catch (error) {
       if (!current(ticket)) return;
       explainImageError(error);
+    } finally {
+      nativePickerInFlightRef.current = false;
     }
   };
 
   const takePhoto = () => {
     if (Platform.OS === "web") {
-      void openSafeWebPicker();
+      void openSafeWebPicker("camera");
       return;
     }
     deferNativePickerUntilModalCloses("camera");
@@ -822,24 +907,68 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 
   const choosePhoto = () => {
     if (Platform.OS === "web") {
-      void openSafeWebPicker();
+      void openSafeWebPicker("library");
       return;
     }
     deferNativePickerUntilModalCloses("library");
   };
 
-  const openImageInput = () => {
-    if (capture() === null || voicePhaseRef.current !== "idle" || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
-    setMediaError("");
-    if (Platform.OS === "web") {
-      void openSafeWebPicker();
+  const refreshAttachmentAnchor = () => {
+    composerDockRef.current?.measureInWindow((x, y, _width, height) => {
+      if (capture() === null) return;
+      const previous = attachmentAnchorRef.current;
+      const anchor = {
+        x: Math.max(8, Math.min(viewportWidth - 68, previous?.x ?? x + (embedded ? 0 : 24) + 3)),
+        y: Math.max(safeInsets.top + 116, y + (menuDockOffsetRef.current ?? height - dockBottom - (height - dockBottom > 80 ? 64 : 60))),
+        width: 60, height: 60,
+      };
+      attachmentAnchorRef.current = anchor;
+      setAttachmentAnchor(anchor);
+    });
+  };
+
+  const openImageInput = (anchor?: ChatAttachmentAnchor) => {
+    if (capture() === null || !voiceActiveRef.current || voicePhaseRef.current !== "idle" || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
+    if (attachmentOwnerRef.current.length >= CHAT_MAX_ATTACHMENTS) {
+      showToast(locale === "en" ? `You can add up to ${CHAT_MAX_ATTACHMENTS} items to this draft.` : translate(locale, `本次草稿最多添加 ${CHAT_MAX_ATTACHMENTS} 个附件。`));
       return;
     }
+    setMediaError("");
+    const initialAnchor = anchor ?? { x: embedded ? 8 : 27, y: viewportHeight - dockBottom - 60, width: 60, height: 60 };
+    attachmentAnchorRef.current = initialAnchor;
+    setAttachmentAnchor(initialAnchor);
+    menuDockOffsetRef.current = null;
+    if (anchor) composerDockRef.current?.measureInWindow((_x, y, _width, height) => {
+      // An expanded editor's action was measured in its just-dismissed Modal,
+      // not the underlying dock. Use the current dock for that handoff.
+      if (anchor.y >= y - 8 && anchor.y <= y + height) menuDockOffsetRef.current = anchor.y - y;
+    });
     Keyboard.dismiss();
     setImageMenuVisible(true);
   };
 
+  const removeAttachment = (attachmentId: string) => {
+    if (capture() === null || sendingRef.current || attachmentWorkInFlightRef.current) return;
+    const item = attachmentOwnerRef.current.find(attachment => attachment.id === attachmentId);
+    if (!item) return;
+    if (previewAttachment?.id === attachmentId) setPreviewAttachment(null);
+    releaseChatAttachment(item);
+    attachmentResourcesRef.current.delete(item);
+    attachmentOwnerRef.current = attachmentOwnerRef.current.filter(attachment => attachment.id !== attachmentId);
+    setAttachments(previous => previous.filter(attachment => attachment.id !== attachmentId));
+    setMediaError("");
+  };
+
+  useEffect(() => {
+    if (!imageMenuVisible || Platform.OS === "web") return;
+    const listener = Keyboard.addListener("keyboardDidHide", refreshAttachmentAnchor);
+    return () => listener.remove();
+  }, [imageMenuVisible, dockBottom]);
+
   useEffect(() => () => {
+    attachmentWorkVersionRef.current++;
+    attachmentResourcesRef.current.forEach(releaseChatAttachment);
+    attachmentResourcesRef.current.clear();
     if (nativePickerFallbackTimerRef.current) {
       clearTimeout(nativePickerFallbackTimerRef.current);
     }
@@ -872,34 +1001,28 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     else if (action === "mic") void startVoice();
     else composerRef.current?.focus();
   }, [historyLoadState, id]);
-  const content = <View style={{flex:1,minHeight:0}}>
+  const content = <View testID="chat-content" style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%"}} onLayout={e=>{const next=e.nativeEvent.layout.height;setComposerSpace(previous=>previous===next?previous:next);}}>
     {!embedded ? <Stack.Screen options={{ gestureEnabled: !sending }} /> : null}
-    <ScrollView ref={scrollRef} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={()=>scrollRef.current?.scrollToEnd({animated:false})} onContentSizeChange={()=>scrollRef.current?.scrollToEnd({animated:false})} testID="chat-scroll">
+    <ScrollView ref={scrollRef} horizontal={false} directionalLockEnabled alwaysBounceHorizontal={false} style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%"}} contentContainerStyle={{width:"100%",minWidth:0,maxWidth:"100%",paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={e=>{scrollGeometry.current.viewportHeight=e.nativeEvent.layout.height;scrollToLatest();}} onContentSizeChange={(_width,height)=>{scrollGeometry.current.contentHeight=height;scrollToLatest();}} testID="chat-scroll">
       {historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
       {historyLoadState==="error"?<Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
       {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} />)}
       {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
       {typing?<TypingDots />:null}
     </ScrollView>
-    <View style={{paddingHorizontal:embedded?0:24,paddingBottom:embedded?0:12}}>
-      {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{t("正在准备图片…")}</NuriText></View>:null}
-      {pendingImage?<GlassSurface kind="composer" contentStyle={{padding:12,flexDirection:"row",alignItems:"center",gap:12}} testID="chat-image-preview"><Image source={{uri:pendingImage.previewUri}} style={{width:64,height:64,borderRadius:12}} contentFit="cover" /><NuriText style={{flex:1}}>{t("已添加图片")}</NuriText><IconAction name="close" label={t("移除图片")} onPress={()=>setPendingImage(null)} disabled={voiceState!=="idle"||sending} testID="chat-image-remove" /></GlassSurface>:null}
+    <View ref={composerDockRef} collapsable={false} testID="chat-composer-dock" style={{width:"100%",alignSelf:"stretch",minWidth:0,maxWidth:"100%",flexShrink:0,paddingHorizontal:embedded?0:24,paddingBottom:voiceState!=="idle"&&!embedded?Math.max(114,dockBottom):dockBottom}}>
+      {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{locale==="en"?"Preparing media…":translate(locale,"正在准备照片和视频…")}</NuriText></View>:null}
       {voiceState!=="idle"?<VoiceInputBar phase={voiceState} seconds={voiceSeconds} metered={voiceMetered} level={readVoiceLevel} onCancel={cancelVoice} onStop={()=>void stopVoice("draft")} onSend={()=>void stopVoice("send")} />:
-        <NuriComposer value={input} onChangeText={setInput} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>void startVoice()} busy={sending||processingImage} disabled={historyLoadState!=="ready"} hasAttachment={!!pendingImage} testID={embedded?"home-chat":"chat"} />}
+        <NuriComposer value={input} onChangeText={setInput} availableHeight={composerSpace} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>void startVoice()} busy={sending||processingImage} disabled={historyLoadState!=="ready"} hasAttachment={attachments.length>0} attachments={attachments} onRemoveAttachment={removeAttachment} onPreviewAttachment={attachment=>{if(capture()!==null&&!sendingRef.current&&!attachmentWorkInFlightRef.current){Keyboard.dismiss();setPreviewAttachment(attachment);}}} testID={embedded?"home-chat":"chat"} />}
       {mediaError?<View style={{flexDirection:"row",alignItems:"center",gap:8,paddingTop:8}} testID="chat-media-error"><NuriText accessibilityLiveRegion="assertive" style={{flex:1}}>{mediaError}</NuriText><IconAction name="close" label={t("关闭")} onPress={()=>setMediaError("")} /></View>:null}
     </View>
-      <Modal visible={imageMenuVisible} transparent animationType="fade" onRequestClose={()=>setImageMenuVisible(false)} onDismiss={flushNativePicker}>
-        <View style={{flex:1,justifyContent:"flex-end",paddingHorizontal:24,paddingBottom:Math.max(safeInsets.bottom,16),backgroundColor:"rgba(20,16,24,.28)"}} testID="chat-attachment-sheet">
+      <Modal visible={imageMenuVisible} transparent animationType="fade" onShow={refreshAttachmentAnchor} onRequestClose={()=>setImageMenuVisible(false)} onDismiss={flushNativePicker}>
+        <View style={{flex:1}} testID="chat-attachment-overlay">
           <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button" accessibilityLabel={t("取消")} onPress={()=>setImageMenuVisible(false)} />
-          <GlassSurface contentStyle={{padding:24,gap:16}} testID="attachments-card">
-            <NuriText role="H2">{locale==="en"?"Add photo":translate(locale,"添加照片")}</NuriText>
-            <MenuRow label={locale==="en"?"Take a photo":translate(locale,"拍照")} onPress={takePhoto} testID="chat-image-camera" />
-            <MenuRow label={locale==="en"?"Choose from photos":translate(locale,"从照片中选择")} onPress={choosePhoto} testID="chat-image-library" />
-            <NuriText secondary role="Caption">{t("你发送的图片会交给 NURI 的 AI 服务（OpenAI）分析，请不要上传不必要的隐私信息")}</NuriText>
-            <NuriButton secondary label={t("取消")} onPress={()=>setImageMenuVisible(false)} testID="chat-image-cancel" />
-          </GlassSurface>
+          <ChatAttachmentMenu anchor={attachmentAnchor} onCamera={takePhoto} onLibrary={choosePhoto} onDismiss={()=>setImageMenuVisible(false)} />
         </View>
       </Modal>
+      <ChatAttachmentPreview attachment={previewAttachment} onClose={()=>setPreviewAttachment(null)} />
     <Toast message={toastMsg} />
   </View>;
   return embedded ? content : <NuriKeyboardFrame>{content}</NuriKeyboardFrame>;
@@ -969,8 +1092,8 @@ function MessageBubble({
         { justifyContent: isAI ? "flex-start" : "flex-end" },
       ]}
     >
-      <GlassSurface kind={isAI ? "message" : "user"} style={{maxWidth:isAI?"100%":"84%",width:isAI?"100%":undefined}} contentStyle={{padding:16}} testID={`bubble-${msg.role}`}>
-        {isAI ? <Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{flexDirection:"row",alignItems:"center",gap:8,minHeight:24,marginBottom:8}} hitSlop={10}><View style={{width:24,height:24}}><View style={{transform:[{scale:24/34}],transformOrigin:"top left"}}><SceneAvatar /></View></View><NuriText style={{fontSize:16,lineHeight:24}}>Nuri</NuriText></Pressable>:null}
+      {isAI?<Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{width:36,minHeight:44,alignSelf:"flex-end",justifyContent:"center",marginRight:8}} hitSlop={4}><SceneAvatar size={36}/></Pressable>:null}
+      <FinalChatBubble incoming={isAI} style={{maxWidth:isAI?"88%":"92%",flexShrink:1,paddingHorizontal:16,paddingVertical:isAI?14:12}} testID={`bubble-${msg.role}`}>
         {msg.image_base64 ? (
           <Image
             source={{ uri: msg.image_base64 }}
@@ -979,13 +1102,13 @@ function MessageBubble({
           />
         ) : null}
         {msg.text && !post && !video ? (
-          <Text style={[styles.bubbleText, {color:palette.ink,fontSize:17,lineHeight:26,fontWeight:"400"}]}>
+          <FinalText style={[styles.bubbleText, {color:palette.ink,fontSize:16,lineHeight:24,fontWeight:"400"}]}>
             {isAI ? (
               <RichText text={msg.text} />
             ) : (
               msg.text
             )}
-          </Text>
+          </FinalText>
         ) : null}
         {post ? (
           <Pressable
@@ -1023,7 +1146,7 @@ function MessageBubble({
             >
               <Ionicons name="copy-outline" size={17} color={colors.onSurfaceTertiary} />
             </Pressable>
-            <Pressable
+            <FrostedPressable
               onPress={() => onFeedback?.(msg, "like")}
               disabled={feedbackSaving}
               style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
@@ -1034,8 +1157,8 @@ function MessageBubble({
               testID={`chat-like-${msg.id}`}
             >
               <Ionicons name={msg.feedback_rating === "like" ? "thumbs-up" : "thumbs-up-outline"} size={18} color={msg.feedback_rating === "like" ? colors.brand : colors.onSurfaceTertiary} />
-            </Pressable>
-            <Pressable
+            </FrostedPressable>
+            <FrostedPressable
               onPress={() => onFeedback?.(msg, "dislike")}
               disabled={feedbackSaving}
               style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
@@ -1046,10 +1169,10 @@ function MessageBubble({
               testID={`chat-dislike-${msg.id}`}
             >
               <Ionicons name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"} size={18} color={msg.feedback_rating === "dislike" ? colors.brand : colors.onSurfaceTertiary} />
-            </Pressable>
+            </FrostedPressable>
           </View>
         ) : null}
-      </GlassSurface>
+      </FinalChatBubble>
     </View>
   );
 }
@@ -1161,7 +1284,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.86)",
   },
   historyStatusText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
-  row: { flexDirection: "row", marginBottom: spacing.sm, alignItems: "flex-end" },
+  row: { flexDirection: "row", width:"100%", minWidth:0, maxWidth:"100%", marginBottom: spacing.sm, alignItems: "flex-end" },
   avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
 
   bubble: {

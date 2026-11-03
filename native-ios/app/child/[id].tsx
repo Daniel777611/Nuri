@@ -7,11 +7,9 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  KeyboardAvoidingView,
   Platform,
 } from "react-native";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
-import { useHeaderHeight } from "@react-navigation/elements";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -25,7 +23,9 @@ import {
   parseDateOnly,
   pregnancyWeeks,
 } from "@/src/child-age";
-import { CardList, NuriButton, NuriField, NuriText, ChoiceChip, MenuRow } from "@/src/uiux48/Primitives";
+import { NuriText, IconAction } from "@/src/uiux48/Primitives";
+import { ChildDateDialog } from "@/src/uiuxfinal/ChildDateDialog";
+import { SettingsPage as CardList, SettingsButton as NuriButton, SettingsField as NuriField, SettingsChoice as ChoiceChip, SettingsChoices, SettingsRow as MenuRow, SettingsFormFooter, SettingsAction } from "@/src/uiuxfinal/Settings";
 import { StateCard } from "@/src/uiux48/StateCard";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { colors, radius, spacing, type } from "@/src/theme";
@@ -40,12 +40,13 @@ const GENDERS: { key: "boy" | "girl" | "other"; label: string }[] = [
 export default function ChildEdit() {
   const { capture, current } = useAccountScope();
   const { t, locale } = useT();
+  const copy=(cn:string,en:string,tw:string)=>locale==="en"?en:locale==="zh-TW"?tw:cn;
   const [confirmDelete,setConfirmDelete]=useState(false);
+  const [dateOpen,setDateOpen]=useState(false);
+  const [advanced,setAdvanced]=useState(false);
   const router = useRouter();
   const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
   const recoverExpiredCredentials = recovery.recover;
-  const headerHeight = useHeaderHeight();
-  const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(tabs)/profile");
   const { id, uiState } = useLocalSearchParams<{ id: string; uiState?: string }>();
   const isNew = id === "new";
@@ -199,19 +200,21 @@ export default function ChildEdit() {
     </>}
   </CardList><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":translate(locale, "删除这份孩子资料？")} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":translate(locale, "将从共用云端账号移除此资料，不仅是本机。")} confirmText={locale==="en"?"Delete profile":translate(locale, "删除资料")} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 
-  return <View style={{flex:1}}><KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==="ios"?"padding":"height"} keyboardVerticalOffset={headerHeight}><CardList>
-    <NuriText style={{fontSize:20,fontWeight:"500"}}>{isNew?t("添加孩子"):t("编辑信息")}</NuriText>
+  return <View style={{flex:1}}><CardList>
     {loadError?<NuriText>{loadError}</NuriText>:null}{saveError?<NuriText>{saveError}</NuriText>:null}
     <NuriField label={t("昵称")} value={nickname} onChangeText={setNickname} editable={!saving&&!loadError} testID="child-nickname" />
-    <NuriText secondary>{t("宝宝出生了吗？")}</NuriText>
-    <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving||!!loadError} onPress={()=>{if(value!==expecting){setExpecting(value);setBirthDate("");}}} testID={value?"child-expecting":"child-born"} />)}</View>
-    <NuriField label={expecting?t("预产期"):t("出生日期")} value={birthDate} onChangeText={setBirthDate} autoCapitalize="none" autoCorrect={false} placeholder="YYYY-MM-DD" maxLength={10} editable={!saving&&!loadError} testID="child-birth-date" />
+    <View style={{position:"relative"}}><NuriField label={expecting?t("预产期"):t("出生日期")} value={birthDate} onChangeText={setBirthDate} autoCapitalize="none" autoCorrect={false} placeholder={copy("选择日期","Choose date","選擇日期")} accessibilityHint="YYYY-MM-DD" maxLength={10} editable={!saving&&!loadError} style={{paddingRight:52}} testID="child-birth-date" /><View style={{position:"absolute",right:4,bottom:5}}><IconAction name="chevronRight" label={expecting?t("选择预产期"):t("选择出生日期")} disabled={saving||!!loadError} onPress={()=>setDateOpen(true)} testID="child-open-date-dialog"/></View></View>
+    {dateOpen?<ChildDateDialog value={birthDate} expecting={expecting} onClose={()=>setDateOpen(false)} onConfirm={value=>{setBirthDate(value);setDateOpen(false);}}/>:null}
+    {birthDateError&&birthDate?<NuriText secondary style={{fontSize:12}}>{birthDateError}</NuriText>:null}
+    <NuriField label={copy("过敏信息","Allergies","過敏資訊")} value={allergies} onChangeText={setAllergies} placeholder={copy("没有可留空","Leave blank if none","沒有可留空")} editable={!saving&&!loadError} testID="child-allergies" />
+    <NuriField label={copy("想让 Nuri 了解的事","What Nuri should know","想讓 Nuri 了解的事")} value={notes} onChangeText={setNotes} placeholder={copy("选填","Optional","選填")} multiline compactMultiline editable={!saving&&!loadError} testID="child-notes" />
+    <View style={{height:16}}/>
+    <View style={{flexDirection:"row",flexWrap:"wrap",justifyContent:"space-between",columnGap:12,rowGap:24}}>{!isNew?<SettingsAction danger label={copy("移除孩子资料","Remove child profile","移除孩子資料")} disabled={saving||!!loadError} onPress={()=>setConfirmDelete(true)} testID="child-delete-btn" />:<View/>}<SettingsAction label={copy("更多资料","More details","更多資料")} onPress={()=>setAdvanced(v=>!v)} testID="child-more" /></View>
+    {advanced?<><NuriText secondary>{t("宝宝出生了吗？")}</NuriText>
+    <SettingsChoices>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving||!!loadError} onPress={()=>{if(value!==expecting){setExpecting(value);setBirthDate("");}}} testID={value?"child-expecting":"child-born"} />)}</SettingsChoices>
     <NuriText secondary style={{fontSize:12}}>{birthDateError||(expecting?t("根据预产期估算孕周，不代表医学检查结果"):t("保存完整生日，用于准确计算月龄"))}</NuriText>
     <NuriText testID="child-months">{!birthDateError?stageLabel:expecting?t("请先填写有效的预产期"):t("请先填写有效的出生日期")}</NuriText>
-    <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{GENDERS.map(g=><ChoiceChip key={g.key} label={t(g.label)} selected={gender===g.key} onPress={()=>setGender(g.key)} />)}</View>
-    <NuriField label={t("过敏史")} value={allergies} onChangeText={setAllergies} editable={!saving&&!loadError} testID="child-allergies" />
-    <NuriField label={t("特殊注意事项")} value={notes} onChangeText={setNotes} multiline editable={!saving&&!loadError} style={{height:96,paddingTop:14}} testID="child-notes" />
-    <NuriButton label={saving?t("保存中..."):t("保存")} busy={saving} disabled={!canSave||saving||!!loadError} onPress={()=>void save()} testID="child-save-btn" />
-    {!isNew?<NuriButton secondary label={t("删除此孩子")} disabled={saving||!!loadError} onPress={()=>setConfirmDelete(true)} testID="child-delete-btn" />:null}
-  </CardList></KeyboardAvoidingView><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":translate(locale, "删除这份孩子资料？")} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":translate(locale, "将从共用云端账号移除此资料，不仅是本机。")} confirmText={locale==="en"?"Delete profile":translate(locale, "删除资料")} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
+    <SettingsChoices>{GENDERS.map(g=><ChoiceChip key={g.key} label={t(g.label)} selected={gender===g.key} disabled={saving||!!loadError} onPress={()=>setGender(g.key)} />)}</SettingsChoices></>:null}
+    <SettingsFormFooter><NuriButton label={saving?t("保存中..."):t("保存")} busy={saving} disabled={!canSave||saving||!!loadError} onPress={()=>void save()} testID="child-save-btn" /></SettingsFormFooter>
+  </CardList><ConfirmDialog visible={confirmDelete} title={locale==="en"?"Delete this child profile?":translate(locale, "删除这份孩子资料？")} message={locale==="en"?"This removes the profile from your shared cloud account, not only this device.":translate(locale, "将从共用云端账号移除此资料，不仅是本机。")} confirmText={locale==="en"?"Delete profile":translate(locale, "删除资料")} danger onConfirm={()=>void remove()} onCancel={()=>setConfirmDelete(false)} /></View>;
 }

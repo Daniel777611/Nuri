@@ -17,6 +17,7 @@ export const en=load('../src/i18n/en.ts').en;
 export const zhTW=load('../src/i18n/zh-TW.ts').zhTW;
 export const i18n=load('../src/i18n/index.tsx',{
   react:{createContext:value=>({value,Provider:'I18nProvider'})},
+  'react-native':{Platform:{OS:'web'},Settings:{},AppState:{}},
   'react/jsx-runtime':{},'@/src/utils/storage':{storage:{}},'./en':{en},'./zh-TW':{zhTW}
 });
 export const translate=i18n.translate;

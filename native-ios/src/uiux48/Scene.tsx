@@ -31,12 +31,14 @@ export function NuriScene({ welcome = false, mascot = false, focused = false }: 
   if (canvas.current.width !== width) canvas.current = { width, height };
   else if (height > canvas.current.height) canvas.current.height = height;
   const t = useNuriTheme(); const a = scenes[t.mode]; const scale = width / 402;
-  const role = welcome ? "welcome" : "home"; const geometry = SCENE48[role][t.mode];
+  // The exported shadow includes 43pt of left-side overflow. Use its render
+  // bounds, not the group's nominal 354pt frame, to avoid stretching the cast.
+  const role = welcome ? "welcome" : "home"; const geometry = welcome?SCENE48[role][t.mode]:{actor:{left:116.36735,top:324.04724,width:221.2653,height:295.90546},shadow:{left:7,top:333,width:395,height:332}};
   return <View pointerEvents="none" style={[StyleSheet.absoluteFill,{height:canvas.current.height,overflow:"hidden"}]} testID="nuri-scene">
-    {welcome ? <LinearGradient colors={[String(t.token("color/welcome37/sky-top")),String(t.token("color/welcome37/sky-bottom"))]} style={StyleSheet.absoluteFill} /> : <Image source={a.room} style={StyleSheet.absoluteFill} contentFit="cover" />}
+    {welcome ? <LinearGradient colors={[String(t.token("color/welcome37/sky-top")),String(t.token("color/welcome37/sky-bottom"))]} style={StyleSheet.absoluteFill} /> : <Image source={require("@/assets/final-flow-20261101/home-room.png")} style={StyleSheet.absoluteFill} contentFit="cover" />}
     <View style={{width:402,height:874,transform:[{scale}],transformOrigin:"top left"}}>
       {welcome ? <><Image source={a.horizon} style={{position:"absolute",left:-122,top:446,width:650,height:160}} /><Image source={a.ground} style={{position:"absolute",left:0,top:0,width:402,height:874}} /></> : null}
-      {welcome || mascot ? <><View style={{position:"absolute",...geometry.shadow,mixBlendMode:"multiply"}} testID={`${role}-ground-shadow`}><Image source={shadows[role][t.mode]} style={{width:geometry.shadow.width,height:geometry.shadow.height}} contentFit="contain" /></View><Image source={welcome?a.body:a.mascot} style={{position:"absolute",...geometry.actor}} contentFit="contain" testID={welcome?"welcome-mascot":"home-mascot"} /></> : null}
+      {welcome || mascot ? <><View style={{position:"absolute",...geometry.shadow,mixBlendMode:"multiply"}} testID={`${role}-ground-shadow`}><Image source={welcome?shadows[role][t.mode]:require("@/assets/final-flow-20261101/home-shadow-alpha.png")} style={{width:geometry.shadow.width,height:geometry.shadow.height}} contentFit="contain" /></View><Image source={welcome?a.body:require("@/assets/final-flow-20261101/home-mascot.svg")} style={{position:"absolute",...geometry.actor}} contentFit="contain" testID={welcome?"welcome-mascot":"home-mascot"} /></> : null}
     </View>
     {focused && !welcome ? <View style={[StyleSheet.absoluteFill,{backgroundColor:String(t.token("color/scene/chat-focus-scrim"))}]} /> : null}
   </View>;

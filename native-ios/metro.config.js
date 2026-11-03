@@ -21,7 +21,8 @@ const publicBuildFingerprint = createHash("sha256")
   .digest("hex");
 config.cacheVersion = `nuri-public-build-${publicBuildFingerprint}`;
 // Release graph exclusion, not just a hidden button or a runtime flag. The
-// resolver's dev bit is supplied by Metro; an env flag alone cannot enable it.
+// Native QA still requires its scoped channel. The independent web handoff
+// channel enables ONLY Community's local reducer, never the API fixture mode.
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName === "nuri-ux49-flow-preview") {
     const bundle = require("./app.json").expo.ios.bundleIdentifier;
@@ -29,7 +30,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     const testflight = process.env.NURI_RELEASE_CHANNEL === "testflight-prototype" && bundle === "com.ordashtech.nuri.nativelab" && process.env.EXPO_PUBLIC_PREVIEW_MODE === "0" && process.env.EXPO_PUBLIC_UIUX48_GALLERY !== "1";
     const simulatorQA = process.env.PRODUCT_BUNDLE_IDENTIFIER === "com.ordashtech.nuri.preview.qa" && /^iphonesimulator/.test(process.env.SDK_NAME ?? "");
     const isolatedQA = process.env.NURI_RELEASE_CHANNEL === "uiux49-qa" && (context.dev === true || simulatorQA) && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1";
-    return { type: "sourceFile", filePath: path.resolve(__dirname, requested && (testflight || isolatedQA) ? "src/uiux49/prototype/FlowPreview.tsx" : "src/uiux49/FlowUnavailable.tsx") };
+    const webLocalPrototype = platform === "web" && process.env.NURI_RELEASE_CHANNEL === "web-local-prototype" && process.env.EXPO_PUBLIC_PREVIEW_MODE === "0" && process.env.EXPO_PUBLIC_UIUX48_GALLERY !== "1";
+    return { type: "sourceFile", filePath: path.resolve(__dirname, requested && (testflight || isolatedQA || webLocalPrototype) ? "src/uiux49/prototype/FlowPreview.tsx" : "src/uiux49/FlowUnavailable.tsx") };
   }
   if (moduleName === "nuri-uiux48-fixture-gallery") {
     const enabled = context.dev === true && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1" && process.env.EXPO_PUBLIC_UIUX48_GALLERY === "1";

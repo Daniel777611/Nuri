@@ -1,3 +1,5 @@
+import { FrostedPressable } from "@/src/uiuxfinal/ButtonMaterial";
+import { NuriTextInput } from "@/src/keyboard/AppKeyboard";
 import { useCallback, useRef } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -104,11 +106,11 @@ export default function KnowledgeLibrary() {
       <Text style={styles.title}>{words.title}</Text>
       <Text style={styles.detail}>{words.detail}</Text>
       <View style={styles.searchRow}>
-        <TextInput
+        <NuriTextInput
           value={query} onChangeText={setQuery} placeholder={words.placeholder}
           placeholderTextColor={colors.muted} style={styles.input}
           accessibilityLabel={words.placeholder} returnKeyType="search" maxLength={200}
-          autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => { void load(query); }}
+          autoCapitalize="none" autoCorrect={false} onSubmitEditing={() => { void load(query); }} onAppKeyboardSubmit={() => { void load(query); }}
           testID="knowledge-search-input"
         />
         <Pressable onPress={() => { void load(query); }} style={styles.searchButton}
@@ -136,7 +138,7 @@ export default function KnowledgeLibrary() {
             const title = cardText(item, "title", locale);
             const label = cardText(item, "type_label", locale);
             const summary = shortResourceSummary(cardText(item, "summary", locale), locale === "en" ? 600 : 220);
-            return <Pressable style={styles.card} testID={`knowledge-card-${item.id}`}
+            return <FrostedPressable style={styles.card} testID={`knowledge-card-${item.id}`}
               accessibilityRole="button" accessibilityLabel={`${words.open}: ${title}`}
               onPress={() => {
                 if (capture() === null || !active.current) return;
@@ -148,7 +150,7 @@ export default function KnowledgeLibrary() {
                 {summary ? <Text style={styles.cardSummary} numberOfLines={3} testID={`knowledge-summary-${item.id}`}>{summary}</Text> : null}
               </View>
               <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-            </Pressable>;
+            </FrostedPressable>;
           }}
           testID="knowledge-card-list"
         />}
@@ -162,7 +164,7 @@ const styles = StyleSheet.create({
   detail: { color: colors.muted, fontSize: 14, lineHeight: 22 },
   searchRow: { flexDirection: "row", gap: 10, alignItems: "center" },
   input: { flex: 1, minWidth: 0, minHeight: 48, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, fontSize: 15 },
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, fontSize: 15, textAlignVertical:"center", includeFontPadding:false },
   searchButton: { width: 48, height: 48, borderRadius: 14, backgroundColor: colors.brand, alignItems: "center", justifyContent: "center" },
   clearButton: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4 },
   clearText: { color: colors.brand, fontSize: 14, fontWeight: "600" },

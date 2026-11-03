@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd native-ios && npx -y pnpm@11.25.0 install --frozen-lockfile && npx expo export --platform web",
+  "buildCommand": "cd native-ios && npx -y pnpm@11.25.0 install --frozen-lockfile && npx -y pnpm@11.25.0 run build:web:ios-parity",
   "outputDirectory": "native-ios/dist",
   "functions": {
     "api/backend.py": {

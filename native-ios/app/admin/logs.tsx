@@ -1,3 +1,4 @@
+import { NuriTextInput } from "@/src/keyboard/AppKeyboard";
 // Chat turn performance log viewer.
 //
 // Standalone from admin.tsx so the wide table and paging state don't crowd it,
@@ -252,13 +253,13 @@ export default function AdminLogs() {
       <SafeAreaView style={styles.gateWrap}>
         <View style={styles.gateCard}>
           <Text style={styles.gateTitle}>对话性能日志</Text>
-          <TextInput
+          <NuriTextInput
             value={key}
             onChangeText={setKey}
             placeholder="管理员密码"
             placeholderTextColor={colors.muted}
             secureTextEntry
-            onSubmitEditing={login}
+            onSubmitEditing={login} onAppKeyboardSubmit={login}
             style={styles.gateInput}
           />
           {gateError ? <Text style={styles.errorText}>{gateError}</Text> : null}
@@ -324,12 +325,12 @@ export default function AdminLogs() {
 
           <Text style={[styles.sectionHeader, { marginTop: spacing.md }]}>按账号筛选</Text>
           <View style={styles.row}>
-            <TextInput
+            <NuriTextInput
               value={accountQuery}
               onChangeText={setAccountQuery}
               placeholder="邮箱或昵称"
               placeholderTextColor={colors.muted}
-              onSubmitEditing={searchAccounts}
+              onSubmitEditing={searchAccounts} onAppKeyboardSubmit={searchAccounts}
               style={styles.searchInput}
             />
             <Pressable onPress={searchAccounts} style={styles.smallBtn} testID="logs-search-accounts">
@@ -645,6 +646,7 @@ const styles = StyleSheet.create({
   },
   gateTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface },
   gateInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
     padding: spacing.md, color: colors.onSurface,
   },
@@ -687,6 +689,7 @@ const styles = StyleSheet.create({
   refreshBtnText: { color: "#fff", fontSize: 13, fontWeight: "600" },
 
   searchInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     flexGrow: 1, minWidth: 180, borderWidth: 1, borderColor: colors.border,
     borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 8,
     color: colors.onSurface, fontSize: 13,
