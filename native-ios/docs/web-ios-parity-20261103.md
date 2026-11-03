@@ -34,7 +34,7 @@ Nuri 登录、账号、聊天、通知历史及偏好继续使用 main 既有接
 
 Community 的 42 个设计状态可本地交互测试，包括提问、回复、推荐筛选、联系邀请、收件箱、家长对话、双方 AI 同意展示及安全设置。当前写操作只改变内存状态，账号切换会重建原型；刷新不持久化。示例未读、姓名、距离、发送动画和成功页不是服务器回执。
 
-完整接口交接将放在 Figma 的 [Prototype 页面](https://www.figma.com/design/AdHDK7uLqyzvgbzm1FlM6F?node-id=188-35035) 右侧，标题为“Community 后端接口交接”。其中逐页映射 42 状态，分开标注已有 main 契约和 `PROPOSED` 能力；后端工程师应先确认 DTO、权限、幂等、分页、错误、双方 AI 授权、媒体及删除保留规则，再实现正式 OpenAPI。
+完整接口交接已放在 Figma 的 [Prototype 页面右侧文档](https://www.figma.com/design/AdHDK7uLqyzvgbzm1FlM6F?node-id=216-13472)，标题为“Community 后端接口交接”。其中逐页映射 42 状态，分开标注已有 main 契约和 `PROPOSED` 能力；后端工程师应先确认 DTO、权限、幂等、分页、错误、双方 AI 授权、媒体及删除保留规则，再实现正式 OpenAPI。
 
 不要把现有 Nuri 单人私聊接口用作家长 P2P 聊天，也不要把 `POST /notifications/{id}/open` 用作纯社区导航：它具有创建或复用 Nuri 私聊并写入消息的业务副作用。公开资料不能直接使用本人 `/auth/me` 的整份 DTO。
 
