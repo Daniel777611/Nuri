@@ -20,7 +20,8 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
-import { TEXT_FONTS } from "@/src/textFonts";
+import { NotoSansSC_400Regular } from "@expo-google-fonts/noto-sans-sc/400Regular";
+import { NotoSansSC_900Black } from "@expo-google-fonts/noto-sans-sc/900Black";
 
 import { api, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
@@ -49,7 +50,7 @@ export default function Register() {
   const acquireRegistration = () => { if (registerAction.current) return false; registerAction.current = true; return true; };
   const releaseRegistration = () => { registerAction.current = false; };
   const [checkingSession, setCheckingSession] = useState(!isPreviewMode);
-  const [fontsLoaded] = useFonts(TEXT_FONTS);
+  const [fontsLoaded] = useFonts({ NotoSansSC_400Regular, NotoSansSC_900Black });
 
   // Someone who is already signed in must never reach this form. Submitting it
   // with a second email replaces the stored token, so the app silently lands on

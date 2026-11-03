@@ -165,8 +165,7 @@ function BillingPage({ checkout }: { checkout?: string }) {
     setBusy(interval);
     setActionError("");
     try {
-      // The native page predates tiers; it only ever offered the first paid one.
-      const { url } = await api.billingCheckout("plus", interval, returnTo);
+      const { url } = await api.billingCheckout(interval, returnTo);
       leftToPay.current = inShell;
       openExternal(url);
       // In the app this page stays put while the browser opens; don't leave

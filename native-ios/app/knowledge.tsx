@@ -162,7 +162,7 @@ const styles = StyleSheet.create({
   detail: { color: colors.muted, fontSize: 14, lineHeight: 22 },
   searchRow: { flexDirection: "row", gap: 10, alignItems: "center" },
   input: { flex: 1, minWidth: 0, minHeight: 48, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, fontSize: 15 },
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, color: colors.onSurface, fontSize: 15, textAlignVertical:"center", includeFontPadding:false },
   searchButton: { width: 48, height: 48, borderRadius: 14, backgroundColor: colors.brand, alignItems: "center", justifyContent: "center" },
   clearButton: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4 },
   clearText: { color: colors.brand, fontSize: 14, fontWeight: "600" },

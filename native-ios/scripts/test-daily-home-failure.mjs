@@ -12,6 +12,14 @@ export function load(path, dependencies = {}) {
     if (name.startsWith("@/assets/")) return "fixture-image";
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow"].map(n=>[n,n]));
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
+    if(name==="@/src/uiuxfinal/HomeVideoThumbnail")return {HomeVideoThumbnail:"HomeVideoThumbnail"};
+    if(name==="@/src/uiuxfinal/Primitives")return {FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FinalCardPage:"CardList",FINAL_COLOR:{accent:"#735C84"}};
+    if(name==="@/src/uiuxfinal/Settings")return {SettingsButton:"NuriButton"};
+    if(name==="@/src/recommendationMedia")return load("../src/recommendationMedia.ts",{"./externalContent":load("../src/externalContent.ts")});
+    if(name==="./ReadingMedia")return load("../src/uiuxfinal/ReadingMedia.tsx",{...dependencies,"./Primitives":{FinalText:"NuriText"}});
+    if(name==="@/src/uiuxfinal/Reading"||name==="./Reading")return load("../src/uiuxfinal/Reading.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FINAL_COLOR:{accent:"#735C84"}}});
+    if(name==="@/src/uiuxfinal/Article")return load("../src/uiuxfinal/Article.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FINAL_COLOR:{accent:"#735C84"}}});
     if(name==="@/src/uiux48/Theme")return {useNuriTheme:()=>({mode:"Morning",ink:"#3d3340",secondary:"#5d5060",token:()=>""})};
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
     if(name==="@/src/uiux48/Composer")return {NuriComposer:"NuriComposer"};
@@ -150,7 +158,7 @@ export function page(f, kind = "daily", params = {}) {
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ top: 0, bottom: 34 }) },
-    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" },
+    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" }, "expo-blur": { BlurView: "Blur" },
     "expo-web-browser": { openBrowserAsync: async (url) => external.push(url) }, "expo-clipboard": { setStringAsync: async () => true },
     "@/src/components/taskCardExport": { firstShareableResource: (resources) => resources?.find((resource) => /^https:\/\//.test(resource.url)) },
     "@/src/feedPreparation": load("../src/feedPreparation.ts", { "./api": f, "./sessionBoundary": f.boundary }),
@@ -211,13 +219,9 @@ test("Home and post page display brief AI search previews with disclosure, not v
     assert.ok(post.find("daily-post-question")); assert.ok(post.find("daily-post-source"));
     assert.equal(post.find("daily-post-source").props.accessibilityRole, "link");
     assert.equal(post.find("daily-post-headline"), undefined);
-    assert.equal(post.find("daily-post-guide-headline").props.children, guide.headline);
-    assert.equal(post.find("daily-post-guide-intro").props.children, guide.intro);
-    assert.equal(post.find("daily-post-guide-disclosure").props.children, guide.disclosure);
-    guide.actions.forEach((_action, index) => assert.ok(post.find(`daily-post-guide-action-${index}`)));
-    assert.equal(post.find("daily-post-summary-question").props.children, "AI_SEARCH_QUESTION?");
+    assert.equal(post.find("daily-post-guide-headline"),undefined,"The final merged article must not repeat the old generic reading guide.");
     assert.equal(post.find("daily-post-summary-situation").props.children, "AI_SEARCH_SITUATION.");
-    assert.ok(post.find("daily-post-summary-point-0")); assert.ok(post.find("daily-post-recommendation-reason"));
+    assert.ok(post.find("daily-post-summary-point-0"));
     assert.match(post.find("daily-post-summary-disclosure").props.children, /部分内容.*有误.*原站核对/);
     assert.doesNotMatch(post.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
     post.find("daily-post-source").props.onPress(); await tick(); post.render();
@@ -405,12 +409,12 @@ for (const [status, kind] of [[401, "session"], [503, "service"]]) test("Home wa
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.equal(p.find("home-nuri-action").props.label, "Open full conversation");
+    assert.equal(p.find("home-nuri-action").props.accessibilityLabel, "Open full conversation");
     f.responder = (path) => path === "/chat/main/preview" ? response({ detail: "private failure" }, status) : null;
     p.blur(); p.focus(); await tick(); p.render();
     const words = load("../src/requestFailure.ts").requestFailureCopy("en", kind);
     assert.equal(p.find("home-nuri-memo").props.children, words.title);
-    assert.equal(p.find("home-nuri-action").props.label, words.action);
+    assert.equal(p.find("home-nuri-action").props.accessibilityLabel, words.action);
     const before = f.calls.filter((call) => call.path === "/chat/main/preview").length;
     f.responder = null; await p.find("home-nuri-action").props.onPress(); await tick(); p.render();
     if (status === 401) { assert.deepEqual(p.routes, ["/login"]); assert.equal(f.calls.filter((call) => call.path === "/chat/main/preview").length, before); }

@@ -645,6 +645,7 @@ const styles = StyleSheet.create({
   },
   gateTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface },
   gateInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
     padding: spacing.md, color: colors.onSurface,
   },
@@ -687,6 +688,7 @@ const styles = StyleSheet.create({
   refreshBtnText: { color: "#fff", fontSize: 13, fontWeight: "600" },
 
   searchInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     flexGrow: 1, minWidth: 180, borderWidth: 1, borderColor: colors.border,
     borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: 8,
     color: colors.onSurface, fontSize: 13,

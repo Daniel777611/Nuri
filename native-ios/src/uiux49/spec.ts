@@ -8,10 +8,12 @@ export const TYPE49 = {
   Caption: { fontSize: 12, lineHeight: 16, fontWeight: "500" },
 } as const;
 export type TextRole49 = keyof typeof TYPE49;
-export const ACTIVE_THEMES49 = ["Morning", "Night"] as const;
+// Nov 1 final design has one approved daytime appearance. Old saved Night
+// values and preview URLs must not re-enable an undesigned release theme.
+export const ACTIVE_THEMES49 = ["Morning"] as const;
 export function normalizeTheme49(value: unknown) {
   // Existing installations can contain Afternoon; migrate to the new day mode.
-  return value === "Night" ? "Night" : "Morning";
+  return "Morning" as const;
 }
-export function hourTheme49(hour: number) { return hour >= 5 && hour < 19 ? "Morning" : "Night"; }
+export function hourTheme49(_hour: number) { return "Morning" as const; }
 export const TAB49 = { height: 64, radius: 32, padding: 8, itemHeight: 48, itemRadius: 24, gap: 4 } as const;

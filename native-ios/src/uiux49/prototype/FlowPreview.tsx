@@ -8,7 +8,7 @@ import { NuriComposer } from "@/src/uiux48/Composer";
 import { FLOW_SCREENS, type FlowBlock, type FlowCopy } from "./screens";
 import { canChat49, createFlow49, draftSlot49, flowReducer49, type FlowEvent49 } from "./model";
 import { FLOW_TW49 } from "./traditional";
-import CommunityRedesign from "./CommunityRedesign";
+import CommunityRedesign from "@/src/uiuxfinal/CommunityFinal";
 import { useAccountScope } from "@/src/useAccountState";
 
 export const FLOW_PREVIEW_ENABLED = true;

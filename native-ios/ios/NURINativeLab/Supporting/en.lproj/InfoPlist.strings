@@ -1,6 +1,6 @@
 CFBundleDisplayName = "Nuri";
-NSCameraUsageDescription = "Allow NURI to use the camera to take a photo you choose to add to a conversation.";
-NSMicrophoneUsageDescription = "NURI uses the microphone to turn audio you actively record into text.";
+NSCameraUsageDescription = "Allow NURI to take photos or record videos that you choose to add to this conversation.";
+NSMicrophoneUsageDescription = "NURI uses the microphone for voice-to-text or audio in videos you choose to record and send.";
 NSPhotoLibraryUsageDescription = "Allow NURI to access photos you choose to add to a conversation or save from the app.";
 NSPhotoLibraryAddUsageDescription = "Allow NURI to save images you explicitly choose to share to your photo library.";
 NSFaceIDUsageDescription = "Allow Nuri to use Face ID to protect access to your saved sign-in credentials.";

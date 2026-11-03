@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 
-// UIUX48's shared shell owns the four-tab bar; nested stacks stay transparent.
+// The final design's shared shell owns the three-tab bar.
 export default function MainLayout() {
   return <Stack screenOptions={{ headerShown: false }} />;
 }

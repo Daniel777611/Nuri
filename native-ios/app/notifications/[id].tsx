@@ -13,17 +13,11 @@ import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { api, auth, ApiError, isAuthError } from "@/src/api";
-import { AIConsentError } from "@/src/aiConsent";
-import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
-import { useAIConsent } from "@/src/useAIConsent";
 
-// "consent": opening writes NURI's message into the conversation, which is
-// gated on AI permission. The permission page is pushed over this screen, and
-// once it is granted the open is retried here.
-type LoadState = { kind: "loading" } | { kind: "missing" } | { kind: "error" } | { kind: "consent" };
+type LoadState = { kind: "loading" } | { kind: "missing" } | { kind: "error" };
 
 export default function NotificationScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -63,11 +57,6 @@ export default function NotificationScreen() {
         router.replace({ pathname: "/login", params: { returnTo: notificationRoute } });
         return;
       }
-      if (err instanceof AIConsentError && err.code === "AI_CONSENT_REQUIRED") {
-        setState({ kind: "consent" });
-        router.push(aiPermissionHref(notificationRoute));
-        return;
-      }
       setState(err instanceof ApiError && err.status === 404 ? { kind: "missing" } : { kind: "error" });
     }
   }, [id, router]);
@@ -83,11 +72,6 @@ export default function NotificationScreen() {
     };
   }, [open]);
 
-  const { state: permission } = useAIConsent();
-  useEffect(() => {
-    if (state.kind === "consent" && permission.status === "allowed") void open();
-  }, [state.kind, permission.status, open]);
-
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       {state.kind === "loading" && (
@@ -101,15 +85,6 @@ export default function NotificationScreen() {
           <Text style={styles.stateText}>{t("这条通知不存在或已过期")}</Text>
           <Pressable style={styles.secondaryButton} onPress={() => router.replace("/")}>
             <Text style={styles.secondaryButtonText}>{t("回到首页")}</Text>
-          </Pressable>
-        </View>
-      )}
-
-      {state.kind === "consent" && (
-        <View style={styles.center}>
-          <Text style={styles.stateText}>{t("需要先开启 AI 权限，才能打开这条通知")}</Text>
-          <Pressable style={styles.secondaryButton} onPress={() => router.push(aiPermissionHref(`/notifications/${id}`))}>
-            <Text style={styles.secondaryButtonText}>{t("去开启")}</Text>
           </Pressable>
         </View>
       )}

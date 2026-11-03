@@ -14,7 +14,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Link } from "expo-router";
 import { Collapsible, Note } from "@/src/admin/AdminParts";
 import UsageDashboard from "@/src/admin/UsageDashboard";
-import QuotaPanel from "@/src/admin/QuotaPanel";
 import { colors, radius, spacing } from "@/src/theme";
 
 // ── Backend base URL ──────────────────────────────────────────────────────────
@@ -562,8 +561,6 @@ export default function AdminPage() {
         </Collapsible>
 
         {/* "#fix" 白名单 */}
-        <QuotaPanel backend={BACKEND} adminKey={key} />
-
         <Collapsible
           title="#fix 白名单"
           summary={reviewersLoading ? "加载中…" : `${reviewers.length} 人`}
@@ -623,6 +620,7 @@ const styles = StyleSheet.create({
   },
   gateTitle: { fontSize: 22, fontWeight: "700" as const, textAlign: "center", color: colors.onSurface },
   gateInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md,
     padding: spacing.md, fontSize: 16, color: colors.onSurface,
   },
@@ -659,6 +657,7 @@ const styles = StyleSheet.create({
   deleteText: { color: colors.error, fontSize: 12, fontWeight: "500" },
 
   miniInput: {
+    textAlignVertical:"top", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.sm, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },
@@ -670,6 +669,7 @@ const styles = StyleSheet.create({
   smallBtnText: { color: "#fff", fontWeight: "600", fontSize: 13 },
 
   input: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },

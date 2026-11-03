@@ -14,6 +14,7 @@ function load(path, dependencies = {}, jsx = false) {
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
    assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, loaded, loaded.exports);
@@ -359,6 +360,7 @@ function headerFixture(f, locale) {
     "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
     "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
+    "@/src/uiuxfinal/Primitives": { FinalText: "FinalText" },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
   }, true).default;

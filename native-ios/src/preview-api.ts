@@ -16,21 +16,12 @@ let billingPreview: any = (() => {
   return {
     enabled: true,
     entitled: false,
-    tier: "basic",
     has_customer: false,
     subscription: null,
     plans: [
-      { tier: "plus", interval: "month", price_id: "price_preview_pm", unit_amount: 699, currency: "usd" },
-      { tier: "plus", interval: "year", price_id: "price_preview_py", unit_amount: 6900, currency: "usd" },
-      { tier: "unlimited", interval: "month", price_id: "price_preview_um", unit_amount: 1499, currency: "usd" },
-      { tier: "unlimited", interval: "year", price_id: "price_preview_uy", unit_amount: 19900, currency: "usd" },
+      { interval: "month", price_id: "price_preview_m", unit_amount: 999, currency: "usd" },
+      { interval: "year", price_id: "price_preview_y", unit_amount: 9900, currency: "usd" },
     ],
-    allowances: { basic: 10, plus: 25, unlimited: null },
-    usage: {
-      tier: "basic", limit: 130000, used: 52000, remaining: 78000, exhausted: false,
-      limit_turns: 10, tokens_per_turn: 13000, override: false,
-      resets_at: new Date(new Date().setHours(24, 0, 0, 0)).toISOString(), enforced: false,
-    },
   };
 })();
 
@@ -394,20 +385,10 @@ const newest = (items: any[]) =>
       `${b?.created_at || ""}:${b?.id || ""}`,
     )
   ).pop() || null;
-let previewMemories = [
-  { id: "mem-1", child_id: null, standing: true, text: "小满对鸡蛋过敏", updated_at: "2026-07-16T08:00:00.000Z" },
-  { id: "mem-2", child_id: "child-1", standing: false, text: "小满最近一晚醒两次", updated_at: "2026-07-17T08:00:00.000Z" },
-  { id: "mem-3", child_id: null, standing: false, text: "妈妈白天上班，晚上自己带", updated_at: "2026-07-12T08:00:00.000Z" },
-];
-
 export async function previewRequest(path: string, init?: RequestInit): Promise<any> {
   const method = init?.method || "GET";
   const body = bodyOf(init);
   const routePath = path.split("?")[0];
-  if(path==="/notifications"&&method==="GET")return {items:[
-    {id:"00000000-0000-4000-8000-000000000001",kind:"care",title:"睡前的节奏",body:"最近的睡前节奏辛苦了，今晚想聊聊吗？",sent_at:new Date(Date.now()-3600e3).toISOString()},
-    {id:"00000000-0000-4000-8000-000000000002",kind:"daily_post",title:"群里建议逐步自我安抚",body:"其他家长的做法：睡前固定流程。",sent_at:new Date(Date.now()-26*3600e3).toISOString()},
-  ]};
   if(path==="/notifications/preferences"&&method==="GET")return {...notificationPreferences};
   if(path==="/notifications/preferences"&&method==="PATCH")return notificationPreferences={...notificationPreferences,...body};
 
@@ -807,34 +788,20 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
 
   // Billing: sample prices; subscribing flips the preview account to a member
   // instead of leaving for Stripe.
-  if (path.split("?")[0] === "/billing/status") return billingPreview;
-  if (routePath === "/billing/usage") return billingPreview.usage;
-  if (routePath === "/memories" && method === "GET") return previewMemories;
-  if (/^\/memories\/[^/]+$/.test(routePath) && method === "DELETE") {
-    previewMemories = previewMemories.filter((m) => m.id !== routePath.split("/")[2]);
-    return undefined;
-  }
-  if (path === "/billing/checkout" || path === "/billing/change") {
+  if (path === "/billing/status") return billingPreview;
+  if (path === "/billing/checkout") {
     const interval = body?.interval === "year" ? "year" : "month";
-    const tier = body?.tier === "plus" ? "plus" : "unlimited";
     const end = new Date(Date.now() + (interval === "year" ? 365 : 30) * 86400000).toISOString();
-    const limit = tier === "plus" ? 25 * 13000 : null;
     billingPreview = {
       ...billingPreview,
       entitled: true,
-      tier,
       has_customer: true,
-      subscription: { status: "active", tier, interval, current_period_end: end, cancel_at_period_end: false },
-      usage: {
-        ...billingPreview.usage, tier, limit, limit_turns: tier === "plus" ? 25 : null,
-        remaining: limit == null ? null : limit - billingPreview.usage.used,
-        exhausted: false,
-      },
+      subscription: { status: "active", interval, current_period_end: end, cancel_at_period_end: false },
     };
     try {
       globalThis.sessionStorage?.setItem(BILLING_PREVIEW_KEY, JSON.stringify(billingPreview));
     } catch { /* preview only */ }
-    return path === "/billing/change" ? billingPreview : { url: "/billing?checkout=success" };
+    return { url: "/billing?checkout=success" };
   }
   if (path === "/billing/portal") return { url: "/billing" };
 

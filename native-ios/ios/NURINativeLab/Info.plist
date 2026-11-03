@@ -62,11 +62,11 @@
       <false/>
     </dict>
     <key>NSCameraUsageDescription</key>
-    <string>允许 NURI 使用相机，以便拍照并在对话中添加图片。</string>
+    <string>允许 NURI 使用相机拍照或录制视频，并在你确认后添加到当前对话。</string>
     <key>NSFaceIDUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your Face ID biometric data.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>NURI 需要使用麦克风，将你主动录制的语音转成文字。</string>
+    <string>NURI 使用麦克风将你主动录制的语音转成文字，或录制你选择发送的视频声音。</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>NURI 需要将你主动分享的任务卡保存到相册。</string>
     <key>NSPhotoLibraryUsageDescription</key>
@@ -95,7 +95,7 @@
       <string>UIInterfaceOrientationPortraitUpsideDown</string>
     </array>
     <key>UIUserInterfaceStyle</key>
-    <string>Automatic</string>
+    <string>Light</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
   </dict>

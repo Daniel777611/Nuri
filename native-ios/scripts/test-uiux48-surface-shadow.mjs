@@ -9,6 +9,7 @@ function load(path,deps={}){
  const module={exports:{}};
  new Function('require','module','exports',code)(name=>{
   if(name.startsWith('@/assets/'))return name;
+  if(name==='./inputLayout')return load('src/uiux48/inputLayout.ts');
   assert.ok(name in deps,'Unexpected import '+name);return deps[name];
  },module,module.exports);return module.exports;
 }
@@ -17,7 +18,7 @@ const flatten=s=>!s?{}:Array.isArray(s)?Object.assign({},...s.map(flatten)):s;
 const nodes=n=>!n||typeof n!=='object'?[]:Array.isArray(n)?n.flatMap(nodes):[n,...nodes(n.props?.children)];
 function primitives(mode){
  const jsx=(type,props)=>({type,props});
- const theme={mode,night:mode==='Night',ink:'#49404f',glass:'rgba(255,248,242,.44)',message:'rgba(255,248,241,.76)',userMessage:'rgba(251,221,224,.6)',composer:'rgba(255,248,241,.92)',coral:'rgba(240,142,150,.7)',token:()=>mode==='Night'?'rgba(166,125,153,.26)':'rgba(242,171,179,.35)'};
+ const theme={mode,night:mode==='Night',keyboard:{appearance:mode==='Night'?'dark':'light'},ink:'#49404f',glass:'rgba(255,248,242,.44)',message:'rgba(255,248,241,.76)',userMessage:'rgba(251,221,224,.6)',composer:'rgba(255,248,241,.92)',coral:'rgba(240,142,150,.7)',token:()=>mode==='Night'?'rgba(166,125,153,.26)':'rgba(242,171,179,.35)'};
  return load('src/uiux48/Primitives.tsx',{
   react:{forwardRef:x=>x},'react/jsx-runtime':{jsx,jsxs:jsx},
   'react-native':{ActivityIndicator:'Activity',KeyboardAvoidingView:'KAV',Platform:{OS:'ios'},Pressable:'Pressable',ScrollView:'Scroll',Switch:'Switch',Text:'Text',TextInput:'Input',View:'View',StyleSheet:{create:x=>x,flatten,absoluteFill:{position:'absolute',left:0,right:0,top:0,bottom:0}}},
@@ -36,6 +37,14 @@ test('shared transparent glass never uses content-pixel legacy shadows; all role
   assert.equal(blur.props.intensity,materials.GLASS_BLUR48[mode][kind]);
  }
 });
+test('shared fields vertically center one-line content without centering multiline notes',()=>{
+ const p=primitives('Morning'),onChangeText=()=>{},ref={current:null};
+ for(const multiline of [false,true]){
+  const tree=p.NuriField({value:'fixture',multiline,onChangeText,style:multiline?{height:96,paddingTop:14}:undefined},ref),input=nodes(tree).find(n=>n.type==='Input'),style=flatten(input.props.style);
+  assert.equal(style.textAlignVertical,multiline?'top':'center');assert.equal(style.paddingVertical,multiline?14:0);assert.equal(style.includeFontPadding,false);
+  assert.equal(input.props.onChangeText,onChangeText);assert.equal(input.props.ref,ref);assert.equal(input.props.value,'fixture');
+ }
+});
 test('all nested choice chips, including all three languages, are flat without losing selection or callbacks',()=>{
  for(const mode of ['Morning','Afternoon','Night'])for(const label of ['简体中文','繁體中文','English'])for(const selected of [false,true]){
   let calls=0;const p=primitives(mode),tree=p.ChoiceChip({label,selected,onPress:()=>calls++}),surface=tree.props.children;
@@ -47,6 +56,15 @@ test('all nested choice chips, including all three languages, are flat without l
  }
  const disabled=primitives('Night').ChoiceChip({label:'fixture',selected:true,disabled:true,onPress:()=>{}});
  assert.equal(disabled.props.disabled,true);assert.equal(disabled.props.accessibilityState.disabled,true);
+});
+test('filled glass stretches every clipping/content layer without clipping the outer shadow or changing default cards',()=>{
+ for(const mode of ['Morning','Afternoon','Night']){
+  const p=primitives(mode),filled=p.GlassSurface({fill:true,children:'fixture',style:{flex:1}}),normal=p.GlassSurface({children:'fixture'});
+  const clip=filled.props.children,content=clip.props.children.at(-1);
+  assert.equal(flatten(clip.props.style).flex,1);assert.equal(flatten(clip.props.style).minHeight,0);
+  assert.equal(flatten(content.props.style).flex,1);assert.equal(flatten(content.props.style).minHeight,0);
+  assert.notEqual(flatten(filled.props.style).overflow,'hidden');assert.equal(flatten(normal.props.children.props.style).flex,undefined);
+ }
 });
 test('floating CTAs retain soft border-box shadows, full pill clipping and existing busy/disabled semantics',()=>{
  for(const mode of ['Morning','Afternoon','Night'])for(const secondary of [false,true])for(const busy of [false,true]){

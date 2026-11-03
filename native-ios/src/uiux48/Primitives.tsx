@@ -8,8 +8,10 @@ import { useNuriTheme } from "./Theme";
 import { GLASS_BLUR48, GLASS_SHADOW48 } from "./materials";
 import { TYPE49, type TextRole49 } from "@/src/uiux49/spec";
 import { GlassLighting } from "./GlassLighting";
+import { singleLineInputStyle, multilineInputStyle } from "./inputLayout";
 
 const icons = {
+  heart: require("@/assets/final-flow-20261101/heart.png"),
   home: require("@/assets/uiux48/approved-icons/home.svg"), chat: require("@/assets/uiux48/approved-icons/chat.svg"),
   notifications: require("@/assets/uiux48/approved-icons/notifications.svg"), community: require("@/assets/uiux48/approved-icons/community.svg"),
   settings: require("@/assets/uiux48/approved-icons/settings.svg"), plus: require("@/assets/uiux48/approved-icons/plus.svg"),
@@ -21,11 +23,12 @@ const icons = {
   image: require("@/assets/uiux48/approved-icons/image.svg"), close: require("@/assets/uiux48/approved-icons/close.svg"),
 };
 export type NuriIconName = keyof typeof icons;
-export function NuriIcon({ name }: { name: NuriIconName }) {
+export function NuriIcon({ name, color, size=24 }: { name: NuriIconName; color?:string; size?:number }) {
   const { ink, night } = useNuriTheme();
   // Figma 127:24534: original outline SVG, no material or backing plate.
   // Preserve its daytime artwork; Night is a white alpha-mask tint only.
-  return <Image source={icons[name]} style={{ width: 24, height: 24 }} contentFit="contain" tintColor={name === "mic" ? night ? "#FFFFFF" : undefined : ink} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
+  const finalIcons={home:require("@/assets/final-flow-20261101/home.svg"),chat:require("@/assets/final-flow-20261101/chat.svg"),community:require("@/assets/final-flow-20261101/community.svg"),send:require("@/assets/final-flow-20261101/send.svg"),plus:require("@/assets/final-flow-20261101/plus.svg"),mic:require("@/assets/final-flow-20261101/microphone.svg")};
+  return <Image source={name in finalIcons?finalIcons[name as keyof typeof finalIcons]:icons[name]} style={{ width:size, height:size }} contentFit="contain" tintColor={color??ink} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
 }
 export function IconAction({ name, label, onPress, testID, disabled }: { name: NuriIconName; label: string; onPress: () => void; testID?: string; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} disabled={disabled} testID={testID} style={({ pressed }) => [s.iconTarget, { opacity: disabled ? .4 : pressed ? .6 : 1 }]}><NuriIcon name={name} /></Pressable>;
@@ -44,16 +47,16 @@ export function NuriText({ children, secondary = false, style, role, ...props }:
 
 /** Shadow lives outside the clipped material. Only the material clips; neither
  * the outer shadow nor the card's top/bottom corners belong to a ScrollView. */
-export function GlassSurface({ children, style, contentStyle, kind = "card", shadow = true, testID }: { children: ReactNode; style?: StyleProp<ViewStyle>; contentStyle?: StyleProp<ViewStyle>; kind?: "card" | "message" | "user" | "composer" | "pill"; shadow?: boolean; testID?: string }) {
+export function GlassSurface({ children, style, contentStyle, kind = "card", shadow = true, testID, fill: stretch = false }: { children: ReactNode; style?: StyleProp<ViewStyle>; contentStyle?: StyleProp<ViewStyle>; kind?: "card" | "message" | "user" | "composer" | "pill"; shadow?: boolean; testID?: string; fill?: boolean }) {
   const t = useNuriTheme();
   const radius = kind === "pill" ? 999 : kind === "composer" ? 24 : 28;
   const fill = kind === "message" ? t.message : kind === "user" ? t.userMessage : kind === "composer" ? t.composer : t.glass;
   return <View testID={testID} style={[{ borderRadius: radius, boxShadow: shadow ? kind === "pill" ? GLASS_SHADOW48.floating : GLASS_SHADOW48.surface : undefined }, style]}>
-    <View style={{ borderRadius: radius, overflow: "hidden", flexShrink: 1 }}>
+    <View style={{ borderRadius: radius, overflow: "hidden", flexShrink: 1, ...(stretch?{flex:1,minHeight:0}:{}) }}>
       <BlurView intensity={GLASS_BLUR48[t.mode][kind]} tint={t.night ? "dark" : "light"} style={[StyleSheet.absoluteFill,{borderRadius:radius,overflow:"hidden"}]} />
       <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: fill }]} />
       <GlassLighting radius={radius} night={t.night} control={kind==="composer"||kind==="pill"} />
-      <View style={[{flexShrink:1},contentStyle]}>{children}</View>
+      <View style={[{flexShrink:1,...(stretch?{flex:1,minHeight:0}:{})},contentStyle]}>{children}</View>
     </View>
   </View>;
 }
@@ -68,7 +71,7 @@ export function NuriButton({ label, busy, secondary, style, ...props }: Omit<Pre
 }
 export const NuriField = forwardRef<TextInput,TextInputProps & { label?: string }>(function NuriField({ label, style, ...props }, ref) {
   const t = useNuriTheme();
-  return <View style={s.fieldWrap}>{label ? <NuriText secondary style={s.label}>{label}</NuriText> : null}<TextInput keyboardAppearance={t.keyboard.appearance} {...props} ref={ref} placeholderTextColor={t.secondary} style={[s.field,{color:t.ink,backgroundColor:t.composer,borderColor:t.outline},style]} /></View>;
+  return <View style={s.fieldWrap}>{label ? <NuriText secondary style={s.label}>{label}</NuriText> : null}<TextInput keyboardAppearance={t.keyboard.appearance} {...props} ref={ref} placeholderTextColor={t.secondary} style={[s.field,props.multiline?multilineInputStyle:singleLineInputStyle,{color:t.ink,backgroundColor:t.composer,borderColor:t.outline},style]} /></View>;
 });
 export function CenteredCard({ children, testID, maxHeight, scroll = true, contentGap = 20 }: { children: ReactNode; testID?: string; maxHeight?: number; scroll?: boolean; contentGap?: number }) {
   return <View style={s.cardRegion}><GlassSurface testID={testID} style={[s.mainCard, maxHeight ? {maxHeight} : null]} contentStyle={{ padding: 24 }} kind="message">

@@ -9,6 +9,7 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { CardList, CenteredCard, NuriButton, NuriText, MenuRow } from "@/src/uiux48/Primitives";
+import { FinalArticle } from "@/src/uiuxfinal/Article";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { api, type DailyPostCard } from "@/src/api";
 import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
@@ -19,6 +20,7 @@ import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
+import {socialPostThumbnail} from "@/src/recommendationMedia";
 
 export default function DailyPostScreen() {
   const { capture, current } = useAccountScope();
@@ -27,6 +29,7 @@ export default function DailyPostScreen() {
   const [card, setCard] = useState<DailyPostCard | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [openingChat, setOpeningChat] = useState(false);
+  const [openingSource, setOpeningSource] = useState(false);
   const [failure, setFailure] = useState<RequestFailureKind | null>(null);
   const [failureSource, setFailureSource] = useState<"load" | "chat">("load");
   const [retry, setRetry] = useState(0);
@@ -34,6 +37,7 @@ export default function DailyPostScreen() {
   const focused = useRef(false);
   const chatOperation = useRef(0);
   const chatBusy = useRef(false);
+  const sourceOperation = useRef(0), sourceBusy = useRef(false);
   // Set when a care notification opens a specific card; otherwise today's.
   const { id, uiState, point } = useLocalSearchParams<{ id?: string; uiState?: string; point?: string }>();
   const validId = typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -47,9 +51,12 @@ export default function DailyPostScreen() {
     focused.current = true;
     chatOperation.current++;
     chatBusy.current = false;
+    sourceOperation.current++;
+    sourceBusy.current = false;
     setFailure(null);
     setSourceFailure(false);
     setOpeningChat(false);
+    setOpeningSource(false);
     if(id!==undefined&&!validId){setCard(null);setState("missing");return()=>{focused.current=false;};}
     setState((previous) => previous === "ready" && retry === 0 ? previous : "loading");
     (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
@@ -74,19 +81,25 @@ export default function DailyPostScreen() {
       focused.current = false;
       chatOperation.current++;
       chatBusy.current = false;
+      sourceOperation.current++;
+      sourceBusy.current = false;
     };
-  }, [id, validId, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setFailureSource, setSourceFailure]));
+  }, [id, validId, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setOpeningSource, setFailureSource, setSourceFailure]));
 
   const openSource = useCallback(async () => {
     const ticket = capture();
-    if (ticket === null || !focused.current || !card) return;
+    if (ticket === null || !focused.current || !card || sourceBusy.current) return;
     const source = externalSourceUrl(card.source_url);
-    if (!source) { setSourceFailure(true); router.push({pathname:"/content-unavailable",params:{kind:"post",...(id?{id:String(id)}:{})}}); return; }
+    if (!source) { setSourceFailure(true); return; }
+    const operation = ++sourceOperation.current;
+    const accepts = () => current(ticket) && focused.current && operation === sourceOperation.current;
+    sourceBusy.current = true; setOpeningSource(true);
     setSourceFailure(false);
     void api.dailyPostEvent(card.id, "source_click").catch(() => {});
-    try { await Linking.openURL(source); if(current(ticket)&&focused.current)router.push({pathname:"/source-preview",params:{kind:"post",...(id?{id:String(id)}:{})}}); }
-    catch { if (current(ticket) && focused.current) {setSourceFailure(true);router.push({pathname:"/content-unavailable",params:{kind:"post",...(id?{id:String(id)}:{})}});} }
-  }, [card, capture, current, setSourceFailure, id, router]);
+    try { await Linking.openURL(source); }
+    catch { if (accepts()) setSourceFailure(true); }
+    finally { if (accepts()) { sourceBusy.current = false; setOpeningSource(false); } }
+  }, [card, capture, current, setSourceFailure, setOpeningSource]);
 
   const talkItThrough = useCallback(async () => {
     const ticket = capture();
@@ -155,27 +168,18 @@ export default function DailyPostScreen() {
       }}
     />;
   }
-  return <CardList>
-    {failureNotice}<NuriText secondary style={{fontSize:12}}>{dailyPostTag(t,card)}</NuriText>
-    {card.locale&&card.locale!==locale?<NuriText secondary testID="daily-post-original-language">{t("此内容保留原语言，尚未提供当前语言的翻译。")}</NuriText>:null}
-    <NuriText style={{fontSize:20,fontWeight:"500",lineHeight:28}}>{sourceAvailable?card.headline:guide.headline}</NuriText>
-    <NuriText secondary testID="daily-post-greeting" style={{fontSize:12}}>{dailyPostGreeting(t,card.nickname,card.audience)}</NuriText>
-    <View testID="daily-post-ai-summary" style={{gap:16}}>
-      <NuriText secondary style={{fontSize:12}}>{t("AI 检索摘要")}</NuriText>
-      {hasSummary?<>{question?<NuriText testID="daily-post-summary-question">{question}</NuriText>:null}{situation?<NuriText testID="daily-post-summary-situation">{situation}</NuriText>:null}{takeaways.map((text,index)=><MenuRow key={index} label={text} onPress={()=>router.push({pathname:"/daily-post",params:{id:card.id,uiState:"takeaway",point:String(index)}})} testID={`daily-post-summary-point-${index}`} />)}</>:<NuriText testID="daily-post-summary-empty">{t("这条资源暂时没有可用摘要，请打开原站查看。")}</NuriText>}
-      <NuriText secondary style={{fontSize:12,lineHeight:18}} testID="daily-post-summary-disclosure">{t(RESOURCE_SUMMARY_DISCLOSURE)}</NuriText>
-      {card.summary_source==="facebook_ai_summary"?<NuriText secondary style={{fontSize:12}} testID="daily-post-summary-basis">{t("此摘要根据检索到的 Facebook AI 摘要再整理，不是原帖逐字引用。")}</NuriText>:null}
-    </View>
-    {reason?<NuriText secondary testID="daily-post-recommendation-reason">{reason}</NuriText>:null}
-    {caution?<NuriText secondary style={{fontSize:12}} testID="daily-post-summary-caution">{caution}</NuriText>:null}
-    <View testID="daily-post-question" style={{gap:16}}>
-      <NuriText>{t("一起想想")}</NuriText><NuriText testID="daily-post-guide-headline">{guide.headline}</NuriText><NuriText testID="daily-post-guide-intro">{guide.intro}</NuriText>
-      {guide.actions.map((action,index)=><NuriText key={index} testID={`daily-post-guide-action-${index}`}>{action}</NuriText>)}
-      <NuriText secondary style={{fontSize:12}} testID="daily-post-guide-disclosure">{guide.disclosure}</NuriText>
-    </View>
-    <NuriText secondary style={{fontSize:12}}>{t("原站的家长经验不代替专业建议。每个孩子都不一样，涉及健康或安全的问题请咨询合适的专业人员。")}</NuriText>
-    <NuriButton label={t("和NURI聊聊这个")} disabled={openingChat} busy={openingChat} onPress={talkItThrough} testID="daily-post-chat" />
-    <NuriButton secondary label={t("打开原站链接")} onPress={()=>void openSource()} accessibilityRole="link" testID="daily-post-source" />
-    {sourceFailure?<NuriText secondary testID="daily-post-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}
-  </CardList>;
+  return <FinalArticle key={card.id}
+    title={sourceAvailable?card.headline:guide.headline}
+    source={dailyPostTag(t,card)}
+    mediaUrl={socialPostThumbnail(card.thumbnail_url,card.source_url)||socialPostThumbnail(card.image_url,card.source_url)}
+    summary={situation||question}
+    points={takeaways}
+    notes={[t(RESOURCE_SUMMARY_DISCLOSURE),card.locale&&card.locale!==locale?t("此内容保留原语言，尚未提供当前语言的翻译。"):"",caution||""]}
+    onSource={()=>void openSource()}
+    onTalk={talkItThrough}
+    busy={openingChat}
+    sourceBusy={openingSource}
+    notice={<>{failureNotice}{sourceFailure?<NuriText secondary testID="daily-post-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}</>}
+    allowSavePreview={process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"}
+  />;
 }
