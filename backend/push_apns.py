@@ -30,6 +30,13 @@ import jwt
 APNS_SANDBOX_HOST = "https://api.sandbox.push.apple.com"
 APNS_PRODUCTION_HOST = "https://api.push.apple.com"
 
+# These separately registered native apps coexist with the configured legacy
+# primary topic. Do not accept arbitrary client-provided APNs topics.
+_NATIVE_APP_TOPICS = frozenset({
+    "com.ordashtech.nuri.nativelab", "com.ordashtech.nuri.beta",
+})
+_TOPIC_UNSET = object()
+
 #: Apple rejects a provider token older than an hour. Refreshing at 50 minutes
 #: keeps one token for hundreds of notifications without ever presenting a
 #: stale one, which Apple treats as an authentication failure rather than a
@@ -57,6 +64,12 @@ _client: Optional[httpx.AsyncClient] = None
 
 def bundle_id() -> str:
     return os.getenv("APNS_BUNDLE_ID", "com.ordashtech.nuri")
+
+
+def is_allowed_topic(topic: object) -> bool:
+    return isinstance(topic, str) and bool(topic) and (
+        topic == bundle_id() or topic in _NATIVE_APP_TOPICS
+    )
 
 
 def configured() -> bool:
@@ -143,13 +156,25 @@ async def send_alert(
     thread_id: str = "nuri-reminders",
     collapse_id: Optional[str] = None,
     expiration_epoch: Optional[int] = None,
+    topic: object = _TOPIC_UNSET,
 ) -> APNsResult:
     """Send one alert. Never raises for an APNs-level rejection.
 
     The caller needs to record and act on a rejection per device, so a 4xx or
     5xx comes back as an :class:`APNsResult` rather than an exception; only a
-    transport failure propagates.
+    transport failure propagates. An explicitly missing or unsupported topic
+    is rejected locally without signing, network I/O, or retiring the device.
     """
+    # Preserve older server callers which omit this keyword. The dispatcher
+    # always supplies the stored value, including None for an invalid old row;
+    # that explicit missing value must never impersonate the primary app.
+    target_topic = bundle_id() if topic is _TOPIC_UNSET else topic
+    if not is_allowed_topic(target_topic):
+        return APNsResult(
+            accepted=False, apns_id="", http_status=0,
+            reason="UnsupportedAPNSTopic", deactivate_token=False,
+            retryable=False, latency_ms=0,
+        )
     host = APNS_SANDBOX_HOST if environment == "sandbox" else APNS_PRODUCTION_HOST
     request_id = str(uuid.uuid4())
     payload = {
@@ -165,7 +190,7 @@ async def send_alert(
     }
     headers = {
         "authorization": f"bearer {await provider_token()}",
-        "apns-topic": bundle_id(),
+        "apns-topic": target_topic,
         "apns-push-type": "alert",
         "apns-priority": "10",
         "apns-id": request_id,

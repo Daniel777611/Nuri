@@ -6134,14 +6134,14 @@ async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid
         # FCM tokens are case-sensitive, and FCM has no sandbox.
         token = body.apns_token
         valid = bool(_FCM_TOKEN_RE.fullmatch(token)) and body.apns_environment == "production"
-        expected_id = push_fcm.package_name()
+        allowed_bundle = body.bundle_id == push_fcm.package_name()
     else:
         token = body.apns_token.lower()
         valid = bool(_APNS_TOKEN_RE.fullmatch(token))
-        expected_id = push_apns.bundle_id()
+        allowed_bundle = push_apns.is_allowed_topic(body.bundle_id)
     if not valid:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid token")
-    if body.bundle_id != expected_id:
+    if not allowed_bundle:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unexpected bundle id")
 
     token_hash = hashlib.sha256(token.encode()).hexdigest()

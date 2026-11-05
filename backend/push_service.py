@@ -499,7 +499,7 @@ async def dispatch_due_notifications(
         def _devices() -> list[dict]:
             return (
                 sb.table("push_devices")
-                .select("id,platform,apns_token,apns_environment,permission_status")
+                .select("id,platform,apns_token,apns_environment,permission_status,bundle_id")
                 .eq("user_id", uid).eq("is_active", True).execute().data or []
             )
 
@@ -521,7 +521,11 @@ async def dispatch_due_notifications(
         accepted = retryable = 0
         for device in devices:
             try:
-                sender = _SENDERS[device.get("platform") or "ios"]
+                platform = device.get("platform") or "ios"
+                sender = _SENDERS[platform]
+                # Always pass the actual stored iOS topic. An absent/invalid
+                # value is a local rejection, never a primary-topic fallback.
+                topic = {"topic": device.get("bundle_id")} if platform == "ios" else {}
                 result = await sender.send_alert(
                     device_token=device["apns_token"],
                     environment=device["apns_environment"],
@@ -530,6 +534,7 @@ async def dispatch_due_notifications(
                     route=event["route"], data=event.get("data") or {},
                     thread_id=event.get("thread_id") or "nuri-reminders",
                     collapse_id=event.get("collapse_id"),
+                    **topic,
                 )
             except Exception as exc:  # noqa: BLE001 - one device must not stop the rest
                 retryable += 1

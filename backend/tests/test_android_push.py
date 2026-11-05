@@ -261,6 +261,7 @@ class _DispatchDb:
 
 def _device(platform, token):
     return {"id": f"dev-{platform}", "platform": platform, "apns_token": token,
+            "bundle_id": push_apns.bundle_id() if platform == "ios" else push_fcm.package_name(),
             "apns_environment": "production", "permission_status": "authorized"}
 
 
