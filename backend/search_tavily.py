@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .websearch import DEFAULT_TIMEOUT_S, SearchRequest, SearchResult, register_provider
+from .websearch import DEFAULT_TIMEOUT_S, SearchImage, SearchRequest, SearchResult, register_provider
 
 TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
 TAVILY_SEARCH_DEPTH = os.getenv("TAVILY_SEARCH_DEPTH", "basic")
@@ -67,6 +67,9 @@ class TavilySearchProvider:
             body["include_domains"] = list(request.include_domains)
         if request.exclude_domains:
             body["exclude_domains"] = list(request.exclude_domains)
+        if request.include_images:
+            body["include_images"] = True
+            body["include_image_descriptions"] = True
         return body
 
     def _parse(self, data: Any, request: SearchRequest) -> list[SearchResult]:
@@ -82,6 +85,20 @@ class TavilySearchProvider:
             url = (item.get("url") or "").strip()
             if not url:
                 continue
+            # Only source-linked result.images have usable provenance. The
+            # response's top-level images are query-related and never attached
+            # to a post, even when a result has no image of its own.
+            images = []
+            supplied = item.get("images") if request.include_images else None
+            if isinstance(supplied, list):
+                for image in supplied[:8]:
+                    if not isinstance(image, dict) or not isinstance(image.get("url"), str):
+                        continue
+                    description = image.get("description")
+                    images.append(SearchImage(
+                        url=image["url"],
+                        description=description[:500] if isinstance(description, str) else "",
+                    ))
             out.append(SearchResult(
                 title=(item.get("title") or "").strip() or url,
                 url=url,
@@ -90,6 +107,7 @@ class TavilySearchProvider:
                 # planner already decided which language pass this was.
                 lang=request.lang,
                 published_at=(item.get("published_date") or "").strip(),
+                images=tuple(images),
             ))
         return out
 
