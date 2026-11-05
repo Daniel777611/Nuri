@@ -34,6 +34,7 @@ APNS_PRODUCTION_HOST = "https://api.push.apple.com"
 # primary topic. Do not accept arbitrary client-provided APNs topics.
 _NATIVE_APP_TOPICS = frozenset({
     "com.ordashtech.nuri.nativelab", "com.ordashtech.nuri.beta",
+    "com.ordashtech.nuri.earlyaccess",
 })
 _TOPIC_UNSET = object()
 

@@ -15,6 +15,7 @@ from backend.tests.test_android_push import FCM_TOKEN, _register
 
 PRODUCTION = "com.ordashtech.nuri.nativelab"
 BETA = "com.ordashtech.nuri.beta"
+EARLY_ACCESS = "com.ordashtech.nuri.earlyaccess"
 LEGACY = "com.example.existing-primary"
 NOW = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
 
@@ -36,15 +37,17 @@ def offline(monkeypatch):
     monkeypatch.setattr(push_apns, "_http", forbidden)
 
 
-def test_only_configured_primary_and_the_two_registered_native_topics_are_allowed():
-    for topic in [LEGACY, PRODUCTION, BETA]:
+def test_only_configured_primary_and_the_three_registered_native_topics_are_allowed():
+    for topic in [LEGACY, PRODUCTION, BETA, EARLY_ACCESS]:
         assert push_apns.is_allowed_topic(topic)
     for topic in [None, "", " ", False, 42, {}, [], "com.other.app",
-                  BETA + ".debug", BETA.upper(), PRODUCTION + " "]:
+                  BETA + ".debug", BETA.upper(), PRODUCTION + " ",
+                  EARLY_ACCESS + ".debug", EARLY_ACCESS.upper(), EARLY_ACCESS + " ",
+                  "com.ordashtech.nuri.preview"]:
         assert not push_apns.is_allowed_topic(topic)
 
 
-@pytest.mark.parametrize("topic", [LEGACY, PRODUCTION, BETA])
+@pytest.mark.parametrize("topic", [LEGACY, PRODUCTION, BETA, EARLY_ACCESS])
 def test_registration_preserves_each_approved_topic_and_existing_token_rules(monkeypatch, topic):
     response, recorder = _register(
         TestClient(main.app), monkeypatch, platform="ios", apns_token="AB" * 32,
@@ -59,7 +62,8 @@ def test_registration_preserves_each_approved_topic_and_existing_token_rules(mon
     assert "ab" * 32 not in response.text
 
 
-@pytest.mark.parametrize("topic", ["com.other.app", BETA + ".debug", BETA + " ", ""])
+@pytest.mark.parametrize("topic", ["com.other.app", BETA + ".debug", BETA + " ", "",
+                                 EARLY_ACCESS + ".debug", EARLY_ACCESS.upper(), EARLY_ACCESS + " "])
 def test_unapproved_registration_is_rejected_before_any_device_write(monkeypatch, topic):
     response, recorder = _register(
         TestClient(main.app), monkeypatch, platform="ios", apns_token="ab" * 32,
@@ -96,7 +100,7 @@ async def send(**options):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("topic", [LEGACY, PRODUCTION, BETA])
+@pytest.mark.parametrize("topic", [LEGACY, PRODUCTION, BETA, EARLY_ACCESS])
 @pytest.mark.parametrize("environment", ["production", "sandbox"])
 async def test_sender_uses_the_exact_approved_topic_in_each_apns_environment(apns, topic, environment):
     result = await send(topic=topic, environment=environment)
@@ -118,7 +122,8 @@ async def test_only_an_omitted_legacy_sender_argument_uses_the_existing_primary(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("topic", [None, "", " ", False, 42, {}, [], "com.other.app", BETA + ".debug"])
+@pytest.mark.parametrize("topic", [None, "", " ", False, 42, {}, [], "com.other.app", BETA + ".debug",
+                                 EARLY_ACCESS + ".debug", EARLY_ACCESS.upper(), EARLY_ACCESS + " "])
 async def test_invalid_explicit_topic_never_signs_sends_retries_or_retires_a_device(topic):
     # The autouse fixture fails immediately if signing or networking is tried.
     result = await send(topic=topic)
@@ -223,23 +228,24 @@ def dispatch(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_one_account_reaches_production_beta_and_android_with_each_devices_own_topic(dispatch, apns):
-    rows = [device("prod", "ios", PRODUCTION), device("beta", "ios", BETA),
+async def test_one_account_reaches_all_approved_ios_topics_and_android_with_each_devices_own_topic(dispatch, apns):
+    rows = [device("legacy", "ios", LEGACY), device("prod", "ios", PRODUCTION),
+            device("beta", "ios", BETA), device("preview", "ios", EARLY_ACCESS),
             device("android", "android", "com.example.android")]
     db = DispatchDb(rows)
     result = await push_service.dispatch_due_notifications(db, now=NOW)
-    assert [request[1]["headers"]["apns-topic"] for request in apns.requests] == [PRODUCTION, BETA]
+    assert [request[1]["headers"]["apns-topic"] for request in apns.requests] == [LEGACY, PRODUCTION, BETA, EARLY_ACCESS]
     assert len(dispatch.android) == 1 and dispatch.android[0]["device_token"] == FCM_TOKEN
     assert "topic" not in dispatch.android[0]
     assert "bundle_id" in db.device_projections[0]
     assert db.device_filters == [("user_id", "u1"), ("is_active", True)]
-    assert {row["device_id"] for row in db.deliveries} == {"prod", "beta", "android"}
+    assert {row["device_id"] for row in db.deliveries} == {"legacy", "prod", "beta", "preview", "android"}
     assert dispatch.finished == [("mock-event", "sent")]
     assert result["sent"] == 1 and result["deactivated"] == 0
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("topic", [None, "", "com.other.app"])
+@pytest.mark.parametrize("topic", [None, "", "com.other.app", EARLY_ACCESS + ".debug"])
 async def test_dispatch_rejects_explicit_invalid_rows_without_apns_or_deactivation(dispatch, topic):
     rows = [device("invalid", "ios", topic)]
     db = DispatchDb(rows)
@@ -255,11 +261,12 @@ async def test_dispatch_rejects_explicit_invalid_rows_without_apns_or_deactivati
 async def test_missing_stored_topic_does_not_fall_back_or_block_other_valid_devices(dispatch, apns):
     missing = device("missing", "ios", PRODUCTION)
     del missing["bundle_id"]
-    rows = [missing, device("prod", "ios", PRODUCTION), device("beta", "ios", BETA)]
+    rows = [missing, device("prod", "ios", PRODUCTION), device("beta", "ios", BETA),
+            device("preview", "ios", EARLY_ACCESS)]
     db = DispatchDb(rows)
     result = await push_service.dispatch_due_notifications(db, now=NOW)
-    assert apns.provider_calls == 2
-    assert [request[1]["headers"]["apns-topic"] for request in apns.requests] == [PRODUCTION, BETA]
+    assert apns.provider_calls == 3
+    assert [request[1]["headers"]["apns-topic"] for request in apns.requests] == [PRODUCTION, BETA, EARLY_ACCESS]
     assert db.device_updates == [] and db.devices == rows
     rejected = [row for row in db.deliveries if row["status"] == "rejected"]
     assert [(row["device_id"], row["error_reason"]) for row in rejected] == [("missing", "UnsupportedAPNSTopic")]
