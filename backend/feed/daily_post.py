@@ -39,6 +39,7 @@ import anyio
 from backend import llm_usage, locales, runtime
 from backend.feed import search_budget
 from backend.feed import standing as standing_guard
+from backend.feed.post_media import social_image_url, source_image_urls
 from backend.nuri_core import family_store
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -256,6 +257,8 @@ class Candidate:
     lang: str
     published_at: str = ""
     label: str = ""
+    thumbnail_url: str = ""
+    image_url: str = ""
 
 
 #: Posts the team has pulled: never picked again for anyone, and a card that
@@ -275,26 +278,38 @@ def is_blocked(url: str) -> bool:
 
 
 def to_candidates(results, *, exclude_urls: set[str]) -> list[Candidate]:
-    seen: set[str] = set()
+    seen: dict[str, Candidate] = {}
     out: list[Candidate] = []
     blocked = blocked_urls()
     for result in results:
         url = canonical_post_url(getattr(result, "url", ""))
-        if not url or url in seen or url in exclude_urls or url in blocked:
+        if not url or url in exclude_urls or url in blocked:
+            continue
+        images = source_image_urls(getattr(result, "images", ()))
+        if url in seen:
+            # Language passes can return the same canonical post. Preserve
+            # the existing text/selection while retaining its real image data.
+            prior = seen[url]
+            merged = tuple(dict.fromkeys(value for value in (prior.thumbnail_url, prior.image_url, *images) if value))[:2]
+            prior.thumbnail_url = merged[0] if merged else ""
+            prior.image_url = merged[1] if len(merged) > 1 else ""
             continue
         platform = platform_of(url) or ""
         text, ai_summary = clean_post_text(getattr(result, "title", ""), getattr(result, "snippet", ""))
         if len(text) < MIN_POST_CHARS:
             continue
-        seen.add(url)
-        out.append(Candidate(
+        candidate = Candidate(
             url=url, platform=platform, title=normalize_space(getattr(result, "title", ""))[:160],
             text=text, ai_summary=ai_summary, lang=getattr(result, "lang", "en"),
             published_at=getattr(result, "published_at", "") or "",
             label=source_label(
                 platform, url, getattr(result, "title", ""), getattr(result, "snippet", ""),
             ),
-        ))
+            thumbnail_url=images[0] if images else "",
+            image_url=images[1] if len(images) > 1 else "",
+        )
+        seen[url] = candidate
+        out.append(candidate)
     return out[:MAX_CANDIDATES]
 
 
@@ -789,6 +804,7 @@ async def search_meta(query: str, lang: str) -> list:
     return await TavilySearchProvider().fetch(SearchRequest(
         query=query, lang="zh" if lang == "zh" else "en",
         include_domains=META_DOMAINS, max_results=SEARCH_RESULTS,
+        include_images=True,
     ))
 
 
@@ -826,6 +842,8 @@ def build_card(pick: dict, plan: Plan, *, locale: str) -> dict:
         "platform": c.platform,
         "source_url": c.url,
         "source_label": c.label,
+        "thumbnail_url": social_image_url(c.thumbnail_url),
+        "image_url": social_image_url(c.image_url),
         "published_at": c.published_at or None,
         "post_topic": pick.get("post_topic", ""),
         "question": pick.get("question", ""),
@@ -909,6 +927,9 @@ def local_day(tz_name: Optional[str], now: datetime) -> tuple[date, str]:
 
 def public_card(row: dict, *, audience: str, nickname: str) -> dict:
     card = dict(row.get("card") or {})
+    for key in ("thumbnail_url", "image_url"):
+        if key in card:
+            card[key] = social_image_url(card[key]) if canonical_post_url(card.get("source_url") or "") else None
     card.update({
         "id": row["id"],
         "card_id": f"{CARD_ID_PREFIX}{row['id']}",
