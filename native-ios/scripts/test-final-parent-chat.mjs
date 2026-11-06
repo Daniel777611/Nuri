@@ -68,7 +68,8 @@ test("shared native controls yield only to parent prototype header and explicitl
    process.env.EXPO_PUBLIC_FLOW_PROTOTYPE=enabled;
    for(const {params,avatar} of cases){
     const C=load("src/components/NativePageControls.tsx",{"react/jsx-runtime":runtime,"react-native":rn,"@expo/vector-icons":{},"expo-router":{usePathname:()=>path,useGlobalSearchParams:()=>params,useRouter:()=>({})},"@/src/i18n":{useT:()=>({locale:"en",t:s=>s}),translate:(_l,s)=>s},"@/src/theme":{colors:{}},"@/src/useAIConsent":{useAIConsent:()=>({state:{status:"allowed"}})},"@/src/aiConsentCopy":{aiConsentCopy:()=>({})},"@/src/aiPermissionNavigation":{},"@/src/requestFailure":{},"./nativeNavigation":{},"@/src/uiux48/Primitives":{IconAction:"IconAction",NuriText:"Text"},"@/src/uiux48/Scene":{NuriAvatar:"Avatar"},"@/src/uiuxfinal/UserAvatar":{CurrentUserAvatarAction:"Profile"},"@/src/uiuxfinal/Primitives":{FinalText:"Text"}}).default;
-    const hidden=enabled==="1"&&path==="/community"&&(params.communityHeader==="parent-chat"||params.communityHeader==="feedback"||params.communityHeader===undefined&&params.uiState==="chat");
+    // Community is released: its parent-chat header owns the top in every build, flag or not.
+    const hidden=path==="/community"&&(params.communityHeader==="parent-chat"||params.communityHeader==="feedback"||params.communityHeader===undefined&&params.uiState==="chat");
     const tree=C();assert.equal(tree===null,hidden);
     if(tree&&path==="/community")assert.equal(!!find(tree,"native-header-settings"),avatar,`Avatar visibility follows explicit current presentation before stale uiState: ${JSON.stringify(params)}`);
    }

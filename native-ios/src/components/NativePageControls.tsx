@@ -20,7 +20,7 @@ export default function NativePageControls() {
   const router = useRouter();
   const pathname = usePathname();
   const {uiState,flowTitle,communityHideBack,communityHeader,communityHideAvatar,section}=useGlobalSearchParams<{uiState?:string;flowTitle?:string;communityHideBack?:string;communityHeader?:string;communityHideAvatar?:string;section?:string}>();
-  const prototypeTitle=process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"&&(pathname==="/community"||pathname==="/notifications")&&typeof flowTitle==="string"&&flowTitle.length<=160?flowTitle:null;
+  const prototypeTitle=(pathname==="/community"||process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"&&pathname==="/notifications")&&typeof flowTitle==="string"&&flowTitle.length<=160?flowTitle:null;
   const { t, locale } = useT();
   const { state } = useAIConsent();
   const aiCopy = aiConsentCopy(locale);
@@ -39,7 +39,7 @@ export default function NativePageControls() {
   // Parent conversations own the complete Figma header. Keep the shell's safe
   // area, but never stack the generic profile/settings header above it. An
   // explicit default wins over a stale initial deep-link uiState on return.
-  if (process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1" && pathname==="/community" &&
+  if (pathname==="/community" &&
       (communityHeader==="parent-chat" || communityHeader==="feedback" || communityHeader===undefined && ["chat","chatOn","consent"].includes(String(uiState)))) return null;
 
   const navigate = (action: NativeNavigationAction) => {

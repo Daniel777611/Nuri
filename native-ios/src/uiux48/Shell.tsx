@@ -36,7 +36,8 @@ export function NuriShell({ children }: { children: ReactNode }) {
   const panelTop=Platform.OS==="ios"&&keyboard?keyboardPanelTop(keyboardFrame,rootFrame):null;
   const welcome=path==="/welcome";
   const {uiState,communityHeader,communityBackdrop,communityHideTabs}=useGlobalSearchParams<{uiState?:string;communityHeader?:string;communityBackdrop?:string;communityHideTabs?:string}>();
-  const community=path==="/community"&&process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1";
+  // Community is a released feature on the live API; its approved chrome applies in every build.
+  const community=path==="/community";
   const parentChat=community&&(communityHeader==="parent-chat"||communityHeader===undefined&&["chat","chatOn","consent"].includes(String(uiState)));
   const signedOutResult=path==="/account-deletion"&&uiState==="deleted";
   const home=segments[0]==="(tabs)"&&path==="/";

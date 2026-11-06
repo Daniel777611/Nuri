@@ -75,5 +75,6 @@ test('protected backend/native-shell/frontend trees remain main and Vercel chang
  const mainBase=(()=>{try{return git(['merge-base','HEAD','refs/remotes/origin/main']).trim()||BASE;}catch{return BASE;}})();
  const changed=git(['diff','--name-only',mainBase,'--','.',':(exclude)native-ios',':(exclude)vercel.json']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
  const untracked=git(['ls-files','--others','--exclude-standard']).trim().split('\n').filter(Boolean);assert.ok(untracked.every(p=>p.startsWith('native-ios/')),'No new protected root/backend files');
- const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));assert.match(current.buildCommand,/cd native-ios .*run build:web:ios-parity$/);delete old.buildCommand;delete current.buildCommand;assert.deepEqual(current,old,'Rewrites/functions/crons/output and all remaining root deployment settings must remain main');
+ const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));// Production web builds like main again (no prototype flags), the same build the native apps use.
+ assert.equal(current.buildCommand,old.buildCommand,'vercel.json buildCommand stays main');delete old.buildCommand;delete current.buildCommand;assert.deepEqual(current,old,'Rewrites/functions/crons/output and all remaining root deployment settings must remain main');
 });
