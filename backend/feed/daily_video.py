@@ -24,7 +24,6 @@ watch it, and transcripts are not reachable from a server. The page says so.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -38,6 +37,7 @@ import anyio
 
 from backend import llm_usage, locales, runtime
 from backend.feed import daily_post as dp
+from backend.feed import search_budget
 from backend.feed import standing as standing_guard
 from backend.nuri_core import family_store
 
@@ -151,7 +151,8 @@ async def search_youtube(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    return await TavilySearchProvider().search(SearchRequest(
+    await search_budget.spend("video")
+    return await TavilySearchProvider().fetch(SearchRequest(
         query=query, lang="zh" if lang == "zh" else "en",
         include_domains=YOUTUBE_DOMAINS, max_results=SEARCH_RESULTS,
     ))
@@ -164,7 +165,7 @@ async def find_candidates(plan: dp.Plan, locale: str, exclude_urls: set[str]) ->
         searches.append(search_youtube(query_zh, "zh"))
     if query_en:
         searches.append(search_youtube(query_en, "en"))
-    batches = await asyncio.gather(*searches) if searches else []
+    batches = await dp.run_searches(searches)
     merged = []
     for i in range(max((len(b) for b in batches), default=0)):
         merged.extend(b[i] for b in batches if i < len(b))
@@ -755,6 +756,7 @@ async def get_daily_video(
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[dp.Plan]]:
     from backend.feed import signals as feed_signals
 
+    await search_budget.require_some_left("video")
     context = await feed_signals.load_recent_main_chat(user_id)
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")

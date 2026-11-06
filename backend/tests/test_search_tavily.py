@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.search_tavily import TavilySearchProvider  # noqa: E402
+from backend.search_tavily import SearchUnavailable, TavilySearchProvider  # noqa: E402
 from backend.websearch import (  # noqa: E402
     NullSearchProvider,
     SearchRequest,
@@ -116,6 +116,44 @@ def test_answer_and_raw_content_are_declined():
     assert seen["include_raw_content"] is False
 
 
+def test_images_are_opt_in_and_never_borrowed_from_the_query_level():
+    body = {
+        "images": [{"url": "https://scontent.fbcdn.net/unrelated.jpg"}],
+        "results": [
+            {"url": "https://www.facebook.com/groups/public/posts/1", "images": [
+                {"url": "https://scontent.fbcdn.net/post-one.jpg", "description": "The post's photo"},
+                None, "https://scontent.fbcdn.net/not-a-described-result.jpg", {"url": 42},
+            ]},
+            {"url": "https://www.facebook.com/groups/public/posts/2"},
+        ],
+    }
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json=body)
+
+    p, patched = _provider(handler)
+    default = _search(p, patched, SearchRequest(query="q"))
+    assert "include_images" not in seen and "include_image_descriptions" not in seen
+    assert all(result.images == () for result in default)
+    out = _search(p, patched, SearchRequest(query="q", include_images=True))
+    assert seen["include_images"] is True and seen["include_image_descriptions"] is True
+    assert len(out[0].images) == 1
+    assert out[0].images[0].url == "https://scontent.fbcdn.net/post-one.jpg"
+    assert out[0].images[0].description == "The post's photo"
+    assert out[1].images == (), "Query images never stand in for a source's missing image"
+
+
+@pytest.mark.parametrize("images", [None, {}, "not a list", [None, 42, {}, {"url": None}]])
+def test_malformed_optional_images_do_not_drop_the_source(images):
+    p, patched = _provider(lambda r: httpx.Response(200, json={
+        "results": [{"url": "https://www.facebook.com/groups/public/posts/1", "images": images}],
+    }))
+    out = _search(p, patched, SearchRequest(query="q", include_images=True))
+    assert len(out) == 1 and out[0].images == ()
+
+
 def test_api_key_goes_in_the_authorization_header():
     seen = {}
 
@@ -189,6 +227,20 @@ def test_unexpected_response_shapes_yield_nothing(body):
 def test_http_errors_return_no_results_rather_than_raising(status):
     p, patched = _provider(lambda r: httpx.Response(status, text="denied"))
     assert _search(p, patched, REQ) == []
+
+
+def test_fetch_reports_a_spent_quota_that_search_would_hide():
+    import backend.search_tavily as mod
+
+    body = {"detail": {"error": "This request exceeds your plan's set usage limit."}}
+    p, patched = _provider(lambda r: httpx.Response(432, json=body))
+    real = mod.httpx.AsyncClient
+    mod.httpx.AsyncClient = patched
+    try:
+        with pytest.raises(SearchUnavailable, match="432.*usage limit"):
+            asyncio.run(p.fetch(REQ))
+    finally:
+        mod.httpx.AsyncClient = real
 
 
 def test_a_network_error_returns_no_results():

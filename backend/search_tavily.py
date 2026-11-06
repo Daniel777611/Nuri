@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .websearch import DEFAULT_TIMEOUT_S, SearchRequest, SearchResult, register_provider
+from .websearch import DEFAULT_TIMEOUT_S, SearchImage, SearchRequest, SearchResult, register_provider
 
 TAVILY_API_URL = os.getenv("TAVILY_API_URL", "https://api.tavily.com/search")
 TAVILY_SEARCH_DEPTH = os.getenv("TAVILY_SEARCH_DEPTH", "basic")
@@ -35,6 +35,11 @@ TAVILY_TIMEOUT_S = float(os.getenv("TAVILY_TIMEOUT_S", str(DEFAULT_TIMEOUT_S)))
 #: Tavily caps this; asking for more than the ranking step will keep is just
 #: latency spent on results that get truncated.
 _MAX_RESULTS_CAP = 20
+
+
+class SearchUnavailable(Exception):
+    """Tavily could not answer (quota, key, network), as opposed to answering
+    with no results."""
 
 
 class TavilySearchProvider:
@@ -62,6 +67,9 @@ class TavilySearchProvider:
             body["include_domains"] = list(request.include_domains)
         if request.exclude_domains:
             body["exclude_domains"] = list(request.exclude_domains)
+        if request.include_images:
+            body["include_images"] = True
+            body["include_image_descriptions"] = True
         return body
 
     def _parse(self, data: Any, request: SearchRequest) -> list[SearchResult]:
@@ -77,6 +85,20 @@ class TavilySearchProvider:
             url = (item.get("url") or "").strip()
             if not url:
                 continue
+            # Only source-linked result.images have usable provenance. The
+            # response's top-level images are query-related and never attached
+            # to a post, even when a result has no image of its own.
+            images = []
+            supplied = item.get("images") if request.include_images else None
+            if isinstance(supplied, list):
+                for image in supplied[:8]:
+                    if not isinstance(image, dict) or not isinstance(image.get("url"), str):
+                        continue
+                    description = image.get("description")
+                    images.append(SearchImage(
+                        url=image["url"],
+                        description=description[:500] if isinstance(description, str) else "",
+                    ))
             out.append(SearchResult(
                 title=(item.get("title") or "").strip() or url,
                 url=url,
@@ -85,13 +107,15 @@ class TavilySearchProvider:
                 # planner already decided which language pass this was.
                 lang=request.lang,
                 published_at=(item.get("published_date") or "").strip(),
+                images=tuple(images),
             ))
         return out
 
-    async def search(self, request: SearchRequest) -> list[SearchResult]:
+    async def fetch(self, request: SearchRequest) -> list[SearchResult]:
+        """Like :meth:`search`, but a failure raises SearchUnavailable, for a
+        caller that must tell "Tavily refused" from "Tavily found nothing"."""
         if not self.api_key:
-            print("[error] TAVILY_API_KEY is not set; no sources this turn")
-            return []
+            raise SearchUnavailable("TAVILY_API_KEY is not set")
         try:
             # A client per call rather than a module-level one: on serverless a
             # cached client outlives the event loop it was built for, and the
@@ -108,11 +132,18 @@ class TavilySearchProvider:
             if resp.status_code >= 400:
                 # Body, truncated, because Tavily explains quota and key
                 # problems there and the status alone doesn't distinguish them.
-                print(f"[error] tavily HTTP {resp.status_code}: {resp.text[:300]}")
-                return []
+                raise SearchUnavailable(f"tavily HTTP {resp.status_code}: {resp.text[:300]}")
             return self._parse(resp.json(), request)
+        except SearchUnavailable:
+            raise
         except Exception as e:
-            print(f"[error] tavily search failed: {type(e).__name__}: {e}")
+            raise SearchUnavailable(f"tavily search failed: {type(e).__name__}: {e}") from e
+
+    async def search(self, request: SearchRequest) -> list[SearchResult]:
+        try:
+            return await self.fetch(request)
+        except SearchUnavailable as e:
+            print(f"[error] {e}; no sources this turn")
             return []
 
 

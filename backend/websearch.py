@@ -74,6 +74,14 @@ ALLOW_OPEN_WEB = os.getenv("WEB_SEARCH_ALLOW_OPEN_WEB", "0") not in ("0", "", "f
 
 
 @dataclass(frozen=True)
+class SearchImage:
+    """Provider image attached to one exact source result, never query images."""
+
+    url: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class SearchResult:
     """One citable source. `site_name` and `tier` are filled in by
     :func:`annotate`, not by the provider — see the module docstring."""
@@ -85,6 +93,7 @@ class SearchResult:
     published_at: str = ""
     site_name: str = ""
     tier: Tier = "neutral"
+    images: tuple[SearchImage, ...] = ()
 
     @property
     def host(self) -> str:
@@ -102,6 +111,8 @@ class SearchRequest:
     include_domains: tuple[str, ...] = ()
     exclude_domains: tuple[str, ...] = ()
     max_results: int = DEFAULT_MAX_RESULTS
+    # Daily posts opt in; authority/video/chat searches keep their old payload.
+    include_images: bool = False
 
 
 @dataclass(frozen=True)

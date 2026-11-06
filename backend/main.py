@@ -6134,14 +6134,14 @@ async def upsert_push_device(body: PushDeviceUpsert, uid: str = Depends(_req_uid
         # FCM tokens are case-sensitive, and FCM has no sandbox.
         token = body.apns_token
         valid = bool(_FCM_TOKEN_RE.fullmatch(token)) and body.apns_environment == "production"
-        expected_id = push_fcm.package_name()
+        allowed_bundle = body.bundle_id == push_fcm.package_name()
     else:
         token = body.apns_token.lower()
         valid = bool(_APNS_TOKEN_RE.fullmatch(token))
-        expected_id = push_apns.bundle_id()
+        allowed_bundle = push_apns.is_allowed_topic(body.bundle_id)
     if not valid:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid token")
-    if body.bundle_id != expected_id:
+    if not allowed_bundle:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unexpected bundle id")
 
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -6692,8 +6692,13 @@ async def internal_care_generate(
     }
     queued = {kind: 0 for kind in generators}
     skipped = {kind: 0 for kind in generators}
-    for uid in uids:
-        for kind, generate in generators.items():
+    # The search budget can run out partway down the list. The start moves each
+    # day so it isn't always the same accounts that miss out, and the video
+    # starts half a list later so those missing a post still tend to get one.
+    now = datetime.now(timezone.utc)
+    shifts = {"daily_video": len(uids) // 2}
+    for kind, generate in generators.items():
+        for uid in push_service.fair_order(uids, now, shift=shifts.get(kind, 0)):
             try:
                 event = await generate(sb, uid)
             except Exception as exc:  # noqa: BLE001 - one account must not stop the run
@@ -7643,6 +7648,7 @@ async def admin_usage_overview(
         raise HTTPException(503, f"usage data unavailable: {type(e).__name__}: {e}")
     return usage_dashboard.build_overview(
         sources, days=days, tz=zone, now=now, include_internal=include_internal,
+        test_emails=push_service.tester_emails(),
     )
 
 
