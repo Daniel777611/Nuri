@@ -692,6 +692,12 @@ async function req<T = any>(path: string, init?: RequestInit, timeoutMs = 12000,
   }
 }
 
+/** The authenticated JSON transport for feature modules (src/communityApi.ts):
+ * same token, session-boundary and AI-consent handling as every call above. */
+export function apiRequest<T = any>(path: string, init?: RequestInit, timeoutMs = 12000): Promise<T> {
+  return req<T>(path, init, timeoutMs);
+}
+
 export const aiConsent = new AIConsentController({
   storage,
   getToken,

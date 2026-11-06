@@ -48,28 +48,9 @@ test("user-approved inline media removes redundant permission/review pages while
  const state=read("src/uiux48/StateCard.tsx");assert.doesNotMatch(state,/useEffect|from ["'][^"']*(?:api|auth)["']/);assert.match(state,/onPress=\{primary.onPress\}/);
 });
 
-test("release Community entries are localized coming-soon surfaces, with no compose or network contract",()=>{
- const jsx=(type,props)=>({type,props});
- for(const locale of ["zh-CN","zh-TW","en"]){
-  let params={},tree;const routes=[];
-  const Component=load("app/community.tsx",{
-   "nuri-ux49-flow-preview":{FLOW_PREVIEW_ENABLED:false,default:"DisabledPrototype",__esModule:true},
-   "react/jsx-runtime":{jsx,jsxs:jsx},
-   "expo-router":{useLocalSearchParams:()=>params,useRouter:()=>({push:href=>routes.push(href),replace:href=>routes.push(href),canGoBack:()=>false})},
-   "@/src/i18n":{useT:()=>({locale})},
-   "@/src/uiux48/Primitives":{CardList:"CardList",MenuRow:"MenuRow",NuriText:"NuriText"},
-   "@/src/uiux48/StateCard":{StateCard:"StateCard"},
-  }).UnavailableCommunity;
-  const status=locale==="en"?"Coming soon":locale==="zh-TW"?"未上線":"未上线";
-  tree=Component();assert.equal(all(tree).find(n=>n.props?.testID==="community-launch-status").props.children,status);
-  for(const [id,screen] of [["community-ask","ask"],["community-find","find"],["community-inbox","inbox"]]){
-   params={};tree=Component();all(tree).find(n=>n.props?.testID===id).props.onPress();
-   assert.deepEqual(routes.at(-1),{pathname:"/community",params:{uiState:screen}});
-   params={uiState:screen};tree=Component();assert.equal(tree.props.testID,"community-service-unavailable");assert.equal(tree.props.title,status);
-   assert.equal(all(tree).find(n=>n.props?.testID==="community-bottle-draft"),undefined);
-   tree.props.primary.onPress();assert.equal(routes.at(-1),"/community");
-  }
-  params={uiState:"unrecognized"};assert.equal(Component().props.title,status,"unknown service state also fails closed");
- }
- assert.doesNotMatch(read("app/community.tsx"),/from ["'][^"']*(?:api|auth|storage)["']|\bfetch\s*\(|useEffect/);
+test("the Community route is the live community, remounted on every account boundary",()=>{
+ const source=readFileSync("app/community.tsx","utf8");
+ assert.match(source,/import CommunityFinal from "@\/src\/uiuxfinal\/CommunityFinal"/);
+ assert.match(source,/<CommunityFinal key=\{generation\} \/>/);
+ assert.doesNotMatch(source,/nuri-ux49-flow-preview|Coming soon|未上线/);
 });

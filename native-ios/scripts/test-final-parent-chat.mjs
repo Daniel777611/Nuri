@@ -53,28 +53,9 @@ function community(locale="zh-CN",initial="chat"){
  const C=load("src/uiuxfinal/CommunityFinal.tsx",{react,"react/jsx-runtime":runtime,"react-native":rn,"expo-image":{Image:"Image"},"expo-blur":{BlurView:"Blur"},"expo-router":{useFocusEffect:fn=>pending.push(fn),useLocalSearchParams:()=>({uiState:initial}),usePathname:()=>"/community",useRouter:()=>({setParams:p=>params.push(p),navigate:r=>routes.push(r),dismissTo:r=>routes.push(r)})},"@/src/i18n":{useT:()=>({locale}),translate:(_l,s)=>s},"@/src/components/nativeNavigation":{registerNativeNavigationGuard:()=>()=>{}},"@/src/uiux48/Primitives":{IconAction:"IconAction",NuriKeyboardFrame:"Frame"},"@/src/uiux48/Composer":{NuriComposer:"Composer"},"@/src/uiux48/useComposerDock":{useComposerDockInset:enabled=>enabled?46:0},"@/src/uiux48/VoiceInputBar":{VoiceInputBar:"Voice"},"./Primitives":presentation,"./ParentChatHeader":header,"./Settings":Object.fromEntries(["SettingsPage","SettingsRow","SettingsToggle","SettingsButton","SettingsSpacer","SettingsField"].map(n=>[n,n])),"./communityModel":model}).default;
  return {render(){cursor=0;pending=[];tree=C();pending.splice(0).forEach(fn=>fn());return tree;},find:id=>find(tree,id),get head(){return walk(tree).find(n=>n.type===header.ParentChatHeader)},get tree(){return tree},get state(){return slots[0]},params,routes,show(screen){slots[0]=model.finalCommunityReducer(slots[0],{type:"go",screen});}};
 }
-test("actual parent TSX removes both legacy rows, uses five original role bubbles and never sends on navigation",()=>{
- for(const locale of ["zh-CN","zh-TW","en"])for(const initial of ["chat","chatOn","consent"]){
-  const a=community(locale,initial),tree=a.render(),all=walk(tree);
-  assert.ok(a.head);assert.equal(a.params.at(-1).communityHeader,"parent-chat");assert.equal(a.params.at(-1).communityHideTabs,"1");
-  assert.equal(all.some(n=>typeof n.type==="function"&&n.type.name==="DemoLabel"),false);assert.equal(a.find("final-parent-settings"),undefined);
-  assert.doesNotMatch(JSON.stringify(tree),/流程|Flow preview|Consent-flow/);assert.deepEqual(a.state.messages,[]);assert.deepEqual(a.state.ai,{});
-  for(let i=0;i<5;i++){
-   const row=a.find("final-parent-message-"+i),bubble=walk(row).find(n=>n.type==="FinalChatBubble");
-   assert.ok(row);assert.ok(walk(row).some(n=>n.type===header.ParentChatAvatar));assert.equal(row.props.style.gap,8);
-   assert.equal(row.props.style.alignItems,i%2?"flex-end":"flex-start");assert.equal(bubble.props.incoming,i%2===0);assert.equal(bubble.props.style.maxWidth,i%2?258:306);
-  }
-  a.show("friends");a.render();assert.equal(a.params.at(-1).communityHeader,"default");assert.equal(a.params.at(-1).communityHideTabs,"0");assert.equal(a.head,undefined);
- }
-});
-test("actual header toggle still requires consent, decline stays off, agreement enables only local state, and back restores hub",()=>{
- const a=community("en","friends");a.render();a.find("final-parent-Maya").props.onPress();assert.equal(a.params.at(-1).communityHeader,"parent-chat","Shell mode changes in the event batch, before render/effects");assert.equal(a.params.at(-1).communityBackdrop,"plain");a.render();assert.equal(a.state.screen,"chat");assert.equal(a.head.props.participating,false);
- a.head.props.onToggle(true);a.render();assert.equal(a.state.screen,"consent");assert.equal(a.head.props.participating,false);assert.deepEqual(a.state.ai,{});
- const decline=walk(a.tree).find(n=>n.type==="FinalButton"&&n.props.label==="Not now");decline.props.onPress();a.render();assert.equal(a.state.ai.Maya,false);
- a.head.props.onToggle(true);a.render();a.find("final-parent-consent-agree").props.onPress();a.render();assert.equal(a.head.props.participating,true);assert.equal(a.head.props.status,"Nuri is on");
- a.head.props.onToggle(false);a.render();assert.equal(a.head.props.participating,false);a.head.props.onBack();assert.equal(a.params.at(-1).communityHeader,"default","Return restores header before render/effects");assert.equal(a.params.at(-1).flowTitle,"Community");a.render();assert.equal(a.state.screen,"friends");assert.equal(a.params.at(-1).communityHeader,"default");
- const direct=community();direct.render();direct.head.props.onBack();assert.deepEqual(direct.routes,["/(tabs)"]);
-});
+// The fixed five-bubble transcript and the local-only consent toggle were removed
+// with the live Community API; scripts/test-final-community.mjs covers the chat contract.
+
 test("shared native controls yield only to parent prototype header and explicitly restore after a stale direct-link uiState",()=>{
  const previous=process.env.EXPO_PUBLIC_FLOW_PROTOTYPE;
  const cases=[{uiState:"chat"},{uiState:"chat",communityHeader:"default"},{communityHeader:"parent-chat"},{communityHeader:"feedback"},{uiState:"friends"},{uiState:"profileSettings"}].map(params=>({params,avatar:true}));

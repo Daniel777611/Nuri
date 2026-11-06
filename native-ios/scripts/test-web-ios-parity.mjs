@@ -36,7 +36,9 @@ test('web scripts pin empty backend plus preview0/flow1/gallery0 instead of enab
  for(const name of ['build:web:ios-parity','web:ios-parity'])for(const [key,value]of Object.entries(webFlags))assert.match(scripts[name],new RegExp(`(?:^| )${key}=${value}(?: |$)`));
  assert.match(scripts['build:web:ios-parity'],/expo export --platform web$/);
  const flow=read('src/uiux49/prototype/FlowPreview.tsx');assert.match(flow,/entry\s*===\s*["']community["']/);assert.match(flow,/<CommunityRedesign\s+key=\{generation\}/);
- for(const p of ['src/uiuxfinal/CommunityFinal.tsx','src/uiuxfinal/communityModel.ts'])assert.doesNotMatch(read(p),/\bfetch\s*\(|from\s+["'][^"']*\/api["']/);
+ // Community runs on the live API through its one client, never raw fetch or fixtures.
+ assert.doesNotMatch(read('src/uiuxfinal/communityModel.ts'),/\bfetch\s*\(|from\s+["'][^"']*api["']/);
+ assert.match(read('src/uiuxfinal/CommunityFinal.tsx'),/from "@\/src\/communityApi"/);assert.doesNotMatch(read('src/uiuxfinal/CommunityFinal.tsx'),/\bfetch\s*\(/);
  const preview=load('src/preview-api.ts',{}, {process:{env:{EXPO_PUBLIC_PREVIEW_MODE:'0'}}});assert.equal(preview.isPreviewMode,false);
 });
 test('main native-ios API superset and module exports survive migration; legacy frontend paging is not fabricated',()=>{
@@ -69,7 +71,9 @@ test('real same-origin API transport remains authenticated, non-cached and accou
  let resolve;held=new Promise(r=>resolve=r);const late=C.api.getMessages('session-A');while(calls.length<2)await new Promise(r=>setImmediate(r));await C.auth.setToken('fixture-B');resolve({ok:true,status:200,json:async()=>[{id:'A-private'}],text:async()=>''});await assert.rejects(late,e=>e.name==='SessionChangedError'||e.sessionChanged===true);assert.equal(await C.auth.getToken(),'fixture-B');
 });
 test('protected backend/native-shell/frontend trees remain main and Vercel changes only buildCommand',()=>{
- const changed=git(['diff','--name-only',BASE,'--','.',':(exclude)native-ios',':(exclude)vercel.json']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
+ // The branch merged origin/main for the Community backend; protected trees must equal that main.
+ const mainBase=(()=>{try{return git(['merge-base','HEAD','refs/remotes/origin/main']).trim()||BASE;}catch{return BASE;}})();
+ const changed=git(['diff','--name-only',mainBase,'--','.',':(exclude)native-ios',':(exclude)vercel.json']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
  const untracked=git(['ls-files','--others','--exclude-standard']).trim().split('\n').filter(Boolean);assert.ok(untracked.every(p=>p.startsWith('native-ios/')),'No new protected root/backend files');
  const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));assert.match(current.buildCommand,/cd native-ios .*run build:web:ios-parity$/);delete old.buildCommand;delete current.buildCommand;assert.deepEqual(current,old,'Rewrites/functions/crons/output and all remaining root deployment settings must remain main');
 });
