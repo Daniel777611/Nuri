@@ -148,7 +148,7 @@ export default function VerifyEmail() {
 
   return <AuthFrame testID="verify-email-step">
     <NuriText>{t("我们已向 {email} 发送了 6 位验证码，10 分钟内有效。",{email})}</NuriText>
-    <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"6-digit code":translate(locale, "6 位验证码")} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} onSubmitEditing={()=>canSubmit&&submit()} testID="verify-code" />
+    <NuriField label={t("验证码")} value={code} onChangeText={value=>setCode(cleanCode(value))} placeholder={locale==="en"?"6-digit code":translate(locale, "6 位验证码")} keyboardType="number-pad" textContentType="oneTimeCode" autoComplete="one-time-code" maxLength={6} onSubmitEditing={()=>canSubmit&&submit()} onAppKeyboardSubmit={()=>{if(canSubmit)void submit();}} testID="verify-code" />
     <Pressable onPress={resend} disabled={secondsLeft>0||resending} style={{minHeight:44,justifyContent:"center"}} testID="verify-resend"><NuriText style={{fontSize:16,opacity:secondsLeft>0?.5:1}}>{resending?t("发送中..."):secondsLeft>0?t("{n} 秒后可重新发送",{n:secondsLeft}):t("重新发送验证码")}</NuriText></Pressable>
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="verify-error">{error}</NuriText>:null}
     {notice?<NuriText secondary style={{fontSize:13}} testID="verify-notice">{notice}</NuriText>:null}

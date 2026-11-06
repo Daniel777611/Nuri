@@ -47,6 +47,12 @@ export function requiresAIConsent(path: string, init?: RequestInit): boolean {
       || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
       || /^\/feed\/daily-(?:post|video)\/[a-zA-Z0-9_-]+$/.test(route))) return false;
   if (route.startsWith("/feed")) return true;
+  // Community: only these three send a parent's words to the AI provider.
+  // Everything else under /community/v1 is plain storage and stays usable
+  // without AI permission (questions, replies, chat, relationships).
+  if (method === "POST" && (route === "/community/v1/question-polishes" || route === "/community/v1/transcriptions"
+      || /^\/community\/v1\/messages\/[^/]+\/translations$/.test(route))) return true;
+  if (route.startsWith("/community/v1/")) return false;
   if (route === "/chat/main/preview" || route === "/chat/main/checkin" || route === "/chat/transcribe") return true;
   if (route.startsWith("/chat") && method !== "GET" && method !== "DELETE") return true;
   if (/^\/notifications\/[^/]+\/open$/.test(route)) return true;

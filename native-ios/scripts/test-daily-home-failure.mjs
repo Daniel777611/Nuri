@@ -4,14 +4,27 @@ import { test } from "node:test";
 import ts from "typescript";
 
 export function load(path, dependencies = {}) {
+  dependencies={...dependencies,"./ButtonMaterial":{FrostedPressable:dependencies["react-native"]?.Pressable??"Pressable",ButtonBackdrop:"ButtonBackdrop"},"@/src/uiuxfinal/ButtonMaterial":{FrostedPressable:dependencies["react-native"]?.Pressable??"Pressable",ButtonBackdrop:"ButtonBackdrop"}};
   const code = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
+    if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:dependencies["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     if (name.startsWith("@/assets/")) return "fixture-image";
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow"].map(n=>[n,n]));
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
+    if(name==="@/src/uiuxfinal/HomeVideoThumbnail")return {HomeVideoThumbnail:"HomeVideoThumbnail"};
+    if(name==="@/src/uiuxfinal/Primitives")return {FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FinalCardPage:"CardList",FINAL_COLOR:{accent:"#735C84"}};
+    if(name==="@/src/uiuxfinal/Settings")return {SettingsButton:"NuriButton"};
+    if(name==="@/src/recommendationMedia")return load("../src/recommendationMedia.ts",{"./externalContent":load("../src/externalContent.ts")});
+    // This boundary records controller props; the scoped preview suite loads
+    // the actual native/web components with independent hook lifecycles.
+    if(name==="./PostSourcePreview")return {PostSourcePreview:props=>({type:"PostSourcePreview",props:{...props,testID:"daily-post-source-preview-fixture"}})};
+    if(name==="./ReadingMedia")return load("../src/uiuxfinal/ReadingMedia.tsx",{...dependencies,"./Primitives":{FinalText:"NuriText"}});
+    if(name==="@/src/uiuxfinal/Reading"||name==="./Reading")return load("../src/uiuxfinal/Reading.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FINAL_COLOR:{accent:"#735C84"}}});
+    if(name==="@/src/uiuxfinal/Article")return load("../src/uiuxfinal/Article.tsx",{...dependencies,"./Primitives":{FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FINAL_COLOR:{accent:"#735C84"}}});
     if(name==="@/src/uiux48/Theme")return {useNuriTheme:()=>({mode:"Morning",ink:"#3d3340",secondary:"#5d5060",token:()=>""})};
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
     if(name==="@/src/uiux48/Composer")return {NuriComposer:"NuriComposer"};
@@ -150,7 +163,7 @@ export function page(f, kind = "daily", params = {}) {
     "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ top: 0, bottom: 34 }) },
-    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" },
+    "@react-navigation/native": { useIsFocused: () => focused }, "expo-image": { Image: "ExpoImage" }, "expo-blur": { BlurView: "Blur" },
     "expo-web-browser": { openBrowserAsync: async (url) => external.push(url) }, "expo-clipboard": { setStringAsync: async () => true },
     "@/src/components/taskCardExport": { firstShareableResource: (resources) => resources?.find((resource) => /^https:\/\//.test(resource.url)) },
     "@/src/feedPreparation": load("../src/feedPreparation.ts", { "./api": f, "./sessionBoundary": f.boundary }),
@@ -194,7 +207,7 @@ export const videoCard = (owner) => ({ id: "video-" + owner, card_id: "dailyvide
   title: owner + " video title", display_title: owner + " private video", channel: "Fixture pediatrician", speaker_kind: "pediatrician", video_lang: "en",
   summary: "Saved description summary", concern: "Fixture sleep", basis: "conversation", locale: "en", nickname: owner, intro: owner + " intro" });
 
-test("Home and post page display brief AI search previews with disclosure, not verbatim excerpts or pictures", async () => {
+test("Home and post page preserve brief AI search summaries and display the original-page preview, not copied excerpts or feed pictures", async () => {
   const f = fixture(); let home, post;
   try {
     await f.login("A"); await f.permit();
@@ -211,19 +224,39 @@ test("Home and post page display brief AI search previews with disclosure, not v
     assert.ok(post.find("daily-post-question")); assert.ok(post.find("daily-post-source"));
     assert.equal(post.find("daily-post-source").props.accessibilityRole, "link");
     assert.equal(post.find("daily-post-headline"), undefined);
-    assert.equal(post.find("daily-post-guide-headline").props.children, guide.headline);
-    assert.equal(post.find("daily-post-guide-intro").props.children, guide.intro);
-    assert.equal(post.find("daily-post-guide-disclosure").props.children, guide.disclosure);
-    guide.actions.forEach((_action, index) => assert.ok(post.find(`daily-post-guide-action-${index}`)));
-    assert.equal(post.find("daily-post-summary-question").props.children, "AI_SEARCH_QUESTION?");
+    assert.equal(post.find("daily-post-guide-headline"),undefined,"The final merged article must not repeat the old generic reading guide.");
     assert.equal(post.find("daily-post-summary-situation").props.children, "AI_SEARCH_SITUATION.");
-    assert.ok(post.find("daily-post-summary-point-0")); assert.ok(post.find("daily-post-recommendation-reason"));
-    assert.match(post.find("daily-post-summary-disclosure").props.children, /部分内容.*有误.*原站核对/);
+    assert.ok(post.find("daily-post-summary-point-0"));
+    assert.equal(post.find("daily-post-summary-disclosure"), undefined, "The requested lower article footer is removed from this reading page.");
     assert.doesNotMatch(post.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
+    assert.equal(post.find("daily-post-source-preview-fixture").props.sourceUrl,"https://source.invalid/A");
+    assert.equal(post.find("daily-post-source-preview-fixture").props.active,true);
+    assert.equal(post.find("daily-post-thumbnail"),undefined);
     post.find("daily-post-source").props.onPress(); await tick(); post.render();
     assert.deepEqual(post.external, ["https://source.invalid/A"]);
     assert.ok(f.calls.some((call) => call.path === "/feed/daily-post/daily-A/events" && JSON.parse(call.init.body).event === "source_click"));
   } finally { home?.unmount(); post?.unmount(); f.restore(); }
+});
+
+test("post removes only its lower notes footer while preserving supplied content, two points, original preview and real source/chat actions", async () => {
+  const f=fixture();let post;
+  try {
+    await f.login("A");await f.permit();
+    const card={...dailyCard("A"),source_url:"https://www.facebook.com/groups/public/posts/42/",headline:"Supplied current post headline.",situation:"Supplied current post summary.",takeaways:["Supplied first parent point.","Supplied second parent point."],locale:"zh-TW",caution:"LOWER_FOOTER_CAUTION_MUST_NOT_RENDER",excerpt:"RAW_POST_BODY_MUST_NOT_RENDER"};
+    f.responder=path=>path.startsWith("/feed/daily-post")&&!path.endsWith("/events")?response({state:"ready",card}):null;
+    post=page(f);post.render();await tick();post.render();
+    assert.equal(post.find("daily-post-summary-disclosure"),undefined);
+    assert.doesNotMatch(post.visible(),/LOWER_FOOTER_CAUTION_MUST_NOT_RENDER|RAW_POST_BODY_MUST_NOT_RENDER|AI 根据检索到的信息整理|此内容保留原语言，尚未提供当前语言的翻译/);
+    assert.match(post.visible(),/Organised by Nuri/);assert.match(post.visible(),/Supplied current post headline/);
+    assert.equal(post.find("daily-post-summary-situation").props.children,"Supplied current post summary.");
+    for(const[index,point]of card.takeaways.entries()){const row=post.find(`daily-post-summary-point-${index}`);assert.ok(row);assert.ok(JSON.stringify(row).includes(point));}
+    assert.equal(post.find("daily-post-summary-point-2"),undefined);
+    const preview=post.find("daily-post-source-preview-fixture");assert.equal(preview.props.sourceUrl,card.source_url);assert.equal(preview.props.active,true);assert.ok(post.find("daily-post-browser-region"));
+    const source=post.find("daily-post-source"),chat=post.find("daily-post-chat");assert.equal(source.props.accessibilityRole,"link");assert.equal(source.props.disabled,false);assert.equal(chat.props.accessibilityRole,"button");assert.equal(chat.props.disabled,false);
+    assert.deepEqual(post.external,[]);assert.deepEqual(post.routes,[]);assert.equal(f.calls.filter(call=>call.path==="/chat/sessions"||call.path.endsWith("/events")).length,0);
+    source.props.onPress();await tick();post.render();assert.deepEqual(post.external,[card.source_url]);assert.equal(f.calls.filter(call=>call.path==="/feed/daily-post/daily-A/events"&&JSON.parse(call.init.body).event==="source_click").length,1);
+    await chat.props.onPress();post.render();const starts=f.calls.filter(call=>call.path==="/chat/sessions");assert.equal(starts.length,1);assert.deepEqual(JSON.parse(starts[0].init.body),{card_id:"source-A"});assert.deepEqual(post.routes,["/chat/created-A"]);
+  } finally {post?.unmount();f.restore();}
 });
 
 test("external post links reject unsafe URL shapes without dispatching or recording a source click", async () => {
@@ -405,12 +438,12 @@ for (const [status, kind] of [[401, "session"], [503, "service"]]) test("Home wa
   const f = fixture(); let p;
   try {
     await f.login("A"); await f.permit(); p = page(f, "home"); p.render(); await tick(); p.render();
-    assert.equal(p.find("home-nuri-action").props.label, "Open full conversation");
+    assert.equal(p.find("home-nuri-action").props.accessibilityLabel, "Open full conversation");
     f.responder = (path) => path === "/chat/main/preview" ? response({ detail: "private failure" }, status) : null;
     p.blur(); p.focus(); await tick(); p.render();
     const words = load("../src/requestFailure.ts").requestFailureCopy("en", kind);
     assert.equal(p.find("home-nuri-memo").props.children, words.title);
-    assert.equal(p.find("home-nuri-action").props.label, words.action);
+    assert.equal(p.find("home-nuri-action").props.accessibilityLabel, words.action);
     const before = f.calls.filter((call) => call.path === "/chat/main/preview").length;
     f.responder = null; await p.find("home-nuri-action").props.onPress(); await tick(); p.render();
     if (status === 401) { assert.deepEqual(p.routes, ["/login"]); assert.equal(f.calls.filter((call) => call.path === "/chat/main/preview").length, before); }

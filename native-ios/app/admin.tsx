@@ -1,3 +1,4 @@
+import { NuriTextInput } from "@/src/keyboard/AppKeyboard";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -322,13 +323,13 @@ export default function AdminPage() {
       <SafeAreaView style={styles.gateWrap}>
         <View style={styles.gateCard}>
           <Text style={styles.gateTitle}>Admin</Text>
-          <TextInput
+          <NuriTextInput
             style={styles.gateInput}
             placeholder="管理员密码"
             secureTextEntry
             value={key}
             onChangeText={setKey}
-            onSubmitEditing={login}
+            onSubmitEditing={login} onAppKeyboardSubmit={login}
             autoFocus
           />
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
@@ -379,12 +380,12 @@ export default function AdminPage() {
             正是让 NURI 每次都编号追问、条列一大堆的原因。改坏了先降成酌用或停用，不用发版。
           </Note>
           <View style={styles.inputRow}>
-            <TextInput
+            <NuriTextInput
               style={[styles.input, { flex: 1 }]}
               placeholder="新增一条规则……"
               value={newRuleText}
               onChangeText={setNewRuleText}
-              onSubmitEditing={addRule}
+              onSubmitEditing={addRule} onAppKeyboardSubmit={addRule}
             />
             <Pressable
               style={[styles.smallBtn, !newRuleText.trim() && styles.smallBtnDisabled]}
@@ -403,7 +404,7 @@ export default function AdminPage() {
             <View key={r.id} style={styles.row}>
               {editingRuleId === r.id ? (
                 <View style={{ flex: 1, gap: spacing.sm }}>
-                  <TextInput
+                  <NuriTextInput
                     style={[styles.miniInput, { minHeight: 90 }]}
                     value={editingText}
                     onChangeText={setEditingText}
@@ -470,13 +471,13 @@ export default function AdminPage() {
             删除会连带清空该账号的孩子档案、对话、任务、长期记忆和性能日志，且不可恢复。
           </Text>
           <View style={styles.inputRow}>
-            <TextInput
+            <NuriTextInput
               style={[styles.input, { flex: 1 }]}
               placeholder="邮箱或昵称（留空列出全部）"
               autoCapitalize="none"
               value={accountQuery}
               onChangeText={setAccountQuery}
-              onSubmitEditing={loadAccounts}
+              onSubmitEditing={loadAccounts} onAppKeyboardSubmit={loadAccounts}
             />
             <Pressable style={styles.smallBtn} onPress={loadAccounts} testID="admin-search-accounts">
               <Text style={styles.smallBtnText}>搜索</Text>
@@ -533,7 +534,7 @@ export default function AdminPage() {
             不发验证邮件、直接可登录，可以用假地址。自动标记为内部账号，不计入测试人数。
           </Text>
           <View style={[styles.inputRow, { flexWrap: "wrap" }]}>
-            <TextInput
+            <NuriTextInput
               style={[styles.input, { flex: 2, minWidth: 200 }]}
               placeholder="邮箱"
               autoCapitalize="none"
@@ -541,7 +542,7 @@ export default function AdminPage() {
               onChangeText={setTestEmail}
               testID="admin-test-account-email"
             />
-            <TextInput
+            <NuriTextInput
               style={[styles.input, { flex: 1, minWidth: 140 }]}
               placeholder="密码（至少6位）"
               autoCapitalize="none"
@@ -573,14 +574,14 @@ export default function AdminPage() {
             只有这些账号在聊天里发的 #fix 会被当成指令，其他人的会当成普通对话。
           </Text>
           <View style={styles.inputRow}>
-            <TextInput
+            <NuriTextInput
               style={[styles.input, { flex: 1 }]}
               placeholder="账号邮箱"
               autoCapitalize="none"
               keyboardType="email-address"
               value={newReviewerEmail}
               onChangeText={setNewReviewerEmail}
-              onSubmitEditing={addReviewer}
+              onSubmitEditing={addReviewer} onAppKeyboardSubmit={addReviewer}
             />
             <Pressable
               style={[styles.smallBtn, !newReviewerEmail.trim() && styles.smallBtnDisabled]}
@@ -623,6 +624,7 @@ const styles = StyleSheet.create({
   },
   gateTitle: { fontSize: 22, fontWeight: "700" as const, textAlign: "center", color: colors.onSurface },
   gateInput: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md,
     padding: spacing.md, fontSize: 16, color: colors.onSurface,
   },
@@ -659,6 +661,7 @@ const styles = StyleSheet.create({
   deleteText: { color: colors.error, fontSize: 12, fontWeight: "500" },
 
   miniInput: {
+    textAlignVertical:"top", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.sm, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },
@@ -670,6 +673,7 @@ const styles = StyleSheet.create({
   smallBtnText: { color: "#fff", fontWeight: "600", fontSize: 13 },
 
   input: {
+    textAlignVertical:"center", includeFontPadding:false,
     borderWidth: 1, borderColor: "#D4D4D0", borderRadius: radius.md, padding: spacing.sm,
     fontSize: 14, color: colors.onSurface, backgroundColor: colors.surfaceSecondary,
   },

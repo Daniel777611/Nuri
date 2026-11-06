@@ -5,11 +5,13 @@ import {execFileSync} from 'node:child_process';
 import ts from 'typescript';
 class FixtureDate extends Date {constructor(...args){super(...(args.length?args:[2026,9,21,12]));}}
 function load(path,deps={},extra='') {
+  deps={...deps,'@/src/textFonts':{TEXT_FONTS:{}},'@/src/uiuxfinal/ButtonMaterial':{FrostedPressable:deps['react-native']?.Pressable??'Pressable',ButtonBackdrop:'ButtonBackdrop'}};
   const module={exports:{}};
   const baseline=process.env.NURI_ONBOARDING_BASELINE_REF;
   if(baseline&&!/^[0-9a-f]{40}$/.test(baseline))throw Error('An exact baseline commit is required');
   const source=baseline?execFileSync('git',['show',baseline+':native-ios/'+path],{encoding:'utf8'}):readFileSync(path,'utf8');
   new Function('require','module','exports','Date',ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText+extra)(name=>{
+  if(name==='@/src/keyboard/AppKeyboard')return {NuriTextInput:deps['react-native']?.TextInput??'TextInput',useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:'AppKeyboardHost'};
   if(name.startsWith('@/assets/'))return 'fixture-image';
   assert.ok(name in deps,'unexpected dependency '+name);return deps[name];
  },module,module.exports,FixtureDate);return module.exports;
@@ -31,6 +33,13 @@ test('all historical Gregorian years, not only 2018 onward; leap and due-date ru
  for(const birth of ['0000-01-01','1900-02-29','2019-02-29','2026-10-22','10000-01-01'])assert.equal(helper.validChildDraft(draft('a',birth)),false,birth);
  assert.equal(helper.validChildDraft({...draft('due','2027-01-01'),expecting:true}),true);
  assert.equal(helper.validChildDraft({...draft('due','2099-01-01'),expecting:true}),false);
+});
+test('year instructions omit the repair-report suffix in all3 locales without restricting historical date entry',()=>{
+ for(const[locale,hint]of [['zh-CN','可直接输入年份，也可滚动选择。'],['zh-TW','可直接輸入年份，也可捲動選擇。'],['en','Type a year directly, or scroll.']]){
+  assert.equal(helper.onboardingChildCopy(locale).yearHint,hint);
+  for(const suffix of ['不再只限最近几年','不再只限最近幾年','There is no recent-years-only limit.'])assert.ok(!helper.onboardingChildCopy(locale).yearHint.includes(suffix));
+  for(const birth of ['0001-01-01','1900-02-28','2010-05-06','2017-12-31'])assert.equal(helper.validChildDraft(draft('historical',birth)),true,`${locale}/${birth}`);
+ }
 });
 test('reads every existing child without dropping siblings, allergies or notes; malformed/duplicate identities fail closed',()=>{
  const rows=[{...draft('a'),id:'a',allergies:['fixture allergy'],notes:'fixture note'},{...draft('b','2017-03-04'),id:'b'}];

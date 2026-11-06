@@ -5,15 +5,18 @@ import { test } from "node:test";
 import ts from "typescript";
 
 function load(path, dependencies = {}, jsx = false) {
+  dependencies={...dependencies,"@/src/uiuxfinal/ButtonMaterial":{FrostedPressable:dependencies["react-native"]?.Pressable??"Pressable",ButtonBackdrop:"ButtonBackdrop"}};
   const output = ts.transpileModule(readFileSync(new URL(path, import.meta.url), "utf8"), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: jsx ? ts.JsxEmit.ReactJSX : undefined },
   }).outputText;
   const loaded = { exports: {} };
   new Function("require", "module", "exports", output)((name) => {
+    if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:dependencies["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction"].map(n=>[n,n]));
     if(name==="@/src/uiux48/Scene")return {NuriAvatar:"NuriAvatar"};
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
+    if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
    assert.ok(name in dependencies, "unexpected dependency " + name);
     return dependencies[name];
   }, loaded, loaded.exports);
@@ -359,6 +362,7 @@ function headerFixture(f, locale) {
     "expo-router": { usePathname: () => "/knowledge", useGlobalSearchParams: () => ({}), useRouter: () => ({ push: (route) => routes.push(route) }) },
     "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ locale, t: (text) => text }) }, "@/src/theme": { colors: {} },
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
+    "@/src/uiuxfinal/Primitives": { FinalText: "FinalText" },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
   }, true).default;
@@ -381,6 +385,8 @@ for (const status of [401, 503]) test(`actual permission refresh ${status} is cl
     const ui = uiFixture(f, locale); const tree = ui.render();
     assert.equal(ui.find(tree, "ai-permission-allow"), null, "unverified identity cannot grant permission");
     assert.equal(ui.find(tree, "ai-permission-status").props.children[1].props.children, expected);
+    const notice=copy.aiConsentCopy(locale);for(const[index,paragraph]of [notice.intro,notice.data,notice.provider,notice.separate,notice.withdraw].entries())assert.equal(ui.find(tree,`ai-permission-explanation-${index}`).props.children,paragraph);
+    assert.doesNotMatch(JSON.stringify(tree),new RegExp(`${notice.version}:`),"Only the version display is removed; substantive permission explanations remain");assert.ok(!JSON.stringify(tree).includes(policy.AI_CONSENT_VERSION));assert.doesNotMatch(notice.separate,/下方|shown below/);assert.ok(ui.find(tree,"ai-permission-privacy"));assert.ok(ui.find(tree,"ai-permission-provider"));
     ui.find(tree, "ai-permission-non-ai").props.onPress();
     assert.deepEqual(ui.routes, [status === 401 ? "/login" : "/(tabs)/profile"]);
     const header = headerFixture(f, locale);

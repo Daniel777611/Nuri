@@ -141,7 +141,7 @@ function readEncodedImageDimensions(bytes: Uint8Array): EncodedImageDimensions |
   return largest;
 }
 
-async function webAssetFromFile(file: File): Promise<ImagePickerAsset> {
+export async function webAssetFromFile(file: File): Promise<ImagePickerAsset> {
   if (file.size > CHAT_IMAGE_MAX_SOURCE_BYTES) {
     throw new ChatImageInputError("too_large");
   }

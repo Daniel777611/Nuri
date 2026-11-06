@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { aiConsent } from "@/src/api";
-import { AIConsentError, AI_CONSENT_VERSION, AI_PRIVACY_URL, AI_PROVIDER_DATA_URL } from "@/src/aiConsent";
+import { AIConsentError, AI_PRIVACY_URL, AI_PROVIDER_DATA_URL } from "@/src/aiConsent";
 import { aiConsentCopy } from "@/src/aiConsentCopy";
 import { useAIConsent } from "@/src/useAIConsent";
 import { useT, translate } from "@/src/i18n";
@@ -58,7 +58,6 @@ export default function AIPermission() {
   if(withdraw && state.status === "allowed") return <StateCard testID="ai-withdraw-card" title={locale==="en"?"Pause AI features?":translate(locale, "暂时停用 AI 功能？")} message={locale==="en"?"Your profile and non-AI records remain available. You can choose permission again later.":translate(locale, "个人资料与已有非 AI 记录仍可使用。之后可以重新选择许可。")} primary={{label:locale==="en"?"Confirm withdrawal":translate(locale, "确认撤回"),onPress:()=>void choose(false)}} secondary={{label:locale==="en"?"Keep using AI":translate(locale, "继续使用 AI"),onPress:()=>setWithdraw(false)}} busy={busy} error={error} />;
   return <AuthFrame testID="ai-permission-card">
     {[copy.intro,copy.data,copy.provider,copy.separate,copy.withdraw].map((paragraph,index)=><NuriText key={index} style={{fontSize:16,lineHeight:24}} testID={`ai-permission-explanation-${index}`}>{paragraph}</NuriText>)}
-    <NuriText secondary style={{fontSize:12}}>{copy.version}: {AI_CONSENT_VERSION}</NuriText>
     <Pressable onPress={()=>openLink(AI_PRIVACY_URL)} accessibilityRole="link" style={{minHeight:44,justifyContent:"center"}} testID="ai-permission-privacy"><NuriText secondary style={{fontSize:13,textDecorationLine:"underline"}}>{copy.privacy}</NuriText></Pressable>
     <Pressable onPress={()=>openLink(AI_PROVIDER_DATA_URL)} accessibilityRole="link" style={{minHeight:44,justifyContent:"center"}} testID="ai-permission-provider"><NuriText secondary style={{fontSize:13,textDecorationLine:"underline"}}>{copy.processing}</NuriText></Pressable>
     <View accessibilityLiveRegion="polite" testID="ai-permission-status">{state.status==="loading"||state.status==="unknown"?<ActivityIndicator />:null}<NuriText secondary style={{fontSize:13}}>{state.status==="allowed"?copy.allowed:needsLogin?requestFailureCopy(locale,"session").detail:state.status==="error"?copy.loadError:state.status==="not_allowed"?copy.denied:copy.loading}</NuriText></View>

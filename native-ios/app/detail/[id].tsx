@@ -1,3 +1,4 @@
+import { FrostedPressable } from "@/src/uiuxfinal/ButtonMaterial";
 import { useCallback, useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
@@ -1098,7 +1099,7 @@ export default function Detail() {
                 queuedAlternatePairs.length > 0 ||
                 resourceRefreshState === "exhausted") &&
               resourcePairComplete ? (
-                <Pressable
+                <FrostedPressable
                   onPress={refreshResourcePair}
                   disabled={resourceRefreshState !== "idle"}
                   style={({ pressed }) => [
@@ -1145,7 +1146,7 @@ export default function Detail() {
                           ? `换一个 · 还有 ${queuedAlternatePairs.length} 组`
                           : t("换一个")}
                   </Text>
-                </Pressable>
+                </FrostedPressable>
               ) : null}
             </View>
             {resourceRefreshState === "exhausted" ? (
@@ -1189,7 +1190,7 @@ export default function Detail() {
                     {t("NURI 只会在一篇文章和一个视频都通过主题、语言与来源核验后显示外部链接。")}
                   </Text>
                   {card.resource_readiness === "retryable" ? (
-                    <Pressable
+                    <FrostedPressable
                       onPress={() => {
                         setCard((current: any) => ({
                           ...current,
@@ -1204,7 +1205,7 @@ export default function Detail() {
                     >
                       <Ionicons name="refresh-outline" size={16} color="#4F4B9C" />
                       <Text style={styles.refreshResourcesButtonText}>{t("重新准备")}</Text>
-                    </Pressable>
+                    </FrostedPressable>
                   ) : null}
                 </View>
               </View>
@@ -1369,7 +1370,7 @@ export default function Detail() {
             <Text style={styles.feedbackTitle}>{t("这次推荐贴合吗？")}</Text>
             <Text style={styles.feedbackSubtitle}>{t("你的选择只会帮助 NURI 调整后续推荐。")}</Text>
             <View style={styles.feedbackActions}>
-              <Pressable
+              <FrostedPressable
                 onPress={() => submitContentFeedback("helpful")}
                 disabled={contentFeedback !== null || feedbackSubmitting}
                 style={[
@@ -1394,8 +1395,8 @@ export default function Detail() {
                 >
                   {t("有帮助")}
                 </Text>
-              </Pressable>
-              <Pressable
+              </FrostedPressable>
+              <FrostedPressable
                 onPress={() => submitContentFeedback("not_relevant")}
                 disabled={contentFeedback !== null || feedbackSubmitting}
                 style={[
@@ -1433,7 +1434,7 @@ export default function Detail() {
                 >
                   {t("需要调整")}
                 </Text>
-              </Pressable>
+              </FrostedPressable>
             </View>
             {feedbackReasonOpen && !contentFeedback ? (
               <View style={styles.feedbackReasons} testID="detail-feedback-reasons">

@@ -56,6 +56,7 @@ from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import google_auth
+from backend import community
 from backend import (
     account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, quota, runtime, stores, usage_dashboard,
@@ -308,8 +309,13 @@ _ERROR_CODES = {
 }
 
 
-def _error_body(status_code: int, message: object, headers: object = None) -> dict:
+def _error_body(status_code: int, message: object, headers: object = None,
+                exc: object = None) -> dict:
     code, retryable = _ERROR_CODES.get(status_code, ("SERVER_ERROR", True))
+    # Community errors name their own code (backend/community.py): its 409s
+    # are version / idempotency / closed-question conflicts, not SESSION_CONFLICT.
+    code = getattr(exc, "error_code", None) or code
+    retryable = getattr(exc, "retryable", retryable)
     retry_after_ms = None
     raw_retry = (headers or {}).get("Retry-After") if hasattr(headers, "get") else None
     if raw_retry:
@@ -326,6 +332,7 @@ def _error_body(status_code: int, message: object, headers: object = None) -> di
             "retry_after_ms": retry_after_ms,
         },
         "request_id": llm_usage.current_request_id(),
+        **({"context": exc.extra} if getattr(exc, "extra", None) else {}),
     }
 
 
@@ -333,7 +340,7 @@ def _error_body(status_code: int, message: object, headers: object = None) -> di
 async def _http_error(_request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
-        content=_error_body(exc.status_code, exc.detail, exc.headers),
+        content=_error_body(exc.status_code, exc.detail, exc.headers, exc),
         headers=exc.headers,
     )
 
@@ -358,6 +365,8 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
         f"{where}: {first.get('msg', 'invalid request')}",
     )
     body["detail"] = jsonable_encoder(errors)
+    if _request.url.path.startswith(community.PREFIX):
+        body["error"]["code"] = "VALIDATION_FAILED"
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=body)
 
 
@@ -6380,6 +6389,15 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
     row = rows[0]
     data = row.get("data") or {}
     target: dict = {"kind": row["type"]}
+    if str(data.get("kind") or "").startswith("community_"):
+        # A typed in-app reference; GET /community/v1/me/notifications/{id}/target
+        # re-checks it against the parent's current access before navigating.
+        target = dict(data.get("target") or {"kind": data["kind"]})
+        return {
+            "id": row["id"], "type": row["type"], "title": row["title"],
+            "content": row.get("full_content") or row["body"], "target": target,
+            "created_at": row.get("created_at"),
+        }
     post_id = data.get("daily_post_id")
     post = await feed_daily_post.get_card(uid, str(post_id)) if post_id else None
     if post:
@@ -6464,6 +6482,14 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
     row = rows[0]
     data = row.get("data") or {}
+    if str(data.get("kind") or "").startswith("community_"):
+        # Opening writes a NURI AI message into the parent's private chat. A
+        # community event must never do that (handoff E12): navigate instead.
+        raise community.CommunityError(
+            "RELATIONSHIP_NOT_ALLOWED",
+            "Community notifications open in the community, not the NURI chat",
+            extra={"target_path": f"{community.PREFIX}/me/notifications/{notification_id}/target"},
+        )
 
     session = await start_session(StartChatRequest(), uid)
 
@@ -6813,6 +6839,7 @@ async def internal_push_test_accounts(authorization: Optional[str] = Header(defa
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
 app.include_router(api)
+app.include_router(community.build_router(_req_uid))
 
 # ── Legacy RAG routes: static & health ─────────────────────────────────────────
 @app.get("/")
