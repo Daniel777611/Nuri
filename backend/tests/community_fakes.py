@@ -196,6 +196,12 @@ class Bucket:
     def create_signed_upload_url(self, path):
         return {"signed_url": f"https://storage.test/upload/{path}", "token": "upload-token", "path": path}
 
+    def upload(self, path, data, file_options=None):
+        if path in self.store.objects:
+            raise RuntimeError("object exists")
+        self.store.objects[path] = bytes(data)
+        return {"path": path}
+
     def download(self, path):
         if path not in self.store.objects:
             raise RuntimeError("object not found")

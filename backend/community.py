@@ -709,6 +709,13 @@ class MediaCompleteIn(_Strict):
     client_request_id: Optional[str] = Field(None, max_length=128)
 
 
+class MediaDirectIn(_Strict):
+    purpose: Literal["avatar", "message"]
+    # A base64 image data URI; ~3.4 MB of text for the 2.5 MB image ceiling.
+    data_uri: str = Field(..., max_length=3_400_000)
+    client_request_id: str = ClientKey
+
+
 # ── P01–P03 Profiles ─────────────────────────────────────────────────────────
 
 def _own_profile_dto(profile: dict, role: str, prefs: dict) -> dict:
@@ -2223,6 +2230,55 @@ def _inspect_image(raw: bytes, row: dict) -> tuple[Optional[str], Optional[str],
     return None, row["declared_mime"], width, height
 
 
+async def upload_direct(uid: str, body: MediaDirectIn) -> dict:
+    """P31+P32 in one call: the image travels through the backend, which checks
+    the real bytes before they are stored and returns a ready media id.
+
+    Native clients cannot reliably PUT raw bytes to a signed URL, and a phone
+    image is well under the request limit, so this is the path the apps use.
+    The signed-upload pair above stays for larger media later.
+    """
+    from PIL import Image
+
+    from backend.nuri_core import image_input
+
+    try:
+        normalized = image_input.validate_image_data_uri(body.data_uri)
+    except image_input.InvalidChatImage as exc:
+        raise _invalid(str(exc))
+    if not normalized:
+        raise _invalid("data_uri must not be empty")
+    header, payload = normalized.split(",", 1)
+    fmt = header.split("/", 1)[1].split(";", 1)[0]
+    raw = base64.b64decode(payload)
+    sha = hashlib.sha256(raw).hexdigest()
+    fp = _fingerprint({"purpose": body.purpose, "sha": sha})
+    existing = await _one("community_media", lambda q: q.eq("owner_id", uid)
+                          .eq("client_request_id", body.client_request_id))
+    if existing:
+        if existing["request_fingerprint"] != fp:
+            raise CommunityError("IDEMPOTENCY_CONFLICT", "This request key was already used with different content")
+        return {"media": _media_dto(existing), "created": False}
+    with Image.open(BytesIO(raw)) as opened:
+        width, height = opened.size
+    media_id = str(uuid.uuid4())
+    path = f"{uid}/{media_id}.{fmt}"
+    mime = f"image/{fmt}"
+    await _db(lambda: _bucket().upload(path, raw, {"content-type": mime, "upsert": "false"}))
+    row, created = await _create_once(
+        "community_media", match={"owner_id": uid}, key_col="client_request_id",
+        key=body.client_request_id, fingerprint=fp,
+        row={"id": media_id, "owner_id": uid, "purpose": body.purpose, "state": "ready",
+             "declared_mime": mime, "validated_mime": mime, "byte_size": len(raw), "sha256": sha,
+             "width": width, "height": height, "storage_path": path,
+             "expires_at": _iso(_now() + timedelta(minutes=MEDIA_UPLOAD_TTL_MIN)), "updated_at": _iso()},
+    )
+    if not created:
+        # A concurrent retry won: drop the copy this call stored.
+        await _db(lambda: _bucket().remove([path]))
+    return {"media": _media_dto(row), "created": created}
+
+
 async def media_access(uid: str, media_id: str) -> dict:
     try:
         uuid.UUID(str(media_id))
@@ -2520,6 +2576,13 @@ def build_router(req_uid: Callable) -> APIRouter:
 
     @r.post("/media/uploads")
     async def _p31(body: MediaUploadIn, uid: str = U): return await create_upload(uid, body)
+
+    @r.post("/media", status_code=status.HTTP_201_CREATED)
+    async def _p31_direct(body: MediaDirectIn, response: Response, uid: str = U):
+        result = await upload_direct(uid, body)
+        if not result["created"]:
+            response.status_code = status.HTTP_200_OK
+        return result
 
     @r.post("/media/uploads/{upload_id}/complete")
     async def _p32(upload_id: str, body: Optional[MediaCompleteIn] = None, uid: str = U):

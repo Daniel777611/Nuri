@@ -188,3 +188,24 @@ test("the screens read and write the live API and carry no sample people or simu
   const route = read("app/community.tsx");
   assert.match(route, /<CommunityFinal key=\{generation\} \/>/);
 });
+
+test("photos and voice: one prepared image per message, voice is transcription into the draft (D14)", async () => {
+  const c = client(), api = c.communityApi;
+  await api.uploadImage("data:image/jpeg;base64,AAAA", "message", "img-1");
+  await api.sendMessage("conv-1", "", "m-2", ["media-1"]);
+  await api.mediaAccess("media-1");
+  await api.transcribe("data:audio/webm;base64,AAAA", "zh-CN", "asr-1");
+  assert.deepEqual(c.calls.map(x => `${x.method} ${x.path}`), [
+    "POST /community/v1/media", "POST /community/v1/conversations/conv-1/messages",
+    "GET /community/v1/media/media-1/access", "POST /community/v1/transcriptions",
+  ]);
+  assert.deepEqual(c.calls[0].body, { purpose: "message", data_uri: "data:image/jpeg;base64,AAAA", client_request_id: "img-1" });
+  assert.deepEqual(c.calls[1].body, { text: "", media_ids: ["media-1"], client_message_id: "m-2" });
+  assert.deepEqual(c.calls[3].body, { audio_base64: "data:audio/webm;base64,AAAA", locale: "zh-CN", ai_consent_version: "2026-10-01.1", client_request_id: "asr-1" });
+  const source = read("src/uiuxfinal/CommunityFinal.tsx");
+  assert.doesNotMatch(source, /notSupported|即将支持|coming soon/i);
+  for (const needle of ["startVoiceRecording()", "communityApi.transcribe(", "communityApi.uploadImage(", "prepareChatImage(", "<VoiceInputBar", "<CommunityImage"]) assert.ok(source.includes(needle), needle);
+  // A transcript lands in the draft; only the chat's own Send button sends it.
+  assert.match(source, /dispatch\(\{type:"draft",slot,text:/);
+  assert.match(source, /if\(spoken&&sendAfter&&slot\.startsWith\("chat:"\)\)/);
+});

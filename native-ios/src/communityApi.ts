@@ -163,8 +163,20 @@ export const communityApi = {
     send<{ conversation: Conversation }>("POST", "/conversations", { target_parent_id: parentId, client_request_id: key }),
   messages: (conversationId: string, cursor?: string | null) =>
     get<Page<Message> & { conversation: Conversation }>(`/conversations/${encodeURIComponent(conversationId)}/messages${q({ cursor, page_size: 50 })}`),
-  sendMessage: (conversationId: string, text: string, key: string) =>
-    send<{ message: Message; created: boolean }>("POST", `/conversations/${encodeURIComponent(conversationId)}/messages`, { text, client_message_id: key }),
+  sendMessage: (conversationId: string, text: string, key: string, mediaIds: string[] = []) =>
+    send<{ message: Message; created: boolean }>("POST", `/conversations/${encodeURIComponent(conversationId)}/messages`,
+      mediaIds.length ? { text, media_ids: mediaIds, client_message_id: key } : { text, client_message_id: key }, mediaIds.length ? 20000 : undefined),
+  // P31–P33: one prepared image (data URI) in, a ready media id out.
+  uploadImage: (dataUri: string, purpose: "message" | "avatar", key: string) =>
+    send<{ media: { media_id: string; state: string; width: number | null; height: number | null }; created: boolean }>(
+      "POST", "/media", { purpose, data_uri: dataUri, client_request_id: key }, 45000),
+  mediaAccess: (mediaId: string) =>
+    get<{ media: { media_id: string; width: number | null; height: number | null }; access: { url: string; expires_in_s: number } }>(
+      `/media/${encodeURIComponent(mediaId)}/access`),
+  // P30: voice is transcription only (D14) — the text comes back as an editable draft.
+  transcribe: (audioBase64: string, locale: string, key: string) =>
+    send<{ draft_text: string }>("POST", "/transcriptions",
+      { audio_base64: audioBase64, locale, ai_consent_version: AI_CONSENT_VERSION, client_request_id: key }, 45000),
   markRead: (conversationId: string, seq: number) =>
     send<{ last_read_seq: number; unread_count: number }>("PUT", `/conversations/${encodeURIComponent(conversationId)}/read-cursor`, { last_read_seq: seq }),
   // P24

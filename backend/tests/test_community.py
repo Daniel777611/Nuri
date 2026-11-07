@@ -736,3 +736,29 @@ def test_storage_outage_is_an_error_not_an_empty_list(env):
     env.db.fail_tables.add("community_questions")
     body = err(env.call("u_ann", "GET", "/me/questions"), 503, "STORAGE_OR_SERVICE_UNAVAILABLE")
     assert body["error"]["retryable"] is True
+
+
+def test_direct_media_upload_validates_stores_and_is_idempotent(env):
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u)
+    conv = connect(env, "u_ann", "u_ben")
+    raw = _png()
+    uri = "data:image/png;base64," + base64.b64encode(raw).decode()
+    body = {"purpose": "message", "data_uri": uri, "client_request_id": "direct-0001"}
+    first = ok(env.call("u_ann", "POST", "/media", json=body), 201)["media"]
+    assert first["state"] == "ready" and first["width"] == 8 and first["mime_type"] == "image/png"
+    again = ok(env.call("u_ann", "POST", "/media", json=body), 200)["media"]
+    assert again["media_id"] == first["media_id"]
+    assert len(env.db.storage.objects) == 1  # the retry stored nothing new
+    other = "data:image/png;base64," + base64.b64encode(_png((1, 2, 3))).decode()
+    err(env.call("u_ann", "POST", "/media", json={**body, "data_uri": other}), 409, "IDEMPOTENCY_CONFLICT")
+    fake = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 40).decode()
+    err(env.call("u_ann", "POST", "/media", json={**body, "data_uri": fake, "client_request_id": "direct-0002"}),
+        422, "VALIDATION_FAILED")
+    err(env.call("u_ann", "POST", "/media", json={**body, "data_uri": "data:text/plain;base64,aGk=",
+                                                  "client_request_id": "direct-0003"}), 422, "VALIDATION_FAILED")
+    sent = ok(env.call("u_ann", "POST", f"/conversations/{conv}/messages",
+                       json={"media_ids": [first["media_id"]], "client_message_id": "direct-msg-0001"}), 201)
+    assert sent["message"]["media"] == [{"media_id": first["media_id"]}]
+    ok(env.call("u_ben", "GET", f"/media/{first['media_id']}/access"))
+    err(env.call("u_cat", "GET", f"/media/{first['media_id']}/access"), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")

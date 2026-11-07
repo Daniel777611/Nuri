@@ -9,6 +9,10 @@ import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { IconAction, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
 import { NuriComposer } from "@/src/uiux48/Composer";
+import { VoiceInputBar } from "@/src/uiux48/VoiceInputBar";
+import * as ImagePicker from "expo-image-picker";
+import { ChatImageInputError, pickWebChatImageFile, prepareChatImage, type PreparedChatImage } from "@/src/chatImageInput";
+import { MAX_VOICE_SECONDS, VoiceInputError, isVoiceInputSupported, startVoiceRecording, type VoiceRecording } from "@/src/chatVoiceInput";
 import { useComposerDockInset } from "@/src/uiux48/useComposerDock";
 import { singleLineInputStyle } from "@/src/uiux48/inputLayout";
 import { api, apiErrorDetail, isAuthError } from "@/src/api";
@@ -127,6 +131,23 @@ function FriendPreviewAvatar() {
 function UnreadBadge({count,style}:{count:number;style:ViewStyle}){
   if(!count)return null;
   return <View pointerEvents="none" style={[{width:14,height:15.273,alignItems:"center",justifyContent:"center"},style]}><Image source={require("@/assets/final-flow-20261101/parent-unread.svg")} style={{position:"absolute",width:14,height:15.273}} contentFit="contain" accessible={false}/><FinalText size={10} style={{lineHeight:14,color:"white"}}>{count>9?"9+":count}</FinalText></View>;
+}
+
+/** Signed read URLs are short-lived (300 s); keep each until shortly before it expires. */
+const mediaUrls=new Map<string,{url:string;until:number}>();
+function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
+  const cached=mediaUrls.get(mediaId);
+  const [url,setUrl]=useState<string|null>(cached&&cached.until>Date.now()?cached.url:null);
+  const [failed,setFailed]=useState(false);
+  useEffect(()=>{
+    if(url||failed)return;
+    let live=true;
+    communityApi.mediaAccess(mediaId).then(result=>{mediaUrls.set(mediaId,{url:result.access.url,until:Date.now()+Math.max(30,result.access.expires_in_s-30)*1000});if(live)setUrl(result.access.url);},()=>{if(live)setFailed(true);});
+    return()=>{live=false;};
+  },[mediaId,url,failed]);
+  return <View testID={"final-parent-image-"+mediaId} accessible accessibilityLabel={label} style={{width:200,height:200,borderRadius:16,overflow:"hidden",backgroundColor:"rgba(115,92,132,.08)",alignItems:"center",justifyContent:"center"}}>
+    {url?<Image source={{uri:url}} style={{width:200,height:200}} contentFit="cover" accessible={false} onError={()=>{mediaUrls.delete(mediaId);setFailed(true);setUrl(null);}}/>:failed?<FinalText size={12} secondary>{label}</FinalText>:<ActivityIndicator color={FINAL_COLOR.accent}/>}
+  </View>;
 }
 
 /** The Community hub and its 42 approved states, on the live Community API
@@ -356,7 +377,74 @@ export default function CommunityFinal() {
 
   const draft = (slot: string) => state.drafts[slot] ?? "";
   const setDraft = (slot: string, text: string) => dispatch({ type: "draft", slot, text });
-  const notSupported=()=>dispatch({type:"notice",message:c("语音和图片即将支持，目前请输入文字","Voice and photos are coming soon; please type for now")});
+  // ── Voice input: a recording becomes editable draft text (D14), never a message by itself.
+  const [voice,setVoice]=useState<{slot:string;phase:"starting"|"recording"|"transcribing";seconds:number;metered:boolean}|null>(null);
+  const voiceRef=useRef<{recording:VoiceRecording|null;slot:string|null;version:number;timer:ReturnType<typeof setInterval>|null}>({recording:null,slot:null,version:0,timer:null});
+  const stopVoiceTimer=()=>{if(voiceRef.current.timer)clearInterval(voiceRef.current.timer);voiceRef.current.timer=null;};
+  const cancelVoice=useCallback(()=>{
+    const v=voiceRef.current;v.version++;if(v.timer)clearInterval(v.timer);v.timer=null;v.recording?.cancel();v.recording=null;v.slot=null;setVoice(null);
+  },[]);
+  // Leaving the screen, the parent or the app always releases the microphone.
+  useEffect(()=>cancelVoice,[state.screen,state.person,cancelVoice]);
+  useFocusEffect(useCallback(()=>()=>cancelVoice(),[cancelVoice]));
+  const voiceError=(error:unknown)=>{
+    const code=error instanceof VoiceInputError?error.code:"";
+    dispatch({type:"notice",message:code==="permission_denied"?c("需要麦克风权限才能语音输入，请在系统设置中允许","Microphone access is needed for voice input"):code==="unsupported"?c("当前设备不支持语音输入，可以改用文字","Voice input isn't available here; please type"):code==="no_microphone"?c("没有找到可用的麦克风","No microphone was found"):code==="too_short"?c("说话时间太短","That was too short"):failure(error)});
+  };
+  const stopVoice=async(sendAfter=false)=>{
+    const v=voiceRef.current,{recording,slot,version}=v;
+    if(!recording||!slot)return;
+    v.recording=null;stopVoiceTimer();
+    setVoice(current=>current?{...current,phase:"transcribing"}:current);
+    let spoken="";
+    try{
+      const clip=await recording.stop();
+      if(version!==v.version)return;
+      spoken=((await communityApi.transcribe(clip,locale,communityKey("asr"))).draft_text||"").trim();
+      if(version!==v.version){spoken="";return;}
+      if(!spoken){dispatch({type:"notice",message:c("没有听清，请再说一次","Didn't catch that; please try again")});return;}
+      const before=latest.current.drafts[slot]??"";
+      dispatch({type:"draft",slot,text:before.trim()?before.trimEnd()+" "+spoken:spoken});
+    }catch(error){if(version===v.version)voiceError(error);spoken="";}
+    finally{if(version===v.version){v.slot=null;setVoice(null);}}
+    if(spoken&&sendAfter&&slot.startsWith("chat:"))void sendChat();
+  };
+  const startVoice=async(slot:string)=>{
+    if(voiceRef.current.slot||busy)return;
+    if(!isVoiceInputSupported()){voiceError(new VoiceInputError("unsupported"));return;}
+    Keyboard.dismiss();
+    const v=voiceRef.current,version=++v.version;
+    v.slot=slot;setVoice({slot,phase:"starting",seconds:0,metered:false});
+    try{
+      const recording=await startVoiceRecording();
+      if(version!==v.version||!mounted.current){recording.cancel();return;}
+      v.recording=recording;
+      const started=Date.now();
+      setVoice({slot,phase:"recording",seconds:0,metered:recording.level()!==null});
+      v.timer=setInterval(()=>{const seconds=Math.floor((Date.now()-started)/1000);setVoice(current=>current&&current.phase==="recording"?{...current,seconds}:current);if(seconds>=MAX_VOICE_SECONDS)void stopVoice();},250);
+    }catch(error){if(version===v.version){v.slot=null;setVoice(null);voiceError(error);}}
+  };
+  const voiceBar=(slot:string)=>voice&&voice.slot===slot?<VoiceInputBar phase={voice.phase} seconds={voice.seconds} metered={voice.metered} level={()=>voiceRef.current.recording?.level()??null} onCancel={cancelVoice} onStop={()=>void stopVoice(false)} onSend={()=>void stopVoice(slot.startsWith("chat:"))}/>:null;
+  // ── One photo per parent message, prepared like the NURI chat's (≤1600 px).
+  const [chatImage,setChatImage]=useState<{person:string;prepared:PreparedChatImage}|null>(null);
+  useEffect(()=>{setChatImage(current=>current&&current.person!==state.person?null:current);},[state.person]);
+  const pickChatImage=async()=>{
+    if(busy||voiceRef.current.slot)return;
+    try{
+      let asset:ImagePicker.ImagePickerAsset|null=null;
+      if(Platform.OS==="web")asset=await pickWebChatImageFile();
+      else{
+        // The system photo picker grants access to the chosen photo only.
+        const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:["images"],allowsEditing:false,allowsMultipleSelection:false,base64:false,exif:false,quality:.78});
+        asset=result.canceled?null:result.assets[0]??null;
+      }
+      if(!asset)return;
+      const prepared=await prepareChatImage(asset);
+      if(mounted.current)setChatImage({person:latest.current.person,prepared});
+    }catch(error){
+      dispatch({type:"notice",message:error instanceof ChatImageInputError&&error.code==="too_large"?c("图片太大了，请换一张","That photo is too large"):c("无法读取这张图片，请换一张","Couldn't read that photo")});
+    }
+  };
   const filterLabels = {
     gender: [c("不限", "Any"), c("妈妈", "Mothers"), c("爸爸", "Fathers")],
     distance: [c("不限", "Any"), c("1 英里内", "Within 1 mile"), c("3 英里内", "Within 3 miles"),c("5 英里内","Within 5 miles"),c("10 英里内","Within 10 miles")]
@@ -466,13 +554,18 @@ export default function CommunityFinal() {
     });
     me.reload();after();
   });
-  const sendChat=()=>write(async()=>{
-    const slot=`chat:${state.person}`,text=draft(slot).trim(),conversationId=chat.value?.conversationId;
-    if(!text||!conversationId)return;
-    await communityApi.sendMessage(conversationId,text,keyFor(slot,text,"msg"));
-    delete writeKeys.current[slot];
+  function sendChat(){return write(async()=>{
+    // Read the latest drafts: a voice transcript may have landed this tick.
+    const current=latest.current,slot="chat:"+current.person,text=(current.drafts[slot]??"").trim(),conversationId=chat.value?.conversationId;
+    const image=chatImage&&chatImage.person===current.person?chatImage.prepared:null;
+    if((!text&&!image)||!conversationId)return;
+    // The photo is stored and checked first; the message only binds a ready id.
+    const mediaIds=image?[(await communityApi.uploadImage(image.dataUri,"message",keyFor(slot+":image",image.dataUri.length+":"+image.dataUri.slice(-96),"img"))).media.media_id]:[];
+    await communityApi.sendMessage(conversationId,text,keyFor(slot,text+"|"+mediaIds.join(","),"msg"),mediaIds);
+    delete writeKeys.current[slot];delete writeKeys.current[slot+":image"];
+    setChatImage(null);
     dispatch({type:"messageSent",slot});chat.reload();
-  });
+  });}
   const toggleAI=(on:boolean)=>write(async()=>{
     const value=chat.value;if(!value)return;
     if(on){
@@ -586,11 +679,12 @@ export default function CommunityFinal() {
             }} onBlur={()=>{
               if(filterMounted.current&&questionFocusEpoch.current===focusEpoch)setQuestionFocusedInput(current=>current===slot?null:current);
             }} placeholder={c("写下你的问题…","Write your question…")} placeholderTextColor="#918896" style={{height:original?122:78,padding:16,paddingRight:choosing?38:16,fontSize:16,lineHeight:24,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined}}/>
-            {original?<View style={{height:44,paddingHorizontal:8,flexDirection:"row",alignItems:"center"}}><Pressable testID="final-question-mic" accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} onPress={notSupported} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable></View>:null}
+            {original?<View style={{height:44,paddingHorizontal:8,flexDirection:"row",alignItems:"center"}}><Pressable testID="final-question-mic" accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} onPress={()=>void startVoice(selectedDraft)} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable></View>:null}
             {choosing?<Pressable accessibilityRole="radio" accessibilityState={{selected,checked:selected}} aria-checked={selected} accessibilityLabel={original?c("选择原版","Use original"):c("选择Nuri润色版","Use Nuri version")} onPress={()=>dispatch({type:"version",version:original?"original":"polished"})} testID={original?"final-question-original":"final-question-version"} style={{position:"absolute",right:-3,top:-3,width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={selected?require("@/assets/final-flow-20261101/community-radio-selected.svg"):require("@/assets/final-flow-20261101/community-radio-empty.svg")} style={{width:16,height:16}} contentFit="contain" accessible={false}/></Pressable>:null}
           </View>;
         })}
       </View>
+      {voiceBar(selectedDraft)}
       {!choosing?<View style={{height:44,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar/><Pressable accessibilityRole="button" testID="final-refine-question" disabled={busy||!draft("question").trim()} onPress={polish} style={{height:44,borderRadius:999,paddingHorizontal:24,backgroundColor:FINAL_COLOR.selected,alignItems:"center",justifyContent:"center",boxShadow:"0px 1px 15px rgba(92,86,98,.18)",opacity:busy||!draft("question").trim()?.6:1}}>{busy?<ActivityIndicator color="white"/>:<FinalText style={{fontWeight:"500",color:"white"}}>{c("需要润色吗？","Refine your wording?")}</FinalText>}</Pressable></View>:null}
       <View style={st.quietDivider}/>
       <View style={{minHeight:44,flexDirection:"row",gap:12,alignItems:"center",flexWrap:"wrap"}}>
@@ -711,12 +805,13 @@ export default function CommunityFinal() {
       <View testID="final-experience-editor" style={{height:145,borderRadius:18,borderWidth:1,borderColor:"rgba(115,92,132,.25)",backgroundColor:"rgba(255,250,245,.9)",padding:12,justifyContent:"space-between"}}>
         <NuriTextInput testID={"final-input-"+slot} accessibilityLabel={placeholder} editable={!closed} multiline maxLength={responding?2000:1000} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} placeholder={placeholder} placeholderTextColor="#918896" style={{flex:1,minHeight:48,padding:0,fontSize:14,lineHeight:20,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined}}/>
         <View style={{height:24,flexDirection:"row",alignItems:"center",gap:8}}>
-          <Pressable accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} disabled={closed} onPress={notSupported} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} disabled={closed||!!voice} onPress={()=>void startVoice(slot)} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel={c("添加表情","Add emoji")} disabled={closed} onPress={()=>setDraft(slot,draft(slot)+" 🙂")} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/community-emoji.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
           <View style={{flex:1}}/>
           <FrostedPressable accessibilityRole="button" testID="final-send-experience" disabled={closed||busy||!draft(slot).trim()} onPress={onSend} style={{width:50,height:24,borderRadius:18,backgroundColor:FINAL_COLOR.coral,alignItems:"center",justifyContent:"center",opacity:closed||busy||!draft(slot).trim()?.6:1}} hitSlop={8}><FinalText size={14} style={{lineHeight:20,color:"white"}}>{c("发送","Send")}</FinalText></FrostedPressable>
         </View>
       </View>
+      {!closed?voiceBar(slot):null}
       {notice}
     </View>;
     const answer=(reply:Reply,small=false)=><View key={reply.reply_id} style={{gap:small?4:detail?16:12}}>
@@ -754,9 +849,10 @@ export default function CommunityFinal() {
         {allThread?.can_post?<View style={{gap:8}}>
           <Pressable accessibilityRole="button" testID="final-expand-reply" disabled={closed} onPress={()=>dispatch({type:"replyTarget",target:"all",expanded:true})} style={{minHeight:18,justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{closed?c("此问题已关闭","This question is closed"):c("回复所有人","Reply to everyone")}</FinalText></Pressable>
           {expanded?editor(c("写下你的回复…","Write your reply…"),()=>comment(slot)):<View style={{height:46,borderWidth:1,borderColor:"rgba(93,80,96,.16)",borderRadius:18,backgroundColor:"rgba(255,250,245,.9)",flexDirection:"row",alignItems:"center",paddingLeft:8,paddingRight:12}}>
-            <Pressable accessibilityRole="button" disabled={closed} accessibilityLabel={c("语音输入","Voice input")} onPress={notSupported} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
+            <Pressable accessibilityRole="button" disabled={closed||!!voice} accessibilityLabel={c("语音输入","Voice input")} onPress={()=>void startVoice(slot)} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
             <NuriTextInput testID="final-comment-input" accessibilityLabel={c("写下回复","Write a reply")} editable={!closed} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} onFocus={()=>dispatch({type:"replyTarget",target:"all",expanded:true})} placeholder={c("写下回复…","Write a reply…")} placeholderTextColor="#918896" style={{...singleLineInputStyle,flex:1,height:44,padding:0,fontSize:14,lineHeight:20,color:FINAL_COLOR.ink}}/>
           </View>}
+          {!expanded&&!closed?voiceBar(slot):null}
         </View>:null}
       </FinalSurface>
     </View></NuriKeyboardFrame>;
@@ -888,11 +984,11 @@ export default function CommunityFinal() {
     }} onToggle={toggleAI}/><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
       {pending(chat)}
       {value&&!list.length?<FinalText secondary style={{textAlign:"center"}}>{c("打个招呼吧","Say hello")}</FinalText>:null}
-      {list.map(m => {const incoming=m.sender==="parent";return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}><FinalText>{m.text||(m.media.length?c("[图片]","[Photo]"):"")}</FinalText></FinalChatBubble></View>;})}
+      {list.map(m => {const incoming=m.sender==="parent";return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText>{m.text}</FinalText>:null}</FinalChatBubble></View>;})}
     </ScrollView><View testID="final-parent-composer-dock" style={{ padding: 24, paddingTop: 8, paddingBottom: dockBottom, gap: 8 }}>
       {notice}
       {value&&!canSend?<FinalText size={12} secondary style={{textAlign:"center"}}>{c("你们已不再联系，不能再发送消息","You're no longer connected and can't send messages")}</FinalText>:null}
-      <NuriComposer disabled={!canSend||busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={sendChat} onAttach={notSupported} onMic={notSupported} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />
+      {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy} busy={busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} hasAttachment={!!chatImage} attachments={chatImage?[{id:"community-photo",kind:"image",uri:chatImage.prepared.previewUri,width:chatImage.prepared.width,height:chatImage.prepared.height,image:chatImage.prepared}]:undefined} onRemoveAttachment={()=>setChatImage(null)} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
     </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri记录这次对话。同意后，Nuri会记录之后的聊天内容，并整理对话要点。双方都可以随时关闭记录。", "The other parent invited Nuri to record this conversation from now on and organise its key points. Either person can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}</NuriKeyboardFrame>;
 }
 const st = StyleSheet.create({
