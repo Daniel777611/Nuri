@@ -42,7 +42,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import anyio
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, status
+from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException, Header, Request, UploadFile, File, Query, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -7851,6 +7851,23 @@ async def admin_chat_reports(
             "response": messages.get(str(row.get("message_id")), {}).get("text") or "",
         })
     return {"days": days, "total": len(rows), "rows": rows}
+
+
+@app.get("/admin/community-reports")
+async def admin_community_reports(
+    status_filter: str = Query("pending", alias="status"), limit: int = 100,
+    _: None = Depends(_require_admin),
+):
+    """Community reports (questions, replies, comments, messages, parents), newest first."""
+    return await community.admin_list_reports(status_filter, limit)
+
+
+@app.post("/admin/community-reports/{report_id}")
+async def admin_review_community_report(
+    report_id: str, body: community.ReportReviewIn, _: None = Depends(_require_admin),
+):
+    """Settle one report: actioned / dismissed, optionally taking the content down."""
+    return await community.admin_review_report(report_id, body)
 
 
 @app.get("/admin/usage/quota")

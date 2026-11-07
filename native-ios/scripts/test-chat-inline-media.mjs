@@ -17,6 +17,8 @@ function load(path, deps, timers = {}) {
     if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:deps["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     if (name.includes("assets/")) return 1;
     if (name === "@/src/uiuxfinal/Primitives") return { FinalChatBubble:"ChatBubble",FinalText:"Text",FinalSurface:"Surface" };
+    // The AI-reply report sheet (03ec913) is a presentational modal; its own suite covers it.
+    if (name === "@/src/components/ChatReportSheet") return { ChatReportSheet: "ChatReportSheet" };
     assert.ok(name in deps, "unexpected import " + name);
     return deps[name];
   }, module, module.exports, ...Object.values(timers));

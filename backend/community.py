@@ -723,6 +723,25 @@ class MediaCompleteIn(_Strict):
     client_request_id: Optional[str] = Field(None, max_length=128)
 
 
+REPORT_REASONS = ("harassment", "sexual", "hate", "child_safety", "self_harm", "spam", "other")
+
+
+class ReportIn(_Strict):
+    target_kind: Literal["question", "reply", "comment", "message", "parent"]
+    target_id: str = Field(..., min_length=1, max_length=64)
+    reason: Literal["harassment", "sexual", "hate", "child_safety", "self_harm", "spam", "other"]
+    note: Optional[str] = Field(None, max_length=1000)
+    # Also block the author. Not offered for anonymous content: a block list
+    # entry would tell the reporter who wrote it.
+    block: bool = False
+
+
+class ReportReviewIn(BaseModel):
+    status: Literal["actioned", "dismissed", "pending"]
+    reviewer_note: Optional[str] = Field(None, max_length=500)
+    remove_content: bool = False
+
+
 class MediaDirectIn(_Strict):
     purpose: Literal["avatar", "message"]
     # A base64 image data URI; ~3.4 MB of text for the 2.5 MB image ceiling.
@@ -2459,6 +2478,144 @@ async def delete_media(uid: str, media_id: str) -> dict:
     return {"media_id": media_id, "state": "deleted"}
 
 
+# ── Reports (Google Play UGC policy) ─────────────────────────────────────────
+
+async def _report_target(uid: str, kind: str, target_id: str) -> tuple[Optional[str], str, bool]:
+    """(author account id, text snapshot, author is anonymous) for something
+    the reporter can actually see; anything else is a 404."""
+    if kind == "parent":
+        profile = await _profile_by_public(target_id)
+        if not profile or profile["user_id"] == uid:
+            raise _not_found("parent")
+        return profile["user_id"], f"{profile.get('display_name') or ''}\n{profile.get('about') or ''}".strip(), False
+    try:
+        uuid.UUID(target_id)
+    except ValueError:
+        raise _not_found(kind)
+    if kind == "question":
+        question, _ = await _visible_question(uid, target_id)
+        return question["author_id"], question["body"], bool(question.get("anonymous"))
+    if kind == "reply":
+        reply = await _one("community_replies", lambda q: q.eq("id", target_id))
+        if not reply:
+            raise _not_found("reply")
+        question, _ = await _visible_question(uid, str(reply["question_id"]))
+        if uid not in (question["author_id"], reply["author_id"]):
+            raise _not_found("reply")
+        return reply["author_id"], reply["body"], bool(reply.get("anonymous"))
+    if kind == "comment":
+        comment = await _one("community_comments", lambda q: q.eq("id", target_id))
+        if not comment:
+            raise _not_found("comment")
+        question, _ = await _visible_question(uid, str(comment["question_id"]))
+        await _thread_access(uid, question, str(comment["reply_id"]) if comment.get("reply_id") else "all")
+        author = comment["author_id"]
+        if author == question["author_id"]:
+            anonymous = bool(question.get("anonymous"))
+        else:
+            own = await _one("community_replies", lambda q: q.eq("question_id", question["id"]).eq("author_id", author))
+            anonymous = bool(own and own.get("anonymous"))
+        return author, comment["body"], anonymous
+    message = await _one("community_messages", lambda q: q.eq("id", target_id))
+    if not message:
+        raise _not_found("message")
+    await _member_conversation(uid, str(message["conversation_id"]))
+    media = f" [{len(message.get('media_ids') or [])} photo(s)]" if message.get("media_ids") else ""
+    return message["sender_id"], (message.get("body") or "") + media, False
+
+
+async def file_report(uid: str, body: ReportIn) -> dict:
+    author, snapshot, anonymous = await _report_target(uid, body.target_kind, body.target_id)
+    if author == uid:
+        raise _invalid("You cannot report your own content")
+    note = _clean_text(body.note, field="note", max_len=500, required=False) or None
+    row = {"reporter_id": uid, "target_kind": body.target_kind, "target_id": body.target_id,
+           "reported_user_id": author, "reason": body.reason, "note": note,
+           "snapshot": (snapshot or "")[:4000], "status": "pending", "updated_at": _iso()}
+    existing = await _one("community_reports", lambda q: q.eq("reporter_id", uid)
+                          .eq("target_kind", body.target_kind).eq("target_id", body.target_id))
+    if existing:
+        # One report per parent and target; a second one updates the reason.
+        report = (await _update("community_reports", {"reason": body.reason, "note": note, "status": "pending",
+                                                      "updated_at": _iso()},
+                                lambda q: q.eq("id", existing["id"])))[0]
+    else:
+        try:
+            report = await _insert("community_reports", row)
+        except _UniqueViolation:
+            report = await _one("community_reports", lambda q: q.eq("reporter_id", uid)
+                                .eq("target_kind", body.target_kind).eq("target_id", body.target_id))
+    print(f"[community] report filed kind={body.target_kind} reason={body.reason}")
+    blocked = False
+    if body.block and author and not anonymous:
+        profile = await _profile(author)
+        if profile:
+            await block(uid, str(profile["public_id"]), BlockIn(confirmed=True))
+            blocked = True
+    # "received" is the truth: the report is queued for a person to review.
+    return {"report_id": str(report["id"]), "status": "received", "blocked": blocked,
+            "block_available": not anonymous}
+
+
+async def admin_list_reports(status_filter: str = "pending", limit: int = 100) -> dict:
+    if status_filter not in ("pending", "actioned", "dismissed", "all"):
+        raise _invalid("status must be pending, actioned, dismissed or all")
+    rows = await _select("community_reports", lambda q: (q if status_filter == "all" else q.eq("status", status_filter))
+                         .order("created_at", desc=True).limit(max(1, min(limit, 200))))
+    people = sorted({r[k] for r in rows for k in ("reporter_id", "reported_user_id") if r.get(k)})
+    users = {u["id"]: u for u in (await _select("users", lambda q: q.in_("id", people)) if people else [])}
+    counts: dict[str, int] = {}
+    for r in rows:
+        if r.get("reported_user_id"):
+            counts[r["reported_user_id"]] = counts.get(r["reported_user_id"], 0) + 1
+    label = lambda uid: (users.get(uid) or {}).get("nickname") or (users.get(uid) or {}).get("email") or "Unknown"
+    return {"status": status_filter, "total": len(rows), "rows": [{
+        "id": str(r["id"]), "target_kind": r["target_kind"], "target_id": r["target_id"],
+        "reason": r["reason"], "note": r.get("note"), "snapshot": r.get("snapshot") or "",
+        "status": r["status"], "content_removed": bool(r.get("content_removed")),
+        "reviewer_note": r.get("reviewer_note"), "created_at": r.get("created_at"), "reviewed_at": r.get("reviewed_at"),
+        "reporter": label(r["reporter_id"]),
+        "reported": label(r["reported_user_id"]) if r.get("reported_user_id") else None,
+        "reported_email": (users.get(r.get("reported_user_id")) or {}).get("email"),
+        "reports_against_reported": counts.get(r.get("reported_user_id"), 0),
+    } for r in rows]}
+
+
+async def admin_review_report(report_id: str, body: ReportReviewIn) -> dict:
+    try:
+        uuid.UUID(report_id)
+    except ValueError:
+        raise _not_found("report")
+    report = await _one("community_reports", lambda q: q.eq("id", report_id))
+    if not report:
+        raise _not_found("report")
+    removed = bool(report.get("content_removed"))
+    if body.remove_content and not removed:
+        kind, target = report["target_kind"], report["target_id"]
+        if kind == "question":
+            await _update("community_questions", {"status": "deleted", "deleted_at": _iso(), "updated_at": _iso()},
+                          lambda q: q.eq("id", target))
+            await _lock_deliveries(target, "question_deleted")
+        elif kind == "reply":
+            await _delete("community_replies", lambda q: q.eq("id", target))
+        elif kind == "comment":
+            await _delete("community_comments", lambda q: q.eq("id", target))
+        elif kind == "message":
+            await _delete("community_messages", lambda q: q.eq("id", target))
+        elif kind == "parent" and report.get("reported_user_id"):
+            # A parent is taken out of recommendations and new contact.
+            await patch_preferences(report["reported_user_id"], PreferencesPatch(profile_hidden=True))
+        removed = True
+        # Every open report on the same target is settled with it.
+        await _update("community_reports", {"content_removed": True, "updated_at": _iso()},
+                      lambda q: q.eq("target_kind", kind).eq("target_id", target))
+    updated = (await _update("community_reports", {
+        "status": body.status, "reviewer_note": (body.reviewer_note or None),
+        "content_removed": removed, "reviewed_at": _iso() if body.status != "pending" else None, "updated_at": _iso(),
+    }, lambda q: q.eq("id", report_id)))[0]
+    return {"id": report_id, "status": updated["status"], "content_removed": bool(updated.get("content_removed"))}
+
+
 # ── P35–P36 Community notifications ──────────────────────────────────────────
 
 def _decode_ts_cursor(cursor: Optional[str]) -> Optional[tuple[str, str]]:
@@ -2728,6 +2885,9 @@ def build_router(req_uid: Callable) -> APIRouter:
 
     @r.delete("/media/{media_id}")
     async def _p34(media_id: str, uid: str = U): return await delete_media(uid, media_id)
+
+    @r.post("/reports", status_code=status.HTTP_201_CREATED)
+    async def _report(body: ReportIn, uid: str = U): return await file_report(uid, body)
 
     @r.get("/me/notifications")
     async def _p35(cursor: Optional[str] = None, page_size: Optional[int] = PageQ, uid: str = U):

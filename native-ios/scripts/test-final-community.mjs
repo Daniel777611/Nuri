@@ -209,3 +209,19 @@ test("photos and voice: one prepared image per message, voice is transcription i
   assert.match(source, /dispatch\(\{type:"draft",slot,text:/);
   assert.match(source, /if\(spoken&&sendAfter&&slot\.startsWith\("chat:"\)\)/);
 });
+
+test("reports: every kind of community content and parents can be reported in-app (Play UGC)", async () => {
+  const c = client();
+  await c.communityApi.report({ target_kind: "message", target_id: "m1", reason: "harassment", note: "x", block: true });
+  assert.deepEqual(c.calls.map(x => `${x.method} ${x.path}`), ["POST /community/v1/reports"]);
+  assert.deepEqual(c.calls[0].body, { target_kind: "message", target_id: "m1", reason: "harassment", note: "x", block: true });
+  const source = read("src/uiuxfinal/CommunityFinal.tsx");
+  for (const entry of ['reportButton("question"', 'reportButton("reply"', 'reportButton("comment"', 'reportButton("parent"', 'kind:"message"', 'testID="final-report-parent-menu"'])
+    assert.ok(source.includes(entry), entry);
+  // Anonymous content can be reported but not blocked from the sheet (it would reveal the author).
+  assert.match(source, /reportButton\("question",question\.question_id,c\([^)]*\),!question\.anonymous/);
+  assert.match(source, /reportButton\("reply",reply\.reply_id,c\([^)]*\),!reply\.anonymous/);
+  const sheet = read("src/uiuxfinal/CommunityReportSheet.tsx");
+  for (const reason of ["harassment", "sexual", "hate", "child_safety", "self_harm", "spam", "other"]) assert.ok(sheet.includes(`"${reason}"`), reason);
+  assert.doesNotMatch(sheet, /\bfetch\(|communityApi\./);  // the sheet only collects; the screen sends
+});
