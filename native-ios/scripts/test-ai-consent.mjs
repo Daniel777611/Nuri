@@ -187,6 +187,8 @@ test("login/privacy/deletion and existing non-AI reads remain usable without AI 
   await f.api.listChildren(); await f.api.listTasks(); await f.api.listSessions(); await f.api.getMessages("session"); await f.api.wipe(); await f.api.deleteChild("child"); await f.api.billingStatus();
   assert.equal(f.calls.length, 10);
   assert.equal(policy.requiresAIConsent("/auth/account", { method: "DELETE" }), false);
+  assert.equal(policy.requiresAIConsent("/chat/sessions/s/messages/m/report", { method: "POST" }), false, "reporting an AI reply never needs AI permission");
+  assert.equal(policy.requiresAIConsent("/chat/sessions/s/messages/m/feedback", { method: "PUT" }), true);
   assert.equal(f.secureReads.length, 0);
 });
 

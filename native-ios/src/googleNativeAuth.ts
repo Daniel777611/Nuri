@@ -26,8 +26,20 @@ export function validNativeGoogleConfiguration(value: unknown): value is NativeG
     && config.callbackRegistered === true;
 }
 
+/** Google's public Web client: the audience of every ID token NURI's backend
+ *  accepts. Android needs nothing else; its OAuth client is matched by the
+ *  package name and signing certificate registered in Google Cloud. */
+const ANDROID_WEB_CLIENT_ID = "22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com";
+
+const hasGoogleSDK = () => (Platform.OS === "ios" || Platform.OS === "android") && !!TurboModuleRegistry.get("RNGoogleSignin");
+
 /** Inspect the installed binary, not JS env guesses or the original app's ID. */
 export async function getNativeGoogleConfiguration(): Promise<NativeGoogleConfiguration | null> {
+  if (Platform.OS === "android") {
+    return hasGoogleSDK()
+      ? { bundleId: "com.ordashtech.nuri", iosClientId: "", webClientId: ANDROID_WEB_CLIENT_ID, callbackRegistered: true }
+      : null;
+  }
   if (Platform.OS !== "ios" || !TurboModuleRegistry.get("RNGoogleSignin")) return null;
   const bridge = NativeModules.NuriGoogleAuthBridge;
   if (!bridge?.getConfiguration) return null;
@@ -39,7 +51,7 @@ export async function getNativeGoogleConfiguration(): Promise<NativeGoogleConfig
 
 /** Lazy loading keeps an older / unconfigured binary from crashing at import. */
 export function getNativeGoogleSDK(): typeof GoogleSDK {
-  if (Platform.OS !== "ios" || !TurboModuleRegistry.get("RNGoogleSignin")) {
+  if (!hasGoogleSDK()) {
     throw new NativeGoogleAuthError("unavailable");
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -57,7 +69,7 @@ export async function obtainNativeGoogleCredential(shouldContinue: () => boolean
     if (!shouldContinue()) return null;
     if (!config) throw new NativeGoogleAuthError("unavailable");
     sdk = getNativeGoogleSDK();
-    sdk.GoogleSignin.configure({ iosClientId: config.iosClientId, webClientId: config.webClientId, offlineAccess: false });
+    sdk.GoogleSignin.configure({ ...(config.iosClientId ? { iosClientId: config.iosClientId } : {}), webClientId: config.webClientId, offlineAccess: false });
     // Do not resurrect a cached provider account after a NURI logout/switch.
     await sdk.GoogleSignin.signOut();
     if (!shouldContinue()) return null;

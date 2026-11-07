@@ -158,6 +158,9 @@ export type RecommendationEventName =
   | "not_relevant"
   | "content_refresh";
 
+/** Why a parent reports an AI reply (POST .../messages/{id}/report). */
+export type ChatReportReason = "harmful" | "offensive" | "misleading" | "other";
+
 export type RecommendationFeedbackReason =
   | "topic_mismatch"
   | "already_seen"
@@ -1088,6 +1091,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ rating }),
     }),
+  reportChatMessage: (sid: string, messageId: string, reason: ChatReportReason, note?: string) =>
+    req<{ message_id: string; reason: ChatReportReason; reported: true; updated_at: string }>(
+      `/chat/sessions/${encodeURIComponent(sid)}/messages/${encodeURIComponent(messageId)}/report`, {
+        method: "POST",
+        body: JSON.stringify({ reason, note: note?.trim() || null }),
+      }),
   // Push writes capture the owning session so an account switch cannot attach
   // an in-flight device registration or cleanup to the next account's JWT.
   registerPushDevice: async (b: PushDeviceRegistration, sessionToken?: string) => {

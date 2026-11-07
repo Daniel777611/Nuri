@@ -2,7 +2,7 @@
   "expo": {
     "name": "NURI Native Lab",
     "slug": "nuri-native-lab",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "orientation": "portrait",
     "icon": "./assets/images/native-lab-icon.png",
     "scheme": "nuri-native-lab",
@@ -28,11 +28,25 @@
       }
     },
     "android": {
+      "package": "com.ordashtech.nuri",
+      "versionCode": 4,
+      "icon": "./assets/images/native-lab-icon.png",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#000"
+        "foregroundImage": "./assets/images/native-lab-icon.png",
+        "backgroundColor": "#E9E4F7"
       },
-      "edgeToEdgeEnabled": true
+      "googleServicesFile": "./google-services.json",
+      "edgeToEdgeEnabled": true,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "web": {
       "name": "NURI",
@@ -45,6 +59,7 @@
       "expo-router",
       "expo-secure-store",
       "./plugins/withNuriNative",
+      "./plugins/withNuriAndroid",
       ["./plugins/withNuriGoogleSignIn", {
         "iosClientId": "22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com",
         "webClientId": "22059260132-e9njjaftvdn0farumni9b67p6l17nfgt.apps.googleusercontent.com"

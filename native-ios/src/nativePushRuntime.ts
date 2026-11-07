@@ -14,9 +14,32 @@ export type NativePushState = {
 const permissions = new Set(["not_determined", "denied", "authorized", "provisional"]);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** An FCM registration token: case-sensitive, letters, digits and `:_-`. */
+const FCM_TOKEN = /^[A-Za-z0-9:_-]{32,4096}$/;
+
 export function parseNativeToken(detail: unknown): PushDeviceRegistration | null {
   if (!detail || typeof detail !== "object") return null;
   const value = detail as Partial<NativePushState>;
+  // The Android app reports FCM, which has no sandbox; the backend files the
+  // token in apns_token with platform "android", as for the old WebView shell.
+  // Only its own bridge says platform "android", so the iOS lab still can't
+  // claim the original app's ID below.
+  if ((detail as { platform?: unknown }).platform === "android" && value.bundleId === "com.ordashtech.nuri") {
+    if (typeof value.token !== "string" || !FCM_TOKEN.test(value.token)) return null;
+    if (typeof value.installationId !== "string" || !uuid.test(value.installationId)) return null;
+    if (!value.permissionStatus || !permissions.has(value.permissionStatus)) return null;
+    return {
+      installation_id: value.installationId,
+      platform: "android",
+      apns_token: value.token,
+      apns_environment: "production",
+      bundle_id: value.bundleId,
+      permission_status: value.permissionStatus,
+      time_zone: typeof value.timeZone === "string" ? value.timeZone.slice(0, 64) : undefined,
+      app_version: typeof value.appVersion === "string" ? value.appVersion.slice(0, 32) : undefined,
+      build_number: typeof value.buildNumber === "string" ? value.buildNumber.slice(0, 32) : undefined,
+    };
+  }
   if (typeof value.token !== "string" || !/^[0-9a-f]{32,256}$/i.test(value.token)) return null;
   if (typeof value.installationId !== "string" || !uuid.test(value.installationId)) return null;
   // Native Lab must report its actual APNs topic. The current backend rejects

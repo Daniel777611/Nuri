@@ -731,6 +731,11 @@ class ChatMessageFeedbackIn(BaseModel):
     rating: Literal["like", "dislike"]
 
 
+class ChatMessageReportIn(BaseModel):
+    reason: Literal["harmful", "offensive", "misleading", "other"]
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
 def _chat_feedback_table_missing(exc: Exception) -> bool:
     message = str(exc).lower()
     return (
@@ -4654,6 +4659,22 @@ async def get_messages(
             logger.warning("chat_feedback_history_annotation_failed", extra={
                 "event": "chat_feedback_history_annotation_failed", "error_type": type(exc).__name__,
             })
+        try:
+            report_result = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_message_reports")
+                .select("message_id").eq("user_id", uid)
+                .in_("message_id", ai_ids).execute()
+            )
+            reported = {str(row.get("message_id")) for row in (report_result.data or [])}
+            if reported:
+                visible_messages = [
+                    {**m, "reported": True} if str(m.get("id")) in reported else m
+                    for m in visible_messages
+                ]
+        except Exception as exc:
+            logger.warning("chat_report_history_annotation_failed", extra={
+                "event": "chat_report_history_annotation_failed", "error_type": type(exc).__name__,
+            })
 
     # Recovery context is derived, optional presentation data. A malformed
     # legacy memory row or a temporary failure of the memories query must never
@@ -4689,6 +4710,22 @@ async def get_messages(
     return messages
 
 
+async def _load_finished_ai_reply(sb, session_id: str, message_id: str) -> dict:
+    """The AI reply `message_id` in `session_id`, or 404 when it is a user
+    message, empty, or still being generated."""
+    result = await anyio.to_thread.run_sync(
+        lambda: sb.table("chat_messages")
+        .select("id,session_id,role,text,created_at,transition")
+        .eq("id", message_id).eq("session_id", session_id).limit(1).execute()
+    )
+    message = (result.data or [None])[0]
+    if (not message or message.get("role") != "ai"
+            or not str(message.get("text") or "").strip()
+            or _is_pending_generation_claim(message)):
+        raise HTTPException(404, "AI response not found")
+    return message
+
+
 @api.put("/chat/sessions/{session_id}/messages/{message_id}/feedback")
 async def set_chat_message_feedback(
     session_id: str, message_id: str, body: ChatMessageFeedbackIn,
@@ -4698,16 +4735,7 @@ async def set_chat_message_feedback(
     sb = _require_chat_storage()
     await _load_owned_session(session_id, uid, sb)
     try:
-        result = await anyio.to_thread.run_sync(
-            lambda: sb.table("chat_messages")
-            .select("id,session_id,role,text,created_at,transition")
-            .eq("id", message_id).eq("session_id", session_id).limit(1).execute()
-        )
-        message = (result.data or [None])[0]
-        if (not message or message.get("role") != "ai"
-                or not str(message.get("text") or "").strip()
-                or _is_pending_generation_claim(message)):
-            raise HTTPException(404, "AI response not found")
+        await _load_finished_ai_reply(sb, session_id, message_id)
 
         history = await anyio.to_thread.run_sync(
             lambda: sb.table("chat_messages").select("id,role,created_at")
@@ -4750,6 +4778,44 @@ async def set_chat_message_feedback(
         "review_status": stored.get("review_status", "pending"),
         "updated_at": stored.get("updated_at", now),
     }
+
+
+@api.post("/chat/sessions/{session_id}/messages/{message_id}/report")
+async def report_chat_message(
+    session_id: str, message_id: str, body: ChatMessageReportIn,
+    uid: str = Depends(_req_uid),
+):
+    """File (or update) one parent's report that an AI reply is harmful,
+    offensive or misleading. Play's AI-generated content policy requires this
+    in-app flag; the rows are reviewed in /admin."""
+    sb = _require_chat_storage()
+    await _load_owned_session(session_id, uid, sb)
+    note = (body.note or "").strip() or None
+    try:
+        await _load_finished_ai_reply(sb, session_id, message_id)
+        now = _now()
+        row = {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nuri:chat-report:{uid}:{message_id}")),
+            "user_id": uid, "session_id": session_id, "message_id": message_id,
+            "reason": body.reason, "note": note,
+            "review_status": "pending", "updated_at": now,
+        }
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_message_reports")
+            .upsert(row, on_conflict="user_id,message_id").execute()
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("chat_report_save_failed", extra={
+            "event": "chat_report_save_failed", "error_type": type(exc).__name__,
+        })
+        raise HTTPException(503, "Report could not be saved")
+    logger.warning("chat_report_filed", extra={
+        "event": "chat_report_filed", "reason": body.reason,
+        "message_id": message_id,
+    })
+    return {"message_id": message_id, "reason": body.reason, "reported": True, "updated_at": now}
 
 class _Turn(NamedTuple):
     """Everything established about a chat turn before the AI reply is produced.
@@ -7740,6 +7806,51 @@ async def admin_chat_feedback(
             "response": response.get("text") or "",
         })
     return {"days": days, "filter": rating, "totals": totals, "rows": rows}
+
+
+@app.get("/admin/chat-reports")
+async def admin_chat_reports(
+    days: int = 30, limit: int = 100, _: None = Depends(_require_admin),
+):
+    """Reports parents filed on AI replies, newest first, with the reply text."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Supabase not configured")
+    days, limit = max(1, min(days, 90)), max(1, min(limit, 200))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        report_rows = list((await anyio.to_thread.run_sync(
+            lambda: sb.table("chat_message_reports").select("*")
+            .gte("updated_at", since.isoformat()).order("updated_at", desc=True)
+            .limit(limit).execute()
+        )).data or [])
+        user_ids = sorted({str(r.get("user_id")) for r in report_rows if r.get("user_id")})
+        message_ids = sorted({str(r.get("message_id")) for r in report_rows if r.get("message_id")})
+        users, messages = {}, {}
+        if user_ids:
+            result = await anyio.to_thread.run_sync(
+                lambda: sb.table("users").select("id,email,nickname").in_("id", user_ids).execute())
+            users = {str(r.get("id")): r for r in (result.data or [])}
+        if message_ids:
+            result = await anyio.to_thread.run_sync(
+                lambda: sb.table("chat_messages").select("id,text").in_("id", message_ids).execute())
+            messages = {str(r.get("id")): r for r in (result.data or [])}
+    except Exception as exc:
+        raise HTTPException(503, f"chat reports unavailable: {type(exc).__name__}")
+
+    rows = []
+    for row in report_rows:
+        user = users.get(str(row.get("user_id")), {})
+        rows.append({
+            "id": row.get("id"), "reason": row.get("reason"), "note": row.get("note"),
+            "review_status": row.get("review_status", "pending"),
+            "created_at": row.get("created_at"), "updated_at": row.get("updated_at"),
+            "user": user.get("nickname") or user.get("email") or "Unknown user",
+            "email": user.get("email") or "", "session_id": row.get("session_id"),
+            "message_id": row.get("message_id"),
+            "response": messages.get(str(row.get("message_id")), {}).get("text") or "",
+        })
+    return {"days": days, "total": len(rows), "rows": rows}
 
 
 @app.get("/admin/usage/quota")

@@ -53,6 +53,9 @@ export function requiresAIConsent(path: string, init?: RequestInit): boolean {
   if (method === "POST" && (route === "/community/v1/question-polishes" || route === "/community/v1/transcriptions"
       || /^\/community\/v1\/messages\/[^/]+\/translations$/.test(route))) return true;
   if (route.startsWith("/community/v1/")) return false;
+  // Reporting a harmful AI reply only stores the report (backend/main.py
+  // report_chat_message) and must work even after AI permission is withdrawn.
+  if (method === "POST" && /^\/chat\/sessions\/[^/]+\/messages\/[^/]+\/report$/.test(route)) return false;
   if (route === "/chat/main/preview" || route === "/chat/main/checkin" || route === "/chat/transcribe") return true;
   if (route.startsWith("/chat") && method !== "GET" && method !== "DELETE") return true;
   if (/^\/notifications\/[^/]+\/open$/.test(route)) return true;

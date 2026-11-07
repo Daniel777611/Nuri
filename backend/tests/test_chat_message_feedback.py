@@ -55,6 +55,7 @@ class Database:
                 {"id": "a1", "session_id": "s1", "role": "ai", "text": "answer", "created_at": "2026-09-22T10:00:02Z", "transition": None},
             ],
             "chat_message_feedback": [],
+            "chat_message_reports": [],
             "users": [{"id": "u1", "email": "parent@example.test", "nickname": "Parent"}],
         }
 
@@ -131,3 +132,48 @@ def test_admin_review_queue_joins_prompt_and_response(monkeypatch):
     assert report["rows"][0]["prompt"] == "help"
     assert report["rows"][0]["response"] == "answer"
     assert report["rows"][0]["review_status"] == "pending"
+
+
+def test_report_saves_one_row_per_reply_and_updates_reason(monkeypatch):
+    db = setup_feedback(monkeypatch)
+    asyncio.run(main.report_chat_message(
+        "s1", "a1", main.ChatMessageReportIn(reason="harmful"), "u1"))
+    second = asyncio.run(main.report_chat_message(
+        "s1", "a1", main.ChatMessageReportIn(reason="other", note="  wrong dose  "), "u1"))
+    assert second["reported"] is True
+    assert len(db.tables["chat_message_reports"]) == 1
+    saved = db.tables["chat_message_reports"][0]
+    assert saved["reason"] == "other"
+    assert saved["note"] == "wrong dose"
+    assert saved["review_status"] == "pending"
+
+
+def test_report_rejects_user_messages_and_other_accounts(monkeypatch):
+    setup_feedback(monkeypatch)
+    for message_id, uid in (("q1", "u1"), ("a1", "someone-else")):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(main.report_chat_message(
+                "s1", message_id, main.ChatMessageReportIn(reason="offensive"), uid))
+        assert exc.value.status_code == 404
+
+
+def test_history_marks_reported_replies(monkeypatch):
+    db = setup_feedback(monkeypatch)
+    db.tables["chat_message_reports"] = [{"user_id": "u1", "message_id": "a1", "reason": "harmful"}]
+
+    async def no_recovery(*_args, **_kwargs): return None
+    monkeypatch.setattr(main, "_memory_recovery_message", no_recovery)
+    history = asyncio.run(main.get_messages("s1", "u1"))
+    assert next(row for row in history if row["id"] == "a1")["reported"] is True
+    assert "reported" not in next(row for row in history if row["id"] == "q1")
+
+
+def test_admin_report_queue_joins_reply_text(monkeypatch):
+    setup_feedback(monkeypatch)
+    asyncio.run(main.report_chat_message(
+        "s1", "a1", main.ChatMessageReportIn(reason="misleading", note="not safe"), "u1"))
+    report = asyncio.run(main.admin_chat_reports(days=30, limit=100, _=None))
+    assert report["total"] == 1
+    assert report["rows"][0]["response"] == "answer"
+    assert report["rows"][0]["reason"] == "misleading"
+    assert report["rows"][0]["email"] == "parent@example.test"

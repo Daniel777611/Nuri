@@ -321,6 +321,8 @@ assert.match(api, /publishSession\(null\)/);
       },
     },
     "./nativePushRuntime": module.exports,
+    // iOS resolves the no-op stub; the Android bridge has its own file.
+    "./androidPushBridge": { androidPushBridge: null, subscribeAndroidPush: () => () => {} },
   });
   assert.equal(await helpers.getReminderSettings(), settings);
   await helpers.setReminderSettings(true, 37);

@@ -4,3 +4,4 @@ allowBuilds:
 onlyBuiltDependencies:
   - unrs-resolver
   - sharp
+nodeLinker: hoisted
