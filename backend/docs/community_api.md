@@ -71,6 +71,9 @@
 | P35 COMMUNITY_NOTIFICATIONS | GET /me/notifications | `notification_events` 里 `data.kind` 以 `community_` 开头的事件，带 `read_at` |
 | P36 NOTIFICATION_TARGET | GET /me/notifications/{id}/target；POST /me/notifications/{id}/read | target 按当前权限重新校验，不可访问时返回 `accessible:false` |
 
+| 举报（Play UGC 政策） | POST /reports `{target_kind: question\|reply\|comment\|message\|parent, target_id, reason, note?, block?}` | reason：harassment / sexual / hate / child_safety / self_harm / spam / other。服务端核对举报人看得到该内容、自己查出作者并保存原文快照；同一人对同一内容只保留一条（再举报会更新）。不能举报自己的内容。`block: true` 会同时屏蔽对方，但匿名内容不提供屏蔽（屏蔽列表会暴露匿名作者）。返回 `status: "received"`，只表示已进入人工审核队列 |
+| 后台 | GET /admin/community-reports?status=pending\|actioned\|dismissed\|all；POST /admin/community-reports/{id} `{status, reviewer_note?, remove_content?}` | 需要 `x-admin-key`。`remove_content` 会删除问题（软删除）、回复、评论或消息；如果举报的是家长，则隐藏其资料。同一内容上其他未处理的举报会一起标记为内容已移除。管理后台 /admin 新增“社区举报”面板 |
+
 现有接口的两处调整：
 - `GET /api/notifications/{id}`：社区事件的 `target` 是类型化的应用内引用。
 - `POST /api/notifications/{id}/open`：遇到社区事件返回 403 `RELATIONSHIP_NOT_ALLOWED`，不会再往 NURI 私聊写消息（交接稿 E12）。
@@ -98,6 +101,8 @@
 - **D18 删除**：所有社区表都 `on delete cascade` 到 `public.users`，账号删除会一并清掉。但 **community-media 存储桶里的文件不会被级联删除**，还需要补一个清理任务。`privacy/wipe` 不涉及社区数据。
 
 ## 需要手动执行（prod）
+
+- 2026-11-07 起新增：执行 `supabase/migrations/20261107010000_community_reports.sql`（举报表）。要在部署前执行，否则举报会报 503。
 
 0. 2026-11-06 起新增：执行 `supabase/migrations/20261106010000_community_gender_tag.sql`（给 `community_profiles` 加 `gender_tag` 列）。**要在部署这版代码之前执行**，否则保存性别标签会报 503。
 

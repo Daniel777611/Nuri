@@ -185,6 +185,9 @@ def run(client: httpx.Client, a: Account, b: Account) -> bool:
     box = j(b("GET", "/me/inbox"))
     entry = next((i for i in box.get("items", []) if i["conversation_id"] == cid), None)
     step("P20 B 收件箱有未读", bool(entry and entry["unread_count"] >= 1), str(entry and entry["unread_count"]))
+    rep = b("POST", "/reports", json={"target_kind": "message", "target_id": j(m)["message"]["message_id"],
+                                      "reason": "other", "note": "smoke test report"})
+    step("UGC B 举报 A 的消息（进入人工审核队列）", rep.status_code == 201 and j(rep).get("status") == "received", str(rep.status_code))
     last = max(x["seq"] for x in msgs["items"])
     cur = j(b("PUT", f"/conversations/{cid}/read-cursor", json={"last_read_seq": last}))
     step("P23 B 标记已读后未读为 0", cur.get("unread_count") == 0, str(cur))

@@ -37,6 +37,7 @@ UNIQUE = {
     "community_ai_consent_decisions": [("request_id", "user_id")],
     "community_ai_requests": [("user_id", "kind", "client_request_id")],
     "community_media": [("owner_id", "client_request_id"), ("storage_path",)],
+    "community_reports": [("reporter_id", "target_kind", "target_id")],
     "notification_events": [("dedupe_key",)],
 }
 NO_ID = {"community_profiles", "community_preferences", "community_blocks",

@@ -16,12 +16,13 @@ import { MAX_VOICE_SECONDS, VoiceInputError, isVoiceInputSupported, startVoiceRe
 import { useComposerDockInset } from "@/src/uiux48/useComposerDock";
 import { singleLineInputStyle } from "@/src/uiux48/inputLayout";
 import { api, apiErrorDetail, isAuthError } from "@/src/api";
-import { childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply } from "@/src/communityApi";
+import { childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
 import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FINAL_COLOR } from "./Primitives";
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
 import { ParentChatAvatar, ParentChatHeader } from "./ParentChatHeader";
 import { SettingsPage, SettingsRow, SettingsButton } from "./Settings";
 import { CommunityProfileEditor, GENDER_TAGS, type GenderTag } from "./CommunityProfileEditor";
+import { CommunityReportSheet } from "./CommunityReportSheet";
 import { createFinalCommunity, finalCommunityReducer, isFinalCommunityScreen, selectedQuestionText, type FinalCommunityEvent, type FinalCommunityScreen, type FinalCommunityState, type ReceivedTab } from "./communityModel";
 import { communityHubTopPadding, HUB_PAGINATION, HUB_CARD_BOTTOM_GUTTER, HUB_PAGER_GAP } from "./communityHubLayout";
 
@@ -428,6 +429,20 @@ export default function CommunityFinal() {
   // ── One photo per parent message, prepared like the NURI chat's (≤1600 px).
   const [chatImage,setChatImage]=useState<{person:string;prepared:PreparedChatImage}|null>(null);
   useEffect(()=>{setChatImage(current=>current&&current.person!==state.person?null:current);},[state.person]);
+  // ── Reports (Play UGC policy): reviewed by a person at /admin, never by AI.
+  const [report,setReport]=useState<{kind:ReportKind;id:string;title:string;allowBlock:boolean}|null>(null);
+  const submitReport=(reason:ReportReason,note:string,blockToo:boolean)=>{
+    const target=report;if(!target)return;
+    void write(async()=>{
+      try{
+        const result=await communityApi.report({target_kind:target.kind,target_id:target.id,reason,note:note||undefined,block:blockToo});
+        refresh();
+        dispatch({type:"notice",message:result.blocked?c("已收到举报，并已屏蔽对方。NURI 团队会尽快人工审核。","Report received and the parent is blocked. The NURI team will review it soon."):c("已收到举报，NURI 团队会尽快人工审核。","Report received. The NURI team will review it soon.")});
+      }finally{if(mounted.current)setReport(null);}
+    });
+  };
+  const reportButton=(kind:ReportKind,id:string,title:string,allowBlock:boolean,testID:string)=><Pressable accessibilityRole="button" accessibilityLabel={title} onPress={()=>setReport({kind,id,title,allowBlock})} testID={testID} hitSlop={8} style={{minWidth:44,minHeight:32,alignItems:"center",justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{c("举报","Report")}</FinalText></Pressable>;
+  const reportSheet=<CommunityReportSheet visible={!!report} busy={busy} title={report?.title??""} allowBlock={!!report?.allowBlock} onClose={()=>setReport(null)} onSubmit={submitReport}/>;
   const pickChatImage=async()=>{
     if(busy||voiceRef.current.slot)return;
     try{
@@ -618,10 +633,11 @@ export default function CommunityFinal() {
         </> : null}
       </> : <>
         <SettingsRow label={c("查看家长资料", "View parent profile")} onPress={() => go("parent")} />
+        <SettingsRow label={c("举报这位家长", "Report this parent")} onPress={() => setReport({kind:"parent",id:state.person,title:c("举报这位家长","Report this parent"),allowBlock:true})} testID="final-report-parent-menu" />
         <SettingsRow label={c("屏蔽这位家长", "Block this parent")} danger onPress={() => dispatch({type:"safety",action:"block"})} testID="final-block-parent" />
         {parentView.value?.relationship.state==="connected"?<SettingsRow label={c("解除联系", "Disconnect")} danger onPress={() => dispatch({type:"safety",action:"disconnect"})} />:null}
       </>}
-    </SettingsPage>{state.screen==="safetyConfirm"?<Modal transparent animationType="fade" onRequestClose={()=>dispatch({type:"back"})}><BlurView tint="light" intensity={40} style={[st.modal,{backgroundColor:"rgba(254,250,247,.5)"}]}><FinalSurface surfaceColor="rgba(255,255,255,.94)" style={{width:354,maxWidth:"100%",boxShadow:"0px 4px 8px rgba(89,71,92,.14)"}} contentStyle={{padding:24,gap:16}}><FinalText size={20} secondary style={{lineHeight:28,fontWeight:"500"}}>{state.safetyAction==="unblock"?c("取消屏蔽这位家长？","Unblock this parent?"):state.safetyAction==="block"?c("屏蔽这位家长？","Block this parent?"):c("解除联系？","Disconnect?")}</FinalText><FinalText size={14} secondary>{state.safetyAction==="block"?c("屏蔽后，你们会解除联系，对方无法再看到你或给你发消息。","Blocking also disconnects you; they can no longer see or message you."):state.safetyAction==="unblock"?c("解除屏蔽不会自动恢复好友关系。","Unblocking does not restore the connection."):c("聊天记录会保留，但你们不能再互发消息。","Your chat history stays, but neither of you can send new messages.")}</FinalText>{notice}<View style={{flexDirection:"row",gap:12}}><SettingsButton secondary style={{flex:1,width:undefined}} label={c("取消","Cancel")} onPress={()=>dispatch({type:"back"})}/><SettingsButton style={{flex:1,width:undefined}} label={c("确认","Confirm")} onPress={confirmSafety} testID="final-confirm-safety"/></View></FinalSurface></BlurView></Modal>:null}</>;
+    </SettingsPage>{state.screen==="safetyConfirm"?<Modal transparent animationType="fade" onRequestClose={()=>dispatch({type:"back"})}><BlurView tint="light" intensity={40} style={[st.modal,{backgroundColor:"rgba(254,250,247,.5)"}]}><FinalSurface surfaceColor="rgba(255,255,255,.94)" style={{width:354,maxWidth:"100%",boxShadow:"0px 4px 8px rgba(89,71,92,.14)"}} contentStyle={{padding:24,gap:16}}><FinalText size={20} secondary style={{lineHeight:28,fontWeight:"500"}}>{state.safetyAction==="unblock"?c("取消屏蔽这位家长？","Unblock this parent?"):state.safetyAction==="block"?c("屏蔽这位家长？","Block this parent?"):c("解除联系？","Disconnect?")}</FinalText><FinalText size={14} secondary>{state.safetyAction==="block"?c("屏蔽后，你们会解除联系，对方无法再看到你或给你发消息。","Blocking also disconnects you; they can no longer see or message you."):state.safetyAction==="unblock"?c("解除屏蔽不会自动恢复好友关系。","Unblocking does not restore the connection."):c("聊天记录会保留，但你们不能再互发消息。","Your chat history stays, but neither of you can send new messages.")}</FinalText>{notice}<View style={{flexDirection:"row",gap:12}}><SettingsButton secondary style={{flex:1,width:undefined}} label={c("取消","Cancel")} onPress={()=>dispatch({type:"back"})}/><SettingsButton style={{flex:1,width:undefined}} label={c("确认","Confirm")} onPress={confirmSafety} testID="final-confirm-safety"/></View></FinalSurface></BlurView></Modal>:null}{reportSheet}</>;
   }
 
   // ── Hub pager: questions (left) and friends / inbox (right) ──────────────
@@ -799,7 +815,7 @@ export default function CommunityFinal() {
     const threadComments:Comment[]=comments.value?.items?[...comments.value.items].reverse():[];
     const canPost=!closed&&(detail?comments.value?.can_post!==false:!!allThread?.can_post);
     const questionContext=<FinalSurface testID="final-question-context" style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{padding:12,gap:8}}>
-      <View style={{height:responding?40:32,flexDirection:"row",alignItems:"center",gap:12}}><View style={{width:28,height:28,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-reply-question-bottle.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/></View><FinalText size={12} secondary style={{flex:1,lineHeight:18}}>{question?(question.is_mine?c("我的问题","My question"):nameOf(question.author)):""}</FinalText><FinalText size={12} secondary style={{lineHeight:18}}>{shortTime(question?.created_at,en)}</FinalText></View>
+      <View style={{height:responding?40:32,flexDirection:"row",alignItems:"center",gap:12}}><View style={{width:28,height:28,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-reply-question-bottle.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/></View><FinalText size={12} secondary style={{flex:1,lineHeight:18}}>{question?(question.is_mine?c("我的问题","My question"):nameOf(question.author)):""}</FinalText><FinalText size={12} secondary style={{lineHeight:18}}>{shortTime(question?.created_at,en)}</FinalText>{question&&!question.is_mine?reportButton("question",question.question_id,c("举报这个问题","Report this question"),!question.anonymous,"final-report-question"):null}</View>
       <FinalSurface radius={20} style={{height:responding?112:84,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{height:responding?112:84}}><ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{padding:16}}><FinalText size={20} style={{fontWeight:"500",lineHeight:28}}>{question?.body??""}</FinalText></ScrollView></FinalSurface>
     </FinalSurface>;
     const editor=(placeholder:string,onSend:()=>void)=><View style={{gap:8}}>
@@ -817,16 +833,16 @@ export default function CommunityFinal() {
       {notice}
     </View>;
     const answer=(reply:Reply,small=false)=><View key={reply.reply_id} style={{gap:small?4:detail?16:12}}>
-      <View style={{height:36,flexDirection:"row",alignItems:"center",gap:8}}><SampleAvatar size={36}/><FinalText size={small?14:16} secondary style={{flex:1,lineHeight:small?20:24,fontWeight:small?"400":"500"}}>{reply.is_mine?c("我的回复","My reply"):nameOf(reply.author)}</FinalText>{!detail&&!closed&&reply.allowed_actions.includes("comment")?<Pressable accessibilityRole="button" onPress={()=>dispatch({type:"replyTarget",target:reply.reply_id,name:reply.is_mine?c("我","me"):nameOf(reply.author)})} testID={"final-reply-"+reply.reply_id} style={{minWidth:60,height:36,alignItems:"center",justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{(reply.comment_count?reply.comment_count+" · ":"")+c("回复 ›","Reply ›")}</FinalText></Pressable>:null}</View>
+      <View style={{height:36,flexDirection:"row",alignItems:"center",gap:8}}><SampleAvatar size={36}/><FinalText size={small?14:16} secondary style={{flex:1,lineHeight:small?20:24,fontWeight:small?"400":"500"}}>{reply.is_mine?c("我的回复","My reply"):nameOf(reply.author)}</FinalText>{!detail&&!closed&&reply.allowed_actions.includes("comment")?<Pressable accessibilityRole="button" onPress={()=>dispatch({type:"replyTarget",target:reply.reply_id,name:reply.is_mine?c("我","me"):nameOf(reply.author)})} testID={"final-reply-"+reply.reply_id} style={{minWidth:60,height:36,alignItems:"center",justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{(reply.comment_count?reply.comment_count+" · ":"")+c("回复 ›","Reply ›")}</FinalText></Pressable>:null}{!reply.is_mine?reportButton("reply",reply.reply_id,c("举报这条经验","Report this reply"),!reply.anonymous,"final-report-reply-"+reply.reply_id):null}</View>
       <FinalText size={small?14:16} style={{lineHeight:small?20:24}}>{reply.body}</FinalText>
       <View style={st.quietDivider}/>
     </View>;
-    const commentRow=(entry:Comment)=><View key={entry.comment_id} style={{gap:8}}><FinalText size={12} secondary>{entry.is_mine?c("你的回复","Your reply"):nameOf(entry.author)}</FinalText><FinalText size={14} style={{lineHeight:20}}>{entry.body}</FinalText><View style={st.quietDivider}/></View>;
-    if(prompting)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:12}}>{pending(askedQuestion)}{questionContext}<View style={{height:44,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar prompt/><Pressable accessibilityRole="button" testID="final-share-experience" onPress={()=>go("respond")} style={{height:44,paddingHorizontal:24,borderRadius:999,backgroundColor:FINAL_COLOR.selected,alignItems:"center",justifyContent:"center",boxShadow:"0px 1px 15px rgba(92,86,98,.18)"}}><FinalText style={{fontWeight:"500",color:"white"}}>{c("你有想法吗？","Would you like to share?")}</FinalText></Pressable></View></View></NuriKeyboardFrame>;
+    const commentRow=(entry:Comment)=><View key={entry.comment_id} style={{gap:8}}><View style={{flexDirection:"row",alignItems:"center",gap:8}}><FinalText size={12} secondary style={{flex:1}}>{entry.is_mine?c("你的回复","Your reply"):nameOf(entry.author)}</FinalText>{!entry.is_mine?reportButton("comment",entry.comment_id,c("举报这条回复","Report this comment"),!!entry.author.parent_id&&!entry.author.anonymous,"final-report-comment-"+entry.comment_id):null}</View><FinalText size={14} style={{lineHeight:20}}>{entry.body}</FinalText><View style={st.quietDivider}/></View>;
+    if(prompting)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:12}}>{pending(askedQuestion)}{questionContext}<View style={{height:44,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar prompt/><Pressable accessibilityRole="button" testID="final-share-experience" onPress={()=>go("respond")} style={{height:44,paddingHorizontal:24,borderRadius:999,backgroundColor:FINAL_COLOR.selected,alignItems:"center",justifyContent:"center",boxShadow:"0px 1px 15px rgba(92,86,98,.18)"}}><FinalText style={{fontWeight:"500",color:"white"}}>{c("你有想法吗？","Would you like to share?")}</FinalText></Pressable></View></View>{reportSheet}</NuriKeyboardFrame>;
     if(responding||expanded&&(replyKeyboardVisible||appKeyboardVisible))return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:12}}>
       <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}}>{questionContext}</ScrollView>
       <FinalSurface testID={"final-community-"+state.screen} style={{boxShadow:"0px 0px 8px rgba(92,86,98,.12)"}} contentStyle={{padding:16,gap:8}}><FinalText size={12} secondary style={{lineHeight:18}}>{responding?c("我的经验","My experience"):c("回复所有人","Reply to everyone")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),responding?respond:()=>comment(slot))}</FinalSurface>
-    </View></NuriKeyboardFrame>;
+    </View>{reportSheet}</NuriKeyboardFrame>;
     if(detail)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34}}>
       <FinalSurface testID={"final-community-"+state.screen} style={{maxHeight:thread?553:undefined,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}}>
         <ScrollView testID="final-reply-thread-scroll" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flexShrink:1}} contentContainerStyle={{padding:20,gap:16,minHeight:thread?undefined:385}}>
@@ -837,7 +853,7 @@ export default function CommunityFinal() {
           {canPost?<View style={{gap:12}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("你的回复","Your reply")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),()=>comment(slot))}</View>:null}
         </ScrollView>
       </FinalSurface>
-    </View></NuriKeyboardFrame>;
+    </View>{reportSheet}</NuriKeyboardFrame>;
     return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:16}}>
       {questionContext}
       <FinalSurface fill testID={"final-community-"+state.screen} style={{maxHeight:546,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{flex:1,minHeight:0,padding:16,gap:16}}>
@@ -857,7 +873,7 @@ export default function CommunityFinal() {
           {!expanded&&!closed?voiceBar(slot):null}
         </View>:null}
       </FinalSurface>
-    </View></NuriKeyboardFrame>;
+    </View>{reportSheet}</NuriKeyboardFrame>;
   }
 
   // ── Contacts and invitations ─────────────────────────────────────────────
@@ -930,6 +946,8 @@ export default function CommunityFinal() {
         {!own&&relation?<>
           <FinalButton disabled={busy||relation.state==="invitation_sent"||relation.state==="blocked_by_me"} label={relationAction} onPress={connect} testID="final-parent-connect"/>
           <FinalButton secondary label={relation.state==="invitation_received"?c("拒绝","Decline"):c("稍后再说","Maybe later")} onPress={decline}/>
+          {reportButton("parent",state.person,c("举报这位家长","Report this parent"),true,"final-report-parent")}
+          {reportSheet}
         </>:null}
       </>:null}
     </>,own?<FinalButton label={state.screen==="profileSettings"?c("完成","Done"):c("下一步","Next")} onPress={()=>state.screen==="profileSettings"?dispatch({type:"back"}):go("suggestions")} testID={state.screen==="profileSettings"?"final-profile-settings-save":"final-profile-next"}/>:undefined,false,{bodyStyle:{paddingVertical:32}});
@@ -988,12 +1006,12 @@ export default function CommunityFinal() {
     }} onToggle={toggleAI}/><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
       {pending(chat)}
       {value&&!list.length?<FinalText secondary style={{textAlign:"center"}}>{c("打个招呼吧","Say hello")}</FinalText>:null}
-      {list.map(m => {const incoming=m.sender==="parent";return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText>{m.text}</FinalText>:null}</FinalChatBubble></View>;})}
+      {list.map(m => {const incoming=m.sender==="parent";return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><Pressable disabled={!incoming} delayLongPress={400} onLongPress={()=>setReport({kind:"message",id:m.message_id,title:c("举报这条消息","Report this message"),allowBlock:true})} accessibilityHint={incoming?c("长按可以举报","Long press to report"):undefined} testID={"final-parent-message-press-"+m.seq} style={{flex:1,maxWidth:incoming?306:258}}><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText>{m.text}</FinalText>:null}</FinalChatBubble></Pressable></View>;})}
     </ScrollView><View testID="final-parent-composer-dock" style={{ padding: 24, paddingTop: 8, paddingBottom: dockBottom, gap: 8 }}>
       {notice}
       {value&&!canSend?<FinalText size={12} secondary style={{textAlign:"center"}}>{c("你们已不再联系，不能再发送消息","You're no longer connected and can't send messages")}</FinalText>:null}
       {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy} busy={busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} hasAttachment={!!chatImage} attachments={chatImage?[{id:"community-photo",kind:"image",uri:chatImage.prepared.previewUri,width:chatImage.prepared.width,height:chatImage.prepared.height,image:chatImage.prepared}]:undefined} onRemoveAttachment={()=>setChatImage(null)} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
-    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri参与这次对话。同意后，Nuri可以读取并整理你们这段对话的全部内容，包括同意之前的消息。双方都可以随时关闭。", "The other parent invited Nuri into this conversation. If you agree, Nuri can read and organise everything in it, including earlier messages. Either of you can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}</NuriKeyboardFrame>;
+    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri参与这次对话。同意后，Nuri可以读取并整理你们这段对话的全部内容，包括同意之前的消息。双方都可以随时关闭。", "The other parent invited Nuri into this conversation. If you agree, Nuri can read and organise everything in it, including earlier messages. Either of you can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}{reportSheet}</NuriKeyboardFrame>;
 }
 const st = StyleSheet.create({
   main: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 32, gap: 16 },

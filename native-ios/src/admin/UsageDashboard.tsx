@@ -4,6 +4,7 @@
 // Reads GET /admin/usage/overview, which does all the arithmetic; this file
 // only lays it out. Admin screens are not translated (see src/i18n).
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CommunityReportsPanel } from "./CommunityReportsPanel";
 import {
   ActivityIndicator,
   Linking,
@@ -591,6 +592,8 @@ export default function UsageDashboard({ adminKey, backend }: { adminKey: string
               <ActivityIndicator color={MARK} style={{ marginVertical: spacing.sm }} />
             ) : null}
           </View>
+
+          <CommunityReportsPanel backend={backend} adminKey={adminKey} />
 
           {/* ── OpenAI bill: what the whole organization was charged ── */}
           <View style={styles.panelBlock} testID="usage-openai-costs">

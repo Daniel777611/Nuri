@@ -838,3 +838,71 @@ def test_d06_received_questions_stay_open_for_thirty_days(env):
     ok(ask(env, "u_ann"), 201)
     expires = datetime.fromisoformat(env.db.rows("community_question_deliveries")[0]["expires_at"])
     assert timedelta(days=29) < expires - datetime.now(timezone.utc) <= timedelta(days=30)
+
+
+# ── Reports (Google Play UGC policy) ─────────────────────────────────────────
+
+def test_reports_cover_every_kind_resolve_authors_and_never_leak_them(env, monkeypatch):
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u)
+    q = ok(ask(env, "u_ann", anonymous=True), 201)["question"]
+    d = next(x for x in _delivery(env, "u_ben") if x["question"]["question_id"] == q["question_id"])
+    reply = ok(env.call("u_ben", "POST", f"/question-deliveries/{d['delivery_id']}/responses",
+                        json={"body": "不当内容", "client_request_id": "rep-resp-0001"}), 201)["reply"]
+    cm = ok(env.call("u_ben", "POST", f"/questions/{q['question_id']}/reply-threads/{reply['reply_id']}/comments",
+                     json={"body": "骚扰评论", "client_message_id": "rep-cm-0001"}), 201)["comment"]
+    conv = connect(env, "u_ann", "u_ben")
+    msg = ok(env.call("u_ben", "POST", f"/conversations/{conv}/messages",
+                      json={"text": "冒犯的话", "client_message_id": "rep-msg-0001"}), 201)["message"]
+
+    # Ben reports Ann's anonymous question: queued, but no block (it would reveal her).
+    r1 = ok(env.call("u_ben", "POST", "/reports", json={"target_kind": "question", "target_id": q["question_id"],
+                                                       "reason": "spam", "block": True}), 201)
+    assert r1 == {**r1, "status": "received", "blocked": False, "block_available": False}
+    assert "u_ann" not in str(r1) and "Ann" not in str(r1)
+    for kind, target in (("reply", reply["reply_id"]), ("comment", cm["comment_id"]), ("message", msg["message_id"])):
+        ok(env.call("u_ann", "POST", "/reports", json={"target_kind": kind, "target_id": target, "reason": "harassment"}), 201)
+    rows = env.db.rows("community_reports")
+    assert {(r["target_kind"], r["reported_user_id"]) for r in rows} == {
+        ("question", "u_ann"), ("reply", "u_ben"), ("comment", "u_ben"), ("message", "u_ben")}
+    assert next(r for r in rows if r["target_kind"] == "message")["snapshot"] == "冒犯的话"
+
+    # One report per target: a second one updates it. Own content and unseen content cannot be reported.
+    ok(env.call("u_ann", "POST", "/reports", json={"target_kind": "reply", "target_id": reply["reply_id"],
+                                                  "reason": "hate", "note": "再次举报"}), 201)
+    assert sum(r["target_kind"] == "reply" for r in env.db.rows("community_reports")) == 1
+    err(env.call("u_ben", "POST", "/reports", json={"target_kind": "reply", "target_id": reply["reply_id"],
+                                                   "reason": "spam"}), 422, "VALIDATION_FAILED")
+    err(env.call("u_cat", "POST", "/reports", json={"target_kind": "message", "target_id": msg["message_id"],
+                                                   "reason": "spam"}), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
+    err(env.call("u_ann", "POST", "/reports", json={"target_kind": "message", "target_id": msg["message_id"],
+                                                   "reason": "rude"}), 422, "VALIDATION_FAILED")
+
+    # Reporting a parent can block them in the same step.
+    rp = ok(env.call("u_ann", "POST", "/reports", json={"target_kind": "parent", "target_id": pid(env, "u_ben"),
+                                                       "reason": "harassment", "block": True}), 201)
+    assert rp["blocked"] is True
+    err(env.call("u_ben", "POST", f"/conversations/{conv}/messages",
+                 json={"text": "还在吗", "client_message_id": "rep-msg-0002"}), 403, "BLOCKED_OR_DISCONNECTED")
+
+
+def test_admin_reviews_reports_and_can_take_content_down(env, monkeypatch):
+    monkeypatch.setattr(main, "ADMIN_KEY", "test-admin")
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    conv = connect(env, "u_ann", "u_ben")
+    msg = ok(env.call("u_ben", "POST", f"/conversations/{conv}/messages",
+                      json={"text": "冒犯的话", "client_message_id": "adm-msg-0001"}), 201)["message"]
+    report = ok(env.call("u_ann", "POST", "/reports", json={"target_kind": "message", "target_id": msg["message_id"],
+                                                           "reason": "harassment"}), 201)
+    assert env.client.get("/admin/community-reports").status_code == 403
+    admin = {"x-admin-key": "test-admin"}
+    queue = env.client.get("/admin/community-reports", headers=admin).json()
+    assert queue["total"] == 1 and queue["rows"][0]["snapshot"] == "冒犯的话"
+    assert queue["rows"][0]["reported"] == "Ben" and queue["rows"][0]["reports_against_reported"] == 1
+    done = env.client.post(f"/admin/community-reports/{report['report_id']}", headers=admin,
+                           json={"status": "actioned", "remove_content": True, "reviewer_note": "removed"}).json()
+    assert done == {"id": report["report_id"], "status": "actioned", "content_removed": True}
+    assert not [m for m in env.db.rows("community_messages") if m["id"] == msg["message_id"]]
+    assert env.client.get("/admin/community-reports", headers=admin).json()["total"] == 0
+    assert env.client.get("/admin/community-reports?status=all", headers=admin).json()["total"] == 1

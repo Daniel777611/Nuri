@@ -74,6 +74,8 @@ export type Message = {
   media: { media_id: string }[]; created_at: string; state: "saved"; client_message_id: string | null;
 };
 export type Recommendation = { parent: PublicParent; distance_miles: number | null; shared_intents: IntentCode[]; relationship: RelationView };
+export type ReportKind = "question" | "reply" | "comment" | "message" | "parent";
+export type ReportReason = "harassment" | "sexual" | "hate" | "child_safety" | "self_harm" | "spam" | "other";
 export type Preferences = {
   parent_message_notifications_enabled: boolean; profile_hidden: boolean; auto_translate_messages: boolean; version: number;
 };
@@ -180,6 +182,9 @@ export const communityApi = {
       { audio_base64: audioBase64, locale, ai_consent_version: AI_CONSENT_VERSION, client_request_id: key }, 45000),
   markRead: (conversationId: string, seq: number) =>
     send<{ last_read_seq: number; unread_count: number }>("PUT", `/conversations/${encodeURIComponent(conversationId)}/read-cursor`, { last_read_seq: seq }),
+  // Reports (Google Play UGC): a person reviews them; the author is never shown to the reporter.
+  report: (body: { target_kind: ReportKind; target_id: string; reason: ReportReason; note?: string; block?: boolean }) =>
+    send<{ report_id: string; status: "received"; blocked: boolean; block_available: boolean }>("POST", "/reports", body),
   // P24
   preferences: () => get<Preferences>("/preferences"),
   savePreferences: (patch: Partial<Omit<Preferences, "version">> & { expected_version?: number }) =>
