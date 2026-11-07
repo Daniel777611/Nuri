@@ -2,7 +2,7 @@
   "expo": {
     "name": "NURI Native Lab",
     "slug": "nuri-native-lab",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "orientation": "portrait",
     "icon": "./assets/images/native-lab-icon.png",
     "scheme": "nuri-native-lab",
@@ -29,7 +29,7 @@
     },
     "android": {
       "package": "com.ordashtech.nuri",
-      "versionCode": 4,
+      "versionCode": 5,
       "icon": "./assets/images/native-lab-icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/native-lab-icon.png",
