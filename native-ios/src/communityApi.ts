@@ -25,7 +25,8 @@ export const intentCodes = (indexes: readonly number[]) =>
 
 export type PublicParent = {
   parent_id: string | null; display_name: string; about: string; city: string;
-  intents: IntentCode[]; role: "mom" | "dad" | null; avatar: { media_id: string } | null; anonymous?: boolean;
+  intents: IntentCode[]; role: "mom" | "dad" | null; gender_tag?: "mom" | "dad" | "other" | null;
+  avatar: { media_id: string } | null; anonymous?: boolean;
 };
 export type RelationState = "none" | "invitation_sent" | "invitation_received" | "connected" | "disconnected" | "blocked_by_me";
 export type RelationView = {
@@ -113,7 +114,7 @@ const send = <T,>(method: string, path: string, body?: unknown, timeoutMs?: numb
 export const communityApi = {
   // P01–P04
   myProfile: () => get<MyProfile>("/profiles/me"),
-  saveProfile: (patch: { display_name?: string; about?: string; city?: string; intents?: IntentCode[]; expected_version?: number }) =>
+  saveProfile: (patch: { display_name?: string; about?: string; city?: string; intents?: IntentCode[]; gender_tag?: "mom" | "dad" | "other"; expected_version?: number }) =>
     send<MyProfile>("PATCH", "/profiles/me", patch),
   parent: (parentId: string) => get<{ parent: PublicParent; relationship: RelationView }>(`/parents/${encodeURIComponent(parentId)}`),
   recommendations: (filters: { role?: "any" | "mom" | "dad"; distance_miles?: number | null; cursor?: string | null } = {}) =>

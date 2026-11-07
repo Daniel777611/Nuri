@@ -13,7 +13,18 @@ export type CommunityProfileEditorProps = {
   selectedIntents: readonly number[];
   onToggleIntent: (index: number) => void;
   avatar?: ReactNode;
+  /** D01: the community name is editable and is the account's name too. */
+  onDisplayNameChange?: (text: string) => void;
+  /** D03: a self-chosen tag; nothing is inferred from the account. */
+  genderTag?: GenderTag | null;
+  onGenderTag?: (tag: GenderTag) => void;
 };
+export type GenderTag = "mom" | "dad" | "other";
+export const GENDER_TAGS: readonly { tag: GenderTag; cn: string; tw: string; en: string }[] = [
+  { tag: "mom", cn: "妈妈", tw: "媽媽", en: "Mom" },
+  { tag: "dad", cn: "爸爸", tw: "爸爸", en: "Dad" },
+  { tag: "other", cn: "其他", tw: "其他", en: "Other" },
+];
 
 // Indices match the existing Community intent reducer, not their display order.
 const INTENTS = [
@@ -35,7 +46,7 @@ function OriginalProfilePortrait() {
 /** Figma 188:63068 card body only. The caller owns its surface, scrolling,
  * keyboard/safe-area treatment and Save action. All edits remain controlled
  * local drafts; this component has no account or transport dependency. */
-export function CommunityProfileEditor({ displayName, city, about, onAboutChange, selectedIntents, onToggleIntent, avatar }: CommunityProfileEditorProps) {
+export function CommunityProfileEditor({ displayName, city, about, onAboutChange, selectedIntents, onToggleIntent, avatar, onDisplayNameChange, genderTag, onGenderTag }: CommunityProfileEditorProps) {
   const { locale } = useT();
   const [aboutHeight, setAboutHeight] = useState(44);
   const c = (cn: string, en: string, tw?: string) => locale === "en" ? en : locale === "zh-TW" ? tw ?? translate(locale, cn) : cn;
@@ -49,24 +60,24 @@ export function CommunityProfileEditor({ displayName, city, about, onAboutChange
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 20 }}>
       <View testID="final-profile-editor-portrait" style={{ width: 104, height: 104, flexShrink: 0 }}>{avatar ?? <OriginalProfilePortrait/>}</View>
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-        <FinalText size={36} style={{ lineHeight: 46, fontWeight: "700" }}>{displayName}</FinalText>
-        <FinalText size={14} secondary style={{ lineHeight: 18, fontWeight: "500" }}>{city}</FinalText>
-        <FinalText size={12} secondary style={{ lineHeight: 18, fontWeight: "500" }}>{c("喜欢“咖啡”，“阅读”，“园艺”", "Enjoys coffee, reading and gardening", "喜歡「咖啡」、「閱讀」、「園藝」")}</FinalText>
+        {onDisplayNameChange?<NuriTextInput testID="final-profile-name" accessibilityLabel={c("社区名字", "Community name", "社區名字")} keyboardAppearance="light" maxLength={30} value={displayName} onChangeText={onDisplayNameChange} placeholder={c("你的名字", "Your name", "你的名字")} placeholderTextColor="#918896" style={{ minHeight: 46, padding: 0, fontSize: 30, lineHeight: 40, fontWeight: "700", color: FINAL_COLOR.ink, includeFontPadding: false }}/>
+          :<FinalText size={36} style={{ lineHeight: 46, fontWeight: "700" }}>{displayName}</FinalText>}
+        {city?<FinalText size={14} secondary style={{ lineHeight: 18, fontWeight: "500" }}>{city}</FinalText>:null}
+        {onDisplayNameChange?<FinalText size={12} secondary style={{ lineHeight: 18 }}>{c("社区名字会同步为你的账号昵称", "Your community name is also your account name", "社區名字會同步為你的帳號暱稱")}</FinalText>:null}
       </View>
     </View>
     {divider}
-    <FinalText size={18} style={{ lineHeight: 26, fontWeight: "500" }}>{c("我的生活", "My life")}</FinalText>
-    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 16 }}>
-      <View style={{ width: "51.2121%", maxWidth: 169, minWidth: 0, gap: 4 }}>
-        <FinalText style={{ lineHeight: 24, fontWeight: "500" }}>{c("我的小孩", "My children")}</FinalText>
-        <FinalText size={12} secondary style={{ lineHeight: 18 }}>{c("正在经历学龄前阶段", "At the preschool stage", "正在經歷學齡前階段")}</FinalText>
+    {onGenderTag?<View style={{ gap: 8 }}>
+      <FinalText style={{ lineHeight: 24, fontWeight: "500" }}>{c("我是", "I am", "我是")}</FinalText>
+      <View testID="final-profile-gender" style={{ flexDirection: "row", gap: 8 }}>
+        {GENDER_TAGS.map(option=>{
+          const selected = genderTag === option.tag;
+          return <Pressable key={option.tag} testID={`final-profile-gender-${option.tag}`} accessibilityRole="radio" accessibilityState={{ selected, checked: selected }} onPress={()=>onGenderTag(option.tag)} style={{ minWidth: 72, minHeight: 36, paddingHorizontal: 12, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: selected ? FINAL_COLOR.selected : FINAL_COLOR.base }}>
+            <FinalText style={{ lineHeight: 24, color: selected ? "white" : FINAL_COLOR.ink }}>{c(option.cn, option.en, option.tw)}</FinalText>
+          </Pressable>;
+        })}
       </View>
-      <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-        <FinalText style={{ lineHeight: 24, fontWeight: "500" }}>{c("生活节奏", "Daily rhythm", "生活節奏")}</FinalText>
-        <FinalText size={12} secondary style={{ lineHeight: 18 }}>{c("喜欢安静的周末活动", "Relaxed weekend activities", "喜歡安靜的週末活動")}</FinalText>
-      </View>
-    </View>
-    {divider}
+    </View>:null}
     <View style={{ gap: 4 }}>
       <FinalText style={{ lineHeight: 24, fontWeight: "500" }}>{c("关于我", "About me", "關於我")}</FinalText>
       <NuriTextInput testID="final-profile-about" accessibilityLabel={c("关于我", "About me", "關於我")} keyboardAppearance="light" multiline value={about} onChangeText={onAboutChange} onContentSizeChange={event=>setAboutHeight(Math.max(44, Math.min(164, Math.ceil(event.nativeEvent.contentSize.height))))} placeholder={c("写一点关于自己的事", "A little about yourself", "寫一點關於自己的事")} placeholderTextColor="#918896" style={{ height: aboutHeight, minHeight: 44, borderRadius: 18, borderWidth: 1, borderColor: "rgba(93,80,96,.25)", backgroundColor: "rgba(255,250,245,.9)", paddingHorizontal: 12, paddingVertical: 11, fontSize: 14, lineHeight: 20, fontWeight: "400", fontFamily: locale === "zh-CN" ? "NotoSansSC_400Regular" : undefined, color: FINAL_COLOR.secondary, textAlignVertical: "top", includeFontPadding: false }}/>

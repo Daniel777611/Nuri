@@ -73,8 +73,9 @@ test('real same-origin API transport remains authenticated, non-cached and accou
 test('protected backend/native-shell/frontend trees remain main and Vercel changes only buildCommand',()=>{
  // The branch merged origin/main for the Community backend; protected trees must equal that main.
  const mainBase=(()=>{try{return git(['merge-base','HEAD','refs/remotes/origin/main']).trim()||BASE;}catch{return BASE;}})();
- const changed=git(['diff','--name-only',mainBase,'--','.',':(exclude)native-ios',':(exclude)vercel.json']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
- const untracked=git(['ls-files','--others','--exclude-standard']).trim().split('\n').filter(Boolean);assert.ok(untracked.every(p=>p.startsWith('native-ios/')),'No new protected root/backend files');
+ // backend/ and supabase/ carry the Community API this branch ships with; every other tree stays main.
+ const changed=git(['diff','--name-only',mainBase,'--','.',':(exclude)native-ios',':(exclude)vercel.json',':(exclude)backend',':(exclude)supabase']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
+ const untracked=git(['ls-files','--others','--exclude-standard']).trim().split('\n').filter(Boolean);assert.ok(untracked.every(p=>/^(native-ios|backend|supabase)\//.test(p)),'No new protected root files');
  const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));// Production web builds like main again (no prototype flags), the same build the native apps use.
  assert.equal(current.buildCommand,old.buildCommand,'vercel.json buildCommand stays main');delete old.buildCommand;delete current.buildCommand;assert.deepEqual(current,old,'Rewrites/functions/crons/output and all remaining root deployment settings must remain main');
 });

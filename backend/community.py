@@ -61,7 +61,13 @@ MESSAGE_MEDIA_MAX = 9
 QUESTIONS_PER_DAY = int(os.getenv("COMMUNITY_QUESTIONS_PER_DAY", "10"))
 INVITATIONS_PER_DAY = int(os.getenv("COMMUNITY_INVITATIONS_PER_DAY", "20"))
 DELIVERY_FANOUT = int(os.getenv("COMMUNITY_DELIVERY_FANOUT", "5"))
-DELIVERY_TTL_DAYS = int(os.getenv("COMMUNITY_DELIVERY_TTL_DAYS", "7"))
+# D06 (meeting 2026-11-06): a received question can be answered for 30 days.
+DELIVERY_TTL_DAYS = int(os.getenv("COMMUNITY_DELIVERY_TTL_DAYS", "30"))
+# D04: rank recipients by family fit, then let the AI order the shortlist by
+# relevance to the question. Off → the rule-based score alone.
+AI_MATCHING = os.getenv("COMMUNITY_AI_MATCHING", "1") == "1"
+MATCH_SHORTLIST = 20
+MATCH_TIMEOUT_S = float(os.getenv("COMMUNITY_MATCH_TIMEOUT_S", "8"))
 MEDIA_UPLOAD_TTL_MIN = 30
 MEDIA_ACCESS_TTL_S = 300
 MEDIA_BUCKET = os.getenv("COMMUNITY_MEDIA_BUCKET", "community-media")
@@ -73,7 +79,8 @@ AI_TIMEOUT_S = float(os.getenv("COMMUNITY_AI_TIMEOUT_S", "20"))
 #: client sends what the parent agreed to; a stale version is CONSENT_REQUIRED.
 NURI_AI_CONSENT_VERSION = os.getenv("NURI_AI_CONSENT_VERSION", "2026-10-01.1")
 #: The notice the two-party consent sheet shows (consent frame 188:65175).
-AI_NOTICE_VERSION = os.getenv("COMMUNITY_AI_NOTICE_VERSION", "2026-11-05.1")
+# D12: consent covers the whole conversation, history included; a new notice.
+AI_NOTICE_VERSION = os.getenv("COMMUNITY_AI_NOTICE_VERSION", "2026-11-06.1")
 AI_PURPOSES = ("conversation_notes", "translation")
 
 #: Frontend intent chips, by the index the 1027 reducer uses (CommunityFinal
@@ -429,14 +436,19 @@ def _role_label(role: str) -> Optional[str]:
 
 
 def public_parent(profile: dict, role: str = "") -> dict:
-    """The whitelist DTO (PUBLIC_DTO). Nothing else about an account leaves."""
+    """The whitelist DTO (PUBLIC_DTO). Nothing else about an account leaves.
+
+    `role` is the parent's own community tag (D03), never the account's
+    parent_role; the argument is kept for callers and ignored.
+    """
     return {
         "parent_id": str(profile["public_id"]),
         "display_name": profile.get("display_name") or "",
         "about": profile.get("about") or "",
         "city": profile.get("city_label") or "",
         "intents": list(profile.get("intent_codes") or []),
-        "role": _role_label(role),
+        "role": _role_label(profile.get("gender_tag") or ""),
+        "gender_tag": profile.get("gender_tag"),
         "avatar": {"media_id": str(profile["avatar_media_id"])} if profile.get("avatar_media_id") else None,
     }
 
@@ -571,6 +583,8 @@ class ProfilePatch(_Strict):
     about: Optional[str] = Field(None, max_length=ABOUT_MAX * 2)
     city: Optional[str] = Field(None, max_length=CITY_MAX * 2)
     intents: Optional[list[str]] = Field(None, max_length=len(INTENT_CODES))
+    # D03: chosen in the community onboarding.
+    gender_tag: Optional[Literal["mom", "dad", "other"]] = None
     avatar_media_id: Optional[str] = None
     clear_avatar: bool = False
     # Coarse location for distance filters; null with share_location=false clears it.
@@ -750,6 +764,8 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
     patch: dict[str, Any] = {}
     if body.display_name is not None:
         patch["display_name"] = _clean_text(body.display_name, field="display_name", max_len=DISPLAY_NAME_MAX)
+    if body.gender_tag is not None:
+        patch["gender_tag"] = body.gender_tag
     if body.about is not None:
         patch["about"] = _clean_text(body.about, field="about", max_len=ABOUT_MAX, required=False)
     if body.city is not None:
@@ -776,9 +792,14 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
             raise CommunityError("MEDIA_NOT_READY_OR_NOT_OWNED", "Avatar is not ready")
         patch["avatar_media_id"] = avatar_row["id"]
 
-    if profile is None:
-        if "display_name" not in patch:
+    if profile is None and "display_name" not in patch:
+        # D01: the first profile starts from the account's name.
+        account = await _one("users", lambda q: q.eq("id", uid))
+        nickname = (account or {}).get("nickname") or ""
+        if not nickname.strip():
             raise _invalid("display_name is required to create a community profile")
+        patch["display_name"] = _clean_text(nickname, field="display_name", max_len=DISPLAY_NAME_MAX)
+    if profile is None:
         row = {"user_id": uid, "about": "", "city_label": "", "intent_codes": [],
                **patch, "updated_at": _iso()}
         try:
@@ -790,11 +811,39 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
         if patch:
             profile = await _versioned_update("community_profiles", profile,
                                               {**patch, "updated_at": _iso()}, id_col="user_id")
+    if "display_name" in patch:
+        await _sync_account_name(uid, patch["display_name"])
     if avatar_row and avatar_row["state"] != "committed":
         await _update("community_media", {"state": "committed", "bound_to": "avatar", "updated_at": _iso()},
                       lambda q: q.eq("id", avatar_row["id"]))
     roles = await _roles([uid])
     return _own_profile_dto(profile, roles.get(uid, ""), await _preferences(uid))
+
+
+async def _sync_account_name(uid: str, name: str) -> None:
+    """D01: a community name change is the account's name change too."""
+    await _update("users", {"nickname": name}, lambda q: q.eq("id", uid))
+    try:
+        from backend.nuri_core import family as core_family
+        core_family.invalidate(uid)
+    except Exception:  # noqa: BLE001 - a cache miss is harmless
+        pass
+
+
+async def sync_name_from_account(uid: str, nickname: str) -> None:
+    """D01, the other direction: PUT /auth/me renames the community profile.
+
+    Best effort: the account rename already succeeded, and a missing profile
+    (or the community tables not yet migrated) is not an error.
+    """
+    name = (nickname or "").strip()[:DISPLAY_NAME_MAX]
+    if not name:
+        return
+    try:
+        await _update("community_profiles", {"display_name": name, "updated_at": _iso()},
+                      lambda q: q.eq("user_id", uid))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[community] name sync skipped: {type(exc).__name__}")
 
 
 async def get_parent(uid: str, parent_id: str) -> dict:
@@ -847,7 +896,7 @@ async def recommendations(uid: str, role: str = "any", distance_miles: Optional[
         other = cand["user_id"]
         if other in i_blocked or other in blocked_me or other in hidden or other in contacts:
             continue
-        if role != "any" and roles.get(other) != role:
+        if role != "any" and cand.get("gender_tag") != role:
             continue
         shared = [c for c in (cand.get("intent_codes") or []) if c in set(me.get("intent_codes") or [])]
         if wanted and not set(wanted) & set(cand.get("intent_codes") or []):
@@ -1079,22 +1128,108 @@ async def _question_dto(uid: str, question: dict, *, reply_count: Optional[int] 
     }
 
 
-async def _deliver(question: dict) -> int:
-    """Hand a new question to up to DELIVERY_FANOUT parents (handoff D04).
+async def _family_features(uids: list[str], profiles: dict[str, dict]) -> dict[str, dict]:
+    """What D04 matches on: youngest child's age, region, family concerns."""
+    if not uids:
+        return {}
+    users = {u["id"]: u for u in await _select("users", lambda q: q.in_("id", uids))}
+    children = await _select("children", lambda q: q.in_("user_id", uids))
+    today = _now().date()
+    ages: dict[str, list[int]] = {}
+    for child in children:
+        try:
+            born = date.fromisoformat(str(child.get("birth_date"))[:10])
+        except ValueError:
+            continue
+        if born <= today:
+            ages.setdefault(child["user_id"], []).append(
+                (today.year - born.year) * 12 + today.month - born.month - (today.day < born.day))
+    out = {}
+    for uid in uids:
+        user, profile = users.get(uid) or {}, profiles.get(uid) or {}
+        region = (profile.get("city_label") or user.get("city") or "").strip().lower()
+        out[uid] = {"age": min(ages[uid]) if ages.get(uid) else None, "region": region,
+                    "concerns": set(user.get("top_concerns") or []),
+                    "intents": list(profile.get("intent_codes") or [])}
+    return out
 
-    Recipients: other parents with a community profile that is not hidden, no
-    block in either direction. A random draw from the 50 most recently active
-    profiles, so the same few parents are not asked every time.
+
+def _fit(asker: dict, other: dict) -> float:
+    """Rule-based family fit, 0–1: child age, region, shared concerns."""
+    age = 0.0
+    if asker["age"] is not None and other["age"] is not None:
+        age = max(0.0, 1 - abs(asker["age"] - other["age"]) / 24)  # within two years
+    region = 1.0 if asker["region"] and asker["region"] == other["region"] else 0.0
+    union = asker["concerns"] | other["concerns"]
+    concerns = len(asker["concerns"] & other["concerns"]) / len(union) if union else 0.0
+    return 0.4 * age + 0.25 * region + 0.35 * concerns
+
+
+def _age_band(months: Optional[int]) -> str:
+    if months is None:
+        return "unknown"
+    return f"{months} months" if months < 24 else f"{months // 12} years"
+
+
+async def _ai_rank(question: dict, shortlist: list[str], features: dict[str, dict], asker: dict) -> list[str]:
+    """D04 "让ai写": order the shortlist by relevance to the question.
+
+    The model sees the question and, per candidate, only a number, a child age
+    band, concern codes, intents and whether the region matches — no names, ids
+    or free text about anyone else. Any failure keeps the rule-based order.
+    """
+    if not AI_MATCHING or len(shortlist) <= 1 or not runtime.aoai:
+        return shortlist
+    lines = []
+    for index, uid in enumerate(shortlist):
+        f = features[uid]
+        lines.append(f"{index}: child {_age_band(f['age'])}; concerns {','.join(sorted(f['concerns'])) or '-'}; "
+                     f"intents {','.join(f['intents']) or '-'}; same region {'yes' if f['region'] and f['region'] == asker['region'] else 'no'}")
+    system = ("You match a parent's question to other parents who could answer it from experience. "
+              "Rank the candidates by how well their family situation fits the question. "
+              "Reply with only the candidate numbers, best first, comma separated.")
+    text = f"Question: {question['body']}\nAsker's child: {_age_band(asker['age'])}\nCandidates:\n" + "\n".join(lines)
+    try:
+        out = await _timed_complete(question["author_id"], system, text)
+    except Exception:  # noqa: BLE001 - ranking is an improvement, never a requirement
+        return shortlist
+    order: list[str] = []
+    for token in out.replace("\n", ",").split(","):
+        token = token.strip()
+        if token.isdigit() and int(token) < len(shortlist) and shortlist[int(token)] not in order:
+            order.append(shortlist[int(token)])
+    return order + [uid for uid in shortlist if uid not in order]
+
+
+async def _timed_complete(uid: str, system: str, text: str) -> str:
+    with anyio.fail_after(MATCH_TIMEOUT_S):
+        return await _complete("community.match", uid, system, text)
+
+
+async def _deliver(question: dict) -> int:
+    """Hand a new question to up to DELIVERY_FANOUT parents (meeting D04).
+
+    Eligible: other parents with a visible community profile and no block in
+    either direction. Ranked by family fit — youngest child's age, region and
+    shared family concerns — then the AI orders the top MATCH_SHORTLIST by
+    relevance to the question (falls back to the rule order on any failure).
     """
     author = question["author_id"]
     i_blocked, blocked_me = await _block_sets(author)
     pool = await _select("community_profiles", lambda q: q.neq("user_id", author)
-                         .order("updated_at", desc=True).limit(50))
+                         .order("updated_at", desc=True).limit(200))
     ids = [p["user_id"] for p in pool]
     hidden_rows = await _select("community_preferences", lambda q: q.in_("user_id", ids)) if ids else []
     hidden = {row["user_id"] for row in hidden_rows if row.get("profile_hidden")}
     eligible = [i for i in ids if i not in i_blocked and i not in blocked_me and i not in hidden]
-    chosen = random.sample(eligible, min(DELIVERY_FANOUT, len(eligible)))
+    profiles = {p["user_id"]: p for p in pool}
+    author_profile = await _profiles([author])
+    features = await _family_features(eligible + [author], {**profiles, **author_profile})
+    asker = features[author]
+    # Ties are broken at random so the same parents are not always first.
+    ranked = sorted(eligible, key=lambda uid: (_fit(asker, features[uid]), random.random()), reverse=True)
+    shortlist = await _ai_rank(question, ranked[:MATCH_SHORTLIST], features, asker)
+    chosen = (shortlist + ranked[MATCH_SHORTLIST:])[:DELIVERY_FANOUT]
     expires = _iso(_now() + timedelta(days=DELIVERY_TTL_DAYS))
     delivered = 0
     for recipient in chosen:
@@ -2101,7 +2236,7 @@ async def decide_ai_consent(uid: str, request_id: str, body: ConsentDecisionIn) 
         # Effective from now on: nothing said before consent is covered.
         req = await _versioned_update("community_ai_consent_requests", req,
                                       {"state": "effective", "decided_at": _iso(),
-                                       "effective_from_seq": int(conv.get("last_message_seq") or 0)})
+                                       "effective_from_seq": 0})  # D12: all content, history included
     return {"request": await _consent_dto(uid, req)}
 
 

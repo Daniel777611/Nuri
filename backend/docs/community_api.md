@@ -63,7 +63,8 @@
 | P28 AI_ACTIVITY | GET /conversations/{id}/ai-participation | 双方决定、各用途的 effective/epoch；`operations` 目前固定为空 |
 | P29 TRANSLATION | POST /messages/{id}/translations `{target_language, ai_consent_version, client_request_id}` | 译文单独返回，不会覆盖原文 |
 | P30 TRANSCRIPTION | POST /transcriptions `{audio_base64, locale, ai_consent_version, client_request_id}` | 复用 /chat/transcribe；只返回草稿文本，不发送 |
-| P31 MEDIA | POST /media/uploads `{purpose: avatar\|message, mime_type, byte_size, sha256, client_request_id}` | 返回签名上传 URL（PUT，30 分钟） |
+| P31 MEDIA（App 使用） | POST /media `{purpose: avatar\|message, data_uri, client_request_id}` | 一张已压缩的图片（data URI），服务端校验真实字节后存入私有桶，直接返回 ready 的 media_id；重试同 key 不会重复存 |
+| P31 MEDIA（大文件预留） | POST /media/uploads `{purpose: avatar\|message, mime_type, byte_size, sha256, client_request_id}` | 返回签名上传 URL（PUT，30 分钟） |
 | P32 MEDIA_COMPLETE | POST /media/uploads/{id}/complete | 服务端下载真实字节，校验大小、sha256、格式和尺寸 → ready 或 rejected |
 | P33 MEDIA_ACCESS | GET /media/{id}/access | 300 秒签名读取 URL；按会话成员 / 头像可见性授权 |
 | P34 MEDIA_DELETE | DELETE /media/{id} | 只能删未发送的草稿，已发送的附件不能删 |
@@ -74,27 +75,32 @@
 - `GET /api/notifications/{id}`：社区事件的 `target` 是类型化的应用内引用。
 - `POST /api/notifications/{id}/open`：遇到社区事件返回 403 `RELATIONSHIP_NOT_ALLOWED`，不会再往 NURI 私聊写消息（交接稿 E12）。
 
-## 对 20 项未决问题采取的默认做法（需产品确认）
+## 对 20 项问题的做法
 
-- **D01 公开身份**：社区资料独立于 auth/me，display_name 需要本人填写，不会自动套用 nickname 或 city。
+2026-11-06 会议已定案的项（来自《Community会议决策表》）标注“会议”，其余仍是保守默认，等待后续决定。
+
+- **D01 公开身份（会议：社区名称可以更改，和系统同步）**：社区名字在编辑档案里可改，改动会同时写入账号昵称（`users.nickname`）；在账号资料里改昵称，也会同步到社区名字。第一次建档案没填名字时，默认用账号昵称。城市不同步。
 - **D02 交友意图**：6 个稳定 code，按前端索引 0–5 对应：`share_parenting_ideas, talk_parenting, similar_experiences, outings_with_children, nearby_parents, casual_chat`。
-- **D03 推荐与距离**：role 取自 `users.parent_role`，只公开 mom/dad。距离只在双方都主动分享粗略位置时计算：位置取 2 位小数（约 1 公里），展示时再取 0.5 英里整。不分享位置的家长不能使用距离筛选。
-- **D04 问题分发**：从最近更新的 50 个可见社区资料中随机投递给 5 人（`COMMUNITY_DELIVERY_FANOUT`），排除隐藏资料和任一方向的屏蔽。没有审核流程。
+- **D03 推荐与距离（会议：社群 onboarding 增加性别 tag）**：引导页新增自选标签 `gender_tag`（mom / dad / other），推荐里的妈妈/爸爸筛选只看这个标签，不再从 `users.parent_role` 推断；未选的家长在按性别筛选时不出现。公开资料返回 `role`（仅 mom/dad）和 `gender_tag`。距离只在双方都主动分享粗略位置时计算：位置取 2 位小数（约 1 公里），展示时再取 0.5 英里整。不分享位置的家长不能使用距离筛选。
+- **D04 问题分发（会议：家庭情况/孩子年龄匹配程度/区域/问题关系度/让 AI 写）**：在最近更新的 200 个可见社区资料里（排除隐藏和任一方向屏蔽），先按规则打分：最小孩子的月龄接近度 40%（相差两年内线性递减）、同一区域 25%（社区城市或账号城市）、家庭关注点 `top_concerns` 重合度 35%。取前 20 名交给 AI，按与问题的相关度重排，最后投递给前 5 人（`COMMUNITY_DELIVERY_FANOUT`）。发给 AI 的只有问题正文、提问者孩子年龄段，以及每位候选人的编号、孩子年龄段、关注点代码、意图代码和是否同区域，不含名字、id 或自我介绍。AI 不可用、超时（8 秒）或出错时，按规则分数投递。`COMMUNITY_AI_MATCHING=0` 可关闭 AI 重排。仍然没有审核流程。
 - **D05 匿名与年龄**：匿名只隐藏展示身份，服务端照常记录作者。年龄取发布时最小一个孩子的月龄快照，未出生的不计。
-- **D06 锁定**：投递 7 天后过期（`COMMUNITY_DELIVERY_TTL_DAYS`）；问题关闭或删除、发生屏蔽时也会锁定。每条投递只能回答一次，不能修改。
+- **D06 锁定（会议：30）**：投递 30 天后过期（`COMMUNITY_DELIVERY_TTL_DAYS`，我按“30 天”理解）；问题关闭或删除、发生屏蔽时也会锁定。每条投递只能回答一次，不能修改。
 - **D07 关闭与删除**：批量操作逐项执行，不是整体原子。关闭后仍可阅读，但不能再回复或评论；删除是软删除，所有人都看不到。没有重新打开功能。
 - **D08 回复线程**：“回复所有人”线程只有提问者能发，所有回答者能读；单条回复线程只有提问者和该回答者能读写。
 - **D09 关系**：只有建立联系后才能聊天；交叉邀请会合并；不能取消已发出的邀请（UI 没有这个功能）。
 - **D10 屏蔽**：屏蔽会断开联系、取消待处理邀请、锁定双方之间等待中的问题、撤回 AI。已有消息保留，但会话变为只读。对方看到的结果与“已断开”或“不存在”一样。
-- **D11/D12 AI 授权**：按用途分开（`conversation_notes` / `translation`）。告知版本是 `COMMUNITY_AI_NOTICE_VERSION`。授权只覆盖生效之后的消息（`effective_from_seq`），不回溯之前的历史。撤回、屏蔽、断开都会让 epoch+1。目前没有实际的 AI 记录或整理任务。
+- **D11/D12 AI 授权**：按用途分开（`conversation_notes` / `translation`）。告知版本是 `COMMUNITY_AI_NOTICE_VERSION`。（会议 D12：所有内容都可以）双方同意后，授权覆盖整段对话，包括同意之前的消息（`effective_from_seq` 为 0）；告知文案和版本随之更新为 `2026-11-06.1`。撤回、屏蔽、断开都会让 epoch+1。目前没有实际的 AI 记录或整理任务。
 - **D13 润色、翻译、转写**：都要求客户端传入与 `NURI_AI_CONSENT_VERSION`（默认 `2026-10-01.1`，即 app 的 aiConsent 版本）一致的值。翻译对方的消息时，还需要该会话 `translation` 用途双方都已同意。
-- **D14 媒体**：只接受 JPEG/PNG/WebP，每张 ≤2.5 MB（与现有单图上限一致），每条消息最多 9 张。暂不支持视频和音频。
+- **D14 媒体（会议：语音是转写）**：语音只做转写：录音转成文字放进输入框，可编辑，不存音频，也不会自动发送。图片只接受 JPEG/PNG/WebP，每张 ≤2.5 MB（App 先压到最长边 1600），App 每条消息发一张，接口允许最多 9 张。暂不支持视频和音频消息。
 - **D15 通知**：写入 `notification_events`（type=chat，kind=`community_*`），按业务事件去重。家长关闭“家长消息通知”或屏蔽了对方时不推送。锁屏文案统一为不含内容的泛化提示。
 - **D16 分页**：见通用约定。
 - **D17 限额**：问题 10 条/天、邀请 20 条/天（可用环境变量调整）。字数上限：问题 1000、回复 2000、评论 1000、消息 2000、about 300、名字 30。目前没有举报功能。
 - **D18 删除**：所有社区表都 `on delete cascade` 到 `public.users`，账号删除会一并清掉。但 **community-media 存储桶里的文件不会被级联删除**，还需要补一个清理任务。`privacy/wipe` 不涉及社区数据。
 
 ## 需要手动执行（prod）
+
+0. 2026-11-06 起新增：执行 `supabase/migrations/20261106010000_community_gender_tag.sql`（给 `community_profiles` 加 `gender_tag` 列）。**要在部署这版代码之前执行**，否则保存性别标签会报 503。
+
 
 1. 在 prod Supabase（`cxxidflulsdmcnazrouw`）的 SQL Editor 中执行 `supabase/migrations/20261105010000_community.sql`。文件里的语句都可重复执行（`if not exists` / `on conflict do nothing`），并且会创建私有存储桶 `community-media`。
 2. 确认 `storage.buckets` 里有 `community-media`，且 `public = false`。

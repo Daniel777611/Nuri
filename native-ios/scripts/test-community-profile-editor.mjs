@@ -49,7 +49,9 @@ test("identity and original 104pt portrait remain visible during inline editing"
   assert.deepEqual(images[0].props.style, { width: 104, height: 104 });
   assert.equal(images[1].props.source, "@/assets/final-flow-20261101/community-profile-head.png");
   assert.deepEqual(images[1].props.style, { position: "absolute", left: 10.4, top: 32.0667, width: 82.3333, height: 71.9333 });
-  for (const text of ["Nina", "Savannah, GA, 31401", "我的生活", "我的小孩", "生活节奏", "正在经历学龄前阶段", "喜欢安静的周末活动"]) assert.ok(walk(tree).some(node => node.props?.children === text), text);
+  // The caller's real name and city show; the design's sample life details do not (no fabricated profile).
+  for (const text of ["Nina", "Savannah, GA, 31401"]) assert.ok(walk(tree).some(node => node.props?.children === text), text);
+  for (const text of ["我的生活", "我的小孩", "生活节奏", "正在经历学龄前阶段", "喜欢安静的周末活动"]) assert.ok(!walk(tree).some(node => node.props?.children === text), text);
 });
 
 test("caller-supplied original portrait is reused without an additional fallback or upload interaction", () => {

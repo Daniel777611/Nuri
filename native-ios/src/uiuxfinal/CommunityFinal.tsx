@@ -21,7 +21,7 @@ import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FI
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
 import { ParentChatAvatar, ParentChatHeader } from "./ParentChatHeader";
 import { SettingsPage, SettingsRow, SettingsButton } from "./Settings";
-import { CommunityProfileEditor } from "./CommunityProfileEditor";
+import { CommunityProfileEditor, GENDER_TAGS, type GenderTag } from "./CommunityProfileEditor";
 import { createFinalCommunity, finalCommunityReducer, isFinalCommunityScreen, selectedQuestionText, type FinalCommunityEvent, type FinalCommunityScreen, type FinalCommunityState, type ReceivedTab } from "./communityModel";
 import { communityHubTopPadding, HUB_PAGINATION, HUB_CARD_BOTTOM_GUTTER, HUB_PAGER_GAP } from "./communityHubLayout";
 
@@ -549,6 +549,8 @@ export default function CommunityFinal() {
     await communityApi.saveProfile({
       ...(profile?{}:{display_name:(account.value?.nickname||"").trim().slice(0,30)||c("新家长","New parent"),city:(account.value?.city||"").trim().slice(0,60)}),
       ...(about!==undefined?{about:about.trim().slice(0,300)}:{}),
+      ...(state.drafts["profile:name"]?.trim()?{display_name:state.drafts["profile:name"].trim().slice(0,30)}:{}),
+      ...(state.drafts["profile:gender"]?{gender_tag:state.drafts["profile:gender"] as GenderTag}:{}),
       intents:intentCodes(state.intents),
       ...(profile?{expected_version:profile.version}:{}),
     });
@@ -888,6 +890,7 @@ export default function CommunityFinal() {
   // ── Finding parents: intent, my profile, suggestions, a parent ───────────
   if(state.screen==="intent")return page(<>
     <View style={{height:24,alignSelf:"stretch",alignItems:"flex-end"}}><Pressable accessibilityRole="button" accessibilityLabel={c("跳过","Skip")} hitSlop={10} style={{height:24,minWidth:44,alignItems:"center",justifyContent:"center"}} onPress={()=>go("profile")}><FinalText size={14} secondary style={{lineHeight:24,fontWeight:"500"}}>{c("跳过","Skip")}</FinalText></Pressable></View>
+    <View testID="final-intent-gender" style={{gap:8,alignItems:"center"}}><FinalText style={{fontWeight:"500",textAlign:"center",lineHeight:24}}>{c("我是","I am")}</FinalText><View style={{flexDirection:"row",gap:8}}>{GENDER_TAGS.map(option=>{const selected=(state.drafts["profile:gender"]||me.value?.profile?.gender_tag)===option.tag;return <Pressable key={option.tag} testID={"final-intent-gender-"+option.tag} accessibilityRole="radio" accessibilityState={{selected,checked:selected}} onPress={()=>setDraft("profile:gender",option.tag)} style={{minWidth:72,height:36,paddingHorizontal:12,borderRadius:18,alignItems:"center",justifyContent:"center",backgroundColor:selected?FINAL_COLOR.selected:"rgba(255,248,242,.75)"}}><FinalText size={14} style={{color:selected?"white":FINAL_COLOR.ink}}>{c(option.cn,option.en)}</FinalText></Pressable>;})}</View></View>
     <View style={{height:60}}><FinalText style={{fontWeight:"500",textAlign:"center",lineHeight:24}}>{c("你希望和新朋友一起","With new friends, you'd like to…")}</FinalText></View>
     <View style={{height:407,gap:16,alignItems:"center"}}>
       {INTENT_LABELS.map(([cn,english],i)=><Pressable key={i} onPress={()=>dispatch({type:"intent",index:i})} accessibilityRole="checkbox" accessibilityState={{checked:state.intents.includes(i)}} testID={"final-intent-"+i} style={{height:44,width:248,maxWidth:"100%",alignItems:"center",justifyContent:"center",flexShrink:0}}>
@@ -898,10 +901,11 @@ export default function CommunityFinal() {
     </View>
   </>,<FinalButton label={c("下一步","Next")} disabled={busy} onPress={()=>me.value?.exists?saveProfile(()=>go("profile")):go("profile")} testID="final-intent-next"/>,true,{bodyStyle:{paddingTop:32,paddingBottom:0},cardStyle:{maxHeight:555}});
   const myProfile:MyProfile["profile"]=me.value?.profile??null;
-  const myName=myProfile?.display_name||account.value?.nickname||"";
+  const myName=state.drafts["profile:name"]??(myProfile?.display_name||account.value?.nickname||"");
+  const myGender=(state.drafts["profile:gender"]||myProfile?.gender_tag||null) as GenderTag|null;
   const myCity=myProfile?.city??account.value?.city??"";
   const myAbout=state.drafts["profile:about"]??myProfile?.about??"";
-  if((state.screen==="profile"||state.screen==="profileSettings")&&(profileEditing||(me.value&&!me.value.exists)))return page(<>{pending(me)}<CommunityProfileEditor displayName={myName} city={myCity} about={myAbout} onAboutChange={text=>setDraft("profile:about",text)} selectedIntents={state.intents} onToggleIntent={index=>dispatch({type:"intent",index})} avatar={<SampleAvatar size={104}/>}/>{!myProfile?<FinalText size={12} secondary style={{paddingHorizontal:24,paddingBottom:16,lineHeight:18}}>{c("保存后，其他家长会看到你的名字、城市和以上内容。","After saving, other parents will see your name, city and the details above.")}</FinalText>:null}</>,<FinalButton label={c("保存","Save")} disabled={busy||!me.value} onPress={()=>saveProfile(()=>setProfileEditingMode(false))} testID="final-profile-save"/>,false,{bodyStyle:{padding:0,gap:0}});
+  if((state.screen==="profile"||state.screen==="profileSettings")&&(profileEditing||(me.value&&!me.value.exists)))return page(<>{pending(me)}<CommunityProfileEditor displayName={myName} city={myCity} about={myAbout} onAboutChange={text=>setDraft("profile:about",text)} selectedIntents={state.intents} onToggleIntent={index=>dispatch({type:"intent",index})} avatar={<SampleAvatar size={104}/>} onDisplayNameChange={text=>setDraft("profile:name",text)} genderTag={myGender} onGenderTag={tag=>setDraft("profile:gender",tag)}/>{!myProfile?<FinalText size={12} secondary style={{paddingHorizontal:24,paddingBottom:16,lineHeight:18}}>{c("保存后，其他家长会看到你的名字、城市和以上内容。","After saving, other parents will see your name, city and the details above.")}</FinalText>:null}</>,<FinalButton label={c("保存","Save")} disabled={busy||!me.value} onPress={()=>saveProfile(()=>setProfileEditingMode(false))} testID="final-profile-save"/>,false,{bodyStyle:{padding:0,gap:0}});
   if (state.screen === "profile" || state.screen === "profileSettings" || state.screen === "parent" || state.screen === "incomingParent") {
     const own=state.screen==="profile"||state.screen==="profileSettings";
     const view=parentView.value,relation=view?.relationship;
@@ -989,7 +993,7 @@ export default function CommunityFinal() {
       {notice}
       {value&&!canSend?<FinalText size={12} secondary style={{textAlign:"center"}}>{c("你们已不再联系，不能再发送消息","You're no longer connected and can't send messages")}</FinalText>:null}
       {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy} busy={busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} hasAttachment={!!chatImage} attachments={chatImage?[{id:"community-photo",kind:"image",uri:chatImage.prepared.previewUri,width:chatImage.prepared.width,height:chatImage.prepared.height,image:chatImage.prepared}]:undefined} onRemoveAttachment={()=>setChatImage(null)} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
-    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri记录这次对话。同意后，Nuri会记录之后的聊天内容，并整理对话要点。双方都可以随时关闭记录。", "The other parent invited Nuri to record this conversation from now on and organise its key points. Either person can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}</NuriKeyboardFrame>;
+    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri参与这次对话。同意后，Nuri可以读取并整理你们这段对话的全部内容，包括同意之前的消息。双方都可以随时关闭。", "The other parent invited Nuri into this conversation. If you agree, Nuri can read and organise everything in it, including earlier messages. Either of you can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}</NuriKeyboardFrame>;
 }
 const st = StyleSheet.create({
   main: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 32, gap: 16 },

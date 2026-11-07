@@ -96,9 +96,8 @@ def test_unknown_fields_are_refused_with_validation_failed(env):
 def test_profile_lifecycle_and_public_dto(env):
     first = ok(env.call("u_ann", "GET", "/profiles/me"))
     assert first["exists"] is False and first["profile"] is None
-    err(env.call("u_ann", "PATCH", "/profiles/me", json={"about": "hi"}), 422, "VALIDATION_FAILED")
     made = make_profile(env, "u_ann", "Ann", about="I know a cafe", city="Savannah, GA",
-                        intents=["casual_chat", "share_parenting_ideas"])
+                        intents=["casual_chat", "share_parenting_ideas"], gender_tag="mom")
     assert made["profile"]["intents"] == ["share_parenting_ideas", "casual_chat"]
     assert made["profile"]["version"] == 1
     err(env.call("u_ann", "PATCH", "/profiles/me", json={"intents": ["dating"]}), 422, "VALIDATION_FAILED")
@@ -109,6 +108,7 @@ def test_profile_lifecycle_and_public_dto(env):
     make_profile(env, "u_ben")
     seen = ok(env.call("u_ben", "GET", f"/parents/{made['profile']['parent_id']}"))
     assert seen["parent"]["display_name"] == "Ann" and seen["parent"]["role"] == "mom"
+    assert seen["parent"]["gender_tag"] == "mom"
     text = str(seen)
     assert "u_ann" not in text and "example.test" not in text and "2024-05-01" not in text
     assert seen["relationship"]["state"] == "none" and "invite" in seen["relationship"]["allowed_actions"]
@@ -135,11 +135,12 @@ def test_hidden_and_blocking_profiles_are_invisible_to_strangers(env):
 
 def test_recommendations_filter_and_exclude(env):
     make_profile(env, "u_ann", intents=["outings_with_children"], share_location=True,
-                 latitude=32.0809, longitude=-81.0912)
+                 latitude=32.0809, longitude=-81.0912, gender_tag="mom")
     make_profile(env, "u_ben", intents=["outings_with_children"], share_location=True,
-                 latitude=32.0900, longitude=-81.1000)
-    make_profile(env, "u_cat", share_location=True, latitude=33.7490, longitude=-84.3880)  # Atlanta
-    make_profile(env, "u_dan")
+                 latitude=32.0900, longitude=-81.1000, gender_tag="dad")
+    make_profile(env, "u_cat", share_location=True, latitude=33.7490, longitude=-84.3880,
+                 gender_tag="mom")  # Atlanta
+    make_profile(env, "u_dan", gender_tag="dad")
     make_profile(env, "u_eve")
     ok(env.call("u_eve", "PATCH", "/preferences", json={"profile_hidden": True}))
 
@@ -214,9 +215,10 @@ def test_translation_of_someone_elses_message_needs_both_parents(env, monkeypatc
     ok(env.call("u_ben", "PUT", f"/ai-consent-requests/{req['request_id']}/my-decision",
                 json={"decision": "allow", "notice_version": community.AI_NOTICE_VERSION,
                       "client_request_id": "aid-0001"}))
-    # Consent covers what is said after it, not the history before it.
-    err(env.call("u_ann", "POST", f"/messages/{early['message_id']}/translations",
-                 json={**tr, "client_request_id": "trans-0002"}), 403, "CONSENT_REQUIRED")
+    # D12: consent covers the whole conversation, the history before it included.
+    back = ok(env.call("u_ann", "POST", f"/messages/{early['message_id']}/translations",
+                       json={**tr, "client_request_id": "trans-0002"}))
+    assert back["translation"]["text"] == "EN:早上好"
     later = ok(env.call("u_ben", "POST", f"/conversations/{conv}/messages",
                         json={"text": "下午好", "client_message_id": "msg-ben-0002"}), 201)["message"]
     done = ok(env.call("u_ann", "POST", f"/messages/{later['message_id']}/translations",
@@ -762,3 +764,77 @@ def test_direct_media_upload_validates_stores_and_is_idempotent(env):
     assert sent["message"]["media"] == [{"media_id": first["media_id"]}]
     ok(env.call("u_ben", "GET", f"/media/{first['media_id']}/access"))
     err(env.call("u_cat", "GET", f"/media/{first['media_id']}/access"), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
+
+
+
+# ── Meeting decisions (2026-11-06) ───────────────────────────────────────────
+
+def test_d01_community_name_and_account_name_stay_one(env):
+    first = ok(env.call("u_ann", "PATCH", "/profiles/me", json={"about": "hi"}))
+    assert first["profile"]["display_name"] == "u_ann"  # prefilled from the account
+    ok(env.call("u_ann", "PATCH", "/profiles/me", json={"display_name": "安妈妈"}))
+    assert next(u for u in env.db.rows("users") if u["id"] == "u_ann")["nickname"] == "安妈妈"
+    headers = {"Authorization": f"Bearer {main._make_token('u_ann')}"}
+    assert env.client.put("/api/auth/me", json={"nickname": "Ann's mum"}, headers=headers).status_code == 200
+    assert ok(env.call("u_ann", "GET", "/profiles/me"))["profile"]["display_name"] == "Ann's mum"
+    # An account without a community profile renames cleanly too.
+    assert env.client.put("/api/auth/me", json={"nickname": "Ben"},
+                          headers={"Authorization": f"Bearer {main._make_token('u_ben')}"}).status_code == 200
+    err(env.call("u_ann", "PATCH", "/profiles/me", json={"gender_tag": "female"}), 422, "VALIDATION_FAILED")
+
+
+def test_d04_questions_go_to_the_best_family_fit_first(env, monkeypatch):
+    monkeypatch.setattr(community, "DELIVERY_FANOUT", 1)
+    rows = env.db.rows("children")
+    rows.clear()
+    rows.extend([
+        {"id": "c-a", "user_id": "u_ann", "nickname": "A", "birth_date": "2024-05-01"},
+        {"id": "c-b", "user_id": "u_ben", "nickname": "B", "birth_date": "2016-01-01"},  # much older
+        {"id": "c-c", "user_id": "u_cat", "nickname": "C", "birth_date": "2024-07-01"},  # two months apart
+    ])
+    for u in env.db.rows("users"):
+        u["top_concerns"] = ["sleep"] if u["id"] in ("u_ann", "u_cat") else ["food"]
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u)
+    q = ok(ask(env, "u_ann"), 201)
+    assert q["delivery"]["recipient_count"] == 1
+    assert [d["recipient_id"] for d in env.db.rows("community_question_deliveries")] == ["u_cat"]
+
+
+def test_d04_the_ai_reorders_the_shortlist_without_seeing_identities(env, monkeypatch):
+    monkeypatch.setattr(community, "DELIVERY_FANOUT", 1)
+    seen = {}
+
+    async def fake_complete(site, uid, system, text):
+        seen["text"] = text
+        return "1, 0"
+
+    monkeypatch.setattr(community, "_complete", fake_complete)
+    monkeypatch.setattr(runtime, "aoai", object())
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u, about="secret about text")
+    ok(ask(env, "u_ann"), 201)
+    assert seen["text"].startswith("Question:")
+    for leak in ("u_ben", "u_cat", "Ben", "Cat", "secret about", "@example.test"):
+        assert leak not in seen["text"], leak
+    assert len(env.db.rows("community_question_deliveries")) == 1
+
+
+def test_d04_a_failing_ai_keeps_the_rule_order(env, monkeypatch):
+    async def broken(*_a, **_k):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(community, "_complete", broken)
+    monkeypatch.setattr(runtime, "aoai", object())
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    assert ok(ask(env, "u_ann"), 201)["delivery"]["recipient_count"] == 1
+
+
+def test_d06_received_questions_stay_open_for_thirty_days(env):
+    from datetime import datetime, timedelta, timezone
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    ok(ask(env, "u_ann"), 201)
+    expires = datetime.fromisoformat(env.db.rows("community_question_deliveries")[0]["expires_at"])
+    assert timedelta(days=29) < expires - datetime.now(timezone.utc) <= timedelta(days=30)

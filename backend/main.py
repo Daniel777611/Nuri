@@ -1459,6 +1459,9 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
             lambda: sb.table("users").update(updates).eq("id", uid).execute()
         )
         core_family.invalidate(uid)
+        if "nickname" in updates:
+            # Meeting D01: the community name and the account name are one.
+            await community.sync_name_from_account(uid, updates["nickname"])
     doc = {**res.data[0], **updates}
     return _to_public(doc)
 
