@@ -43,7 +43,8 @@ import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
 import { registerNativeNavigationGuard, type NativeNavigationAction } from "@/src/components/nativeNavigation";
 import Toast from "@/src/components/Toast";
-import { ApiError, api, isStreamUnsupported } from "@/src/api";
+import { ChatReportSheet } from "@/src/components/ChatReportSheet";
+import { ApiError, api, isStreamUnsupported, type ChatReportReason } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
   ChatImageInputError,
@@ -74,6 +75,7 @@ type Msg = {
   quick_replies?: string[];
   transition?: any;
   feedback_rating?: "like" | "dislike" | null;
+  reported?: boolean;
 };
 
 /** `transition.post` on a card marker written when a post notification is opened. */
@@ -393,6 +395,26 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       if (current(ticket)) feedbackSavingRef.current.delete(message.id);
     }
   }, [id, showToast, t, capture, current, setFeedbackSavingIds, setMessages]);
+
+  const [reportTarget, setReportTarget] = useState<Msg | null>(null);
+  const [reportSaving, setReportSaving] = useState(false);
+  const submitReport = useCallback(async (reason: ChatReportReason, note: string) => {
+    const ticket = capture();
+    if (ticket === null || !id || !reportTarget || reportSaving) return;
+    const messageId = reportTarget.id;
+    setReportSaving(true);
+    try {
+      await api.reportChatMessage(id, messageId, reason, note);
+      if (!current(ticket)) return;
+      setMessages((list) => list.map((item) => item.id === messageId ? { ...item, reported: true } : item));
+      setReportTarget(null);
+      showToast(t("已收到举报，我们会尽快审核"));
+    } catch {
+      if (current(ticket)) showToast(t("举报提交失败，请重试"));
+    } finally {
+      if (current(ticket)) setReportSaving(false);
+    }
+  }, [id, reportTarget, reportSaving, showToast, t, capture, current, setMessages, setReportSaving, setReportTarget]);
 
   const load = useCallback(async () => {
     const ticket = capture();
@@ -1006,7 +1028,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     <ScrollView ref={scrollRef} horizontal={false} directionalLockEnabled alwaysBounceHorizontal={false} style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%"}} contentContainerStyle={{width:"100%",minWidth:0,maxWidth:"100%",paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={e=>{scrollGeometry.current.viewportHeight=e.nativeEvent.layout.height;scrollToLatest();}} onContentSizeChange={(_width,height)=>{scrollGeometry.current.contentHeight=height;scrollToLatest();}} testID="chat-scroll">
       {historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
       {historyLoadState==="error"?<Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
-      {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} />)}
+      {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} onReport={setReportTarget} />)}
       {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
       {typing?<TypingDots />:null}
     </ScrollView>
@@ -1023,6 +1045,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
         </View>
       </Modal>
       <ChatAttachmentPreview attachment={previewAttachment} onClose={()=>setPreviewAttachment(null)} />
+      <ChatReportSheet visible={!!reportTarget} busy={reportSaving} onClose={()=>setReportTarget(null)} onSubmit={(reason,note)=>void submitReport(reason,note)} />
     <Toast message={toastMsg} />
   </View>;
   return embedded ? content : <NuriKeyboardFrame>{content}</NuriKeyboardFrame>;
@@ -1035,12 +1058,14 @@ function MessageBubble({
   feedbackSaving = false,
   onCopy,
   onFeedback,
+  onReport,
 }: {
   msg: Msg;
   actionsEnabled?: boolean;
   feedbackSaving?: boolean;
   onCopy?: (message: Msg) => void;
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
+  onReport?: (message: Msg) => void;
 }) {
   const { t } = useT();
   const palette = useNuriTheme();
@@ -1169,6 +1194,17 @@ function MessageBubble({
               testID={`chat-dislike-${msg.id}`}
             >
               <Ionicons name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"} size={18} color={msg.feedback_rating === "dislike" ? colors.brand : colors.onSurfaceTertiary} />
+            </FrostedPressable>
+            <FrostedPressable
+              onPress={() => onReport?.(msg)}
+              disabled={msg.reported === true}
+              style={[styles.responseAction, msg.reported === true && styles.responseActionSelected]}
+              accessibilityRole="button"
+              accessibilityLabel={msg.reported ? t("已举报这条回复") : t("举报这条回复")}
+              accessibilityState={{ disabled: msg.reported === true }}
+              testID={`chat-report-${msg.id}`}
+            >
+              <Ionicons name={msg.reported ? "flag" : "flag-outline"} size={17} color={msg.reported ? colors.brand : colors.onSurfaceTertiary} />
             </FrostedPressable>
           </View>
         ) : null}

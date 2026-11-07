@@ -920,6 +920,13 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
       updated_at: new Date().toISOString(),
     };
   }
+  if (/^\/chat\/sessions\/[^/]+\/messages\/[^/]+\/report$/.test(path) && method === "POST") {
+    const parts = path.split("/");
+    const message = (messages[parts[3]] || []).find((item) => item.id === parts[5] && item.role === "ai");
+    if (!message) throw new Error("AI response not found");
+    (message as any).reported = true;
+    return { message_id: parts[5], reason: body.reason, reported: true, updated_at: new Date().toISOString() };
+  }
   if (/^\/chat\/sessions\/[^/]+\/messages$/.test(path) && method === "POST") {
     const sessionId = path.split("/")[3]; const user_message = { id: id("msg"), session_id: sessionId, role: "user", text: body.text || "[图片]", created_at: new Date().toISOString() };
     const ai = {
