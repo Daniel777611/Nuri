@@ -47,6 +47,7 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
   private func configureNotifications(
     launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) {
+    guard let identity = NuriNativeIdentity.current else { return }
     let notificationCenter = UNUserNotificationCenter.current()
     notificationCenter.delegate = self
 
@@ -56,10 +57,9 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
       NuriPushStore.shared.storeNotificationRoute(from: userInfo)
     }
 
-    // The lab is a separate app, not an upgrade of the original web shell.
-    // Initialize only lab-owned reminders once; future launches preserve its
-    // explicitly enabled, clearly labelled local test reminders.
-    let migrationKey = "com.ordashtech.nuri.nativelab.reminders-initialized"
+    // Each installed app initializes only its own reminder namespace once.
+    // Production's existing key and saved settings remain unchanged.
+    let migrationKey = identity.remindersInitializedKey
     if !UserDefaults.standard.bool(forKey: migrationKey) {
       NuriReminderScheduler.shared.disableAndClear()
       UserDefaults.standard.set(true, forKey: migrationKey)

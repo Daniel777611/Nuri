@@ -366,6 +366,7 @@ function headerFixture(f, locale) {
     "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/uiuxfinal/Primitives": { FinalText: "FinalText" },
     "@/src/aiConsentCopy": copy, "@/src/aiPermissionNavigation": navigation, "@/src/requestFailure": failureCopy,
+    "@/src/liveCommunityGate": { isLiveCommunityEnabled: () => false },
     "./nativeNavigation": { requestGuardedNativeNavigation: () => false },
   }, true).default;
   const tree = Controls();

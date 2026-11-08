@@ -50,7 +50,16 @@ test("user-approved inline media removes redundant permission/review pages while
 
 test("the Community route is the live community, remounted on every account boundary",()=>{
  const source=readFileSync("app/community.tsx","utf8");
- assert.match(source,/import CommunityFinal from "@\/src\/uiuxfinal\/CommunityFinal"/);
+ assert.match(source,/import CommunityFinal from "nuri-live-community"/);
  assert.match(source,/<CommunityFinal key=\{generation\} \/>/);
  assert.doesNotMatch(source,/nuri-ux49-flow-preview|Coming soon|未上线/);
+ let generation=1;
+ const CommunityFinal=Symbol("live-community"),jsx=(type,props,key)=>({type,props,key});
+ const Route=load("app/community.tsx",{"nuri-live-community":{__esModule:true,default:CommunityFinal},"@/src/useAccountState":{useAccountScope:()=>({generation})},"react/jsx-runtime":{jsx,jsxs:jsx}}).default;
+ assert.deepEqual(Route(),{type:CommunityFinal,props:{},key:1});generation=2;assert.deepEqual(Route(),{type:CommunityFinal,props:{},key:2});generation=3;assert.equal(Route().key,3,"A to B to A still remounts, rather than reusing A's private state");
+ const flags=["EXPO_PUBLIC_PREVIEW_MODE","EXPO_PUBLIC_UIUX48_GALLERY","EXPO_PUBLIC_FLOW_PROTOTYPE","EXPO_PUBLIC_COMMUNITY_PROTOTYPE"],live={EXPO_PUBLIC_RELEASE_FLAVOR:"live-alpha",NURI_RELEASE_CHANNEL:"live-alpha"};
+ const cases=[{env:live,enabled:true},{env:{...live,...Object.fromEntries(flags.map(key=>[key,"0"]))},enabled:true},{env:{},enabled:false},{env:{...live,NURI_RELEASE_CHANNEL:"testflight-prototype"},enabled:false},{env:{...live,EXPO_PUBLIC_RELEASE_FLAVOR:"alpha"},enabled:false},...flags.flatMap(key=>["1","true","invalid",""].map(value=>({env:{...live,[key]:value},enabled:false})))];
+ const p=spawnSync(process.execPath,["-e",`const c=require('./metro.config.js'),keys=${JSON.stringify(["EXPO_PUBLIC_RELEASE_FLAVOR","NURI_RELEASE_CHANNEL",...flags])},cases=${JSON.stringify(cases)};console.log(JSON.stringify(cases.map(item=>{for(const key of keys)delete process.env[key];Object.assign(process.env,item.env);return c.resolver.resolveRequest({dev:false},'nuri-live-community','ios');})));`],{encoding:"utf8",env:{...process.env,EXPO_NO_DOTENV:"1"}});
+ assert.equal(p.status,0,p.stderr);const resolutions=JSON.parse(p.stdout);assert.equal(resolutions.length,cases.length);
+ for(const [index,resolution]of resolutions.entries()){assert.equal(resolution.type,"sourceFile");assert.equal(resolution.filePath,new URL(cases[index].enabled?"../src/uiuxfinal/CommunityFinal.tsx":"../src/uiuxfinal/CommunityUnavailable.tsx",import.meta.url).pathname,JSON.stringify(cases[index]));}
 });

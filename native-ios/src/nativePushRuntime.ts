@@ -12,6 +12,7 @@ export type NativePushState = {
 };
 
 const permissions = new Set(["not_determined", "denied", "authorized", "provisional"]);
+const supportedIOSBundles = new Set(["com.ordashtech.nuri.nativelab", "com.ordashtech.nuri.beta", "com.ordashtech.nuri.earlyaccess"]);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** An FCM registration token: case-sensitive, letters, digits and `:_-`. */
@@ -40,11 +41,13 @@ export function parseNativeToken(detail: unknown): PushDeviceRegistration | null
       build_number: typeof value.buildNumber === "string" ? value.buildNumber.slice(0, 32) : undefined,
     };
   }
+  const platform = (detail as { platform?: unknown }).platform;
+  if (platform !== undefined && platform !== "ios") return null;
   if (typeof value.token !== "string" || !/^[0-9a-f]{32,256}$/i.test(value.token)) return null;
   if (typeof value.installationId !== "string" || !uuid.test(value.installationId)) return null;
-  // Native Lab must report its actual APNs topic. The current backend rejects
-  // this new bundle until configured; never substitute the original app ID.
-  if (value.bundleId !== "com.ordashtech.nuri.nativelab") return null;
+  // Report only the installed app's true allowlisted APNs topic. Parsing a
+  // snapshot does not establish provisioning or backend topic acceptance.
+  if (typeof value.bundleId !== "string" || !supportedIOSBundles.has(value.bundleId)) return null;
   if (value.environment !== "sandbox" && value.environment !== "production") return null;
   if (!value.permissionStatus || !permissions.has(value.permissionStatus)) return null;
   return {

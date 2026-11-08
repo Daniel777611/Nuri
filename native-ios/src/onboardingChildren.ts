@@ -1,4 +1,5 @@
-import { isValidBirthDate, isValidDueDate } from "./child-age";
+import { isValidBirthDate, isValidDueDate, localDateOnly, parseDateOnly, type DateOnly } from "./child-age";
+import type { InlineDateDraft } from "./onboardingInlineDate";
 
 export type ChildPayload = {
   nickname: string;
@@ -7,7 +8,11 @@ export type ChildPayload = {
   allergies: string[];
   notes: string;
 };
-export type ChildDraft = ChildPayload & { key: string; id?: string; expecting: boolean };
+// Partial wheel positions are local UI state only. childPayload deliberately
+// serializes its existing whitelist, never these unfinished date columns.
+export type ChildDraft = ChildPayload & { key: string; id?: string; expecting: boolean; date_parts?: InlineDateDraft;
+  /** UI-only untouched default-date marker, never serialized in childPayload. */
+  date_default?: string };
 type Confirmed = { id: string; fingerprint: string };
 type PendingCreate = { key: string; payload: ChildPayload; beforeIds: Set<string> };
 export type ChildSaveProgress = { confirmed: Map<string, Confirmed>; pending: PendingCreate | null; deferred: PendingCreate[] };
@@ -42,8 +47,12 @@ export function childDraftsFromServer(value: unknown): ChildDraft[] {
   });
 }
 
-export function validChildDraft(row: ChildDraft): boolean {
-  return !!row.nickname.trim() && (row.expecting ? isValidDueDate(row.birth_date) : isValidBirthDate(row.birth_date));
+export function validChildDraft(row: ChildDraft, today: DateOnly = localDateOnly()): boolean {
+  if (row.date_parts) {
+    const date = parseDateOnly(row.birth_date);
+    if (!date || row.date_parts.year !== date.year || row.date_parts.month !== date.month || row.date_parts.day !== date.day) return false;
+  }
+  return !!row.nickname.trim() && (row.expecting ? isValidDueDate(row.birth_date, today) : isValidBirthDate(row.birth_date, today));
 }
 
 type RecoveryOptions = {
@@ -130,7 +139,12 @@ export async function persistOnboardingChildren(rows: ChildDraft[], options: {
     remember(pending.key, matches[0], pending.payload);
     progress.pending = null;
   };
-  if (new Set(rows.map(row => row.key)).size !== rows.length || rows.some(row => !validChildDraft(row))) throw new ChildSaveError("invalid");
+  // Skipping an optional setup step must not force repair/deletion of an
+  // unchanged legacy cloud row. Only a previously confirmed exact fingerprint
+  // can bypass validation; new/edited incomplete drafts still fail closed.
+  if (new Set(rows.map(row => row.key)).size !== rows.length || rows.some(row => !validChildDraft(row)
+      && !(row.id && progress.confirmed.get(row.key)?.id === row.id
+        && progress.confirmed.get(row.key)?.fingerprint === childFingerprint(row)))) throw new ChildSaveError("invalid");
   await own();
   await reconcile();
   for (const row of rows) {

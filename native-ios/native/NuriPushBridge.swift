@@ -5,6 +5,45 @@ import StoreKit
 import UIKit
 import UserNotifications
 
+/// Only these three separately registered apps may own notification state.
+/// Existing apps retain every key; Preview never migrates another app's keys.
+struct NuriNativeIdentity {
+  let bundleId: String
+  let keychainAccount: String
+
+  static let current: NuriNativeIdentity? = {
+    switch Bundle.main.bundleIdentifier {
+    case "com.ordashtech.nuri.nativelab":
+      return NuriNativeIdentity(
+        bundleId: "com.ordashtech.nuri.nativelab",
+        keychainAccount: "native-lab-installation-id"
+      )
+    case "com.ordashtech.nuri.beta":
+      return NuriNativeIdentity(
+        bundleId: "com.ordashtech.nuri.beta",
+        keychainAccount: "nuri-beta-installation-id"
+      )
+    case "com.ordashtech.nuri.earlyaccess":
+      return NuriNativeIdentity(
+        bundleId: "com.ordashtech.nuri.earlyaccess",
+        keychainAccount: "nuri-preview-installation-id"
+      )
+    default:
+      return nil
+    }
+  }()
+
+  var tokenKey: String { "\(bundleId).apns-token" }
+  var tokenEnvironmentKey: String { "\(bundleId).apns-token-environment" }
+  var keychainService: String { "\(bundleId).installation" }
+  var reminderQueueLabel: String { "\(bundleId).local-reminder-settings" }
+  var enabledKey: String { "\(bundleId).reminder-enabled" }
+  var intervalKey: String { "\(bundleId).reminder-interval-seconds" }
+  var reminderIdentifier: String { "\(bundleId).local-reminder" }
+  var batchIdentifierPrefix: String { "\(bundleId).local-reminder.batch." }
+  var remindersInitializedKey: String { "\(bundleId).reminders-initialized" }
+}
+
 extension Notification.Name {
   static let nuriPushStateDidChange = Notification.Name("NuriNativeLabPushStateDidChange")
   static let nuriNotificationRouteDidOpen = Notification.Name("NuriNativeLabNotificationRouteDidOpen")
@@ -13,32 +52,29 @@ extension Notification.Name {
 final class NuriPushStore {
   static let shared = NuriPushStore()
 
-  private let expectedBundleId = "com.ordashtech.nuri.nativelab"
-  private let tokenKey = "com.ordashtech.nuri.nativelab.apns-token"
-  private let tokenEnvironmentKey = "com.ordashtech.nuri.nativelab.apns-token-environment"
-  private let keychainService = "com.ordashtech.nuri.nativelab.installation"
-  private let keychainAccount = "native-lab-installation-id"
+  private let identity = NuriNativeIdentity.current
   private let routeLock = NSLock()
   private var pendingRoute: String?
 
   private init() {}
 
   func updateDeviceToken(_ deviceToken: Data) {
-    guard Bundle.main.bundleIdentifier == expectedBundleId else { return }
+    guard let identity else { return }
     let token = deviceToken.map { String(format: "%02x", $0) }.joined()
     let environment = pushEnvironment()
 
-    UserDefaults.standard.set(token, forKey: tokenKey)
-    UserDefaults.standard.set(environment, forKey: tokenEnvironmentKey)
+    UserDefaults.standard.set(token, forKey: identity.tokenKey)
+    UserDefaults.standard.set(environment, forKey: identity.tokenEnvironmentKey)
     notifyPushStateChanged()
   }
 
   func notifyPushStateChanged() {
+    guard identity != nil else { return }
     NotificationCenter.default.post(name: .nuriPushStateDidChange, object: nil)
   }
 
   func storeNotificationRoute(from userInfo: [AnyHashable: Any]) {
-    guard let route = userInfo["route"] as? String, Self.isAllowedRoute(route) else {
+    guard identity != nil, let route = userInfo["route"] as? String, Self.isAllowedRoute(route) else {
       return
     }
 
@@ -54,6 +90,7 @@ final class NuriPushStore {
   }
 
   func consumePendingRoute() -> String? {
+    guard identity != nil else { return nil }
     routeLock.lock()
     defer { routeLock.unlock() }
 
@@ -63,6 +100,10 @@ final class NuriPushStore {
   }
 
   func currentPushState(completion: @escaping ([String: Any]?) -> Void) {
+    guard let identity else {
+      completion(nil)
+      return
+    }
     UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
       guard let self else {
         completion(nil)
@@ -71,8 +112,8 @@ final class NuriPushStore {
 
       let environment = self.pushEnvironment()
       guard
-        let token = UserDefaults.standard.string(forKey: self.tokenKey),
-        UserDefaults.standard.string(forKey: self.tokenEnvironmentKey) == environment,
+        let token = UserDefaults.standard.string(forKey: identity.tokenKey),
+        UserDefaults.standard.string(forKey: identity.tokenEnvironmentKey) == environment,
         token.range(of: "^[0-9a-f]{32,256}$", options: .regularExpression) != nil
       else {
         completion(nil)
@@ -80,16 +121,16 @@ final class NuriPushStore {
       }
 
       let bundle = Bundle.main
-      // Never reuse or impersonate the original web-shell APNs topic. An
-      // incorrectly configured build has no valid Native Lab push snapshot.
-      guard let bundleId = bundle.bundleIdentifier, bundleId == self.expectedBundleId else {
+      // Report the installed app's true topic. Beta backend topic acceptance
+      // and provisioning are separate external requirements.
+      guard let bundleId = bundle.bundleIdentifier, bundleId == identity.bundleId else {
         completion(nil)
         return
       }
       let state: [String: Any] = [
         "token": token,
         "environment": environment,
-        "installationId": self.installationId(),
+        "installationId": self.installationId(identity: identity),
         "bundleId": bundleId,
         "permissionStatus": Self.permissionStatus(settings.authorizationStatus),
         "timeZone": TimeZone.current.identifier,
@@ -139,11 +180,11 @@ final class NuriPushStore {
     return configuredEnvironment == "production" ? "production" : "sandbox"
   }
 
-  private func installationId() -> String {
+  private func installationId(identity: NuriNativeIdentity) -> String {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: keychainService,
-      kSecAttrAccount as String: keychainAccount,
+      kSecAttrService as String: identity.keychainService,
+      kSecAttrAccount as String: identity.keychainAccount,
       kSecReturnData as String: true,
       kSecMatchLimit as String: kSecMatchLimitOne,
     ]
@@ -162,8 +203,8 @@ final class NuriPushStore {
     let valueData = Data(value.utf8)
     let deleteQuery: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: keychainService,
-      kSecAttrAccount as String: keychainAccount,
+      kSecAttrService as String: identity.keychainService,
+      kSecAttrAccount as String: identity.keychainAccount,
     ]
     SecItemDelete(deleteQuery as CFDictionary)
 
@@ -197,11 +238,10 @@ final class NuriReminderScheduler {
 
   private let center = UNUserNotificationCenter.current()
   private let defaults = UserDefaults.standard
-  private let queue = DispatchQueue(label: "com.ordashtech.nuri.nativelab.local-reminder-settings")
-  private let enabledKey = "com.ordashtech.nuri.nativelab.reminder-enabled"
-  private let intervalKey = "com.ordashtech.nuri.nativelab.reminder-interval-seconds"
-  private let reminderIdentifier = "com.ordashtech.nuri.nativelab.local-reminder"
-  private let batchIdentifierPrefix = "com.ordashtech.nuri.nativelab.local-reminder.batch."
+  private let identity = NuriNativeIdentity.current
+  private let queue = DispatchQueue(
+    label: NuriNativeIdentity.current?.reminderQueueLabel ?? "NuriUnsupportedReminderSettings"
+  )
   private let maximumIntervalSeconds = 31_536_000
   private let maximumPendingRequests = 64
   private let maximumBatchCount = 60
@@ -233,21 +273,23 @@ final class NuriReminderScheduler {
   }
 
   private func savedPreferences() -> Preferences {
-    // Read only this lab's settings. There is deliberately no original-app
-    // or older web-shell preference/keychain migration path.
-    let interval = defaults.integer(forKey: intervalKey)
+    guard let identity else { return Preferences(enabled: false, intervalSeconds: 3600) }
+    // Read only this installed app's namespace; no cross-app migration.
+    let interval = defaults.integer(forKey: identity.intervalKey)
     return Preferences(
-      enabled: defaults.bool(forKey: enabledKey),
+      enabled: defaults.bool(forKey: identity.enabledKey),
       intervalSeconds: (1...maximumIntervalSeconds).contains(interval) ? interval : 3600
     )
   }
 
   private func save(_ preferences: Preferences) {
-    defaults.set(preferences.enabled, forKey: enabledKey)
-    defaults.set(preferences.intervalSeconds, forKey: intervalKey)
+    guard let identity else { return }
+    defaults.set(preferences.enabled, forKey: identity.enabledKey)
+    defaults.set(preferences.intervalSeconds, forKey: identity.intervalKey)
   }
 
   func restoreSavedSettings() {
+    guard identity != nil else { return }
     enqueue {
       self.apply(self.savedPreferences(), requestPermission: false) { result in
         if case .failure = result {
@@ -258,12 +300,13 @@ final class NuriReminderScheduler {
     }
   }
 
-  /// Initializes only the lab's local reminders to disabled on first launch.
+  /// Initializes only this app's local reminders to disabled on first launch.
   /// It never reads or removes the original web-shell app's notification IDs.
   func disableAndClear() {
+    guard let identity else { return }
     enqueue {
-      self.defaults.set(false, forKey: self.enabledKey)
-      self.defaults.removeObject(forKey: self.intervalKey)
+      self.defaults.set(false, forKey: identity.enabledKey)
+      self.defaults.removeObject(forKey: identity.intervalKey)
       self.center.getPendingNotificationRequests { requests in
         self.queue.async {
           self.cancelOwnedRequests(requests) {
@@ -275,6 +318,10 @@ final class NuriReminderScheduler {
   }
 
   func getSettings(completion: @escaping Completion) {
+    guard identity != nil else {
+      completion(.failure(error(code: 4, message: "This app identity does not support NURI reminders.")))
+      return
+    }
     enqueue {
       let preferences = self.savedPreferences()
       self.center.getNotificationSettings { settings in
@@ -293,6 +340,10 @@ final class NuriReminderScheduler {
     intervalSeconds: NSNumber,
     completion: @escaping Completion
   ) {
+    guard identity != nil else {
+      completion(.failure(error(code: 4, message: "This app identity does not support NURI reminders.")))
+      return
+    }
     enqueue {
       // Validate before converting to Int, including non-finite/oversized input.
       let seconds = intervalSeconds.doubleValue
@@ -419,7 +470,7 @@ final class NuriReminderScheduler {
   }
 
   private func matches(_ request: UNNotificationRequest, preferences: Preferences) -> Bool {
-    guard let trigger = request.trigger as? UNTimeIntervalNotificationTrigger,
+    guard let identity, let trigger = request.trigger as? UNTimeIntervalNotificationTrigger,
       request.content.userInfo["type"] as? String == "local_reminder"
     else {
       return false
@@ -427,11 +478,11 @@ final class NuriReminderScheduler {
 
     if preferences.intervalSeconds >= 60 {
       // Retain a compatible request owned by this lab without resetting it.
-      return request.identifier == reminderIdentifier && trigger.repeats
+      return request.identifier == identity.reminderIdentifier && trigger.repeats
         && trigger.timeInterval == TimeInterval(preferences.intervalSeconds)
     }
 
-    return request.identifier.hasPrefix(batchIdentifierPrefix)
+    return request.identifier.hasPrefix(identity.batchIdentifierPrefix)
       && !trigger.repeats
       && (request.content.userInfo["reminderSchema"] as? NSNumber)?.intValue == 2
       && (request.content.userInfo["intervalSeconds"] as? NSNumber)?.intValue == preferences.intervalSeconds
@@ -439,7 +490,8 @@ final class NuriReminderScheduler {
   }
 
   private func isOwned(_ identifier: String) -> Bool {
-    identifier == reminderIdentifier || identifier.hasPrefix(batchIdentifierPrefix)
+    guard let identity else { return false }
+    return identifier == identity.reminderIdentifier || identifier.hasPrefix(identity.batchIdentifierPrefix)
   }
 
   private func dueDate(_ request: UNNotificationRequest) -> Date? {
@@ -452,13 +504,13 @@ final class NuriReminderScheduler {
   }
 
   private func newPlans(_ preferences: Preferences, count: Int) -> [SchedulePlan] {
-    guard preferences.enabled else { return [] }
+    guard let identity, preferences.enabled else { return [] }
 
     if preferences.intervalSeconds >= 60 {
       let content = notificationContent(preferences: preferences, dueDate: nil)
       return [
         SchedulePlan(
-          identifier: reminderIdentifier,
+          identifier: identity.reminderIdentifier,
           content: content,
           repeatInterval: TimeInterval(preferences.intervalSeconds),
           dueDate: nil
@@ -471,7 +523,7 @@ final class NuriReminderScheduler {
         TimeInterval(preferences.intervalSeconds * index)
       )
       return SchedulePlan(
-        identifier: "\(batchIdentifierPrefix)\(index)",
+        identifier: "\(identity.batchIdentifierPrefix)\(index)",
         content: notificationContent(preferences: preferences, dueDate: dueDate),
         repeatInterval: nil,
         dueDate: dueDate
@@ -742,6 +794,10 @@ final class NuriPushBridge: RCTEventEmitter {
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
     DispatchQueue.main.async {
+      guard NuriNativeIdentity.current != nil else {
+        reject("PUSH_UNAVAILABLE", "This app identity does not support NURI notifications.", nil)
+        return
+      }
       _ = NuriPushStore.shared.consumePendingRoute()
       // Removes only this app's already delivered banners. APNs payloads
       // already in transit cannot be recalled by a client-side cleanup.
@@ -786,6 +842,10 @@ final class NuriPushBridge: RCTEventEmitter {
     _ resolve: @escaping RCTPromiseResolveBlock,
     rejecter reject: @escaping RCTPromiseRejectBlock
   ) {
+    guard NuriNativeIdentity.current != nil else {
+      reject("PUSH_UNAVAILABLE", "This app identity does not support NURI notifications.", nil)
+      return
+    }
     let center = UNUserNotificationCenter.current()
     center.getNotificationSettings { settings in
       let finishRegistration = {

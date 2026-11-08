@@ -229,8 +229,8 @@ test("Home and post page preserve brief AI search summaries and display the orig
     assert.ok(post.find("daily-post-summary-point-0"));
     assert.equal(post.find("daily-post-summary-disclosure"), undefined, "The requested lower article footer is removed from this reading page.");
     assert.doesNotMatch(post.visible(), /copied-(?:excerpt|author|picture)-sentinel/);
-    assert.equal(post.find("daily-post-source-preview-fixture").props.sourceUrl,"https://source.invalid/A");
-    assert.equal(post.find("daily-post-source-preview-fixture").props.active,true);
+    assert.ok(post.find("daily-post-thumbnail-unavailable"));
+    assert.equal(post.find("daily-post-source-preview-fixture"),undefined);
     assert.equal(post.find("daily-post-thumbnail"),undefined);
     post.find("daily-post-source").props.onPress(); await tick(); post.render();
     assert.deepEqual(post.external, ["https://source.invalid/A"]);
@@ -251,7 +251,7 @@ test("post removes only its lower notes footer while preserving supplied content
     assert.equal(post.find("daily-post-summary-situation").props.children,"Supplied current post summary.");
     for(const[index,point]of card.takeaways.entries()){const row=post.find(`daily-post-summary-point-${index}`);assert.ok(row);assert.ok(JSON.stringify(row).includes(point));}
     assert.equal(post.find("daily-post-summary-point-2"),undefined);
-    const preview=post.find("daily-post-source-preview-fixture");assert.equal(preview.props.sourceUrl,card.source_url);assert.equal(preview.props.active,true);assert.ok(post.find("daily-post-browser-region"));
+    assert.ok(post.find("daily-post-thumbnail-unavailable"));assert.ok(post.find("daily-post-media-region"));assert.equal(post.find("daily-post-source-preview-fixture"),undefined);
     const source=post.find("daily-post-source"),chat=post.find("daily-post-chat");assert.equal(source.props.accessibilityRole,"link");assert.equal(source.props.disabled,false);assert.equal(chat.props.accessibilityRole,"button");assert.equal(chat.props.disabled,false);
     assert.deepEqual(post.external,[]);assert.deepEqual(post.routes,[]);assert.equal(f.calls.filter(call=>call.path==="/chat/sessions"||call.path.endsWith("/events")).length,0);
     source.props.onPress();await tick();post.render();assert.deepEqual(post.external,[card.source_url]);assert.equal(f.calls.filter(call=>call.path==="/feed/daily-post/daily-A/events"&&JSON.parse(call.init.body).event==="source_click").length,1);
@@ -270,7 +270,11 @@ test("external post links reject unsafe URL shapes without dispatching or record
       f.responder = (path) => path.startsWith("/feed/daily-post") ? response({ state: "ready", card: { ...dailyCard("A"), source_url } }) : null;
       post = page(f); post.render(); await tick(); post.render();
       const events = f.calls.filter((call) => call.path.endsWith("/events")).length;
-      post.find("daily-post-source").props.onPress(); await tick(); post.render();
+      const imageAction=post.find("daily-post-source");assert.equal(imageAction.props.disabled,true);
+      imageAction.props.onPress();await tick();post.render();assert.deepEqual(post.external,[]);
+      // The independent text link still reaches the real controller, which
+      // must reject unsafe metadata too; a disabled image action is a no-op.
+      post.find("daily-post-source-caption").props.onPress(); await tick(); post.render();
       assert.deepEqual(post.external, [], source_url);
       assert.ok(post.find("daily-post-source-error"), source_url);
       assert.equal(f.calls.filter((call) => call.path.endsWith("/events")).length, events, source_url);

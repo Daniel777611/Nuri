@@ -96,34 +96,27 @@ for (const route of ["https://nurifam.app/notifications/12345678", "/notificatio
 }
 assert.equal(safeNotificationRoute(notification), notification);
 
-// Native storage and reminder ownership are lab-only, even if these bridge
-// sources were accidentally compiled into a build with the original app ID.
+// Native storage and reminder ownership use the installed app's exact namespace.
+// The original web-shell identity remains unsupported, never a fallback.
 // Generated iOS copies are managed by prebuild, not edited by this test.
 {
   const swift = readFileSync(new URL("../native/NuriPushBridge.swift", import.meta.url), "utf8");
   const delegate = readFileSync(new URL("../native/NuriAppDelegate.swift", import.meta.url), "utf8");
-  for (const contents of [swift, delegate]) {
-    assert.doesNotMatch(contents, /"com\.ordashtech\.nuri(?!\.nativelab)[^"]*"/,
-      "native lab must not read, delete or migrate the original app's namespaces");
-  }
+  assert.deepEqual([...swift.matchAll(/case "([^"]+)":/g)].map(match => match[1]),
+    ["com.ordashtech.nuri.nativelab", "com.ordashtech.nuri.beta", "com.ordashtech.nuri.earlyaccess"]);
+  assert.match(swift, /default:\s+return nil/);
   const expectedKeys = {
-    expectedBundleId: "com.ordashtech.nuri.nativelab",
-    tokenKey: "com.ordashtech.nuri.nativelab.apns-token",
-    tokenEnvironmentKey: "com.ordashtech.nuri.nativelab.apns-token-environment",
-    keychainService: "com.ordashtech.nuri.nativelab.installation",
-    keychainAccount: "native-lab-installation-id",
-    enabledKey: "com.ordashtech.nuri.nativelab.reminder-enabled",
-    intervalKey: "com.ordashtech.nuri.nativelab.reminder-interval-seconds",
-    reminderIdentifier: "com.ordashtech.nuri.nativelab.local-reminder",
-    batchIdentifierPrefix: "com.ordashtech.nuri.nativelab.local-reminder.batch.",
+    tokenKey: ".apns-token", tokenEnvironmentKey: ".apns-token-environment", keychainService: ".installation",
+    enabledKey: ".reminder-enabled", intervalKey: ".reminder-interval-seconds", reminderIdentifier: ".local-reminder",
+    batchIdentifierPrefix: ".local-reminder.batch.", remindersInitializedKey: ".reminders-initialized",
   };
-  for (const [name, expected] of Object.entries(expectedKeys)) {
-    assert.equal(swift.match(new RegExp(`private let ${name} = "([^"]+)"`))?.[1], expected);
-  }
-  assert.match(swift, /guard Bundle\.main\.bundleIdentifier == expectedBundleId else \{ return \}/);
-  assert.match(swift, /guard let bundleId = bundle\.bundleIdentifier, bundleId == self\.expectedBundleId/);
+  for (const [name, suffix] of Object.entries(expectedKeys)) assert.ok(swift.includes(`var ${name}: String { "\\(bundleId)${suffix}" }`));
+  assert.match(swift, /bundleId: "com\.ordashtech\.nuri\.nativelab",\s+keychainAccount: "native-lab-installation-id"/);
+  assert.match(swift, /guard let identity else \{ return \}/);
+  assert.match(swift, /guard let bundleId = bundle\.bundleIdentifier, bundleId == identity\.bundleId/);
   assert.doesNotMatch(swift, /bundleIdentifier\s*\?\?|legacyIntervalKey|legacyIdentifiers|removeLegacyTests|kSecAttrAccessGroup/);
-  assert.match(delegate, /"com\.ordashtech\.nuri\.nativelab\.reminders-initialized"/);
+  assert.match(delegate, /guard let identity = NuriNativeIdentity\.current else \{ return \}/);
+  assert.match(delegate, /let migrationKey = identity\.remindersInitializedKey/);
   assert.match(swift, /Notification\.Name\("NuriNativeLabPushStateDidChange"\)/);
   assert.match(swift, /Notification\.Name\("NuriNativeLabNotificationRouteDidOpen"\)/);
   assert.match(swift, /content\.title = "Nuri 本机测试提醒"\s+content\.body = "仅用于验证本机提醒频率；远程 APNs 尚待后端支持。"/);
@@ -655,10 +648,17 @@ assert.match(api, /publishSession\(null\)/);
   let deliveredCleared = 0;
   let registrationGate = null;
   let permissionOverride = null;
+  let uiLocale = "en";
+  let languageMode = "system";
+  let sessionReadGate = null;
+  let nativeSubscriptions = 0;
+  let sessionSubscriptions = 0;
+  let foregroundSubscriptions = 0;
   const registrations = [];
   const deletions = [];
   const routes = [];
-  const values = new Map([["ui_language", "en"]]);
+  const values = new Map([["ui_language", "zh-CN"]]);
+  const storageReads = [];
   const router = { push: (route) => routes.push(route) };
   const bridge = {
     getInitialState: async () => ({ pushState: state, route: notification }),
@@ -691,6 +691,7 @@ assert.match(api, /publishSession\(null\)/);
       },
     },
     "react-native": { AppState: { addEventListener: (_name, listener) => {
+      foregroundSubscriptions += 1;
       foreground = listener;
       return { remove: () => { foreground = null; } };
     } } },
@@ -701,18 +702,21 @@ assert.match(api, /publishSession\(null\)/);
         registerPushDevice: async (device, owner) => { registrations.push([owner, device]); },
         deactivatePushDevice: async (id, owner) => { deletions.push([id, owner]); },
       },
-      auth: { getToken: async () => session, retryPendingPushCleanup: async () => ({}), subscribeSessionChange: (listener) => {
+      auth: { getToken: async () => { const captured = session; if (sessionReadGate) await sessionReadGate.promise; return captured; }, retryPendingPushCleanup: async () => ({}), subscribeSessionChange: (listener) => {
+        sessionSubscriptions += 1;
         sessionListener = listener;
         return () => { sessionListener = null; };
       } }, PUSH_INSTALLATION_KEY: "installation",
     },
     "./utils/storage": { storage: {
-      getItem: async (key, fallback) => values.get(key) || fallback,
+      getItem: async (key, fallback) => { storageReads.push(key); return values.get(key) || fallback; },
       setItem: async (key, value) => { values.set(key, value); return true; },
       removeItem: async (key) => { values.delete(key); return true; },
     } },
     "./preview-api": { isPreviewMode: false },
+    "./i18n": { useT: () => ({ locale: uiLocale, languageMode }) },
     "./nativePush": { getNativePushBridge: () => bridge, subscribeNativePush: (onState, onRoute) => {
+      nativeSubscriptions += 1;
       stateListener = onState;
       routeListener = onRoute;
       return () => { stateListener = null; routeListener = null; };
@@ -745,32 +749,92 @@ assert.match(api, /publishSession\(null\)/);
   render();
   await tick();
   assert.deepEqual(routes, [notification]);
+  const subscriptionCounts = [nativeSubscriptions, sessionSubscriptions, foregroundSubscriptions];
+  const nativeRequests = registrationsRequested;
+  const initialPayload = registrations[0][1];
+  for (const [mode, locale] of [["zh-TW", "zh-TW"], ["system", "en"], ["zh-CN", "zh-CN"], ["system", "en"]]) {
+    languageMode = mode; uiLocale = locale;
+    const count = registrations.length;
+    render(); await tick();
+    assert.equal(registrations.length, count + 1, "A changed UI locale gets one deduplicated metadata upsert");
+    assert.equal(registrations.at(-1)[0], session);
+    assert.equal(registrations.at(-1)[1].locale, locale, "Explicit/system/unsupported→English result comes from the live UI context");
+    const { locale: _changed, ...device } = registrations.at(-1)[1];
+    const { locale: _initial, ...initialDevice } = initialPayload;
+    assert.deepEqual(device, initialDevice, "Locale changes cannot alter the APNs identity, token, environment or installation");
+    render(); await tick(); assert.equal(registrations.length, count + 1, "Same-language rerender must not duplicate registration");
+  }
+  assert.deepEqual([nativeSubscriptions, sessionSubscriptions, foregroundSubscriptions], subscriptionCounts,
+    "Locale changes must not remount the app-lifetime runtime or install new listeners");
+  assert.equal(registrationsRequested, nativeRequests, "Locale-only changes must not re-request APNs registration");
+  assert.equal(storageReads.includes("ui_language"), false, "A stale legacy language cache is not current UI language authority");
+
+  // A delayed A credential snapshot must not reclaim B's push registration,
+  // and its completion must read the latest UI locale rather than a closure.
+  sessionReadGate = deferred(); foreground("active"); await tick();
+  uiLocale = "zh-TW"; languageMode = "system"; render(); await tick();
+  session = "locale-owner-B"; sessionListener(session);
+  uiLocale = "en"; languageMode = "en"; render(); await tick();
+  sessionReadGate.resolve(); sessionReadGate = null;
+  await tick(); await tick();
+  assert.equal(registrations.at(-1)[0], "locale-owner-B");
+  assert.equal(registrations.at(-1)[1].locale, "en");
+  assert.deepEqual([nativeSubscriptions, sessionSubscriptions, foregroundSubscriptions], subscriptionCounts);
+
+  const beforeRevocation = registrations.length;
   nativeState = { ...state, permissionStatus: "denied" };
   stateListener(nativeState);
   await tick();
-  assert.deepEqual(deletions[0], [state.installationId, session]);
+  assert.deepEqual(deletions.at(-1), [state.installationId, session]);
   requestsFail = false;
   nativeState = state;
   const beforeForeground = registrationsRequested;
   foreground("active");
   await tick();
   assert.ok(registrationsRequested > beforeForeground);
-  assert.equal(registrations.length, 2);
+  assert.equal(registrations.length, beforeRevocation + 1);
   registrationGate = deferred();
   permissionOverride = "denied";
   foreground("active");
   await tick();
   registrationGate.resolve();
   await tick();
-  assert.equal(registrations.length, 2, "a stale authorized snapshot cannot undo a newer denied permission");
+  assert.equal(registrations.length, beforeRevocation + 1, "a stale authorized snapshot cannot undo a newer denied permission");
   session = null;
   sessionListener(null);
   await tick();
   assert.equal(deliveredCleared, 1);
+  sessionReadGate = deferred(); foreground("active"); await tick();
+  const beforeUnmount = registrations.length;
   effects.forEach((effect) => effect.cleanup?.());
+  sessionReadGate.resolve(); await tick(); await tick();
+  assert.equal(registrations.length, beforeUnmount, "An unmounted delayed refresh must not send a new registration");
   assert.equal(sessionListener, null);
   assert.equal(stateListener, null);
   assert.equal(routeListener, null);
   assert.equal(foreground, null);
+}
+// Runtime effects consume I18nProvider rather than its fallback context, but
+// remain a stable, unkeyed sibling of the same mounted navigator.
+{
+  const source = readFileSync(new URL("../app/_layout.tsx", import.meta.url), "utf8");
+  const tree = ts.createSourceFile("app/_layout.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const functions = tree.statements.filter(ts.isFunctionDeclaration);
+  const runtime = functions.find(node => node.name?.text === "AppRuntimeEffects");
+  const root = functions.find(node => node.name?.text === "RootLayout");
+  assert.ok(runtime?.body && root?.body);
+  const calls = node => { const names = []; const visit = child => { if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)) names.push(child.expression.text); ts.forEachChild(child, visit); }; visit(node); return names; };
+  for (const name of ["useActivityHeartbeat", "usePushBridge"]) {
+    assert.equal(calls(runtime.body).filter(value => value === name).length, 1);
+    assert.equal(calls(root.body).filter(value => value === name).length, 0);
+  }
+  let provider;
+  const visit = node => { if (ts.isJsxElement(node) && node.openingElement.tagName.getText(tree) === "I18nProvider") provider = node; ts.forEachChild(node, visit); };
+  visit(root);
+  assert.ok(provider);
+  const nodes = []; const descendants = node => { if (ts.isJsxSelfClosingElement(node)) nodes.push(node); ts.forEachChild(node, descendants); }; descendants(provider);
+  const effects = nodes.filter(node => node.tagName.getText(tree) === "AppRuntimeEffects");
+  assert.equal(effects.length, 1); assert.equal(effects[0].attributes.properties.length, 0, "No locale/identity key may remount runtime effects");
+  assert.equal(nodes.filter(node => node.tagName.getText(tree) === "Stack").length, 1, "The navigator is preserved, not duplicated for language changes");
 }
 console.log("Native APNs runtime: parsing, routing, permission, session races and retry checks passed.");

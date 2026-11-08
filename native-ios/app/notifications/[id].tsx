@@ -16,6 +16,7 @@ import { api, auth, ApiError, isAuthError } from "@/src/api";
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
+import { isCommunityNotificationKind } from "@/src/communityNotificationEntry";
 
 type LoadState = { kind: "loading" } | { kind: "missing" } | { kind: "error" };
 
@@ -43,6 +44,17 @@ export default function NotificationScreen() {
     try {
       token = await auth.getToken();
       if (!requestIsCurrent()) return;
+      const notification = await api.getNotification(id as string);
+      if (!requestIsCurrent()) return;
+      const classifiedToken = await auth.getToken();
+      if (!requestIsCurrent() || classifiedToken !== token) return;
+      if (isCommunityNotificationKind(notification.target?.kind)) {
+        // CommunityFinal calls the authenticated /target endpoint again and
+        // opens only its typed, currently accessible reference. No NURI AI
+        // conversation write is performed for Community notifications.
+        router.replace({ pathname: "/community", params: { notificationId: id as string } } as never);
+        return;
+      }
       const { session_id } = await api.openNotification(id as string);
       const currentToken = await auth.getToken();
       if (!requestIsCurrent() || currentToken !== token) return;

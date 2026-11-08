@@ -165,13 +165,15 @@ test("client helpers: error codes, intents, child age, times and unique keys", (
   assert.equal(keys.size, 200); for (const k of keys) assert.ok(k.length >= 8 && k.startsWith("q-"));
 });
 
-test("only polish, transcription and translation need the device's AI permission", () => {
+test("polish, transcription, translation and server-side question matching need device AI permission", () => {
   const { requiresAIConsent } = load("src/aiConsent.ts", { "./utils/storage": { storage: {} } });
   const post = { method: "POST" };
   assert.equal(requiresAIConsent("/community/v1/question-polishes", post), true);
   assert.equal(requiresAIConsent("/community/v1/transcriptions", post), true);
   assert.equal(requiresAIConsent("/community/v1/messages/m1/translations", post), true);
-  for (const path of ["/community/v1/questions", "/community/v1/conversations/c1/messages", "/community/v1/invitations", "/community/v1/me/inbox", "/community/v1/conversations/c1/ai-consent-requests"])
+  assert.equal(requiresAIConsent("/community/v1/questions", post), true);
+  assert.equal(requiresAIConsent("/community/v1/questions?q=x"), false);
+  for (const path of ["/community/v1/conversations/c1/messages", "/community/v1/invitations", "/community/v1/me/inbox", "/community/v1/conversations/c1/ai-consent-requests"])
     assert.equal(requiresAIConsent(path, path.includes("inbox") ? undefined : post), false, path);
 });
 
@@ -204,7 +206,7 @@ test("photos and voice: one prepared image per message, voice is transcription i
   assert.deepEqual(c.calls[3].body, { audio_base64: "data:audio/webm;base64,AAAA", locale: "zh-CN", ai_consent_version: "2026-10-01.1", client_request_id: "asr-1" });
   const source = read("src/uiuxfinal/CommunityFinal.tsx");
   assert.doesNotMatch(source, /notSupported|即将支持|coming soon/i);
-  for (const needle of ["startVoiceRecording()", "communityApi.transcribe(", "communityApi.uploadImage(", "prepareChatImage(", "<VoiceInputBar", "<CommunityImage"]) assert.ok(source.includes(needle), needle);
+  for (const needle of ["startVoiceRecording()", "communityApi.transcribe(", "communityApi.uploadImage(", "selectCommunityImage(", "prepareChatImage)", "<VoiceInputBar", "<CommunityImage"]) assert.ok(source.includes(needle), needle);
   // A transcript lands in the draft; only the chat's own Send button sends it.
   assert.match(source, /dispatch\(\{type:"draft",slot,text:/);
   assert.match(source, /if\(spoken&&sendAfter&&slot\.startsWith\("chat:"\)\)/);

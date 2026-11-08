@@ -14,6 +14,7 @@ import { StateCard } from "@/src/uiux48/StateCard";
 import { api, type DailyPostCard } from "@/src/api";
 import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
 import { externalSourceUrl } from "@/src/externalContent";
+import { socialPostThumbnail } from "@/src/recommendationMedia";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { shortResourceSummary, hasPostSummarySource, RESOURCE_SUMMARY_DISCLOSURE } from "@/src/resourceSummary";
 import { useT } from "@/src/i18n";
@@ -173,6 +174,7 @@ export default function DailyPostScreen() {
     title={sourceAvailable?card.headline:guide.headline}
     source={dailyPostTag(t,card)}
     sourceUrl={externalSourceUrl(card.source_url)}
+    mediaUrls={[card.thumbnail_url,card.image_url].map(value=>socialPostThumbnail(value,card.source_url)).filter((value):value is string=>Boolean(value))}
     sourceActive={sourceActive}
     summary={situation||question}
     points={takeaways}

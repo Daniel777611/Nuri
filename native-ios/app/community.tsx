@@ -1,4 +1,4 @@
-import CommunityFinal from "@/src/uiuxfinal/CommunityFinal";
+import CommunityFinal from "nuri-live-community";
 import { useAccountScope } from "@/src/useAccountState";
 
 /** Community on the live /api/community/v1 API. A session boundary remounts

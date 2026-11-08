@@ -1115,6 +1115,7 @@ export const api = {
     return deactivatePushInstallation(installationId, token || "");
   },
   listNotifications: (limit = 30) => req<{ items: NotificationHistoryItem[] }>(`/notifications?limit=${Math.max(1, Math.min(100, Math.trunc(Number.isFinite(limit) ? limit : 30)))}`),
+  getNotification: (id: string) => req<{ id: string; target?: { kind?: unknown } }>(`/notifications/${encodeURIComponent(id)}`),
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),

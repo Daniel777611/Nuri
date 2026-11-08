@@ -17,8 +17,17 @@ import { NuriThemeProvider, NuriNavigationTheme } from "@/src/uiux48/Theme";
 import { NuriShell } from "@/src/uiux48/Shell";
 import { AppKeyboardProvider } from "@/src/keyboard/AppKeyboard";
 import { getIdentityGeneration, subscribeSessionBoundary } from "@/src/sessionBoundary";
+import { AIConsentStartupGate } from "@/src/components/AIConsentStartupGate";
 
 SplashScreen.preventAutoHideAsync();
+
+/** Stable app-lifetime effects consume the resolved UI language context.
+ * Language/identity changes do not key or remount the navigator. */
+function AppRuntimeEffects() {
+  useActivityHeartbeat();
+  usePushBridge();
+  return null;
+}
 
 export default function RootLayout() {
   const identity=useSyncExternalStore(subscribeSessionBoundary,getIdentityGeneration,getIdentityGeneration);
@@ -27,9 +36,6 @@ export default function RootLayout() {
   const fontsReady =
     (iconFontsLoaded || Boolean(iconFontsError)) &&
     (textFontsLoaded || Boolean(textFontsError));
-  useActivityHeartbeat();
-  usePushBridge();
-
   useEffect(() => {
     if (fontsReady) {
       SplashScreen.hideAsync();
@@ -41,13 +47,14 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <I18nProvider>
+        <AppRuntimeEffects />
         <SafeAreaProvider>
-          <NuriThemeProvider><NuriNavigationTheme><AppKeyboardProvider ownerKey={identity}><NuriShell><Stack
+          <NuriThemeProvider><NuriNavigationTheme><AppKeyboardProvider ownerKey={identity}><AIConsentStartupGate><NuriShell><Stack
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: "transparent" },
             }}
-          /></NuriShell></AppKeyboardProvider></NuriNavigationTheme></NuriThemeProvider>
+          /></NuriShell></AIConsentStartupGate></AppKeyboardProvider></NuriNavigationTheme></NuriThemeProvider>
         </SafeAreaProvider>
       </I18nProvider>
     </GestureHandlerRootView>

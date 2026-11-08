@@ -89,10 +89,13 @@ function runner() {
 
 function page(f, locale = "en") {
   const r = runner(), routes = [];
-  const jsx = (type, props) => ({ type, props });
+  const jsx = (type, props, key) => ({ type, props, key });
+  const account = load("../src/useAccountState.ts", { react: r.react, "./api": f });
   const component = load("../app/login.tsx", {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/api": f,
-    "@/src/useAccountState": load("../src/useAccountState.ts", { react: r.react, "./api": f }),
+    "@/src/useAccountState": account,
+    "@/src/uiux48/useNativeAuthDraft": load("../src/uiux48/useNativeAuthDraft.ts", { react: r.react, "@/src/useAccountState": account }),
+    "@/src/uiux48/Primitives": Object.fromEntries(["AuthFrame", "FormTabs", "NuriField", "NuriText", "NuriButton"].map(name => [name, name])),
     "react-native": { View: "View", Text: "Text", TextInput: "Input", Pressable: "Pressable", KeyboardAvoidingView: "KeyboardAvoidingView",
       ScrollView: "ScrollView", Platform: { OS: "ios" }, StyleSheet: { create: (value) => value } },
     "expo-router": { useRouter: () => ({ replace: (href) => routes.push(href), push: (href) => routes.push(href) }), useLocalSearchParams: () => ({}) },
@@ -107,7 +110,8 @@ function page(f, locale = "en") {
   const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node)
     ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
   const p = { routes, unmount: r.unmount, render: () => { tree = r.render(component); return tree; },
-    find: (id) => nodes(tree).find((node) => node.props?.testID === id), visible: () => JSON.stringify(tree) };
+    find: (id) => nodes(tree).find((node) => node.props?.testID === id), visible: () => JSON.stringify(tree),
+    fieldEpoch: () => nodes(tree).find(node => node.type === "View" && nodes(node.props?.children).some(child => child.props?.testID === "login-email"))?.key };
   p.fill = () => { p.find("login-email").props.onChangeText("fixture@example.invalid"); p.find("login-password").props.onChangeText("fixture-password"); p.render(); };
   p.submit = () => p.find("login-submit-btn").props.onPress();
   return p;
@@ -129,8 +133,10 @@ for (const [fault, warning, message] of [["failWrite", "secureSet", /could not b
   test("actual " + fault + " resets form yet displays actionable local-storage error", async () => {
     const f = fixture(); let p;
     try {
-      f[fault] = true; p = page(f); p.render(); p.fill(); await p.submit(); p.render();
-      assert.equal(p.find("login-email").props.value, ""); assert.equal(p.find("login-password").props.value, "");
+      f[fault] = true; p = page(f); p.render(); p.fill(); const oldEpoch = p.fieldEpoch(); await p.submit(); p.render();
+      assert.notEqual(p.fieldEpoch(), oldEpoch, "A storage replacement boundary must retire the native credential fields");
+      assert.equal(p.find("login-email").props.defaultValue, ""); assert.equal(p.find("login-password").props.defaultValue, "");
+      assert.equal(p.find("login-email").props.value, undefined); assert.equal(p.find("login-password").props.value, undefined);
       assert.ok(p.find("login-error")); assert.match(p.visible(), message); assert.match(p.visible(), /retry/);
       assert.doesNotMatch(p.visible(), /邮箱或密码错误/); assert.deepEqual(p.routes, []); assert.ok(f.warnings.includes(warning));
       if (fault === "failWrite") assert.equal(f.secure.size, 0);

@@ -52,10 +52,41 @@ test('web-specific identity/storage/font/shell adapters retain exact main source
  for(const p of ['src/theme.ts','src/utils/storage/index.web.ts','src/components/GoogleSignInButton.web.tsx','src/nativeShell.web.ts','src/textFonts.web.ts','src/hooks/use-icon-fonts.ts','src/googleSignInSession.ts'])assert.equal(hash(readFileSync(p)),hash(main('native-ios/'+p)),p);
  for(const [p,name]of [['src/i18n/en.ts','en'],['src/i18n/zh-TW.ts','zhTW']]){const old=loadSource(main('native-ios/'+p))[name],current=load(p)[name];for(const [key,value]of Object.entries(old))assert.equal(current[key],value,'Main dictionary key must remain: '+key);}
 });
-test('actual web font adapter installs local-only aliases once and all four route consumers use it',()=>{
+test('actual web font adapter installs local-only aliases once; root font gate covers shared onboarding consumers',()=>{
  const inserted=[],nodes=new Map(),document={getElementById:id=>nodes.get(id),createElement:tag=>({tag}),head:{appendChild:n=>{nodes.set(n.id,n);inserted.push(n);}}};
  const first=load('src/textFonts.web.ts',{}, {document});load('src/textFonts.web.ts',{}, {document});assert.deepEqual(first.TEXT_FONTS,{});assert.equal(inserted.length,1);assert.equal((inserted[0].textContent.match(/@font-face/g)||[]).length,5);assert.match(inserted[0].textContent,/src:local\(/);assert.doesNotMatch(inserted[0].textContent,/url\(|https?:/);assert.deepEqual(load('src/textFonts.web.ts',{}, {document:undefined}).TEXT_FONTS,{});
- for(const p of ['app/_layout.tsx','app/register.tsx','app/onboarding.tsx','app/verify-email.tsx']){const source=read(p);assert.match(source,/from ["']@\/src\/textFonts["']/);assert.match(source,/useFonts\(TEXT_FONTS\)/);assert.doesNotMatch(source,/from ["']@expo-google-fonts\/noto-sans-sc["']/);}
+ for(const p of ['app/_layout.tsx','app/register.tsx','app/verify-email.tsx']){const source=read(p);assert.match(source,/from ["']@\/src\/textFonts["']/);assert.match(source,/useFonts\(TEXT_FONTS\)/);assert.doesNotMatch(source,/from ["']@expo-google-fonts\/noto-sans-sc["']/);}
+ // Onboarding now uses the app-lifetime loader, rather than loading the same
+ // fonts again inside the route. Execute that real ancestor's render gate.
+ const jsx=(type,props)=>({type,props}),effects=[],fontCalls=[],splash=[];
+ let textFonts=[false,null],iconFonts=[false,null];
+ const layout=load('app/_layout.tsx',{
+  'react/jsx-runtime':{jsx,jsxs:jsx},react:{useEffect:fn=>effects.push(fn),useSyncExternalStore:(_subscribe,get)=>get()},
+  'expo-router':{Stack:'Stack'},'expo-font':{useFonts:fonts=>{fontCalls.push(fonts);return textFonts;}},'@/src/textFonts':first,
+  'expo-splash-screen':{preventAutoHideAsync:()=>splash.push('prevent'),hideAsync:()=>splash.push('hide')},
+  'react-native':{Platform:{OS:'web'},View:'View'},'react-native-gesture-handler':{GestureHandlerRootView:'GestureHandlerRootView'},
+  'react-native-safe-area-context':{SafeAreaProvider:'SafeAreaProvider',SafeAreaView:'SafeAreaView'},'expo-status-bar':{StatusBar:'StatusBar'},
+  '@/src/hooks/use-icon-fonts':{useIconFonts:()=>iconFonts},'@/src/i18n':{I18nProvider:'I18nProvider'},
+  '@/src/useActivityHeartbeat':{useActivityHeartbeat:()=>{}},'@/src/usePushBridge':{usePushBridge:()=>{}},
+  '@/src/components/NativePageControls':{default:'NativePageControls'},'@/src/uiux48/Theme':{NuriThemeProvider:'NuriThemeProvider',NuriNavigationTheme:'NuriNavigationTheme'},
+  '@/src/uiux48/Shell':{NuriShell:'NuriShell'},'@/src/keyboard/AppKeyboard':{AppKeyboardProvider:'AppKeyboardProvider'},
+  '@/src/sessionBoundary':{getIdentityGeneration:()=>1,subscribeSessionBoundary:()=>()=>{}},'@/src/components/AIConsentStartupGate':{AIConsentStartupGate:'AIConsentStartupGate'},
+ }).default;
+ const render=()=>{const tree=layout();effects.splice(0).forEach(fn=>fn());return tree;};
+ const find=(node,type)=>node&&typeof node==='object'?(node.type===type?node:[node.props?.children].flat(Infinity).map(child=>find(child,type)).find(Boolean)):undefined;
+ assert.deepEqual(splash,['prevent']);assert.equal(render(),null);
+ textFonts=[true,null];assert.equal(render(),null,'text fonts alone cannot mount the navigator');
+ textFonts=[false,null];iconFonts=[true,null];assert.equal(render(),null,'icon fonts alone cannot mount the navigator');
+ assert.deepEqual(splash,['prevent'],'splash remains until both font owners settle');
+ textFonts=[true,null];const ready=render();assert.ok(find(find(ready,'NuriShell'),'Stack'),'onboarding navigator inherits the settled root font loader');
+ assert.deepEqual(splash,['prevent','hide']);assert.ok(fontCalls.every(fonts=>fonts===first.TEXT_FONTS));
+ textFonts=[false,Error('local font fallback')];iconFonts=[false,Error('icon fallback')];assert.ok(find(render(),'Stack'),'font failure retains the existing platform fallback instead of blocking the app');
+ for(const p of ['app/onboarding.tsx','src/uiuxfinal/OnboardingForm.tsx','src/uiuxfinal/InlineChildDate.tsx'])assert.doesNotMatch(read(p),/from ["']@expo-google-fonts\/noto-sans-sc["']/);
+ assert.match(read('app/onboarding.tsx'),/from ["']@\/src\/uiuxfinal\/OnboardingForm["']/);
+ assert.match(read('src/uiuxfinal/OnboardingForm.tsx'),/import \{ NuriField, NuriText \} from ["']@\/src\/uiux48\/Primitives["']/);
+ assert.match(read('src/uiuxfinal/OnboardingForm.tsx'),/<NuriText\b/);assert.match(read('src/uiuxfinal/OnboardingForm.tsx'),/<NuriField\b/);
+ for(const alias of ['NotoSansSC_400Regular','NotoSansSC_500Medium'])assert.ok(inserted[0].textContent.includes(alias),'shared text alias is installed: '+alias);
+ assert.match(read('src/uiuxfinal/InlineChildDate.tsx'),/locale === ["']zh-CN["'] \? ["']NotoSansSC_400Regular["'] : undefined/);
 });
 test('actual browser storage uses only its platform adapter and preserves typed round-trips and removal',async()=>{
  const data=new Map(),calls=[],AsyncStorage={getItem:async k=>{calls.push(['get',k]);return data.get(k)??null;},setItem:async(k,v)=>{calls.push(['set',k]);data.set(k,v);},removeItem:async k=>{calls.push(['remove',k]);data.delete(k);}};

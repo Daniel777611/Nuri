@@ -16,6 +16,7 @@ function load(path,deps={}){
   if(name==="./CommunityProfileEditor")return {CommunityProfileEditor:"CommunityProfileEditor"};
   if(name==="./communityHubLayout")return load("src/uiuxfinal/communityHubLayout.ts");
   if(name==="@/src/uiux48/inputLayout")return load("src/uiux48/inputLayout.ts");
+  if(name==="@/src/liveCommunityGate")return load("src/liveCommunityGate.ts");
   assert.ok(name in deps,"Unapproved dependency "+name);return deps[name];
  },m,m.exports);return m.exports;
 }
@@ -56,25 +57,27 @@ function community(locale="zh-CN",initial="chat"){
 // The fixed five-bubble transcript and the local-only consent toggle were removed
 // with the live Community API; scripts/test-final-community.mjs covers the chat contract.
 
-test("shared native controls yield only to parent prototype header and explicitly restore after a stale direct-link uiState",()=>{
- const previous=process.env.EXPO_PUBLIC_FLOW_PROTOTYPE;
+test("shared native controls yield only to the live parent header and explicitly restore after a stale direct-link uiState",()=>{
+ const keys=["EXPO_PUBLIC_RELEASE_FLAVOR","EXPO_PUBLIC_PREVIEW_MODE","EXPO_PUBLIC_UIUX48_GALLERY","EXPO_PUBLIC_FLOW_PROTOTYPE","EXPO_PUBLIC_COMMUNITY_PROTOTYPE"],previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
  const cases=[{uiState:"chat"},{uiState:"chat",communityHeader:"default"},{communityHeader:"parent-chat"},{communityHeader:"feedback"},{uiState:"friends"},{uiState:"profileSettings"}].map(params=>({params,avatar:true}));
  for(const uiState of ["preferences","blocked","blockedEmpty"]){
   cases.push({params:{uiState},avatar:false},{params:{uiState,communityHideAvatar:"1"},avatar:false},{params:{uiState,communityHideAvatar:"0",communityHeader:"default"},avatar:true});
  }
  cases.push({params:{uiState:"profileSettings",communityHideAvatar:"1"},avatar:false},{params:{uiState:"profileSettings",communityHideAvatar:"0"},avatar:true});
  try{
+  process.env.EXPO_PUBLIC_RELEASE_FLAVOR="live-alpha";for(const key of keys.slice(1))process.env[key]="0";
   for(const enabled of ["0","1"])for(const path of ["/community","/daily-video","/chat/session"]){
    process.env.EXPO_PUBLIC_FLOW_PROTOTYPE=enabled;
    for(const {params,avatar} of cases){
     const C=load("src/components/NativePageControls.tsx",{"react/jsx-runtime":runtime,"react-native":rn,"@expo/vector-icons":{},"expo-router":{usePathname:()=>path,useGlobalSearchParams:()=>params,useRouter:()=>({})},"@/src/i18n":{useT:()=>({locale:"en",t:s=>s}),translate:(_l,s)=>s},"@/src/theme":{colors:{}},"@/src/useAIConsent":{useAIConsent:()=>({state:{status:"allowed"}})},"@/src/aiConsentCopy":{aiConsentCopy:()=>({})},"@/src/aiPermissionNavigation":{},"@/src/requestFailure":{},"./nativeNavigation":{},"@/src/uiux48/Primitives":{IconAction:"IconAction",NuriText:"Text"},"@/src/uiux48/Scene":{NuriAvatar:"Avatar"},"@/src/uiuxfinal/UserAvatar":{CurrentUserAvatarAction:"Profile"},"@/src/uiuxfinal/Primitives":{FinalText:"Text"}}).default;
-    // Community is released: its parent-chat header owns the top in every build, flag or not.
-    const hidden=path==="/community"&&(params.communityHeader==="parent-chat"||params.communityHeader==="feedback"||params.communityHeader===undefined&&params.uiState==="chat");
+    // Only the live, non-prototype Community graph owns this header. An
+    // obsolete FLOW flag must not hide generic controls in other graphs.
+    const hidden=enabled==="0"&&path==="/community"&&(params.communityHeader==="parent-chat"||params.communityHeader==="feedback"||params.communityHeader===undefined&&params.uiState==="chat");
     const tree=C();assert.equal(tree===null,hidden);
     if(tree&&path==="/community")assert.equal(!!find(tree,"native-header-settings"),avatar,`Avatar visibility follows explicit current presentation before stale uiState: ${JSON.stringify(params)}`);
    }
   }
- }finally{if(previous===undefined)delete process.env.EXPO_PUBLIC_FLOW_PROTOTYPE;else process.env.EXPO_PUBLIC_FLOW_PROTOTYPE=previous;}
+ }finally{for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}}
 });
 test("parent backdrop reuses original unified illustration, physical blur and independent half-white veil",()=>{
  const C=load("src/uiuxfinal/ChatBackdrop.tsx",{react:{useRef:v=>({current:v})},"react/jsx-runtime":runtime,"react-native":{...rn,useWindowDimensions:()=>({width:402,height:874})},"expo-image":{Image:"Image"}}).FinalChatBackdrop;
@@ -84,11 +87,12 @@ test("parent backdrop reuses original unified illustration, physical blur and in
  assert.match(read("src/uiux48/Shell.tsx"),/parentChat\|\|communityBackdrop==="plain"\?<FinalChatBackdrop scene="parent"\//);
 });
 test("deep-link first render has the parent background and no tabs even before route presentation effects",()=>{
- const previous=process.env.EXPO_PUBLIC_FLOW_PROTOTYPE;process.env.EXPO_PUBLIC_FLOW_PROTOTYPE="1";
+ const keys=["EXPO_PUBLIC_RELEASE_FLAVOR","EXPO_PUBLIC_PREVIEW_MODE","EXPO_PUBLIC_UIUX48_GALLERY","EXPO_PUBLIC_FLOW_PROTOTYPE","EXPO_PUBLIC_COMMUNITY_PROTOTYPE"],previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+ process.env.EXPO_PUBLIC_RELEASE_FLAVOR="live-alpha";for(const key of keys.slice(1))process.env[key]="0";
  try{for(const params of [{uiState:"chat"},{uiState:"consent"},{communityHeader:"parent-chat"},{uiState:"chat",communityHeader:"default",communityBackdrop:"final-unified",communityHideTabs:"0"}]){
   const C=load("src/uiux48/Shell.tsx",{react:{useEffect:()=>{},useRef:v=>({current:v}),useState:v=>[v,()=>{}]},"react/jsx-runtime":runtime,"react-native":rn,"expo-router":{usePathname:()=>"/community",useSegments:()=>[],useGlobalSearchParams:()=>params},"react-native-safe-area-context":{SafeAreaView:"Safe"},"expo-status-bar":{StatusBar:"Status"},"expo-image":{Image:"Image"},"expo-linear-gradient":{LinearGradient:"Gradient"},"expo-blur":{},"@/src/i18n":{},"@/src/components/NativePageControls":{default:"NativeControls"},"@/src/components/nativeNavigation":{},"./Scene":{NuriScene:"Scene"},"./Theme":{useNuriTheme:()=>({night:false,mode:"Morning",keyboard:{}})},"./Primitives":{},"@/src/uiuxfinal/Primitives":presentation,"@/src/uiuxfinal/ChatBackdrop":{FinalChatBackdrop:"ChatBackdrop"},"@/src/uiuxfinal/ReadingBackdrop":{FinalReadingBackdrop:"ReadingBackdrop"},"./keyboard":{}}).NuriShell;
   const tree=C({children:"page"}),all=walk(tree),parent=params.communityHeader!=="default";
   assert.equal(all.some(n=>n.type==="ChatBackdrop"&&n.props.scene==="parent"),parent);assert.equal(all.some(n=>typeof n.type==="function"&&n.type.name==="NuriTabBar"),!parent);
   assert.ok(all.some(n=>n.type==="Safe"&&n.props.edges?.[0]==="top"),"Always retain shell top safe area");
- }}finally{if(previous===undefined)delete process.env.EXPO_PUBLIC_FLOW_PROTOTYPE;else process.env.EXPO_PUBLIC_FLOW_PROTOTYPE=previous;}
+ }}finally{for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}}
 });

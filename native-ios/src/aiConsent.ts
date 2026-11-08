@@ -12,6 +12,9 @@ export type AIConsentState = {
   version: string;
   // Classification only; never retain the backend response body or token.
   failure?: "session" | "unavailable";
+  // Distinguish an explicit saved refusal from never having been asked.
+  // Neither value grants permission; every AI request still checks storage.
+  choiceRecorded?: boolean;
 };
 type Context = { token: string; userId: string; session: number };
 export type AIConsentLease = Context & { decision: number };
@@ -47,10 +50,10 @@ export function requiresAIConsent(path: string, init?: RequestInit): boolean {
       || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
       || /^\/feed\/daily-(?:post|video)\/[a-zA-Z0-9_-]+$/.test(route))) return false;
   if (route.startsWith("/feed")) return true;
-  // Community: only these three send a parent's words to the AI provider.
-  // Everything else under /community/v1 is plain storage and stays usable
-  // without AI permission (questions, replies, chat, relationships).
-  if (method === "POST" && (route === "/community/v1/question-polishes" || route === "/community/v1/transcriptions"
+  // The current backend may send a newly posted question to AI matching.
+  // Gate that write too until the server offers a genuinely non-AI path.
+  // Ordinary replies, chat, relationships and reporting remain non-AI.
+  if (method === "POST" && (route === "/community/v1/questions" || route === "/community/v1/question-polishes" || route === "/community/v1/transcriptions"
       || /^\/community\/v1\/messages\/[^/]+\/translations$/.test(route))) return true;
   if (route.startsWith("/community/v1/")) return false;
   // Reporting a harmful AI reply only stores the report (backend/main.py
@@ -78,6 +81,7 @@ export class AIConsentController {
   private decision = 0;
   private context: Context | null = null;
   private blocked = new Set<string>();
+  private startupHeld = false;
   private writes: Promise<unknown> = Promise.resolve();
   private listeners = new Set<(state: AIConsentState) => void>();
   private state: AIConsentState = { status: "unknown", userId: null, session: 0, version: AI_CONSENT_VERSION };
@@ -94,8 +98,18 @@ export class AIConsentController {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
-  private publish(status: AIConsentState["status"], userId = this.context?.userId || null, failure?: AIConsentState["failure"]) {
-    this.state = { status, userId, session: this.session, version: AI_CONSENT_VERSION, ...(failure ? { failure } : {}) };
+  // The startup UI can inspect identity while preventing an older saved grant
+  // from racing a new pre-login decision. This is a deny-only process latch.
+  setStartupHold = (held: boolean) => {
+    if (this.startupHeld === held) return;
+    this.startupHeld = held;
+    if (held) this.decision++;
+    // A hold can invalidate a refresh that is already loading. Always restart
+    // that check on release, not only when the previous status was allowed.
+    else this.publish("unknown");
+  };
+  private publish(status: AIConsentState["status"], userId = this.context?.userId || null, failure?: AIConsentState["failure"], choiceRecorded?: boolean) {
+    this.state = { status, userId, session: this.session, version: AI_CONSENT_VERSION, ...(failure ? { failure } : {}), ...(choiceRecorded === undefined ? {} : { choiceRecorded }) };
     this.listeners.forEach((listener) => { try { listener(this.getState()); } catch { /* UI cannot bypass the gate. */ } });
   }
   sessionChanged = () => {
@@ -125,7 +139,7 @@ export class AIConsentController {
     if (session !== this.session || currentToken !== token) throw new AIConsentError("AI_SESSION_CHANGED");
     return this.context = { token, userId, session };
   }
-  private async read(context: Context, decision: number): Promise<boolean> {
+  private async read(context: Context, decision: number): Promise<{ allowed: boolean; recorded: boolean }> {
     const [raw, denied] = await Promise.all([
       this.deps.storage.secureGet(this.key(context.userId), ""),
       // Deny-only journal: missing/unreadable metadata is NOT permission. It
@@ -136,8 +150,9 @@ export class AIConsentController {
     if (decision !== this.decision) throw new AIConsentError("AI_SESSION_CHANGED");
     let record: any = null;
     try { record = JSON.parse(raw || ""); } catch { /* absent or corrupt => denied */ }
-    return !this.blocked.has(context.userId) && denied === false && record?.allowed === true
-      && record.userId === context.userId && record.version === AI_CONSENT_VERSION && record.provider === AI_PROVIDER;
+    const recorded = typeof record?.allowed === "boolean" && record.userId === context.userId
+      && record.version === AI_CONSENT_VERSION && record.provider === AI_PROVIDER;
+    return { recorded, allowed: recorded && !this.blocked.has(context.userId) && denied === false && record.allowed === true };
   }
   refresh = async (): Promise<AIConsentState> => {
     const session = this.session;
@@ -145,9 +160,9 @@ export class AIConsentController {
     this.publish("loading");
     try {
       const context = await this.identify();
-      const allowed = await this.read(context, decision);
+      const { allowed, recorded } = await this.read(context, decision);
       if (!this.same(context) || decision !== this.decision) return this.getState();
-      this.publish(allowed ? "allowed" : "not_allowed");
+      this.publish(allowed ? "allowed" : "not_allowed", context.userId, undefined, recorded);
     } catch (error) {
       if (session === this.session && decision === this.decision && this.state.status !== "signed_out") {
         const status = error && typeof error === "object" && "status" in error ? error.status : null;
@@ -158,20 +173,22 @@ export class AIConsentController {
     return this.getState();
   };
   authorize = async (token: string | null): Promise<AIConsentLease> => {
+    if (this.startupHeld) throw new AIConsentError("AI_CONSENT_REQUIRED");
     const context = await this.identify(token);
     const decision = this.decision;
-    const allowed = await this.read(context, decision);
+    const { allowed, recorded } = await this.read(context, decision);
     if (!this.same(context) || decision !== this.decision) throw new AIConsentError("AI_SESSION_CHANGED");
+    if (this.startupHeld) throw new AIConsentError("AI_CONSENT_REQUIRED");
     if (!allowed) {
-      this.publish("not_allowed");
+      this.publish("not_allowed", context.userId, undefined, recorded);
       throw new AIConsentError("AI_CONSENT_REQUIRED");
     }
-    this.publish("allowed");
+    this.publish("allowed", context.userId, undefined, recorded);
     return { ...context, decision };
   };
   // Invoke immediately before fetch/xhr.send, with no await in between.
   assertCurrent = (lease: AIConsentLease) => {
-    if (!this.same(lease) || lease.decision !== this.decision || this.blocked.has(lease.userId)) throw new AIConsentError("AI_SESSION_CHANGED");
+    if (this.startupHeld || !this.same(lease) || lease.decision !== this.decision || this.blocked.has(lease.userId)) throw new AIConsentError("AI_SESSION_CHANGED");
   };
   setAllowed = (allowed: boolean, expected: AIConsentState): Promise<boolean> => {
     const context = this.context;
@@ -193,7 +210,7 @@ export class AIConsentController {
       if (decision !== this.decision) return false;
       if (!saved || !permitted) throw new AIConsentError("AI_CONSENT_STORAGE_FAILED");
       if (allowed) this.blocked.delete(context.userId);
-      this.publish(allowed ? "allowed" : "not_allowed");
+      this.publish(allowed ? "allowed" : "not_allowed", context.userId, undefined, true);
       return true;
     };
     const next = this.writes.then(write, write);

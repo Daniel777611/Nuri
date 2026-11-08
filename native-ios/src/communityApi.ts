@@ -79,10 +79,21 @@ export type ReportReason = "harassment" | "sexual" | "hate" | "child_safety" | "
 export type Preferences = {
   parent_message_notifications_enabled: boolean; profile_hidden: boolean; auto_translate_messages: boolean; version: number;
 };
+export type CommunityNotificationTarget =
+  | { kind: "community_question"; question_id: string; delivery_id: string }
+  | { kind: "community_reply"; question_id: string; thread_id: string }
+  | { kind: "community_invitation"; invitation_id: string; state?: string }
+  | { kind: "community_conversation" | "community_ai_consent"; conversation_id: string };
+export type CommunityNotificationTargetResult = { notification_id: string } & (
+  | { accessible: true; target: CommunityNotificationTarget; reason: null }
+  | { accessible: false; target: null; reason: string }
+);
+export type AIPurpose = "conversation_notes" | "translation";
 export type ConsentRequest = {
-  request_id: string; purpose: string; notice_version: string; state: "pending" | "effective" | "declined" | "revoked" | "superseded";
+  request_id: string; purpose: AIPurpose; notice_version: string; state: "pending" | "effective" | "declined" | "revoked" | "superseded";
   epoch: number; version: number; initiated_by: "me" | "parent"; my_decision: "allow" | "decline" | "pending";
   parent_decision: "allow" | "decline" | "pending"; effective: boolean;
+  effective_from_seq: number | null;
 };
 export type AIParticipation = {
   conversation_id: string; epoch: number; effective: boolean; notice_version: string;
@@ -114,6 +125,8 @@ const send = <T,>(method: string, path: string, body?: unknown, timeoutMs?: numb
   apiRequest<T>(V1 + path, { method, body: body === undefined ? undefined : JSON.stringify(body) }, timeoutMs);
 
 export const communityApi = {
+  notificationTarget: (id: string) => get<CommunityNotificationTargetResult>(`/me/notifications/${encodeURIComponent(id)}/target`),
+  markNotificationRead: (id: string) => send<{ notification_id: string; read_at: string }>("POST", `/me/notifications/${encodeURIComponent(id)}/read`),
   // P01–P04
   myProfile: () => get<MyProfile>("/profiles/me"),
   saveProfile: (patch: { display_name?: string; about?: string; city?: string; intents?: IntentCode[]; gender_tag?: "mom" | "dad" | "other"; expected_version?: number }) =>
@@ -191,14 +204,23 @@ export const communityApi = {
     send<Preferences>("PATCH", "/preferences", patch),
   // P25–P28
   aiParticipation: (conversationId: string) => get<AIParticipation>(`/conversations/${encodeURIComponent(conversationId)}/ai-participation`),
-  requestAI: (conversationId: string, noticeVersion: string, key: string) =>
+  requestAI: (conversationId: string, noticeVersion: string, key: string, purpose: AIPurpose = "conversation_notes") =>
     send<{ request: ConsentRequest; created: boolean }>("POST", `/conversations/${encodeURIComponent(conversationId)}/ai-consent-requests`,
-      { purpose: "conversation_notes", notice_version: noticeVersion, client_request_id: key }),
+      { purpose, notice_version: noticeVersion, client_request_id: key }),
   decideAI: (requestId: string, decision: "allow" | "decline", noticeVersion: string, key: string) =>
     send<{ request: ConsentRequest }>("PUT", `/ai-consent-requests/${encodeURIComponent(requestId)}/my-decision`,
       { decision, notice_version: noticeVersion, client_request_id: key }),
-  revokeAI: (conversationId: string) =>
-    send<{ effective: boolean }>("DELETE", `/conversations/${encodeURIComponent(conversationId)}/ai-participation`),
+  revokeAI: (conversationId: string, purpose?: AIPurpose) =>
+    send<{ effective: boolean }>("DELETE", `/conversations/${encodeURIComponent(conversationId)}/ai-participation${q({ purpose })}`),
+  // P29 returns a separate translation; it never changes the saved original.
+  translateMessage: (messageId: string, targetLanguage: string, key: string) =>
+    send<MessageTranslation>("POST", `/messages/${encodeURIComponent(messageId)}/translations`,
+      { target_language: targetLanguage, ai_consent_version: AI_CONSENT_VERSION, client_request_id: key }, 30000),
+};
+
+export type MessageTranslation = {
+  message_id: string; original: { text: string; language: string | null };
+  translation: { id: string; kind: "translation"; state: string; text: string; target_language: string; created_at: string };
 };
 
 /** "约 1.5 英里" style label input; null when either parent shared no location. */

@@ -1,7 +1,9 @@
 import { createContext, forwardRef, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ForwardedRef, type ReactNode } from "react";
-import { AppState, Platform, TextInput, View, type TextInputProps } from "react-native";
+import { AppState, Keyboard, Platform, TextInput, View, type TextInputProps } from "react-native";
 import { usePathname } from "expo-router";
 import { useT, translate, type Locale } from "@/src/i18n";
+import { subscribeSessionBoundary } from "@/src/sessionBoundary";
+import { NativeNuriTextInput } from "./NativeNuriTextInput";
 import { KeyboardPanel } from "./KeyboardPanel";
 import { getPinyinCandidates } from "./pinyinEngine";
 import { deleteKeyboardSelection, keyboardSelection, replaceKeyboardSelection, type KeyboardEdit, type KeyboardSelection } from "./editingModel";
@@ -77,6 +79,7 @@ export class AppKeyboardController {
     this.update({ visible: false, activeHostId: null, height: 0, epoch: this.snapshot.epoch + 1, preedit: "", candidates: [], canDictate: false, canSticker: false });
     previous?.system(false); if (blur) previous?.blur();
   };
+  resetOwner = () => { this.dismiss(); this.preferred = null; };
   refresh(id: string) {
     if (this.activeId !== id) return;
     const current = this.field();
@@ -175,11 +178,18 @@ export function AppKeyboardProvider({ children, ownerKey }: { children: ReactNod
   if (!controllerRef.current) controllerRef.current = new AppKeyboardController();
   const controller = controllerRef.current, location = useRef({ path, ownerKey });
   useEffect(() => {
-    controller.setEnabled(!AppState.currentState || AppState.currentState === "active");
-    const subscription = AppState.addEventListener("change", state => controller.setEnabled(state === "active"));
-    return () => { subscription.remove(); controller.setEnabled(false); };
+    // UIKit owns iOS input, selected IME, marked text and candidates. Keep the
+    // existing custom keyboard only on the other supported preview surfaces.
+    controller.setEnabled(Platform.OS !== "ios" && (!AppState.currentState || AppState.currentState === "active"));
+    const subscription = AppState.addEventListener("change", state => {
+      controller.setEnabled(Platform.OS !== "ios" && state === "active");
+      if (Platform.OS === "ios" && state !== "active") Keyboard.dismiss();
+    });
+    return () => { subscription.remove(); controller.setEnabled(false); controller.resetOwner(); };
   }, [controller]);
-  useEffect(() => { if (location.current.path !== path || location.current.ownerKey !== ownerKey) { location.current = { path, ownerKey }; controller.dismiss(); } }, [controller, path, ownerKey]);
+  // Logout can retire a session without changing the navigation ownerKey.
+  useEffect(() => subscribeSessionBoundary(() => { controller.resetOwner(); if (Platform.OS === "ios") Keyboard.dismiss(); }), [controller]);
+  useEffect(() => { if (location.current.path !== path || location.current.ownerKey !== ownerKey) { const ownerChanged = location.current.ownerKey !== ownerKey; location.current = { path, ownerKey }; if (ownerChanged) controller.resetOwner(); else controller.dismiss(); if (Platform.OS === "ios") Keyboard.dismiss(); } }, [controller, path, ownerKey]);
   return <ControllerContext.Provider value={controller}>{children}</ControllerContext.Provider>;
 }
 
@@ -202,7 +212,7 @@ export function useAppKeyboardVisible(scopeId?: string) { const keyboard = useAp
  * Each native Modal must provide its own scope/host in its own view layer. */
 export function AppKeyboardHost({ scopeId = "root" }: { scopeId?: string }) {
   const controller = useContext(ControllerContext), keyboard = useAppKeyboard();
-  if (!keyboard.visible || keyboard.activeHostId !== scopeId) return null;
+  if (Platform.OS === "ios" || !keyboard.visible || keyboard.activeHostId !== scopeId) return null;
   const { layout, mode, shift, secure, multiline, returnKeyLabel, preedit, candidates, onText, onBackspace, onSpace, onEnter, onDone, onModeChange, onShift, onCandidate, onDictation, onSticker, onUseSystemKeyboard } = keyboard;
   const content = <KeyboardPanel {...{ layout, mode, shift, secure, multiline, returnKeyLabel, preedit, candidates, onText, onBackspace, onSpace, onEnter, onDone, onModeChange, onShift, onCandidate, onDictation, onSticker, onUseSystemKeyboard }} onHeightChange={(height: number) => controller?.height(scopeId, keyboard.epoch, height)} />;
   // Preserve the real input's selection on pointer activation. Keyboard/AX
@@ -239,7 +249,13 @@ function returnLabel(props: TextInputProps, locale: Locale) {
 
 /** Keep the original native/DOM TextInput instance, refs, callbacks and drafts.
  * Only soft-keyboard presentation and virtual-edit selection are adapted. */
-export const NuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function NuriTextInput({ appKeyboard = true, keyboardActive = true, keyboardId, onAppKeyboardSubmit, onAppKeyboardDone, onAppKeyboardDictation, onAppKeyboardSticker, ...props }, forwardedRef) {
+export const NuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function NuriTextInput(props, ref) {
+  const scope = useContext(ScopeContext);
+  if (Platform.OS === "ios") return <NativeNuriTextInput {...props} ref={ref} scopeActive={scope.active} />;
+  return <CustomNuriTextInput {...props} ref={ref} />;
+});
+
+const CustomNuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function CustomNuriTextInput({ appKeyboard = true, keyboardActive = true, keyboardId, onAppKeyboardSubmit, onAppKeyboardDone, onAppKeyboardDictation, onAppKeyboardSticker, ...props }, forwardedRef) {
   const controller = useContext(ControllerContext), scope = useContext(ScopeContext), { locale } = useT();
   const generatedId = useId(), id = keyboardId ?? `nuri-input-${generatedId}`;
   const ref = useRef<TextInput | null>(null), mounted = useRef(true), focusVersion = useRef(0);

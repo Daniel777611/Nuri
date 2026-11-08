@@ -94,6 +94,8 @@ function page(path, f, options = {}) {
   const dep = {
     react: r.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "@/src/useAccountState": hooks,
     "@/src/api": f, "@/src/sessionBoundary": f.boundary,
+    "@/src/liveCommunityGate": load("../src/liveCommunityGate.ts"),
+    "@/src/useAIConsent": { useAIConsent: () => ({ state: f.aiConsent.getState() }) },
     "@/src/requestFailure": load("../src/requestFailure.ts"),
     "@/src/collectionActions": load("../src/collectionActions.ts"),
     "@/src/aiPermissionNavigation": load("../src/aiPermissionNavigation.ts"),
@@ -104,7 +106,7 @@ function page(path, f, options = {}) {
     "@expo/vector-icons": { Ionicons: "Icon" }, "expo-linear-gradient": { LinearGradient: "Gradient" }, "expo-blur": { BlurView: "Blur" },
     "react-native-safe-area-context": { useSafeAreaInsets: () => ({ bottom: 0, top: 0 }) },
     "@react-navigation/native": { useIsFocused: () => true }, "@react-navigation/elements": { useHeaderHeight: () => 44 },
-    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t:options.realI18n?(key,vars)=>_translateForI18nFixture(pageLocale,key,vars):t, locale: pageLocale, setLocale }), LOCALES: ["en", "zh-CN", "zh-TW"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文", "zh-TW":"繁體中文" } },
+    "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t:options.realI18n?(key,vars)=>_translateForI18nFixture(pageLocale,key,vars):t, locale: pageLocale, setLocale, languageMode:"en", chooseLanguage:async value=>{await setLocale(value);return value;} }), LOCALES: ["en", "zh-CN", "zh-TW"], LOCALE_LABELS: { en: "English", "zh-CN": "简体中文", "zh-TW":"繁體中文" } },
     "@/src/nativeShell": { usePurchaseAllowed: () => false, isNativeShell: () => true, useOnReturnToApp: () => {} },
     "@/src/nativePush": { getReminderSettings: async () => ({ enabled: false, intervalSeconds: 30 }), MAX_LOCAL_REMINDER_INTERVAL_SECONDS: 31536000, openNotificationSettings: async () => {}, requestNotificationPermission: async () => {}, setReminderSettings: async () => {} },
     "@/src/child-age": load("../src/child-age.ts"), "@/src/taskMeta": load("../src/taskMeta.ts"),
@@ -118,6 +120,11 @@ function page(path, f, options = {}) {
     "@/src/uiux48/Scene": { NuriAvatar:"NuriAvatar" },
     "@/src/uiux48/Composer": { NuriComposer:"NuriComposer" },
     "@/src/uiux48/StateCard": {StateCard:"StateCard"},
+    "@/src/uiuxfinal/Settings": Object.fromEntries(["SettingsPage","SettingsRow","SettingsToggle","SettingsButton","SettingsField","SettingsChoice","SettingsChoices","SettingsFormFooter","SettingsDivider","SettingsAction"].map(name=>[name,name])),
+    "@/src/uiuxfinal/Primitives": {FinalText:"FinalText",FinalSurface:"FinalSurface"},
+    "@/src/uiuxfinal/UserAvatar": {UserAvatar:"UserAvatar",CurrentUserAvatarAction:"CurrentUserAvatarAction"},
+    "@/src/uiuxfinal/HomeVideoThumbnail": {HomeVideoThumbnail:"HomeVideoThumbnail"},
+    "@/src/uiuxfinal/currentUserIdentity": {beginCurrentUserIdentityRead:()=>null,publishCurrentUserIdentity:()=>{}},
     "@/src/uiux48/MediaPanel": {MediaPanel:"MediaPanel"},
     "@/src/uiux48/chatDraft": load("../src/uiux48/chatDraft.ts",{"@/src/api":f}),
     "@/src/components/nativeNavigation":{requestGuardedNativeNavigation:()=>false},
@@ -125,6 +132,7 @@ function page(path, f, options = {}) {
     "@/src/resourceSummary":load("../src/resourceSummary.ts"),
     "../chat/[id]": {default:"ChatConversation",__esModule:true},
   };
+  dep["@/src/uiux48/useNativeAuthDraft"] = load("../src/uiux48/useNativeAuthDraft.ts", { react: r.react, "@/src/useAccountState": hooks });
   for (const name of ["Toast", "CheckinSheet", "ConfirmDialog", "TaskCard", "DailyPostCard", "DailyVideoCard", "RequestFailureNotice", "GoogleSignInButton", "MemoriesSection", "AndroidDownloadSection"]) dep["@/src/components/" + name] = { default: name, __esModule: true };
   const component = load(path, dep)[options.exportName ?? (path.endsWith("/tasks.tsx") ? "LegacyTasks" : "default")];
   let tree;
@@ -137,7 +145,7 @@ function page(path, f, options = {}) {
   }
   const render = () => { tree = r.render(() => expand(component())); return tree; };
   const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(node) ? node.flatMap((child) => nodes(child)) : [node, ...nodes(node.props?.children)];
-  return { ...r, routes, localeWrites, hooks, render, nodes: () => nodes(tree), find: (id) => nodes(tree).find((node) => node.props?.testID === id), kind: (type) => nodes(tree).find((node) => node.type === type), visible: () => JSON.stringify(tree) };
+  return { ...r, routes, localeWrites, hooks, render, get locale(){return pageLocale;}, nodes: () => nodes(tree), find: (id) => nodes(tree).find((node) => node.props?.testID === id), kind: (type) => nodes(tree).find((node) => node.type === type), visible: () => JSON.stringify(tree) };
 }
 
 test("actual language screen exposes all three choices and persists zh-TW through the existing privacy API",async()=>{
@@ -146,7 +154,7 @@ test("actual language screen exposes all three choices and persists zh-TW throug
   await f.login("A");await f.permit();p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true});
   p.render();await tick();await tick();p.render();
   for(const locale of ["zh-CN","zh-TW","en"])assert.ok(p.find("profile-language-"+locale));
-  assert.equal(p.find("profile-language-zh-TW").props.label,"繁體中文");
+  assert.equal(p.find("profile-language-zh-TW").props.children[0].props.children,"繁體中文");
   const before=f.calls.filter(c=>c.path==="/privacy"&&c.init.method&&c.init.method!=="GET").length;
   assert.equal(before,0,"Rendering the language page must not mutate preferences");
   await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
@@ -155,14 +163,22 @@ test("actual language screen exposes all three choices and persists zh-TW throug
   assert.deepEqual(p.localeWrites,["zh-TW"]);assert.equal(p.find("profile-saved-card").props.message,"變更已儲存。");
  }finally{p?.unmount();f.restore();}
 });
-test("failed Traditional preference/local-storage saves never show success or leave the language mutation locked",async()=>{
+test("failed device/cloud language writes never claim cloud success or leave the language mutation locked",async()=>{
  for(const failure of ["server","storage"]){const f=fixture();let p;try{
   await f.login("A");await f.permit();if(failure==="server")f.responder=(path,init)=>path==="/privacy"&&init.method?response({detail:"fixture offline"},503):null;
   p=page("../app/(tabs)/profile.tsx",f,{params:{section:"language"},realI18n:true,failLocale:failure==="storage"?"zh-TW":undefined});
   p.render();await tick();await tick();p.render();await p.find("profile-language-zh-TW").props.onPress();await tick();p.render();
-  assert.equal(p.find("profile-saved-card"),undefined);assert.ok(p.find("profile-action-result"));
-  if(failure==="storage")assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method).length,0);
-  assert.deepEqual(p.localeWrites,["zh-TW","en"]);
+  assert.equal(p.find("profile-saved-card"),undefined);
+  if(failure==="storage"){
+   assert.ok(p.find("profile-action-result"));assert.equal(p.locale,"en");
+   assert.equal(p.find("profile-language-local-card"),undefined);
+   assert.equal(f.calls.filter(c=>c.path==="/privacy"&&c.init.method).length,0);
+  }else{
+   assert.ok(p.find("profile-language-local-card"));assert.equal(p.locale,"zh-TW");
+   assert.match(p.find("profile-language-local-card").props.message,/雲端語言尚未同步/);
+   p.find("profile-language-local-card").props.primary.onPress();p.render();
+  }
+  assert.deepEqual(p.localeWrites,["zh-TW"]);
   await p.find("profile-language-zh-CN").props.onPress();await tick();assert.ok(p.localeWrites.includes("zh-CN"));
  }finally{p?.unmount();f.restore();}}
 });
@@ -239,19 +255,24 @@ test("actual state hook clears on every epoch, rejects saved setters, queued upd
 });
 for (const name of ["profile", "tasks", "index"]) test("actual " + name + " clears visible A data immediately; B failures/late A/ABA cannot restore it", async () => {
   const f = fixture(); let p;
+  // Main settings is navigation-only; inspect its real personal section so
+  // the original private-data isolation assertion stays meaningful.
+  const options = name === "profile" ? { params: { section: "personal" } } : {};
   try {
-    await f.login("A"); await f.permit(); p = page("../app/(tabs)/" + name + ".tsx", f); p.render(); await tick(); p.render();
+    await f.login("A"); await f.permit(); p = page("../app/(tabs)/" + name + ".tsx", f, options); p.render(); await tick(); p.render();
     assert.match(p.visible(), /A-private-/);
     // Keep the same mounted instance: cached A data must vanish before B loads.
     await f.login("B"); p.render(); assert.doesNotMatch(p.visible(), /A-private-/);
     await f.login("A"); await f.permit(); p.render(); await tick(); p.render();
     const late = deferred(); f.responder = (path, _init, owner) => owner === "A" && path !== "/auth/me" ? late.promise : owner === "B" ? response({ detail: "offline" }, 503) : null;
     // Refocus/mount starts real A requests, then replace while bodies are held.
-    p.unmount(); p = page("../app/(tabs)/" + name + ".tsx", f); p.render(); await tick();
+    p.unmount(); p = page("../app/(tabs)/" + name + ".tsx", f, options); p.render(); await tick();
     await f.login("B"); p.render(); assert.doesNotMatch(p.visible(), /A-private-/); await tick(); p.render();
     late.resolve(response([{ nickname: "A-private-late", title: "A-private-late" }])); await tick(); p.render(); assert.doesNotMatch(p.visible(), /A-private-/);
-    const oldHandler = p.find("home-nuri-card")?.props.onPress || p.find("profile-logout-btn")?.props.onPress;
+    const oldNameSetter = p.find("profile-name")?.props.onChangeText;
+    const oldHandler = p.find("home-nuri-card")?.props.onPress || p.find("profile-logout-btn")?.props.onPress || (oldNameSetter ? ()=>oldNameSetter("A-private-old-handler") : null);
     await f.login("A"); p.render(); if (oldHandler) await oldHandler(); assert.deepEqual(p.routes, []);
+    p.render();assert.doesNotMatch(p.visible(),/A-private-old-handler/);
   } finally { p?.unmount(); f.restore(); }
 });
 test("deprecated Tasks route redirects to Home without loading or mutating tasks",async()=>{
@@ -305,6 +326,77 @@ test("actual Profile strict logout failure restores A and real Keychain retry su
     assert.deepEqual(p.routes, ["/login"]);
   } finally { p?.unmount(); f.restore(); }
 });
+for (const flavor of ["app-store", "early-access", "alpha", "live-alpha"]) test(`${flavor}: settings main exposes confirmed strict logout with real push cleanup`, async () => {
+  const originalFlavor = process.env.EXPO_PUBLIC_RELEASE_FLAVOR;
+  process.env.EXPO_PUBLIC_RELEASE_FLAVOR = flavor;
+  const f = fixture(); let p;
+  try {
+    await f.login("A"); f.ordinary.set(f.PUSH_INSTALLATION_KEY, "fixture-installation");
+    await f.auth.setOnboarded(true);
+    p = page("../app/(tabs)/profile.tsx", f, { params: { section: "main" } });
+    p.render(); await tick(); p.render();
+    assert.ok(p.find("profile-section-account"));
+    const button = p.find("profile-logout-btn"); assert.equal(button.type, "SettingsAction");
+    assert.equal(f.calls.filter(call => call.path.startsWith("/mobile/push-devices")).length, 0);
+    button.props.onPress(); p.render();
+    assert.ok(p.find("profile-logout-card")); assert.equal(await f.auth.getToken(), "account-A");
+    p.find("profile-logout-card").props.secondary.onPress(); p.render();
+    assert.ok(p.find("profile-logout-btn")); assert.equal(await f.auth.getToken(), "account-A");
+    p.find("profile-logout-btn").props.onPress(); p.render();
+    f.responder = path => path.startsWith("/mobile/push-devices") ? response({}, 503) : null;
+    p.find("profile-logout-card").props.primary.onPress();
+    for (let i = 0; i < 5; i++) { await tick(); p.render(); }
+    assert.equal(await f.auth.getToken(), "account-A");
+    assert.ok(p.find("profile-logout-card").props.error); assert.ok(p.find("profile-force-local-logout"));
+    assert.deepEqual(p.routes, []);
+    f.responder = null;
+    p.find("profile-logout-card").props.primary.onPress();
+    for (let i = 0; i < 5; i++) { await tick(); p.render(); }
+    assert.equal(await f.auth.getToken(), null);
+    assert.equal(await f.auth.getOnboarded(), false);
+    assert.equal(f.ordinary.has(f.PUSH_INSTALLATION_KEY), false);
+    assert.deepEqual(p.routes, ["/login"]);
+    assert.ok(f.calls.some(call => call.path.startsWith("/mobile/push-devices") && call.init.method === "DELETE" && call.owner === "A"));
+  } finally {
+    p?.unmount(); f.restore();
+    if (originalFlavor === undefined) delete process.env.EXPO_PUBLIC_RELEASE_FLAVOR;
+    else process.env.EXPO_PUBLIC_RELEASE_FLAVOR = originalFlavor;
+  }
+});
+
+test("settings main logout confirmation and its stale callback cannot sign out a replacement account", async () => {
+  const f = fixture(); let p;
+  try {
+    await f.login("A"); p = page("../app/(tabs)/profile.tsx", f, { params: { section: "main" } });
+    p.render(); await tick(); p.render(); p.find("profile-logout-btn").props.onPress(); p.render();
+    const staleConfirm = p.find("profile-logout-card").props.primary.onPress;
+    await f.login("B"); p.render(); p.render();
+    assert.equal(p.find("profile-logout-card"), undefined);
+    staleConfirm(); await tick(); p.render();
+    assert.equal(await f.auth.getToken(), "account-B"); assert.deepEqual(p.routes, []);
+  } finally { p?.unmount(); f.restore(); }
+});
+test("actual settings menu connects Community preferences only in the dedicated live Alpha flavor", async () => {
+  const keys = ["EXPO_PUBLIC_RELEASE_FLAVOR", "EXPO_PUBLIC_PREVIEW_MODE", "EXPO_PUBLIC_UIUX48_GALLERY", "EXPO_PUBLIC_FLOW_PROTOTYPE", "EXPO_PUBLIC_COMMUNITY_PROTOTYPE"];
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    for (const flavor of ["app-store", "early-access", "alpha", "beta", "live-alpha"]) {
+      for (const key of keys) delete process.env[key];
+      process.env.EXPO_PUBLIC_RELEASE_FLAVOR = flavor;
+      const f = fixture(); let p;
+      try {
+        await f.login("A"); p = page("../app/(tabs)/profile.tsx", f, { params: { section: "main" } });
+        p.render(); await tick(); p.render();
+        const entry = p.find("profile-community-preferences");
+        assert.equal(!!entry, flavor === "live-alpha");
+        assert.ok(p.find("profile-logout-btn"), "The existing confirmed logout must remain available in every flavor");
+        if (entry) { entry.props.onPress(); assert.deepEqual(p.routes, [{ pathname: "/community", params: { uiState: "preferences" } }]); }
+        assert.equal(f.calls.filter(call => call.path.startsWith("/community")).length, 0, "The settings entry itself must not read or mutate Community");
+      } finally { p?.unmount(); f.restore(); }
+    }
+  } finally { for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+});
+
 test("actual Home late canonical-session result cannot navigate B or an unmounted screen", async () => {
   for (const unmount of [false, true]) {
     const f = fixture(), barrier = deferred(); let p;
@@ -348,13 +440,16 @@ test("notification save shows an explicit shared success card only after confirm
   assert.equal(p.find("notification-settings-saved"),undefined);
   p.find("notification-settings-save").props.onPress();await tick();p.render();
   assert.equal(p.find("notification-settings-saved").props.title,"Settings saved");
-  assert.match(p.find("notification-settings-saved").props.note,/does not mean a test reminder was sent/);
+  assert.equal(p.find("notification-settings-saved").props.message,"Your notification preferences have been saved.");
+  assert.equal(p.find("notification-settings-saved").props.note,undefined);
+  assert.equal(f.calls.filter(call=>call.init.method==="POST").length,0,"saving preferences must not send a reminder");
   p.find("notification-settings-saved").props.primary.onPress();p.render();assert.ok(p.find("notification-settings-save"));
  }finally{p?.unmount();f.restore();}
 });
 for(const outcome of ["empty","conflict","offline"])test("notification "+outcome+" save retains form and never shows saved",async()=>{
  const f=fixture();let p;
  try{await f.login("A");p=page("../app/notification-settings.tsx",f);p.render();await tick();p.render();
+  p.find("notification-advanced").props.onPress();p.render();
   p.find("quiet-hours-start").props.onChangeText("21:15");p.render();
   f.responder=(path,init)=>path==="/notifications/preferences"&&init.method==="PATCH"?response(outcome==="conflict"?{...JSON.parse(init.body),quiet_hours_start:"22:00"}:{},outcome==="offline"?503:200):null;
   p.find("notification-settings-save").props.onPress();await tick();p.render();

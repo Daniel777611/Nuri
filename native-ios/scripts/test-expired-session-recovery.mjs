@@ -228,9 +228,13 @@ try {
 
 // The affected consumers must invoke the guarded helper for every old 401
 // branch, block forms after cleanup failure, and never invoke strict logout.
-for (const [path, count] of [["../app/onboarding.tsx", 4], ["../app/child/[id].tsx", 3], ["../app/register.tsx", 1]]) {
+for (const [path, count, recoveryName] of [["../app/onboarding.tsx", 4, "recover"], ["../app/child/[id].tsx", 3, "recoverExpiredCredentials"], ["../app/register.tsx", 1, "recoverExpiredCredentials"]]) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
-  assert.equal((source.match(/await recoverExpiredCredentials\((?:error|err), (?:requestToken|token)\)/g) || []).length, count);
+  // The simplified onboarding retains all four guarded recovery sites, but
+  // its existing recovery hook is locally named `recover`, not the retired
+  // page's `recoverExpiredCredentials`. Verify the binding, not just a name.
+  if (recoveryName === "recover") assert.match(source, /recover = recovery\.recover/);
+  assert.equal((source.match(new RegExp(`await ${recoveryName}\\((?:error|err|failure), (?:requestToken|token)\\)`, "g")) || []).length, count);
   assert.doesNotMatch(source, /auth\.clearToken\(/);
   assert.match(source, /if \(recovery\.blocked\) return <ExpiredSessionRecoveryNotice/);
 }

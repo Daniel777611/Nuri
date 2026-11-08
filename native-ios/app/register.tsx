@@ -1,6 +1,7 @@
 import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
+import { useNativeAuthDraft } from "@/src/uiux48/useNativeAuthDraft";
 import {
   ActivityIndicator,
   Image,
@@ -30,6 +31,7 @@ import { useT, translate } from "@/src/i18n";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
+const registrationReady = ({ email, password }: { email: string; password: string }) => /\S+@\S+\.\S+/.test(email) && password.length >= 6;
 
 export default function Register() {
   const { capture, current } = useAccountScope();
@@ -40,9 +42,7 @@ export default function Register() {
   const headerHeight = useHeaderHeight();
   const { width: viewportWidth } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
-  const [email, setEmail] = useState(isPreviewMode ? "preview@nuri.app" : "");
-  const [nickname, setNickname] = useState("");
-  const [password, setPassword] = useState(isPreviewMode ? "preview" : "");
+  const draft = useNativeAuthDraft({ email: isPreviewMode ? "preview@nuri.app" : "", nickname: "", password: isPreviewMode ? "preview" : "" }, registrationReady);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const registerAction = useRef(false);
@@ -96,11 +96,11 @@ export default function Register() {
     return () => { cancelled = true; };
   }, [router, recoverExpiredCredentials, capture, current, setCheckingSession]);
 
-  const canNext = /\S+@\S+\.\S+/.test(email) && password.length >= 6;
-
   const submit = async () => {
     const ticket = capture();
-    if (ticket === null || submitting || !acquireRegistration()) return;
+    const values = draft.read();
+    if (ticket === null || values === null || submitting || !acquireRegistration()) return;
+    const { email, nickname, password } = values;
     setError(null);
     setSubmitting(true);
     try {
@@ -138,14 +138,14 @@ export default function Register() {
   return <AuthFrame testID="register-step-account">
     <FormTabs active="register" />
     <NuriText style={{fontSize:14}}>{locale === "en" ? "Start with a lighter conversation." : translate(locale, "从一次轻松的对话开始。")}</NuriText>
-    <View style={{gap:16}}>
-      <NuriField label={locale === "en" ? "Your name" : translate(locale, "称呼")} value={nickname} onChangeText={setNickname} placeholder={locale === "en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} testID="register-nickname" />
-      <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="register-email" />
-      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder={locale==="en"?"At least 6 characters":translate(locale, "至少 6 位")} secureTextEntry autoComplete="new-password" testID="register-password" />
+    <View key={draft.generation} style={{gap:16}}>
+      <NuriField label={locale === "en" ? "Your name" : translate(locale, "称呼")} defaultValue={draft.initial.nickname} onChangeText={text => draft.change("nickname", text)} placeholder={locale === "en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} testID="register-nickname" />
+      <NuriField label={t("邮箱")} defaultValue={draft.initial.email} onChangeText={text => draft.change("email", text)} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" testID="register-email" />
+      <NuriField label={t("密码")} defaultValue={draft.initial.password} onChangeText={text => draft.change("password", text)} placeholder={locale==="en"?"At least 6 characters":translate(locale, "至少 6 位")} secureTextEntry autoComplete="new-password" testID="register-password" />
     </View>
-    <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can read our privacy policy before continuing. AI permission is a separate choice after signing in.":translate(locale, "继续前可查看隐私说明，AI 许可将在登录后单独选择。")}</NuriText>
+    <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can review the privacy policy before continuing. Your AI choice is separate from account registration and can be changed in Privacy & AI.":locale==="zh-TW"?"繼續前可查看隱私說明。AI 選擇與帳號註冊分開，可隨時在「隱私與 AI」更改。":"继续前可查看隐私说明。AI 选择与账号注册分开，可随时在“隐私与 AI”更改。"}</NuriText>
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="register-error">{error}</NuriText>:null}
-    <NuriButton label={submitting?t("创建中..."):t("创建账号")} busy={submitting} disabled={!canNext||submitting} onPress={submit} testID="register-next-btn" />
+    <NuriButton label={submitting?t("创建中..."):t("创建账号")} busy={submitting} disabled={!draft.ready||submitting} onPress={submit} testID="register-next-btn" />
     <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
   </AuthFrame>;
 }
