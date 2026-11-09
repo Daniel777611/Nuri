@@ -67,25 +67,72 @@ class _Settings:
 def db(monkeypatch):
     settings = _Settings()
     monkeypatch.setattr(runtime, "get_supabase", lambda: settings)
-    monkeypatch.delenv("DAILY_POST_SEARCH_LIMIT", raising=False)
-    monkeypatch.delenv("DAILY_VIDEO_SEARCH_LIMIT", raising=False)
+    for name in ("DAILY_POST_SEARCH_LIMIT", "DAILY_VIDEO_SEARCH_LIMIT",
+                 "DAILY_POST_ACCOUNT_SEARCH_LIMIT", "DAILY_VIDEO_ACCOUNT_SEARCH_LIMIT"):
+        monkeypatch.delenv(name, raising=False)
     return settings
 
 
-def _spend(kind="post", now=NOW):
-    asyncio.run(sb.spend(kind, now=now))
+def _spend(kind="post", now=NOW, account=None):
+    async def run():
+        with sb.for_account(account):
+            await sb.spend(kind, now=now)
+    asyncio.run(run())
 
 
-def test_ten_requests_a_day_then_no_more(db):
+def test_fifteen_requests_a_day_site_wide_then_no_more(db):
+    for _ in range(15):
+        _spend()
+    with pytest.raises(sb.SearchBudgetSpent, match="limit of 15 reached"):
+        _spend()
+    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:15"
+
+
+def test_each_account_gets_ten_of_its_own(db):
     for _ in range(10):
-        _spend()
-    with pytest.raises(sb.SearchBudgetSpent, match="limit of 10"):
-        _spend()
-    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:10"
+        _spend(account="u1")
+    with pytest.raises(sb.SearchBudgetSpent, match="limit of 10 for this account"):
+        _spend(account="u1")
+    # Another parent is not held back by the first one's searches.
+    _spend(account="u2")
+    assert db.rows["daily_search_budget_post:u1"]["value"] == "2026-11-01:10"
+    assert db.rows["daily_search_budget_post:u2"]["value"] == "2026-11-01:1"
+    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:11"
+
+
+def test_the_site_wide_backstop_still_holds_across_accounts(db):
+    for i in range(15):
+        _spend(account=f"u{i}")
+    with pytest.raises(sb.SearchBudgetSpent, match="limit of 15 reached"):
+        _spend(account="u99")
+
+
+def test_an_account_out_of_searches_is_refused_before_a_model_call(db):
+    for _ in range(10):
+        _spend(account="u1")
+
+    async def check(account):
+        with sb.for_account(account):
+            await sb.require_some_left("post", now=NOW)
+
+    with pytest.raises(sb.SearchBudgetSpent, match="for this account"):
+        asyncio.run(check("u1"))
+    asyncio.run(check("u2"))
+
+
+def test_the_account_lasts_only_inside_its_block(db):
+    async def run():
+        with sb.for_account("u1"):
+            await sb.spend("post", now=NOW)
+        await sb.spend("post", now=NOW)
+
+    asyncio.run(run())
+    assert db.rows["daily_search_budget_post:u1"]["value"] == "2026-11-01:1"
+    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:2"
 
 
 def test_posts_and_videos_have_separate_budgets(db):
-    for _ in range(10):
+    for _ in range(15):
         _spend("post")
     _spend("video")
     assert db.rows["daily_search_budget_video"]["value"] == "2026-11-01:1"
@@ -93,9 +140,12 @@ def test_posts_and_videos_have_separate_budgets(db):
 
 def test_a_new_utc_day_starts_again(db):
     for _ in range(10):
+        _spend(account="u1")
+    for _ in range(5):
         _spend()
-    _spend(now=TOMORROW)
+    _spend(now=TOMORROW, account="u1")
     assert db.rows["daily_search_budget_post"]["value"] == "2026-11-02:1"
+    assert db.rows["daily_search_budget_post:u1"]["value"] == "2026-11-02:1"
 
 
 def test_the_limit_can_change_without_a_release(db, monkeypatch):
@@ -105,6 +155,11 @@ def test_the_limit_can_change_without_a_release(db, monkeypatch):
         _spend("video")
     monkeypatch.setenv("DAILY_VIDEO_SEARCH_LIMIT", "not a number")
     assert sb.limit("video") == sb.DEFAULT_LIMIT
+    monkeypatch.setenv("DAILY_VIDEO_ACCOUNT_SEARCH_LIMIT", "2")
+    _spend("video", account="u1")
+    _spend("video", account="u1")
+    with pytest.raises(sb.SearchBudgetSpent, match="for this account"):
+        _spend("video", account="u1")
 
 
 def test_concurrent_instances_cannot_overspend(db, monkeypatch):
@@ -120,8 +175,8 @@ def test_concurrent_instances_cannot_overspend(db, monkeypatch):
         t.start()
     for t in threads:
         t.join()
-    assert len(taken) == 10
-    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:10"
+    assert len(taken) == 15
+    assert db.rows["daily_search_budget_post"]["value"] == "2026-11-01:15"
 
 
 def test_an_unreachable_counter_does_not_block_the_search(db):
@@ -133,7 +188,7 @@ def test_an_unreachable_counter_does_not_block_the_search(db):
 def test_require_some_left_only_reads(db):
     asyncio.run(sb.require_some_left("post", now=NOW))
     assert not db.rows
-    for _ in range(10):
+    for _ in range(15):
         _spend()
     with pytest.raises(sb.SearchBudgetSpent):
         asyncio.run(sb.require_some_left("post", now=NOW))

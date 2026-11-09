@@ -1105,7 +1105,9 @@ async def get_daily_post(user_id: str, tz_name: Optional[str], *, now: Optional[
     # Tavily requests this card really sent; the rest came from the shared pool.
     spent = search_pool.start_counting()
     try:
-        card, plan = await _generate(user_id, children, profile, day, store, now)
+        # Every search below counts against this parent's own daily ceiling too.
+        with search_budget.for_account(user_id):
+            card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily post generation failed: {type(exc).__name__}: {exc}")
         await finish(status="failed", error=f"{type(exc).__name__}: {exc}",

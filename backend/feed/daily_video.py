@@ -736,7 +736,8 @@ async def get_daily_video(
 
     spent = search_pool.start_counting()  # requests sent; the rest came from the pool
     try:
-        card, plan = await _generate(user_id, children, profile, day, store, now)
+        with search_budget.for_account(user_id):  # this parent's own ceiling too
+            card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily video generation failed: {type(exc).__name__}: {exc}")
         await finish(status="failed", error=f"{type(exc).__name__}: {exc}",
