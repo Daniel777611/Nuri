@@ -37,7 +37,7 @@ import anyio
 
 from backend import llm_usage, locales, runtime
 from backend.feed import daily_post as dp
-from backend.feed import search_budget
+from backend.feed import search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.nuri_core import family_store
 
@@ -151,11 +151,11 @@ async def search_youtube(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    await search_budget.spend("video")
-    return await TavilySearchProvider().fetch(SearchRequest(
-        query=query, lang="zh" if lang == "zh" else "en",
+    lang = "zh" if lang == "zh" else "en"
+    return await search_pool.search("video", query, lang, lambda: TavilySearchProvider().fetch(SearchRequest(
+        query=query, lang=lang,
         include_domains=YOUTUBE_DOMAINS, max_results=SEARCH_RESULTS,
-    ))
+    )))
 
 
 async def find_candidates(plan: dp.Plan, locale: str, exclude_urls: set[str]) -> list[Candidate]:
@@ -734,16 +734,18 @@ async def get_daily_video(
         except Exception as exc:
             print(f"[warn] daily video save failed: {type(exc).__name__}")
 
+    spent = search_pool.start_counting()  # requests sent; the rest came from the pool
     try:
         card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily video generation failed: {type(exc).__name__}: {exc}")
-        await finish(status="failed", error=f"{type(exc).__name__}: {exc}")
+        await finish(status="failed", error=f"{type(exc).__name__}: {exc}",
+                     queries={"searches": spent[0]})
         return {**base, "state": "empty", "retry_after_s": dp.FAILED_RETRY_S}
     queries = None
     if plan:
         query_zh, query_en = video_queries(plan)
-        queries = {"zh": query_zh, "en": query_en}
+        queries = {"zh": query_zh, "en": query_en, "searches": spent[0]}
     if not card:
         await finish(status="empty", basis=plan.basis if plan else None, queries=queries)
         return {**base, "state": "empty", "retry_after_s": dp.EMPTY_RETRY_S}
@@ -756,7 +758,7 @@ async def get_daily_video(
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[dp.Plan]]:
     from backend.feed import signals as feed_signals
 
-    await search_budget.require_some_left("video")
+    budget_left = await dp.has_search_budget("video")
     context = await feed_signals.load_recent_main_chat(user_id)
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
@@ -764,7 +766,8 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     standing = await family_store.load_standing_memories(user_id, children)
 
     plans: list[dp.Plan] = []
-    if context.get("external_research_allowed"):
+    # See daily_post._generate: conversation words are rarely in the pool.
+    if budget_left and context.get("external_research_allowed"):
         messages = family_store.redact_child_profile_history(list(context.get("messages") or []), children)
         user_texts = [str(m.get("text") or "") for m in messages if m.get("role") == "user"]
         plan = await anyio.to_thread.run_sync(
@@ -775,10 +778,15 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     plans.extend(dp.profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
 
     started = time.monotonic()
+    refused: Optional[Exception] = None
     for index, plan in enumerate(plans):
         if index and time.monotonic() - started > dp.GENERATION_BUDGET_S:
             break
-        candidates = await find_candidates(plan, locale, exclude)
+        try:
+            candidates = await find_candidates(plan, locale, exclude)
+        except search_budget.SearchBudgetSpent as exc:
+            refused = exc  # not pooled and no budget; the next plan's may be
+            continue
         if not candidates:
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_video(
@@ -794,6 +802,8 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             except Exception as exc:  # the card is still worth showing without them
                 print(f"[warn] daily video key points failed: {type(exc).__name__}")
             return card, plan
+    if refused:
+        raise refused
     return None, (plans[0] if plans else None)
 
 

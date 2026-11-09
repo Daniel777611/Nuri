@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 import anyio
 
 from backend import llm_usage, locales, runtime
-from backend.feed import search_budget
+from backend.feed import search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.feed.post_media import social_image_url, source_image_urls
 from backend.nuri_core import family_store
@@ -362,6 +362,19 @@ def _age_words(months: Optional[int]) -> tuple[str, str]:
     return f"{months // 12}岁", f"{months // 12} year old"
 
 
+#: Months under two rounded to an age parents write in posts, for the search
+#: words only. Exact months gave nearly every baby their own search words, so
+#: the shared pool (search_pool.py) could seldom answer one parent with
+#: another's search; the card still names the child's real age.
+_QUERY_AGE_BANDS = ((2, 1), (4, 3), (7, 6), (10, 9), (15, 12), (21, 18), (24, 24))
+
+
+def _query_age_words(months: Optional[int]) -> tuple[str, str]:
+    if months is not None and months < 24:
+        months = next(shown for upper, shown in _QUERY_AGE_BANDS if months <= upper)
+    return _age_words(months)
+
+
 def youngest_age_months(children: list[dict]) -> Optional[int]:
     ages = [
         m for m in (family_store.age_in_months(str(c.get("birth_date") or "")) for c in children)
@@ -420,6 +433,7 @@ def profile_plans(
     """
     months = youngest_age_months(children)
     age_zh, age_en = _age_words(months)
+    query_age_zh, query_age_en = _query_age_words(months)
     usable = list(dict.fromkeys(c for c in concerns if c in CONCERN_EN))
     start = day.toordinal() % len(usable) if usable else 0
     topics = [_concern_topic(c, months) for c in usable[start:] + usable[:start]]
@@ -429,8 +443,8 @@ def profile_plans(
 
     plans = []
     for label_zh, label_en, topic_zh, topic_en in topics[:limit]:
-        zh = " ".join(p for p in (age_zh, "宝宝", topic_zh, "宝妈") if p)
-        who = age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
+        zh = " ".join(p for p in (query_age_zh, "宝宝", topic_zh, "宝妈") if p)
+        who = query_age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
         en = " ".join((who, topic_en, "moms"))
         if locale == "en":
             shown = " · ".join(p for p in (age_en, label_en) if p)
@@ -800,12 +814,12 @@ async def search_meta(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    await search_budget.spend("post")
-    return await TavilySearchProvider().fetch(SearchRequest(
-        query=query, lang="zh" if lang == "zh" else "en",
+    lang = "zh" if lang == "zh" else "en"
+    return await search_pool.search("post", query, lang, lambda: TavilySearchProvider().fetch(SearchRequest(
+        query=query, lang=lang,
         include_domains=META_DOMAINS, max_results=SEARCH_RESULTS,
         include_images=True,
-    ))
+    )))
 
 
 async def run_searches(searches: list) -> list[list]:
@@ -1088,14 +1102,17 @@ async def get_daily_post(user_id: str, tz_name: Optional[str], *, now: Optional[
             print(f"[warn] daily post save failed: {type(exc).__name__}")
             return False
 
+    # Tavily requests this card really sent; the rest came from the shared pool.
+    spent = search_pool.start_counting()
     try:
         card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily post generation failed: {type(exc).__name__}: {exc}")
-        await finish(status="failed", error=f"{type(exc).__name__}: {exc}")
+        await finish(status="failed", error=f"{type(exc).__name__}: {exc}",
+                     queries={"searches": spent[0]})
         return {**base, "state": "empty", "retry_after_s": FAILED_RETRY_S}
 
-    queries = {"zh": plan.query_zh, "en": plan.query_en} if plan else None
+    queries = {"zh": plan.query_zh, "en": plan.query_en, "searches": spent[0]} if plan else None
     if not card:
         await finish(status="empty", basis=plan.basis if plan else None, queries=queries)
         return {**base, "state": "empty", "retry_after_s": EMPTY_RETRY_S}
@@ -1136,7 +1153,7 @@ async def get_card(user_id: str, row_id: str) -> Optional[dict]:
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[Plan]]:
     from backend.feed import signals as feed_signals
 
-    await search_budget.require_some_left("post")
+    budget_left = await has_search_budget("post")
     context = await feed_signals.load_recent_main_chat(user_id)
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
@@ -1144,7 +1161,9 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     standing = await family_store.load_standing_memories(user_id, children)
 
     plans: list[Plan] = []
-    if context.get("external_research_allowed"):
+    # A conversation's search words are this parent's own and almost never in
+    # the shared pool, so without budget left they aren't worth a model call.
+    if budget_left and context.get("external_research_allowed"):
         messages = family_store.redact_child_profile_history(
             list(context.get("messages") or []), children,
         )
@@ -1161,12 +1180,19 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     plans.extend(profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
 
     started = time.monotonic()
+    refused: Optional[Exception] = None
     for index, plan in enumerate(plans):
         # The first visitor's request is the one waiting on this: a fallback
         # plan is only worth starting while that wait is still reasonable.
         if index and time.monotonic() - started > GENERATION_BUDGET_S:
             break
-        candidates = await find_candidates(plan, locale, exclude)
+        try:
+            candidates = await find_candidates(plan, locale, exclude)
+        except search_budget.SearchBudgetSpent as exc:
+            # These words aren't in the shared pool and there is no budget to
+            # search them; the next plan's may be.
+            refused = exc
+            continue
         if not candidates:
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_post(
@@ -1175,7 +1201,17 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
         ))
         if pick:
             return build_card(pick, plan, locale=locale), plan
+    if refused:
+        raise refused
     return None, plans[-1] if plans else None
+
+
+async def has_search_budget(kind: str) -> bool:
+    try:
+        await search_budget.require_some_left(kind)
+    except search_budget.SearchBudgetSpent:
+        return False
+    return True
 
 
 def _table_missing(exc: Exception) -> bool:
