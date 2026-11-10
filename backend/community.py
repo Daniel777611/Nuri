@@ -26,6 +26,7 @@ through `runtime.get_supabase` on every call (the one test seam).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -40,7 +41,7 @@ from io import BytesIO
 from typing import Any, Callable, Literal, Optional
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend import llm_usage, push_service, runtime
@@ -75,6 +76,10 @@ MEDIA_MAX_BYTES = 2_500_000  # the existing NURI single-image ceiling
 MEDIA_MIMES = {"image/jpeg": "jpeg", "image/png": "png", "image/webp": "webp"}
 AI_MODEL = os.getenv("COMMUNITY_AI_MODEL", "gpt-5-mini")
 AI_TIMEOUT_S = float(os.getenv("COMMUNITY_AI_TIMEOUT_S", "20"))
+#: Polish, translate and match are short rewrites, not reasoning problems. At the
+#: model default they spent 128–384 reasoning tokens and 2.4–8 s a call in prod
+#: (2026-11-10); the router uses "minimal" for the same model at ~2 s.
+AI_REASONING_EFFORT = os.getenv("COMMUNITY_AI_REASONING_EFFORT", "minimal")
 #: The app's own NURI AI consent version (native-ios/src/aiConsent.ts). The
 #: client sends what the parent agreed to; a stale version is CONSENT_REQUIRED.
 NURI_AI_CONSENT_VERSION = os.getenv("NURI_AI_CONSENT_VERSION", "2026-10-01.1")
@@ -963,12 +968,18 @@ async def _complete(call_site: str, uid: str, system: str, text: str) -> str:
     if not client:
         raise CommunityError("STORAGE_OR_SERVICE_UNAVAILABLE", "AI is unavailable")
     started = time.perf_counter()
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": text}]
     try:
-        resp = await client.chat.completions.create(
-            model=AI_MODEL,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
-            timeout=AI_TIMEOUT_S,
-        )
+        try:
+            resp = await client.chat.completions.create(
+                model=AI_MODEL, messages=messages, timeout=AI_TIMEOUT_S,
+                **({"reasoning_effort": AI_REASONING_EFFORT} if AI_REASONING_EFFORT else {}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A model that takes no reasoning_effort: same call without it.
+            if not AI_REASONING_EFFORT or "reasoning" not in str(exc):
+                raise
+            resp = await client.chat.completions.create(model=AI_MODEL, messages=messages, timeout=AI_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001
         llm_usage.record(call_site, AI_MODEL, user_id=uid, status="error",
                          duration_ms=runtime.elapsed_ms(started), error=type(exc).__name__)
@@ -1250,22 +1261,27 @@ async def _deliver(question: dict) -> int:
     shortlist = await _ai_rank(question, ranked[:MATCH_SHORTLIST], features, asker)
     chosen = (shortlist + ranked[MATCH_SHORTLIST:])[:DELIVERY_FANOUT]
     expires = _iso(_now() + timedelta(days=DELIVERY_TTL_DAYS))
-    delivered = 0
+    rows = []
     for recipient in chosen:
         try:
-            row = await _insert("community_question_deliveries", {
+            rows.append(await _insert("community_question_deliveries", {
                 "question_id": question["id"], "recipient_id": recipient,
                 "state": "waiting", "expires_at": expires,
-            })
+            }))
         except _UniqueViolation:
             continue
-        delivered += 1
-        await _notify(recipient, "community_question", str(row["id"]),
-                      {"delivery_id": str(row["id"]), "question_id": str(question["id"])}, actor=author)
-    return delivered
+    await asyncio.gather(*(
+        _notify(row["recipient_id"], "community_question", str(row["id"]),
+                {"delivery_id": str(row["id"]), "question_id": str(question["id"])}, actor=author)
+        for row in rows))
+    return len(rows)
 
 
-async def create_question(uid: str, body: QuestionIn) -> dict:
+async def create_question(uid: str, body: QuestionIn,
+                          schedule: Optional[Callable[..., Any]] = None) -> dict:
+    """Publish a question. Delivery (ranking, the AI shortlist, notifications)
+    runs after the response when `schedule` is given — it took 5–7 s in prod,
+    and the parent should not wait on it to see "sent"."""
     await _require_profile(uid)
     text = _clean_text(body.body, field="body", max_len=QUESTION_MAX)
     if body.version_source == "polished":
@@ -1292,12 +1308,22 @@ async def create_question(uid: str, body: QuestionIn) -> dict:
             "status": "open", "updated_at": _iso(),
         },
     )
-    if created:
-        await _deliver(row)
-    deliveries = await _select("community_question_deliveries", lambda q: q.eq("question_id", row["id"]))
+    deliveries = [] if created else await _select("community_question_deliveries",
+                                                  lambda q: q.eq("question_id", row["id"]))
+    # A retry of a question whose background delivery never landed delivers it
+    # now; deliveries are unique per (question, recipient), so this is safe.
+    pending_delivery = created or not deliveries
+    if pending_delivery and schedule is not None:
+        schedule(_deliver, row)
+        delivery = {"recipient_count": None, "state": "delivering"}
+    else:
+        if pending_delivery:
+            await _deliver(row)
+            deliveries = await _select("community_question_deliveries", lambda q: q.eq("question_id", row["id"]))
+        delivery = {"recipient_count": len(deliveries), "state": "delivered" if deliveries else "no_recipients"}
     return {
         "question": await _question_dto(uid, row),
-        "delivery": {"recipient_count": len(deliveries), "state": "delivered" if deliveries else "no_recipients"},
+        "delivery": delivery,
         # Publishing is synchronous; the operation is already terminal.
         "operation": {"operation_id": f"question:{row['id']}", "state": "succeeded"},
         "created": created,
@@ -2732,8 +2758,8 @@ def build_router(req_uid: Callable) -> APIRouter:
     async def _p05(body: PolishIn, uid: str = U): return await polish_question(uid, body)
 
     @r.post("/questions", status_code=status.HTTP_201_CREATED)
-    async def _p06(body: QuestionIn, response: Response, uid: str = U):
-        result = await create_question(uid, body)
+    async def _p06(body: QuestionIn, response: Response, background: BackgroundTasks, uid: str = U):
+        result = await create_question(uid, body, schedule=background.add_task)
         if not result["created"]:
             response.status_code = status.HTTP_200_OK
         return result

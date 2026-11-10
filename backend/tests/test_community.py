@@ -256,7 +256,9 @@ def test_question_publish_delivers_notifies_and_is_idempotent(env):
         make_profile(env, u)
     created = ok(ask(env, "u_ann", anonymous=True, show_child_age=True), 201)
     q = created["question"]
-    assert created["delivery"]["recipient_count"] == 2 and created["created"] is True
+    # Delivery runs after the response (the TestClient runs it before returning).
+    assert created["delivery"] == {"recipient_count": None, "state": "delivering"} and created["created"] is True
+    assert len(env.db.rows("community_question_deliveries")) == 2
     assert q["child_age_months"] and q["status"] == "open" and q["is_mine"]
     assert created["operation"]["state"] == "succeeded"
     op = ok(env.call("u_ann", "GET", f"/operations/{created['operation']['operation_id']}"))
@@ -796,8 +798,7 @@ def test_d04_questions_go_to_the_best_family_fit_first(env, monkeypatch):
         u["top_concerns"] = ["sleep"] if u["id"] in ("u_ann", "u_cat") else ["food"]
     for u in ("u_ann", "u_ben", "u_cat"):
         make_profile(env, u)
-    q = ok(ask(env, "u_ann"), 201)
-    assert q["delivery"]["recipient_count"] == 1
+    ok(ask(env, "u_ann"), 201)
     assert [d["recipient_id"] for d in env.db.rows("community_question_deliveries")] == ["u_cat"]
 
 
@@ -828,7 +829,8 @@ def test_d04_a_failing_ai_keeps_the_rule_order(env, monkeypatch):
     monkeypatch.setattr(runtime, "aoai", object())
     for u in ("u_ann", "u_ben"):
         make_profile(env, u)
-    assert ok(ask(env, "u_ann"), 201)["delivery"]["recipient_count"] == 1
+    ok(ask(env, "u_ann"), 201)
+    assert len(env.db.rows("community_question_deliveries")) == 1
 
 
 def test_d06_received_questions_stay_open_for_thirty_days(env):
@@ -906,3 +908,44 @@ def test_admin_reviews_reports_and_can_take_content_down(env, monkeypatch):
     assert not [m for m in env.db.rows("community_messages") if m["id"] == msg["message_id"]]
     assert env.client.get("/admin/community-reports", headers=admin).json()["total"] == 0
     assert env.client.get("/admin/community-reports?status=all", headers=admin).json()["total"] == 1
+
+
+
+def test_sending_a_question_does_not_wait_for_delivery_or_the_ai(env, monkeypatch):
+    """2026-11-10: the AI shortlist took 5–7 s in prod inside the send request."""
+    import asyncio as _asyncio
+    calls = []
+
+    async def slow_deliver(question):
+        calls.append(question["id"])
+
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    monkeypatch.setattr(community, "_deliver", slow_deliver)
+    scheduled = []
+    result = _asyncio.run(community.create_question(
+        "u_ann", community.QuestionIn(body="睡前总哭？", client_request_id="bg-q-0001"),
+        schedule=lambda fn, *a: scheduled.append((fn, a))))
+    assert result["delivery"]["state"] == "delivering" and calls == []  # nothing ran inline
+    assert len(scheduled) == 1 and scheduled[0][0] is slow_deliver
+    # A retry of a question whose delivery never landed schedules it again.
+    again = _asyncio.run(community.create_question(
+        "u_ann", community.QuestionIn(body="睡前总哭？", client_request_id="bg-q-0001"),
+        schedule=lambda fn, *a: scheduled.append((fn, a))))
+    assert again["created"] is False and len(scheduled) == 2
+
+
+def test_community_ai_calls_ask_for_minimal_reasoning(env, monkeypatch):
+    seen = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            seen.update(kwargs)
+            msg = type("M", (), {"content": "ok"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()], "usage": None})()
+
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    monkeypatch.setattr(runtime, "aoai", client)
+    import asyncio as _asyncio
+    assert _asyncio.run(community._complete("community.polish", "u_ann", "sys", "text")) == "ok"
+    assert seen["reasoning_effort"] == "minimal"
