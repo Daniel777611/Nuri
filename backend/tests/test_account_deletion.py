@@ -222,10 +222,7 @@ def test_success_only_deletes_caller_and_revokes_old_jwt(env):
     assert env.db.tables["email_codes"] == [{"email": "b@example.test"}]
     assert env.db.tables["chat_messages"] == [{"session_id": "chat_sessions-b"}]
     assert env.db.tables["feed_cards"] == [{"id": "global-content"}]
-    assert len(env.db.tables["app_settings"]) == 7  # global + all B namespaces
-    # A's per-account search counts went with A.
-    assert not any(r["key"].startswith("daily_search_budget_") and A in r["key"]
-                   for r in env.db.tables["app_settings"])
+    assert len(env.db.tables["app_settings"]) == 5  # global + all B namespaces
     assert memstore.users_id == {B: {"id": B}}
     assert memstore.users_email == {"b@example.test": {"id": B}}
     assert memstore.messages == {"b": [{"text": "B"}]}

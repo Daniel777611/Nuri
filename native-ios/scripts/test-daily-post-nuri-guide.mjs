@@ -12,6 +12,14 @@ function load(path, dependencies = {}) {
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => {
+    if(name.startsWith("@/assets/"))return "fixture-image";
+    if(name==="@/src/uiuxfinal/Article")return load("../src/uiuxfinal/Article.tsx",dependencies);
+    if(name==="./Reading")return load("../src/uiuxfinal/Reading.tsx",dependencies);
+    if(name==="./ReadingMedia")return load("../src/uiuxfinal/ReadingMedia.tsx",dependencies);
+    if(name==="./Primitives")return {FinalText:"Text",FinalSurface:"Surface",FINAL_COLOR:{accent:"#735C84"}};
+    if(name==="./ButtonMaterial")return {ButtonBackdrop:"ButtonBackdrop"};
+    if(name==="@/src/recommendationMedia")return load("../src/recommendationMedia.ts",{"./externalContent":externalModule});
+    if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:dependencies["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     // Presentation-only UIUX48 dependencies are shallow; API/ownership assertions stay real.
     if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","MenuRow"].map(n=>[n,n]));
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
@@ -37,7 +45,9 @@ function card(concern = "睡眠") {
     question: "AI_SEARCH_QUESTION?", headline: "AI_SEARCH_HEADLINE.", situation: "AI_SEARCH_SITUATION.",
     takeaways: ["AI_SEARCH_POINT_ONE.", "AI_SEARCH_POINT_TWO.", "AI_SEARCH_POINT_THREE."],
     why_this: "AI_SEARCH_REASON.", caution: "AI_SEARCH_CAUTION.", summary_source: "facebook_ai_summary" };
-  for (const key of ["excerpt", "body", "source_body", "transcript", "thumbnail_url", "image_url", "source_label"]) {
+  // Feed-supplied public thumbnail metadata is now allowed on detail. Source
+  // body, transcripts and author metadata remain excluded from summaries.
+  for (const key of ["excerpt", "body", "source_body", "transcript", "source_label"]) {
     Object.defineProperty(value, key, { get() { throw new Error("source content must not be read: " + key); } });
   }
   return value;
@@ -62,6 +72,7 @@ function runner() {
     unmount() { effects.forEach((effect) => effect?.cleanup?.()); } };
 }
 const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ScrollView: "ScrollView",
+  AppState: { currentState: "active", addEventListener: () => ({ remove() {} }) },
   Platform: { OS: "ios" }, StyleSheet: { create: (value) => value }, useWindowDimensions: () => ({ width: 390 }) };
 function postComponent(guideInputs = []) {
   return load("../src/components/DailyPostCard.tsx", {
@@ -85,6 +96,7 @@ function page(params = { id: "post-A" }) {
   const auth = { getSessionGeneration: () => generation, subscribeSessionBoundary: () => () => {} };
   const screen = load("../app/daily-post.tsx", {
     react: r.react, "react/jsx-runtime": runtime, "react-native": { ...native, Linking: { openURL: (url) => p.source(url) } },
+    "expo-image":{Image:"Image"}, "react-native-safe-area-context":{useSafeAreaInsets:()=>({bottom:0})},
     "@/src/api": { api }, "@/src/i18n": {translate:_translateForI18nFixture, useT: () => ({ t, locale: "zh-CN" }) },
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": { __esModule: true, default: (props) => jsx("Notice", { ...props, testID: "failure-notice" }) },
@@ -117,23 +129,26 @@ function page(params = { id: "post-A" }) {
   });
 }
 
-test("actual post screen renders brief AI search preview plus distinct original guide and disclosures", async () => {
-  const p = page();
+test("actual Article shows supplied short summary and two points; the owned takeaway keeps distinct NURI guidance and disclosure", async () => {
+  const params={id:"post-A"},p = page(params);
   try {
     p.render(); await tick(); p.render(); const expected = guideModule.nuriResourceGuide({ concern: "睡眠" }, t);
-    assert.equal(p.find("daily-post-guide-headline").props.children, expected.headline);
-    assert.equal(p.find("daily-post-guide-intro").props.children, expected.intro);
+    assert.ok(p.find("final-article-card"));assert.match(p.visible(),/AI_SEARCH_HEADLINE/);
+    assert.equal(p.find("daily-post-source-caption").props.children.props.children,"Threads 家长分享","parent experience must remain labelled as parent sharing, not professional advice");
     for (let index = 0; index < 3; index++) assert.equal(p.find(`daily-post-guide-action-${index}`), undefined);
     assert.equal(p.find("daily-post-guide-action-3"), undefined);
-    assert.equal(p.find("daily-post-guide-disclosure").props.children, expected.disclosure);
     assert.match(expected.disclosure, /不是原文或完整视频摘要/);
-    assert.equal(p.find("daily-post-summary-question").props.children, "AI_SEARCH_QUESTION?");
     assert.equal(p.find("daily-post-summary-situation").props.children, "AI_SEARCH_SITUATION.");
     assert.ok(p.find("daily-post-summary-point-0")); assert.ok(p.find("daily-post-summary-point-1"));
     assert.equal(p.find("daily-post-summary-point-2"), undefined);
-    assert.match(p.find("daily-post-summary-disclosure").props.children, /部分内容.*有误.*原站核对/);
-    assert.match(p.find("daily-post-summary-basis").props.children, /不是原帖逐字引用/);
-    assert.match(p.visible(), /AI_SEARCH_REASON.*AI_SEARCH_CAUTION/);
+    assert.doesNotMatch(p.visible(), /AI_SEARCH_POINT_THREE|AI_SEARCH_REASON|AI_SEARCH_CAUTION/,"removed lower notes must not become a fabricated source summary");
+    // The final reading layout removed the old lower-note/guide rows. Check
+    // the real remaining disclosure surface, not nonexistent legacy test IDs.
+    Object.assign(params,{uiState:"takeaway",point:"0"});p.render();
+    const takeaway=p.find("social-takeaway-card");
+    assert.equal(takeaway.props.title,"AI_SEARCH_POINT_ONE.");assert.equal(takeaway.props.message,expected.intro);
+    assert.equal(takeaway.props.note,t(summaryModule.RESOURCE_SUMMARY_DISCLOSURE));
+    assert.match(takeaway.props.note,/部分内容.*有误.*原站核对/);
     for (const input of p.guideInputs) assert.deepEqual(input, { concern: "睡眠" });
     assert.deepEqual(p.calls, [["getById", "post-A"]], "guide rendering adds no generation/summary request");
     assert.deepEqual(p.external, []); assert.deepEqual(p.routes, []);
@@ -178,7 +193,7 @@ test("Home fallback labels the original NURI guide, never a missing or unsafe-so
   }
 });
 
-test("AI summaries are restored but raw excerpt, full source body, transcript and images remain unpublished", async () => {
+test("AI summaries are restored but raw source bodies, transcripts and unvalidated image payloads remain unpublished", async () => {
   const p = page(), thirdParty = "THIRD_PARTY_DO_NOT_RENDER";
   const plain = { ...card(), question: "<b>AI_ALLOWED_QUESTION?</b> https://source.example/hidden",
     situation: "AI_ALLOWED_SITUATION.", headline: "AI_ALLOWED_HEADLINE.", takeaways: ["AI_ALLOWED_POINT."],
@@ -187,12 +202,14 @@ test("AI summaries are restored but raw excerpt, full source body, transcript an
   p.read = async () => ({ state: "ready", card: plain });
   try {
     p.render(); await tick(); p.render(); assert.doesNotMatch(p.visible(), /THIRD_PARTY_DO_NOT_RENDER|source\.example/);
-    assert.equal(p.find("daily-post-summary-question").props.children, "AI_ALLOWED_QUESTION?");
     assert.equal(p.find("daily-post-summary-situation").props.children, "AI_ALLOWED_SITUATION.");
     assert.ok(p.find("daily-post-summary-point-0"));
     const home = postComponent().default({ status: "ready", card: plain, nickname: "Parent", width: 340, onPress() {}, onRetry() {} });
     assert.doesNotMatch(JSON.stringify(home), /THIRD_PARTY_DO_NOT_RENDER/);
     assert.match(JSON.stringify(home), /AI_ALLOWED_QUESTION/);
+    p.blur();plain.situation="";p.focus();await tick();p.render();
+    assert.equal(p.find("daily-post-summary-situation").props.children,"AI_ALLOWED_QUESTION?","a missing situation falls back only to the normalized supplied question");
+    assert.doesNotMatch(p.visible(),/THIRD_PARTY_DO_NOT_RENDER|source\.example/);
   } finally { p.unmount(); }
 });
 
@@ -205,7 +222,7 @@ test("original-site link and NURI conversation keep existing event/session contr
     assert.ok(p.calls.some(([operation, id, event]) => operation === "event" && id === "post-A" && event === "source_click"));
     p.find("daily-post-chat").props.onPress(); await tick();
     assert.ok(p.calls.some(([operation, body]) => operation === "startSession" && body.card_id === "post:post-A"));
-    assert.deepEqual(p.routes, [{pathname:"/source-preview",params:{kind:"post",id:"post-A"}},"/chat/created-A"]);
+    assert.deepEqual(p.routes, ["/chat/created-A"],"original-site access belongs to the OS, never an internal republishing browser");
   } finally { p.unmount(); }
 });
 
@@ -213,8 +230,13 @@ test("invalid or credential-bearing source URLs cannot be opened", async () => {
   for (const source_url of ["javascript:alert(1)", "http://example.com/post", "https://example.com/post?access_token=secret", "https://localhost/private"]) {
     const p = page(); p.read = async () => ({ state: "ready", card: { ...card(), source_url } });
     try {
-      p.render(); await tick(); p.render(); p.find("daily-post-source").props.onPress(); await tick(); p.render();
-      assert.deepEqual(p.external, []); assert.ok(p.find("daily-post-source-error")); assert.ok(p.find("daily-post-guide-headline"));
+      p.render(); await tick(); p.render();assert.equal(p.find("daily-post-source").props.disabled,true);
+      p.find("daily-post-source").props.onPress();await tick();assert.deepEqual(p.external,[]);
+      p.find("daily-post-source-caption").props.onPress(); await tick(); p.render();
+      assert.deepEqual(p.external, []); assert.ok(p.find("daily-post-source-error"));
+      assert.match(p.visible(),new RegExp(guideModule.nuriResourceGuide({concern:"睡眠"},t).headline));
+      assert.equal(p.find("daily-post-source").props.disabled,true);
+      assert.doesNotMatch(p.visible(),/AI_SEARCH_HEADLINE|AI_SEARCH_SITUATION|AI_SEARCH_POINT/);
     } finally { p.unmount(); }
   }
 });
@@ -222,11 +244,11 @@ test("invalid or credential-bearing source URLs cannot be opened", async () => {
 test("missing card and load failure do not generate topic-specific post guide", async () => {
   const p = page(); p.read = async () => ({ state: "empty" });
   try {
-    p.render(); await tick(); p.render(); assert.equal(p.find("daily-post-guide-headline"), undefined); assert.deepEqual(p.guideInputs, []);
+    p.render(); await tick(); p.render(); assert.equal(p.find("final-article-card"), undefined); assert.deepEqual(p.guideInputs, []);
     p.blur(); p.read = async () => { throw new Error("offline"); }; p.focus(); await tick(); p.render();
-    assert.ok(p.find("failure-notice")); assert.equal(p.find("daily-post-guide-headline"), undefined);
+    assert.ok(p.find("failure-notice")); assert.equal(p.find("final-article-card"), undefined);
     p.read = async () => ({ state: "ready", card: card() }); p.find("failure-notice").props.onRetry();
-    p.render(); await tick(); p.render(); assert.ok(p.find("daily-post-guide-headline"));
+    p.render(); await tick(); p.render(); assert.ok(p.find("final-article-card"));
   } finally { p.unmount(); }
 });
 
@@ -236,7 +258,7 @@ for (const change of ["account", "blur", "unmount"]) test("held post body cannot
     p.render(); await tick();
     if (change === "account") { p.changeAccount(); p.read = async () => ({ state: "empty" }); p.render(); } else p[change]();
     held.resolve({ state: "ready", card: card("stale-private-post-topic") }); await tick();
-    if (change !== "unmount") { p.render(); assert.equal(p.find("daily-post-guide-headline"), undefined); assert.doesNotMatch(p.visible(), /stale-private-post-topic/); }
+    if (change !== "unmount") { p.render(); assert.equal(p.find("final-article-card"), undefined); assert.doesNotMatch(p.visible(), /stale-private-post-topic/); }
     assert.deepEqual(p.routes, []);
   } finally { held.resolve({ state: "empty" }); p.unmount(); }
 });
@@ -250,13 +272,13 @@ test("recommendation detail derives original guide only from topic and family st
   assert.doesNotMatch(guideSection, /card\.(?:summary|body|description|title)|resource\.(?:summary|description|title)|image_url/);
 });
 
-test("actual summary row opens only its owned resource takeaway and returns through the real stack", async () => {
+test("static Article points never navigate; an explicit owned takeaway deep link returns through the real stack", async () => {
   const params = {id: "post-A"}, p = page(params);
   try {
     p.render(); await tick(); p.render();
-    p.find("daily-post-summary-point-1").props.onPress();
-    assert.deepEqual(p.routes, [{pathname:"/daily-post",params:{id:"post-A",uiState:"takeaway",point:"1"}}]);
-    Object.assign(params, p.routes[0].params); p.hasBack = true; p.render();
+    assert.equal(p.find("daily-post-summary-point-1").props.onPress,undefined);
+    assert.deepEqual(p.routes,[],"a static reading step is not a fake interactive control");
+    Object.assign(params,{uiState:"takeaway",point:"1"}); p.hasBack = true; p.render();
     const surface = p.find("social-takeaway-card");
     assert.equal(surface.props.title, "AI_SEARCH_POINT_TWO.");
     assert.deepEqual(p.calls, [["getById", "post-A"]], "rendering/navigation must not start a chat or generate content");

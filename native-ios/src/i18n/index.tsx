@@ -74,39 +74,57 @@ export function translate(
   return interpolate(DICTIONARIES[locale]?.[source] ?? source, vars);
 }
 
-// Written on every change so the next launch renders in the right language
-// immediately, instead of flashing Simplified until /auth/me answers.
+// This cache is not proof of a user choice: older account hydration also wrote
+// it. Only the separate, valid mode key records an explicit app preference.
 const LOCALE_KEY = "ui_language";
 const LANGUAGE_MODE_KEY = "ui_language_mode";
 export type LanguageMode = Locale | "system";
+
+/** Device fallback is intentionally different from backend language parsing.
+ * Unsupported phone languages use English, never an inferred Chinese choice. */
+export function normalizeDeviceLocale(value: unknown): Locale {
+  const raw = String(value ?? "").trim().replace(/_/g, "-").toLowerCase();
+  if (/^en(?:-|$)/.test(raw)) return "en";
+  if (!/^zh(?:-|$)/.test(raw)) return "en";
+  if (/(?:^|-)hant(?:-|$)/.test(raw) || /^zh-(?:tw|hk|mo)(?:-|$)/.test(raw)) return "zh-TW";
+  return "zh-CN";
+}
+
 export function systemLocale(): Locale {
-  let value:unknown;
-  try { value=Platform.OS==="ios"?Settings.get("AppleLanguages")?.[0]||Settings.get("AppleLocale"):Intl.DateTimeFormat().resolvedOptions().locale; } catch { value="en"; }
-  return /^zh/i.test(String(value))?normalizeLocale(value):"en";
+  try {
+    const value = Platform.OS === "ios"
+      ? Settings.get("AppleLanguages")?.[0] || Settings.get("AppleLocale")
+      : Intl.DateTimeFormat().resolvedOptions().locale;
+    return normalizeDeviceLocale(value);
+  } catch { return "en"; }
+}
+
+function storedLanguageMode(value: unknown): LanguageMode {
+  return value === "system" || LOCALES.includes(value as Locale) ? value as LanguageMode : "system";
 }
 
 type I18nValue = {
   locale: Locale;
   languageMode: LanguageMode;
   chooseLanguage: (next: LanguageMode) => Promise<Locale>;
-  /** Switch the UI now and remember the choice. Does not call the API — the
-   *  settings screen owns persisting to the server. */
+  /** Reconcile after account/profile hydration without treating a server
+   * language as a device preference. Explicit choices use chooseLanguage. */
   setLocale: (next: unknown) => Promise<void>;
   t: (source: string, vars?: Record<string, string | number>) => string;
 };
 
 const I18nContext = createContext<I18nValue>({
   locale: DEFAULT_LOCALE,
-  languageMode: DEFAULT_LOCALE,
+  languageMode: "system",
   chooseLanguage: async () => DEFAULT_LOCALE,
   setLocale: async () => {},
   t: (s, v) => interpolate(s, v),
 });
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE);
-  const [languageMode,setLanguageMode]=useState<LanguageMode>(DEFAULT_LOCALE);
-  const mode=useRef<LanguageMode>(DEFAULT_LOCALE),intent=useRef(0);
+  const [locale, setLocaleState] = useState<Locale>(systemLocale);
+  const [languageMode,setLanguageMode]=useState<LanguageMode>("system");
+  const mode=useRef<LanguageMode>("system"),intent=useRef(0),mounted=useRef(true);
   const writes=useRef<Promise<void>>(Promise.resolve());
   const enqueue=useCallback(<T,>(work:()=>Promise<T>):Promise<T>=>{
     const task=writes.current.catch(()=>{}).then(work);
@@ -115,40 +133,46 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   },[]);
 
   useEffect(() => {
-    let active=true;const ticket=intent.current;
+    mounted.current=true;let active=true,foreground=AppState.currentState==="active";const ticket=intent.current;
     void (async () => {
-      const [saved,savedMode]=await Promise.all([storage.getItem(LOCALE_KEY,"" as string),storage.getItem(LANGUAGE_MODE_KEY,"" as string)]);
+      let savedMode:unknown;
+      try { savedMode=await storage.getItem(LANGUAGE_MODE_KEY,"" as string); } catch { savedMode=""; }
       if(!active||ticket!==intent.current)return;
-      const chosen:LanguageMode=savedMode==="system"?"system":normalizeLocale(savedMode||saved||DEFAULT_LOCALE);
-      mode.current=chosen;setLanguageMode(chosen);setLocaleState(chosen==="system"?systemLocale():normalizeLocale(saved||chosen));
+      const chosen=storedLanguageMode(savedMode);
+      mode.current=chosen;setLanguageMode(chosen);setLocaleState(chosen==="system"?systemLocale():chosen);
     })();
-    const sub=AppState.addEventListener("change",state=>{if(state==="active"&&mode.current==="system"){void enqueue(async()=>{if(mode.current!=="system")return;const next=systemLocale();const saved=await storage.setItem(LOCALE_KEY,next);if(saved&&mode.current==="system")setLocaleState(next);});}});
-    return()=>{active=false;sub.remove();};
-  }, [enqueue]);
+    const refreshDevice=()=>{if(active&&foreground&&mode.current==="system")setLocaleState(systemLocale());};
+    const sub=AppState.addEventListener("change",state=>{foreground=state==="active";refreshDevice();});
+    // RN's Settings.get reads a JS cache. Its settingsUpdated event refreshes
+    // that cache; watchKeys also catches updates delivered after AppState active.
+    const watch=Platform.OS==="ios"&&typeof Settings.watchKeys==="function"
+      ? Settings.watchKeys(["AppleLanguages","AppleLocale"],refreshDevice):null;
+    return()=>{active=false;mounted.current=false;sub.remove();if(watch!==null)Settings.clearWatch(watch);};
+  }, []);
 
-  const setLocale = useCallback(async (next: unknown) => {
-    const ticket=++intent.current;
+  const setLocale = useCallback(async (_next: unknown) => {
+    const ticket=intent.current;
     return enqueue(async()=>{
-    // Account/profile hydration must not override a previously chosen system
-    // language, even when it resolves before the provider's initial read.
-    const savedMode=await storage.getItem(LANGUAGE_MODE_KEY,"" as string);
-    if(ticket!==intent.current)return;
-    if(savedMode==="system"){mode.current="system";setLanguageMode("system");}
-    const normalized = mode.current==="system"?systemLocale():normalizeLocale(next);
-    const saved = await storage.setItem(LOCALE_KEY, normalized);
-    if (!saved) throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
-    if(ticket===intent.current)setLocaleState(normalized);
+    if(!mounted.current||ticket!==intent.current)return;
+    let savedMode:unknown;
+    try { savedMode=await storage.getItem(LANGUAGE_MODE_KEY,"" as string); } catch { return; }
+    if(!mounted.current||ticket!==intent.current)return;
+    const chosen=storedLanguageMode(savedMode);
+    mode.current=chosen;setLanguageMode(chosen);setLocaleState(chosen==="system"?systemLocale():chosen);
     });
   }, [enqueue]);
   const chooseLanguage=useCallback(async(next:LanguageMode)=>{
+    if(next!=="system"&&!LOCALES.includes(next))throw new Error("UNSUPPORTED_LANGUAGE_SELECTION");
     const ticket=++intent.current;
-    const normalized=next==="system"?systemLocale():normalizeLocale(next);
     return enqueue(async()=>{
-    if(ticket!==intent.current)throw new Error("LANGUAGE_SELECTION_SUPERSEDED");
-    const result=[await storage.setItem(LOCALE_KEY,normalized),await storage.setItem(LANGUAGE_MODE_KEY,next)];
-    if(result.some(value=>!value))throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
-    if(ticket!==intent.current)throw new Error("LANGUAGE_SELECTION_SUPERSEDED");
-    mode.current=next;setLanguageMode(next);setLocaleState(normalized);return normalized;
+    if(!mounted.current||ticket!==intent.current)throw new Error("LANGUAGE_SELECTION_SUPERSEDED");
+    const normalized=next==="system"?systemLocale():normalizeLocale(next);
+    if(!await storage.setItem(LOCALE_KEY,normalized))throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
+    if(!mounted.current||ticket!==intent.current)throw new Error("LANGUAGE_SELECTION_SUPERSEDED");
+    if(!await storage.setItem(LANGUAGE_MODE_KEY,next))throw new Error("LOCAL_LANGUAGE_SAVE_FAILED");
+    if(!mounted.current||ticket!==intent.current)throw new Error("LANGUAGE_SELECTION_SUPERSEDED");
+    const currentLocale=next==="system"?systemLocale():normalized;
+    mode.current=next;setLanguageMode(next);setLocaleState(currentLocale);return currentLocale;
     });
   },[enqueue]);
 

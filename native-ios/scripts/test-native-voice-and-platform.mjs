@@ -67,10 +67,7 @@ function voiceHarness(options = {}) {
   }
   const AudioModule = {
     AudioRecorder: Recorder,
-    // Android opens the permission activity on every request, so the adapter
-    // must only ask when the permission is not granted yet.
-    getRecordingPermissionsAsync: async () => ({ granted: options.granted !== false && options.alreadyGranted !== false }),
-    requestRecordingPermissionsAsync: async () => { calls.requests = (calls.requests || 0) + 1; return { granted: options.granted !== false }; },
+    requestRecordingPermissionsAsync: async () => ({ granted: options.granted !== false }),
   };
   const module = moduleWithMocks("../src/chatVoiceInput.native.ts", {
     "react-native": { AppState: state, Platform: { OS: options.platform ?? "ios", isTV: false } },
@@ -134,20 +131,6 @@ function released(harness) {
   await assert.rejects(h.module.startVoiceRecording(), { code: "permission_denied" });
   assert.equal(h.calls.recorders.length, 0);
   assert.equal(h.calls.modes.length, 0);
-}
-{
-  // Already granted: no permission request, so Android never leaves the app.
-  const granted = voiceHarness({ platform: "android" });
-  const recording = await granted.module.startVoiceRecording();
-  assert.equal(granted.calls.requests || 0, 0);
-  recording.cancel();
-  await settle();
-  // First use: one request, then recording starts.
-  const first = voiceHarness({ platform: "android", alreadyGranted: false });
-  const firstRecording = await first.module.startVoiceRecording();
-  assert.equal(first.calls.requests, 1);
-  firstRecording.cancel();
-  await settle();
 }
 {
   const h = voiceHarness({ platform: "web" });

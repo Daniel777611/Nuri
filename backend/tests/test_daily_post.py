@@ -244,23 +244,11 @@ def _months_old(months):
 def test_no_usable_concern_searches_the_childs_stage(concerns):
     """The new-account case: nothing chosen, or only "我不知道从哪开始"."""
     plans = dp.profile_plans(_months_old(8), concerns, date(2026, 9, 11))
-    # Search words round 8 months to 9 so babies can share pooled searches;
-    # the label on the card keeps the real age.
-    assert plans[0].query_zh == "9个月 宝宝 辅食 添加 宝妈"
-    assert plans[0].concern.startswith("8个月")
+    assert plans[0].query_zh == "8个月 宝宝 辅食 添加 宝妈"
     # The age band first, then what parents of any young child ask.
     assert [p.query_en for p in plans] == [
-        "9 month old starting solids moms", "9 month old sleep moms", "9 month old tantrums moms",
+        "8 month old starting solids moms", "8 month old sleep moms", "8 month old tantrums moms",
     ]
-
-
-@pytest.mark.parametrize("months, words", [
-    (0, "1个月"), (2, "1个月"), (3, "3个月"), (5, "6个月"), (8, "9个月"), (11, "12个月"),
-    (16, "18个月"), (22, "2岁"), (30, "2岁"), (50, "4岁"),
-])
-def test_search_words_use_an_age_band(months, words):
-    plan = dp.profile_plan(_months_old(months), ["sleep"], date(2026, 9, 11))
-    assert plan.query_zh.startswith(words + " ")
 
 
 def test_with_no_child_on_file_it_still_searches_for_a_baby():
@@ -546,44 +534,15 @@ def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monke
     assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
 
 
-def _budget_spent(monkeypatch):
+def test_a_spent_search_budget_is_recorded_before_any_model_call(world, monkeypatch):
     async def spent(_kind):
         raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
 
     monkeypatch.setattr(search_budget, "require_some_left", spent)
-
-
-def test_a_spent_budget_with_nothing_pooled_is_recorded_without_a_model_call(world, monkeypatch):
-    _budget_spent(monkeypatch)
-
-    async def not_pooled(plan, _locale, _exclude):
-        world.searched.append((plan.basis, set()))
-        raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
-
-    monkeypatch.setattr(dp, "find_candidates", not_pooled)
     assert _get()["state"] == "empty"
     row = world.db.tables["daily_post_cards"][0]
     assert row["status"] == "failed" and "search limit" in row["error"]
-    assert row["query"] == {"searches": 0}
-    # No words written from the chat: they could not be searched for anyway.
-    assert world.conversation_calls == 0 and world.generated == 0
-    # Every profile plan was asked, in case the pool held one of them.
-    assert [basis for basis, _ in world.searched] == ["profile"] * dp.PROFILE_PLANS
-
-
-def test_a_spent_budget_still_makes_a_card_from_the_pool(world, monkeypatch):
-    _budget_spent(monkeypatch)
-    calls = []
-
-    async def second_plan_pooled(plan, _locale, _exclude):
-        calls.append(plan.query_en)
-        if len(calls) == 1:
-            raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
-        return [_cand(url=world.card_url)]
-
-    monkeypatch.setattr(dp, "find_candidates", second_plan_pooled)
-    assert _get()["state"] == "ready"
-    assert len(calls) == 2 and world.conversation_calls == 0
+    assert world.conversation_calls == 0 and not world.searched
 
 
 def test_one_language_failing_keeps_the_other_languages_posts(monkeypatch):

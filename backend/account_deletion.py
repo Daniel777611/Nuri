@@ -23,7 +23,6 @@ import anyio
 from fastapi import HTTPException
 
 from backend import billing, memstore, stores
-from backend.feed import search_budget
 from backend.nuri_core import family, outcome
 from backend.nuri_core.outcome_store import event_setting_prefix
 from backend.recommendation_feedback import event_storage_key
@@ -93,9 +92,6 @@ def _setting_scopes(uid: str) -> tuple[tuple[str, str], ...]:
         ("like", snapshot_storage_prefix(uid) + "%"),
         ("eq", event_storage_key(uid)),
         ("like", event_setting_prefix(uid) + "%"),
-        # Today's per-account search counts for the daily cards.
-        ("eq", search_budget.account_key("post", uid)),
-        ("eq", search_budget.account_key("video", uid)),
     )
 
 

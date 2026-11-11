@@ -8,14 +8,16 @@ export function youtubeVideoThumbnail(videoId:unknown):string|null{
 }
 
 /** Optional feed-supplied preview only, not a client-side scrape/OG service.
- * Current main does not produce post images yet. Reject credentials and local
- * targets, and restrict future supplied thumbnails to the social image CDNs. */
+ * The current generator may omit these fields. Reject credentials and local
+ * targets, and restrict supplied thumbnails to the social image CDNs. */
 export function socialPostThumbnail(value:unknown,sourceUrl:unknown):string|null{
  if(!externalSourceUrl(sourceUrl))return null;
  const safe=externalSourceUrl(value);
- if(!safe)return null;
+ if(!safe||safe.length>4096)return null;
  const url=new URL(safe),host=url.hostname.toLowerCase();
  if(!["fbcdn.net","cdninstagram.com"].some(domain=>host===domain||host.endsWith(`.${domain}`)))return null;
  if(!/\.(?:jpe?g|png|webp|avif|gif)$/i.test(url.pathname))return null;
+ // Social avatars and page furniture must not be labelled as post artwork.
+ if(/avatar|profile[\s_-]*(?:picture|photo|image)|favicon|\blogo\b|\bicon\b/i.test(url.pathname)||/\/t\d+(?:\.\d+)*-(?:1|19)\//i.test(url.pathname))return null;
  return safe;
 }

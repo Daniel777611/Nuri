@@ -21,7 +21,9 @@ const editing = compile("../src/keyboard/editingModel.ts", {});
 
 /** This deliberately executes actual source with a small React-hook/native-ref
  * adapter. It does not simulate Yoga, UIKit, browser IME or a real soft keyboard. */
-function environment({ os = "ios", locale = "en", candidates, actualEngine = false } = {}) {
+// These existing custom-controller contracts run on Android/web. The separate
+// native-ime-ownership suite executes the real public iOS route and adapter.
+function environment({ os = "android", locale = "en", candidates, actualEngine = false } = {}) {
   let current = null, nextId = 0, path = "/fixture", appState = "active";
   const contexts = [], tasks = [], listeners = new Set(), candidateCalls = [];
   const document = { activeElement: { closest: () => null } };
@@ -58,9 +60,11 @@ function environment({ os = "ios", locale = "en", candidates, actualEngine = fal
   }
   const api = compile("../src/keyboard/AppKeyboard.tsx", {
     react, "react/jsx-runtime": { jsx, jsxs: jsx },
-    "react-native": { Platform: { OS: os }, TextInput: "NativeTextInput", View: "View", AppState: { get currentState() { return appState; }, addEventListener(event, fn) { assert.equal(event, "change"); listeners.add(fn); return { remove() { listeners.delete(fn); } }; } } },
+    "react-native": { Platform: { OS: os }, TextInput: "NativeTextInput", View: "View", Keyboard: { dismiss() {} }, AppState: { get currentState() { return appState; }, addEventListener(event, fn) { assert.equal(event, "change"); listeners.add(fn); return { remove() { listeners.delete(fn); } }; } } },
     "expo-router": { usePathname: () => path },
     "@/src/i18n": { useT: () => ({ locale }), translate: (_locale, text) => text },
+    "@/src/sessionBoundary": { subscribeSessionBoundary: () => () => {} },
+    "./NativeNuriTextInput": { NativeNuriTextInput() { assert.fail("The custom-controller fixture must not enter the iOS native route"); } },
     "./KeyboardPanel": { KeyboardPanel: "KeyboardPanel" }, "./pinyinEngine": dictionary, "./editingModel": editing,
   }, { queueMicrotask: task => tasks.push(task), document });
   const controller = new api.AppKeyboardController(); contexts[0].current = controller;
@@ -81,7 +85,7 @@ function environment({ os = "ios", locale = "en", candidates, actualEngine = fal
     const changes = [], calls = [], props = { ...(controlled ? { value: "" } : {}), onChangeText: value => { changes.push(value); if (controlled) props.value = value; }, ...initial };
     let attachedRef;
     const handle = { focus() { calls.push("focus"); }, blur() { calls.push("blur"); }, measure() {}, clear() {}, isFocused: () => true };
-    const r = runner(() => { contexts[1].current = scope; return api.NuriTextInput(props, forwarded); }, tree => { assert.equal(tree.type, "NativeTextInput"); if (tree.props.ref !== attachedRef) { attachedRef?.(null); attachedRef = tree.props.ref; attachedRef(handle); } });
+    const r = runner(() => { contexts[1].current = scope; const routed = api.NuriTextInput(props, forwarded); return routed.type(routed.props, forwarded); }, tree => { assert.equal(tree.type, "NativeTextInput"); if (tree.props.ref !== attachedRef) { attachedRef?.(null); attachedRef = tree.props.ref; attachedRef(handle); } });
     return Object.assign(r, { props, changes, calls, handle, forwarded, scope,
       focus() { r.render().props.onFocus({ nativeEvent: {} }); r.render(); },
       select(start, end = start) { r.render().props.onSelectionChange({ nativeEvent: { selection: { start, end } } }); r.render(); },
@@ -223,7 +227,7 @@ test("custom submit does not forge native onSubmitEditing; hardware event callba
   const e = environment(), native = [], f = e.input({ onSubmitEditing: event => native.push(event) }); f.focus(); e.actions().onEnter(); assert.deepEqual(native, []); const event = { nativeEvent: { text: "native" } }; f.render().props.onSubmitEditing(event); assert.equal(native[0], event); f.unmount();
 });
 test("system fallback is explicit, restores platform props and cannot leave a custom accessory over native keys", () => {
-  for (const os of ["ios", "web"]) { const e = environment({ os }), f = e.input({ keyboardType: "email-address", inputMode: "email", inputAccessoryViewID: "original-accessory" }); f.focus(); const before = f.render(); assert.equal(before.props.showSoftInputOnFocus, false); assert.equal(before.props.inputAccessoryViewID, undefined); if (os === "web") assert.equal(before.props.inputMode, "none");
+  for (const os of ["android", "web"]) { const e = environment({ os }), f = e.input({ keyboardType: "email-address", inputMode: "email", inputAccessoryViewID: "original-accessory" }); f.focus(); const before = f.render(); assert.equal(before.props.showSoftInputOnFocus, false); assert.equal(before.props.inputAccessoryViewID, undefined); if (os === "web") assert.equal(before.props.inputMode, "none");
     e.actions().onUseSystemKeyboard(); const after = f.render(); assert.equal(e.actions().visible, false); assert.notEqual(after.props.showSoftInputOnFocus, false); assert.equal(after.props.inputMode, "email"); assert.equal(after.props.inputAccessoryViewID, "original-accessory"); assert.equal(after.props.ref, before.props.ref); assert.equal(e.actions().layout, "email"); f.unmount(); }
 });
 test("unmanaged opt-out retains original keyboard and accessory props without activating the provider", () => {

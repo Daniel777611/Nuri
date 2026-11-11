@@ -177,11 +177,7 @@ export async function startVoiceRecording(): Promise<VoiceRecording> {
 
   try {
     await audioCleanup;
-    // Ask only when not yet granted: on Android a request opens the system
-    // permission activity even for a granted permission, briefly sending the
-    // app to the background, which the chat screen took as "cancel voice".
-    const existing = await nativeAudio.getRecordingPermissionsAsync();
-    const permission = existing.granted ? existing : await nativeAudio.requestRecordingPermissionsAsync();
+    const permission = await nativeAudio.requestRecordingPermissionsAsync();
     if (!permission.granted) throw new VoiceInputError("permission_denied");
     if (AppState.currentState !== "active") throw new VoiceInputError("failed", "App is not active");
     // Attach after the system permission dialog, which temporarily makes iOS inactive.

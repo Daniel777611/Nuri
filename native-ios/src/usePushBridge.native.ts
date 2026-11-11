@@ -6,12 +6,14 @@ import { storage } from "./utils/storage";
 import { isPreviewMode } from "./preview-api";
 import { getNativePushBridge, subscribeNativePush } from "./nativePush";
 import { getAppNativePushRuntime, type NativePushRuntime, parseNativeToken } from "./nativePushRuntime";
+import { useT } from "./i18n";
 
 export { parseNativeToken, safeNotificationRoute } from "./nativePushRuntime";
 
 const authRoutes = new Set(["login", "register", "verify-email", "forgot-password", "onboarding", "welcome"]);
 
 export function usePushBridge() {
+  const { locale } = useT();
   const router = useRouter();
   const pathname = usePathname();
   const segments = useSegments();
@@ -20,7 +22,9 @@ export function usePushBridge() {
   const runtimeRef = useRef<NativePushRuntime | null>(null);
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
   const readyRef = useRef(ready);
+  const localeRef = useRef(locale);
   readyRef.current = ready;
+  localeRef.current = locale;
 
   useEffect(() => {
     const bridge = getNativePushBridge();
@@ -40,6 +44,7 @@ export function usePushBridge() {
       openRoute: (route) => router.push(route as never),
     });
     runtimeRef.current = runtime;
+    runtime.setLocale(localeRef.current);
     runtime.setNavigationReady(readyRef.current);
 
     const acceptState = (state: unknown, read?: number, preservePermission = false) => {
@@ -50,11 +55,11 @@ export function usePushBridge() {
 
     const refreshSession = async () => {
       const read = ++sessionRead;
-      const [session, locale] = await Promise.all([
-        auth.getToken(), storage.getItem("ui_language", "zh-CN"),
-      ]);
+      const session = await auth.getToken();
       if (!disposed && read === sessionRead) {
-        runtime.setLocale(locale || "zh-CN");
+        // Use the provider's live system/explicit result, not a legacy cache
+        // captured before the asynchronous credential read completed.
+        runtime.setLocale(localeRef.current);
         lastSession = session;
         void runtime.setSession(session);
       }
@@ -116,6 +121,13 @@ export function usePushBridge() {
       refreshRef.current = null;
     };
   }, [router]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    runtime.setLocale(locale);
+    void runtime.sync();
+  }, [locale]);
 
   useEffect(() => {
     runtimeRef.current?.setNavigationReady(ready);

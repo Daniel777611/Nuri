@@ -661,11 +661,10 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") return;
-      // The microphone permission dialog briefly makes iOS inactive and sends
-      // Android to the background. There is no recorder yet; the adapter only
-      // records while the app is active and cancels itself on a later
-      // background. Once recording, a background transition or blur cancels.
-      if (voiceStartInFlightRef.current && !voiceRecordingRef.current) return;
+      // iOS briefly becomes inactive while asking for microphone permission.
+      // There is no recorder yet; the adapter checks foreground state before
+      // recording. A real background transition or screen blur still cancels.
+      if (state === "inactive" && voiceStartInFlightRef.current && !voiceRecordingRef.current) return;
       voiceStartVersionRef.current += 1;
       clearVoiceTimer();
       voiceRecordingRef.current?.cancel();

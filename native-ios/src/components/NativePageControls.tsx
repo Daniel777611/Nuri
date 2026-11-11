@@ -1,6 +1,6 @@
 import { FrostedPressable } from "@/src/uiuxfinal/ButtonMaterial";
 import { Ionicons } from "@expo/vector-icons";
-import { useGlobalSearchParams, usePathname, useRouter } from "expo-router";
+import { useGlobalSearchParams, usePathname, useRootNavigationState, useRouter } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useT, translate } from "@/src/i18n";
@@ -9,7 +9,8 @@ import { useAIConsent } from "@/src/useAIConsent";
 import { aiConsentCopy } from "@/src/aiConsentCopy";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy } from "@/src/requestFailure";
-import { requestGuardedNativeNavigation, type NativeNavigationAction } from "./nativeNavigation";
+import { chatHeaderBackAction, requestGuardedNativeNavigation, type NativeNavigationAction } from "./nativeNavigation";
+import { isLiveCommunityEnabled } from "@/src/liveCommunityGate";
 import { IconAction, NuriText } from "@/src/uiux48/Primitives";
 import { NuriAvatar } from "@/src/uiux48/Scene";
 import { CurrentUserAvatarAction } from "@/src/uiuxfinal/UserAvatar";
@@ -20,14 +21,15 @@ export default function NativePageControls() {
   const router = useRouter();
   const pathname = usePathname();
   const {uiState,flowTitle,communityHideBack,communityHeader,communityHideAvatar,section}=useGlobalSearchParams<{uiState?:string;flowTitle?:string;communityHideBack?:string;communityHeader?:string;communityHideAvatar?:string;section?:string}>();
-  const prototypeTitle=(pathname==="/community"||process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"&&pathname==="/notifications")&&typeof flowTitle==="string"&&flowTitle.length<=160?flowTitle:null;
+  const liveCommunity=pathname==="/community"&&isLiveCommunityEnabled();
+  const prototypeTitle=(liveCommunity||process.env.EXPO_PUBLIC_FLOW_PROTOTYPE==="1"&&pathname==="/notifications")&&typeof flowTitle==="string"&&flowTitle.length<=160?flowTitle:null;
   const { t, locale } = useT();
   const { state } = useAIConsent();
   const aiCopy = aiConsentCopy(locale);
   const openPermission = () => { if (pathname !== "/ai-permission") router.push(aiPermissionHref(pathname)); };
   const notificationsLabel = locale === "en" ? "Notification settings" : locale === "zh-TW" ? "通知設定" : "通知设置";
   const labels: Record<string, [string,string]> = { "/login":["欢迎回来","Welcome back"],"/register":["创建账号","Create account"],"/verify-email":["验证邮箱","Verify email"],"/forgot-password":["重置密码","Reset password"],"/onboarding":["认识你和家人","Your family"],"/community":["社区","Community"],"/notifications":["推送","Notifications"],"/notification-settings":["通知设置","Notifications"],"/profile":["个人资料与设置","Profile & settings"],"/chats":["Nuri","Nuri"],"/daily-video":["推送","Recommendations"],"/daily-post":["推送","Recommendations"] };
-  const stateTitle = pathname==="/daily-post"&&uiState==="takeaway" ? ["一起想想怎么做","Think it through"] : pathname==="/onboarding" ? (uiState==="setupChild"?["介绍一下宝宝","Tell us about your child"]:uiState==="setupConcerns"?["最近关注什么？","What's on your mind?"]:["先认识一下你","Let's get to know you"]) : pathname.startsWith("/child/") ? ["孩子资料","Child profile"] : pathname.startsWith("/saved/") ? (uiState==="choose" ? ["选择收藏分类","Choose a collection"] : ["已保存的内容","Saved content"]) : pathname==="/account-deletion"&&uiState==="deleted" ? ["账号已删除","Account deleted"] : null;
+  const stateTitle = pathname==="/daily-post"&&uiState==="takeaway" ? ["一起想想怎么做","Think it through"] : pathname.startsWith("/child/") ? ["孩子资料","Child profile"] : pathname.startsWith("/saved/") ? (uiState==="choose" ? ["选择收藏分类","Choose a collection"] : ["已保存的内容","Saved content"]) : pathname==="/account-deletion"&&uiState==="deleted" ? ["账号已删除","Account deleted"] : null;
   const title = stateTitle ? stateTitle[locale==="en"?1:0] : pathname==="/source-preview"?(locale==="en"?"View original content":translate(locale, "查看原始内容")):pathname==="/content-unavailable"?(locale==="en"?"Not ready yet":translate(locale, "暂时没有准备好")):pathname==="/forgot-password"&&uiState==="resetDone"?(locale==="en"?"Password updated":translate(locale, "密码已更新")):pathname==="/notification-settings"&&uiState==="permission"?(locale==="en"?"Device notification access":translate(locale, "设备通知权限")):pathname.startsWith("/chat/") ? "Nuri" : labels[pathname]?.[locale === "en" ? 1 : 0] ?? "Nuri";
   const authenticated = !/^\/(login|register|verify-email|forgot-password|onboarding|ai-permission)$/.test(pathname);
   const reading = pathname==="/daily-post"||pathname==="/daily-video";
@@ -39,7 +41,9 @@ export default function NativePageControls() {
   // Parent conversations own the complete Figma header. Keep the shell's safe
   // area, but never stack the generic profile/settings header above it. An
   // explicit default wins over a stale initial deep-link uiState on return.
-  if (pathname==="/community" &&
+  // The simplified onboarding route owns its own progress/back/skip header.
+  if (pathname==="/onboarding") return null;
+  if (liveCommunity &&
       (communityHeader==="parent-chat" || communityHeader==="feedback" || communityHeader===undefined && ["chat","chatOn","consent"].includes(String(uiState)))) return null;
 
   const navigate = (action: NativeNavigationAction) => {
@@ -49,14 +53,14 @@ export default function NativePageControls() {
     } else if (action === "back" && router.canGoBack()) {
       router.back();
     } else {
-      router.dismissTo("/");
+      router.dismissTo(authenticated && !(pathname === "/account-deletion" && uiState === "deleted") ? "/(tabs)" : "/");
     }
   };
 
   return (
     <View testID="native-page-controls">
     <View style={[styles.row,nuriChat?{gap:8}:null]}>
-      {pathname==="/community"&&communityHideBack==="1"?<View style={{width:8}} />:<IconAction name="back" label={t("返回")} onPress={() => navigate("back")} testID="native-header-back" />}
+      {pathname==="/community"&&communityHideBack==="1"?<View style={{width:8}} />:nuriChat?<ChatBackAction pathname={pathname} label={t("返回")} navigate={navigate} />:<IconAction name="back" label={t("返回")} onPress={() => navigate("back")} testID="native-header-back" />}
       {pathname.startsWith("/chat/")||pathname==="/chats"?<NuriAvatar />:null}
       {settings||nuriChat||pathname==="/community"?<FinalText size={nuriChat?18:20} secondary={settings||pathname==="/community"&&communityHeader!=="blocked-list"} style={{flex:1,marginLeft:nuriChat?0:4,lineHeight:pathname==="/community"&&!regularCommunity?28:26,fontWeight:settings||regularCommunity?"400":"500"}}>{displayTitle}</FinalText>:<NuriText role="H2" secondary={!reading} style={{flex:1,marginLeft:4,...(reading?{fontSize:20,lineHeight:28,color:"#4A454D",fontWeight:"500"}:null)}}>{displayTitle}</NuriText>}
       {authenticated&&pathname==="/community"&&!hideCommunityAvatar?<CurrentUserAvatarAction path={pathname} testID="native-header-settings" />:null}
@@ -64,6 +68,11 @@ export default function NativePageControls() {
       {(pathname.startsWith("/chat")||pathname==="/daily-post"||pathname==="/daily-video"||pathname==="/knowledge"||pathname.startsWith("/detail/")) && ["not_allowed", "error"].includes(state.status) ? <FrostedPressable onPress={openPermission} style={styles.banner} accessibilityRole="button" testID="native-ai-permission-blocked"><NuriText style={{fontSize:12,lineHeight:18}}>{state.status === "error" ? (state.failure === "session" ? requestFailureCopy(locale, "session").detail : aiCopy.loadError) : aiCopy.banner}</NuriText></FrostedPressable> : null}
     </View>
   );
+}
+
+function ChatBackAction({ pathname, label, navigate }: { pathname: string; label: string; navigate: (action: NativeNavigationAction) => void }) {
+  const state = useRootNavigationState();
+  return <IconAction name="back" label={label} onPress={() => navigate(chatHeaderBackAction(pathname, state))} testID="native-header-back" />;
 }
 
 function Control({ icon, label, onPress, testID }: {

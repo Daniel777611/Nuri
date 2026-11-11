@@ -1,439 +1,249 @@
-import { FrostedPressable } from "@/src/uiuxfinal/ButtonMaterial";
-import { NuriTextInput } from "@/src/keyboard/AppKeyboard";
-import { AuthFrame, ChoiceChip, GlassSurface, MenuRow, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
-import { useNuriTheme } from "@/src/uiux48/Theme";
 import { useCallback, useEffect, useRef } from "react";
-import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
-import {
-  ActivityIndicator,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
-} from "react-native";
+import { AccessibilityInfo, ActivityIndicator, Keyboard, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
-import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
-import { useHeaderHeight } from "@react-navigation/elements";
-import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
-import { useFonts } from "expo-font";
-import { TEXT_FONTS } from "@/src/textFonts";
-
 import { api, auth, isAuthError } from "@/src/api";
+import { useAccountScope, useAccountState as useState } from "@/src/useAccountState";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
-import { useT, translate } from "@/src/i18n";
-import {
-  daysInMonth,
-  formatDateOnly,
-  isValidBirthDate,
-  isValidDueDate,
-  parseDateOnly,
-} from "@/src/child-age";
-import { childDraftsFromServer, childFingerprint, ChildSaveError, deleteOnboardingChild, newChildSaveProgress, onboardingChildCopy, persistOnboardingChildren, refreshOnboardingChildren, removeOnboardingDraft, validChildDraft, type ChildDraft, type ChildSaveProgress } from "@/src/onboardingChildren";
+import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
+import { NuriButton, NuriIcon, NuriKeyboardFrame, NuriText } from "@/src/uiux48/Primitives";
+import { useNuriTheme } from "@/src/uiux48/Theme";
+import { useT, translate } from "@/src/i18n";
+import { childDraftsFromServer, childFingerprint, ChildSaveError, deleteOnboardingChild, newChildSaveProgress, onboardingChildCopy, persistOnboardingChildren, refreshOnboardingChildren, removeOnboardingDraft, validChildDraft, type ChildDraft, type ChildSaveProgress } from "@/src/onboardingChildren";
+import { appendChildDraft, blankChildDraft, cloneChildDraft, committableChildDrafts, isBlankChildDraft } from "@/src/simplifiedOnboarding";
+import { readParentGender, saveParentGender } from "@/src/onboardingParentGender";
+import { ChildProfileCard, ParentProfileCard, OnboardingPrompt, ChildReviewCard, type ParentDraft } from "@/src/uiuxfinal/OnboardingForm";
+import { OnboardingKeyboardFooter, useOnboardingKeyboardVisible } from "@/src/uiuxfinal/OnboardingKeyboardFooter";
 
-const babyIcon = require("@/assets/images/onboarding-baby-icon.png");
-const parentIcon = require("@/assets/images/onboarding-parent-icon.png");
+type SetupError = "" | "load" | "delete" | "unconfirmed" | "save" | "invalid-edit" | "parent-name" | "incomplete-children";
 
-const CONCERNS = [
-  ["sleep", "睡眠"], ["food", "饮食／副食品"], ["emotion", "情绪与哭闹"],
-  ["development", "发展与学习"], ["parenting", "教养方式"], ["health", "生病与健康"],
-  ["childcare", "托育／幼儿园"], ["family", "家人教养观念不同"], ["unknown", "我不知道从哪开始"], ["other", "其他"],
-] as const;
-// NURI addresses the parent by role, so an unanswered role used to be stored
-// as "mom" for everyone. Asked here rather than at signup to keep signup to
-// just email and password.
-const PARENT_ROLES = [["mom", "妈妈"], ["dad", "爸爸"], ["grandparent", "祖父母／外祖父母"], ["other", "其他照顾者"]] as const;
-const HELP_PREFS = [["research", "专业研究与知识"], ["experience", "真实家长经验分享"], ["analysis", "一步一步分析原因"], ["actionable", "直接给我可执行的方法"]] as const;
-const INFO_SOURCES = [["research", "专业研究／论文"], ["expert", "医师或专家"], ["parents", "其他家长经验"], ["all", "都会参考"]] as const;
-const FREQUENCIES = [["daily", "每天一次"], ["weekly_2_3", "每周 2～3 次"], ["weekly", "每周一次"], ["on_demand", "有需要时再推播"]] as const;
-
-const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
-
+/** Replaces the retired topic/preferences tour. Navigation and editing are
+ * local; only final Confirm completes setup through the real guarded API. */
 export default function Onboarding() {
   const { capture, current } = useAccountScope();
   const { t, locale } = useT();
-  const theme = useNuriTheme();
-  const childCopy = onboardingChildCopy(locale);
-  const router = useRouter();
-  const recovery = useExpiredSessionRecovery(() => router.replace("/login"));
-  const recoverExpiredCredentials = recovery.recover;
-  const headerHeight = useHeaderHeight();
-  const { width: viewportWidth } = useWindowDimensions();
-  const phoneWidth = Math.min(viewportWidth, 402);
-  const [fontsLoaded] = useFonts(TEXT_FONTS);
-  // 0/1/2 = Figma 注册流程 2/4/5；3–6 = 注册流程 6/6.1/6.2/6.3。
-  const [page, setPage] = useState(0);
-  const [childName, setChildName] = useState("");
-  const [childGender, setChildGender] = useState("other");
-  const [skipChild, setSkipChild] = useState(false);
-  const [birthYear, setBirthYear] = useState<number | null>(null);
-  const [birthMonth, setBirthMonth] = useState<number | null>(null);
-  const [birthDay, setBirthDay] = useState<number | null>(null);
-  const [expecting, setExpecting] = useState(false);
-  const [nickname, setNickname] = useState("");
-  const [city, setCity] = useState("");
-  const [parentRole, setParentRole] = useState("");
-  const [concerns, setConcerns] = useState<string[]>([]);
-  const [concernOther, setConcernOther] = useState("");
-  const [hobbies, setHobbies] = useState("");
-  const [helpPref, setHelpPref] = useState("");
-  const [infoSource, setInfoSource] = useState("");
-  const [frequency, setFrequency] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [childDrafts, setChildDrafts] = useState<ChildDraft[]>([]);
-  const [editingKey, setEditingKey] = useState<string | null>("new-1");
-  const [loaded, setLoaded] = useState(false);
-  const [reload, setReload] = useState(0);
-  const nextDraft = useRef(1);
-  const saveAction = useRef(false);
-  const saveProgress = useRef<{ ticket: number; value: ChildSaveProgress } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [syncError, setSyncError] = useState("");
+  const keyboardVisible = useOnboardingKeyboardVisible();
+  const theme = useNuriTheme(), copy = onboardingChildCopy(locale), router = useRouter();
+  const cn = (text: string, en: string, vars?: Record<string, string | number>) => translate(locale, locale === "en" ? en : text, vars);
+  const recovery = useExpiredSessionRecovery(() => router.replace("/login")), recover = recovery.recover;
+  const [page, setPage] = useState<0 | 1 | 2>(0);
+  const [parent, setParent] = useState<ParentDraft>({ nickname: "", city: "", gender: "hidden" });
+  const [parentCommitted, setParentCommitted] = useState<ParentDraft | null>(null);
+  const [rows, setRows] = useState<ChildDraft[]>([]), [review, setReview] = useState<ChildDraft[]>([]);
+  const [expecting, setExpecting] = useState(false), [editing, setEditing] = useState<ChildDraft | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ChildDraft | null>(null);
-  const hasUnconfirmedCreate = saveProgress.current?.ticket === capture() && !!saveProgress.current?.value.pending;
-
-  // UI-only route state drives the existing shared header, never a save.
-  useEffect(()=>{router.setParams({uiState:page===0?"setupParent":page===1?"setupChild":"setupConcerns"});},[page,router]);
-  useFocusEffect(useCallback(()=>{
-    if(page===0&&!pickerOpen)return;
-    return registerNativeNavigationGuard("/onboarding",action=>{
-      if(capture()===null||saveAction.current||action!=="back")return;
-      if(confirmDelete)setConfirmDelete(null);else if(pickerOpen)setPickerOpen(false);else if(page===1&&editingKey&&childDrafts.length)setEditingKey(null);else setPage(value=>Math.max(0,value-1));
-    });
-  },[page,pickerOpen,saving,editingKey,childDrafts.length,confirmDelete,capture,setPage,setPickerOpen,setEditingKey,setConfirmDelete]));
+  const [loaded, setLoaded] = useState(false), [saving, setSaving] = useState(false), [reload, setReload] = useState(0);
+  const [error, setError] = useState<SetupError>(""), [reducedMotion, setReducedMotion] = useState(false), [scrollRevision, setScrollRevision] = useState(0);
+  // Keep semantic errors, not translated snapshots: an already-visible error
+  // follows a device/app language change without reloading or losing drafts.
+  const errorMessage = error === "load" ? cn("家庭资料加载失败，请检查网络并刷新后重试。", "Family details could not be loaded. Check your connection and retry.")
+    : error === "delete" ? copy.deleteFailed : error === "unconfirmed" ? copy.unconfirmed
+    : error === "save" ? cn("保存失败，这次资料尚未完整写入。请检查网络后重试。", "Setup was not fully saved. Check your connection and retry.")
+    : error === "invalid-edit" ? cn("请填写昵称并选择有效日期。", "Enter a nickname and choose a valid date.")
+    : error === "parent-name" ? cn("请填写称呼，或跳过此步骤。", "Enter your name, or skip this step.")
+    : error === "incomplete-children" ? cn("请补全孩子昵称和有效日期，或移除未填写的卡片。", "Complete each child's nickname and date, or remove the incomplete card.") : "";
+  const initialParent = useRef<{ ticket: number; userId: string; value: ParentDraft } | null>(null);
+  const progress = useRef<{ ticket: number; value: ChildSaveProgress } | null>(null);
+  const action = useRef(false), sequence = useRef(0), scroll = useRef<ScrollView>(null);
+  const positions = useRef(new Map<string, number>()), offsets = useRef({ born: 0, unborn: 0 });
+  const pendingScroll = useRef<{ ticket: number; key: string; expecting: boolean } | null>(null);
+  const frame = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
+  const newKey = () => `setup-${capture()}-${++sequence.current}`;
+  const available = () => capture() !== null && loaded && !action.current;
 
   useEffect(() => {
-    const ticket = capture();
-    if (ticket === null) return;
-    let cancelled = false;
-    setLoaded(false);
+    let active = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then(value => { if (active) setReducedMotion(value); });
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReducedMotion);
+    return () => { active = false; subscription.remove(); if (frame.current !== null) cancelAnimationFrame(frame.current); };
+  }, [setReducedMotion]);
+  useEffect(() => {
+    const ticket = capture(); if (ticket === null) return;
+    let cancelled = false; setLoaded(false); setError("");
     (async () => {
-      const requestToken = await auth.getToken();
+      const token = await auth.getToken();
+      const owns = async () => !cancelled && current(ticket) && await auth.getToken() === token && current(ticket);
       try {
+        if (!token || !await owns()) return;
+        const [me, children] = await Promise.all([api.me(), api.listChildren()]);
+        if (!await owns()) return;
+        if (!me || typeof me.id !== "string" || !me.id) throw new Error("Missing account identity");
+        const gender = await readParentGender(me.id, owns); if (!await owns()) return;
+        const value: ParentDraft = { nickname: me.nickname || "", city: me.city || "", gender };
+        initialParent.current = { ticket, userId: me.id, value };
+        const drafts = childDraftsFromServer(children), saved = newChildSaveProgress();
+        for (const child of drafts) saved.confirmed.set(child.key, { id: child.id!, fingerprint: childFingerprint(child) });
+        progress.current = { ticket, value: saved };
+        setParent(value); setParentCommitted(null); setReview(drafts.map(cloneChildDraft));
+        setRows(drafts.length ? drafts : [blankChildDraft(newKey(), false)]);
+        setPage(0); setExpecting(false); setEditing(null);
+        pendingScroll.current = null; positions.current.clear(); offsets.current = { born: 0, unborn: 0 }; setLoaded(true);
+      } catch (failure) {
         if (cancelled || !current(ticket)) return;
-        const [me, kids] = await Promise.all([api.me(), api.listChildren()]);
-        if (cancelled || await auth.getToken() !== requestToken || !current(ticket)) return;
-        setNickname(me?.nickname || ""); setCity(me?.city || ""); setParentRole(me?.parent_role || "");
-        // Only the choices this page offers: an older account can hold one that
-        // was retired (e.g. "education"), which has no chip to untick and made
-        // every save fail validation.
-        setConcerns((me?.top_concerns || []).filter((key: string) => CONCERNS.some(([k]) => k === key)));
-        setConcernOther(me?.concern_other || "");
-        setHobbies(me?.hobbies || ""); setHelpPref(me?.help_preference || "");
-        setInfoSource(me?.info_source || ""); setFrequency(me?.content_frequency || "");
-        const drafts = childDraftsFromServer(kids);
-        const progress = newChildSaveProgress();
-        for (const child of drafts) progress.confirmed.set(child.key, { id: child.id!, fingerprint: childFingerprint(child) });
-        saveProgress.current = { ticket, value: progress };
-        setChildDrafts(drafts); setEditingKey(drafts.length ? null : "new-1");
-        setChildName(""); setChildGender("other"); setBirthYear(null); setBirthMonth(null); setBirthDay(null); setExpecting(false);
-        setSyncError(""); setLoaded(true);
-      } catch (error) {
-        if (cancelled || !current(ticket)) return;
-        if (isAuthError(error)) {
-          await recoverExpiredCredentials(error, requestToken);
-          return;
-        }
-        // A first-time account returns an empty children array, not an error.
-        // Any rejection here means durable profile state could not be read;
-        // proceeding would risk overwriting an existing child with blanks.
-        setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
+        if (isAuthError(failure)) { await recover(failure, token); return; }
+        setError("load");
       }
     })();
     return () => { cancelled = true; };
-  }, [reload, router, t, recoverExpiredCredentials, capture, current, setNickname, setCity, setParentRole, setConcerns, setConcernOther, setHobbies, setHelpPref, setInfoSource, setFrequency, setChildDrafts, setEditingKey, setLoaded, setChildName, setChildGender, setBirthYear, setBirthMonth, setBirthDay, setExpecting, setSyncError]);
+  // Typing or a system-language update must not reload account data, erase
+  // in-progress child cards, or remount fields. Errors localize at render time.
+  }, [reload, capture, current, recover]);
 
-  const stepNumber = page < 3 ? page + 1 : 4;
-  const birthDate = birthYear && birthMonth && birthDay
-    ? formatDateOnly({ year: birthYear, month: birthMonth, day: birthDay })
-    : "";
-  const hasPartialBirthDate = !!birthYear || !!birthMonth || !!birthDay;
-  const birthDateError = hasPartialBirthDate && !birthDate
-    ? expecting ? t("请选择完整的预产期") : t("请选择完整的出生年、月、日")
-    : birthDate && !(expecting ? isValidDueDate(birthDate) : isValidBirthDate(birthDate))
-      ? expecting ? t("预产期要在今天之后的 40 周内") : t("出生日期不能晚于今天")
-      : "";
-  const validBirthDate = expecting ? isValidDueDate(birthDate) : isValidBirthDate(birthDate);
-  const chooseExpecting = (value: boolean) => {
-    if (value === expecting) return;
-    setExpecting(value); setBirthYear(null); setBirthMonth(null); setBirthDay(null); setSkipChild(false);
+  const back = useCallback(() => {
+    if (capture() === null || action.current) return;
+    Keyboard.dismiss();
+    if (confirmDelete) setConfirmDelete(null);
+    else if (editing) { setEditing(null); setError(""); }
+    else if (page > 0) { setPage(page === 2 ? 1 : 0); setError(""); }
+    else router.replace("/welcome");
+  }, [capture, confirmDelete, editing, page, router, setConfirmDelete, setEditing, setPage, setError]);
+  useFocusEffect(useCallback(() => registerNativeNavigationGuard("/onboarding", navigation => { if (navigation === "back") back(); }), [back]));
+  // Wait for actual new-card layout. Fixed footer is a separate flex sibling;
+  // full circle and its shadow remain inside the padded scroll viewport.
+  const revealPending = () => {
+    const pending = pendingScroll.current;
+    if (!pending || !current(pending.ticket) || page !== 1 || pending.expecting !== expecting) return;
+    const y = positions.current.get(pending.key); if (y === undefined) return;
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      if (pendingScroll.current !== pending || !current(pending.ticket)) return;
+      scroll.current?.scrollTo({ y: Math.max(0, y - 8), animated: !reducedMotion }); pendingScroll.current = null;
+    });
   };
-  const editorValid = !!childName.trim() && validBirthDate;
-  const editingIndex = childDrafts.findIndex(row => row.key === editingKey);
-  const childOrdinal = editingIndex >= 0 ? editingIndex + 1 : childDrafts.length + 1;
-  const canNext = loaded && (page === 0 ? !!nickname.trim() && !!parentRole : page === 1 ? editingKey ? editorValid : skipChild || childDrafts.length > 0 : true);
-  const birthLabel = birthDate
-    ? // All three are set whenever birthDate is, but that is a fact about
-      // formatDateOnly rather than something the type system can see.
-      t("{year} 年 {month} 月 {day} 日", {
-        year: String(birthYear),
-        month: String(birthMonth),
-        day: String(birthDay),
-      })
-    : expecting ? t("请选择预产期") : t("请选择孩子的出生年、月、日");
-
-  const editChild = (child: ChildDraft) => {
-    if (capture() === null || saveAction.current) return;
-    const date = parseDateOnly(child.birth_date);
-    setEditingKey(child.key); setChildName(child.nickname); setChildGender(child.gender); setExpecting(child.expecting);
-    setBirthYear(date?.year ?? null); setBirthMonth(date?.month ?? null); setBirthDay(date?.day ?? null); setSkipChild(false);
+  useEffect(() => { revealPending(); }, [scrollRevision, page, expecting, reducedMotion]);
+  const changeCategory = (value: boolean) => {
+    if (!available() || value === expecting) return;
+    Keyboard.dismiss(); pendingScroll.current = null; setExpecting(value);
+    if (!rows.some(row => row.expecting === value)) setRows(old => appendChildDraft(old, newKey(), value));
+    requestAnimationFrame(() => scroll.current?.scrollTo({ y: value ? offsets.current.unborn : offsets.current.born, animated: false }));
   };
-  const commitEditor = (): ChildDraft[] | null => {
-    if (capture() === null || saveAction.current || !editingKey || !editorValid) return null;
-    const existing = childDrafts.find(row => row.key === editingKey);
-    const draft: ChildDraft = { key: editingKey, id: existing?.id, nickname: childName.trim(), birth_date: birthDate,
-      gender: childGender as ChildDraft["gender"], allergies: existing?.allergies ?? [], notes: existing?.notes ?? "", expecting };
-    const rows = existing ? childDrafts.map(row => row.key === editingKey ? draft : row) : [...childDrafts, draft];
-    setChildDrafts(rows); setSkipChild(false); setEditingKey(null); setSyncError("");
-    return rows;
+  const add = () => {
+    const ticket = capture(); if (ticket === null || !available()) return;
+    Keyboard.dismiss(); const key = newKey(); pendingScroll.current = { ticket, key, expecting };
+    setRows(old => appendChildDraft(old, key, expecting)); setScrollRevision(value => value + 1);
   };
-  const addAnother = () => {
-    if (capture() === null || saveAction.current || !loaded) return;
-    if (editingKey && !commitEditor()) return;
-    nextDraft.current += 1;
-    setEditingKey(`new-${nextDraft.current}`); setChildName(""); setChildGender("other");
-    setBirthYear(null); setBirthMonth(null); setBirthDay(null); setExpecting(false); setSkipChild(false);
+  const update = (row: ChildDraft) => {
+    if (!available()) return;
+    if (editing?.key === row.key) setEditing(row); else setRows(old => old.map(previous => previous.key === row.key ? row : previous));
   };
-
-  const refreshChildren = async () => {
-    const ticket = capture();
-    if (ticket === null || saveAction.current || !loaded || saveProgress.current?.ticket !== ticket) return;
-    saveAction.current = true; setSaving(true); setSyncError("");
-    let requestToken: string | null = null;
-    try {
-      requestToken = await auth.getToken();
-      const rows = await refreshOnboardingChildren(childDrafts, { api, progress: saveProgress.current.value,
-        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket),
-        onConfirmed: () => {},
-      });
-      if (!current(ticket)) return;
-      setChildDrafts(rows);
-      setSyncError(saveProgress.current.value.pending ? childCopy.unconfirmed : childCopy.recovered);
-    } catch (error) {
-      if (!current(ticket)) return;
-      if (isAuthError(error)) { await recoverExpiredCredentials(error, requestToken); return; }
-      setSyncError(t("家庭资料加载失败，请检查网络并刷新后重试。"));
-    } finally { saveAction.current = false; setSaving(false); }
+  const remove = (row: ChildDraft) => {
+    if (!available()) return;
+    if (row.id) { setConfirmDelete(row); return; }
+    const ticket = capture(); if (progress.current?.ticket === ticket) removeOnboardingDraft(row.key, progress.current.value);
+    setRows(old => old.filter(item => item.key !== row.key)); setReview(old => old.filter(item => item.key !== row.key));
+    if (editing?.key === row.key) setEditing(null);
   };
-  const removeDraft = (child: ChildDraft) => {
-    const ticket = capture();
-    if (ticket === null || saveAction.current || child.id) return;
-    const progress = saveProgress.current?.ticket === ticket ? saveProgress.current.value : null;
-    const unconfirmed = progress?.pending?.key === child.key;
-    if (progress) removeOnboardingDraft(child.key, progress);
-    const rows = childDrafts.filter(row => row.key !== child.key);
-    setChildDrafts(rows); setSkipChild(rows.length === 0);
-    if (editingKey === child.key) setEditingKey(null);
-    setSyncError(unconfirmed ? childCopy.removedUnknown : "");
-  };
-  const removeSavedChild = async () => {
+  const deleteSaved = async () => {
     const child = confirmDelete, ticket = capture();
-    if (!child?.id || ticket === null || saveAction.current || saveProgress.current?.ticket !== ticket) return;
-    setConfirmDelete(null); saveAction.current = true; setSaving(true); setSyncError("");
-    let requestToken: string | null = null;
+    if (!child?.id || ticket === null || !available() || progress.current?.ticket !== ticket) return;
+    setConfirmDelete(null); action.current = true; setSaving(true); setError(""); const token = await auth.getToken();
     try {
-      requestToken = await auth.getToken();
-      await deleteOnboardingChild(child.id, { api, progress: saveProgress.current.value,
-        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket), onConfirmed: () => {},
-      });
+      await deleteOnboardingChild(child.id, { api, progress: progress.current.value,
+        owns: async () => current(ticket) && await auth.getToken() === token && current(ticket), onConfirmed: () => {} });
       if (!current(ticket)) return;
-      const rows = childDrafts.filter(row => row.id !== child.id);
-      setChildDrafts(rows); setSkipChild(rows.length === 0);
-      if (editingKey === child.key) setEditingKey(null);
-    } catch (error) {
-      if (!current(ticket)) return;
-      if (isAuthError(error)) { await recoverExpiredCredentials(error, requestToken); return; }
-      setSyncError(childCopy.deleteFailed);
-    } finally { saveAction.current = false; setSaving(false); }
+      setRows(old => old.filter(item => item.id !== child.id)); setReview(old => old.filter(item => item.id !== child.id));
+      if (editing?.id === child.id) setEditing(null);
+    } catch (failure) { if (current(ticket)) { if (isAuthError(failure)) await recover(failure, token); else setError("delete"); } }
+    finally { action.current = false; if (current(ticket)) setSaving(false); }
   };
-
-  const save = async (deferChildren = false) => {
-    const ticket = capture();
-    if (ticket === null) return;
-    if (saveAction.current || !loaded) return;
-    if (!deferChildren && !skipChild && childDrafts.length === 0) {
-      setPage(1);
-      return;
-    }
-    saveAction.current = true; setSaving(true);
-    setSyncError("");
-    let requestToken: string | null = null;
+  const reconcile = async () => {
+    const ticket = capture(); if (ticket === null || !available() || progress.current?.ticket !== ticket) return;
+    action.current = true; setSaving(true); const token = await auth.getToken();
     try {
-      requestToken = await auth.getToken();
-      if (!requestToken || !current(ticket)) return;
-      if (saveProgress.current?.ticket !== ticket) saveProgress.current = { ticket, value: newChildSaveProgress() };
-      await persistOnboardingChildren(deferChildren ? [] : childDrafts, { api, progress: saveProgress.current.value,
-        owns: async () => current(ticket) && await auth.getToken() === requestToken && current(ticket),
-        onConfirmed: (key, id) => setChildDrafts(rows => rows.map(row => row.key === key ? { ...row, id } : row)),
-      });
-      // The next write must not continue under a login that replaced the
-      // session which submitted the child. Capture directly before that call.
-      const profileRequestToken = await auth.getToken();
-      if (profileRequestToken !== requestToken || !current(ticket)) return;
-      const profile: any = await api.updateMe({ nickname: nickname.trim(), city: city.trim(), parent_role: parentRole || undefined, top_concerns: concerns, concern_other: concerns.includes("other") ? concernOther.trim() : "", hobbies: hobbies.trim(), help_preference: helpPref, info_source: infoSource, content_frequency: frequency, onboarding_completed: true });
+      const recovered = await refreshOnboardingChildren(page === 1 ? rows : review, { api, progress: progress.current.value,
+        owns: async () => current(ticket) && await auth.getToken() === token && current(ticket), onConfirmed: () => {} });
       if (!current(ticket)) return;
-      if (profile?.onboarding_completed !== true) throw new Error("Onboarding completion was not confirmed");
-      if (!await auth.setOnboarded(true, { expectedToken: requestToken, expectedGeneration: ticket })) return;
-      if (await auth.getToken() !== requestToken || !current(ticket)) return;
-      router.replace("/(tabs)");
-    } catch (error) {
-      if (!current(ticket)) return;
-      if (isAuthError(error)) {
-        await recoverExpiredCredentials(error, requestToken);
-        return;
-      }
-      setSyncError(error instanceof ChildSaveError && error.code === "unconfirmed" ? childCopy.unconfirmed : t("保存失败，这次资料尚未完整写入。请检查网络后重试。"));
-    } finally { saveAction.current = false; setSaving(false); }
+      if (page !== 1) setReview(recovered);
+      setRows(recovered.map(cloneChildDraft)); setEditing(null); setError(progress.current.value.pending ? "unconfirmed" : "");
+    } catch (failure) { if (current(ticket)) { if (isAuthError(failure)) await recover(failure, token); else setError("unconfirmed"); } }
+    finally { action.current = false; if (current(ticket)) setSaving(false); }
   };
-
+  const finish = async () => {
+    const ticket = capture(), original = initialParent.current;
+    if (ticket === null || !available() || original?.ticket !== ticket || editing) return;
+    action.current = true; setSaving(true); setError(""); const token = await auth.getToken();
+    const owns = async () => current(ticket) && await auth.getToken() === token && current(ticket);
+    try {
+      if (!token || !await owns()) return;
+      if (progress.current?.ticket !== ticket) throw new ChildSaveError("stale");
+      await persistOnboardingChildren(review, { api, progress: progress.current.value, owns,
+        onConfirmed: (key, id) => { setReview(old => old.map(row => row.key === key ? { ...row, id } : row)); setRows(old => old.map(row => row.key === key ? { ...row, id } : row)); } });
+      if (!await owns()) return;
+      if (parentCommitted && parentCommitted.gender !== original.value.gender) await saveParentGender(original.userId, parentCommitted.gender, owns);
+      if (!await owns()) return;
+      // Retired role/topic preferences are preserved. Gender is local and is
+      // deliberately never inferred as a parenting role.
+      const profile: any = await api.updateMe({ ...(parentCommitted ? { nickname: parentCommitted.nickname.trim(), city: parentCommitted.city.trim() } : {}), onboarding_completed: true });
+      if (!await owns()) return;
+      if (profile?.onboarding_completed !== true) throw new Error("Completion unconfirmed");
+      if (!await auth.setOnboarded(true, { expectedToken: token, expectedGeneration: ticket })) throw new Error("Local completion unconfirmed");
+      if (await owns()) router.replace("/(tabs)");
+    } catch (failure) {
+      if (!current(ticket)) return;
+      if (isAuthError(failure)) await recover(failure, token);
+      else setError(failure instanceof ChildSaveError && failure.code === "unconfirmed" ? "unconfirmed" : "save");
+    } finally { action.current = false; if (current(ticket)) setSaving(false); }
+  };
   const next = () => {
-    if (capture() === null || saveAction.current || !canNext) return;
-    if (page === 2) { void save(); return; }
-    if (page === 1 && editingKey && !commitEditor()) return;
-    setPage((p) => p + 1);
+    if (!available()) return;
+    Keyboard.dismiss(); setError("");
+    if (editing) {
+      if (!validChildDraft(editing)) { setError("invalid-edit"); return; }
+      setReview(old => old.map(row => row.key === editing.key ? cloneChildDraft(editing) : row));
+      setRows(old => old.map(row => row.key === editing.key ? cloneChildDraft(editing) : row)); setEditing(null); return;
+    }
+    if (page === 0) {
+      if (!parent.nickname.trim()) { setError("parent-name"); return; }
+      setParentCommitted({ ...parent }); setPage(1); return;
+    }
+    if (page === 1) {
+      try { setReview(committableChildDrafts(rows)); setPage(2); }
+      catch {
+        setError("incomplete-children");
+        const invalid = rows.find(row => !isBlankChildDraft(row) && !validChildDraft(row)), ticket = capture();
+        if (invalid && ticket !== null) { setExpecting(invalid.expecting); pendingScroll.current = { ticket, key: invalid.key, expecting: invalid.expecting }; setScrollRevision(value => value + 1); }
+      }
+    } else void finish();
   };
-  const skip = () => page === 2 ? setPage(3) : save();
-  const goBack = () => page > 0 && setPage((p) => p - 1);
-  const toggleConcern = (key: string) => setConcerns((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
+  const skip = () => {
+    if (!available()) return;
+    Keyboard.dismiss(); setError("");
+    if (editing) { setEditing(null); return; }
+    if (page === 0) { const original = initialParent.current; if (original?.ticket === capture()) setParent({ ...original.value }); setParentCommitted(null); setPage(1); }
+    else if (page === 1) { setRows(review.map(cloneChildDraft)); setPage(2); }
+    else void finish();
+  };
 
-  if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recoverExpiredCredentials} />;
-  if (!fontsLoaded) return <View style={styles.loading}><ActivityIndicator color="#3A2F5A" /></View>;
-
-  return <View style={{flex:1}}>
-    <AuthFrame testID="onboarding-card">
-      {syncError?<NuriText style={{color:"#9a606a",fontSize:13}}>{syncError}</NuriText>:null}
-      {loaded&&(syncError||hasUnconfirmedCreate)?<NuriButton secondary label={childCopy.refresh} disabled={saving} busy={saving} onPress={()=>void refreshChildren()} testID="onboarding-reconcile-children" />:null}
-      {!loaded?<><NuriText secondary>{childCopy.loading}</NuriText>{syncError?<NuriButton secondary label={childCopy.reload} testID="onboarding-reload" onPress={()=>{if(capture()!==null&&!saveAction.current)setReload(value=>value+1);}} />:null}</>:null}
-      {page===0?<>
-        <NuriField label={locale==="en"?"What should Nuri call you?":translate(locale, "希望 Nuri 怎么称呼你？")} editable={loaded&&!saving} value={nickname} onChangeText={setNickname} testID="onboarding-parent-name" />
-        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Your role":translate(locale, "你的角色")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{PARENT_ROLES.map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={parentRole===key} onPress={()=>setParentRole(key)} testID={`onboarding-role-${key}`} />)}</View>
-        <NuriField label={locale==="en"?"City (optional)":translate(locale, "居住城市（可选）")} value={city} onChangeText={setCity} placeholder={locale==="en"?"You can add this later":translate(locale, "稍后再填")} testID="onboarding-city" />
-      </>:page===1?<>
-        <NuriText role="H2" testID="onboarding-children-title">{childCopy.title}</NuriText>
-        <NuriText secondary testID="onboarding-children-guide">{childCopy.guide}</NuriText>
-        <View style={{gap:8}} testID="onboarding-children-list">{childDrafts.map((child,index)=><View key={child.key} style={{gap:4}}>
-          <MenuRow label={`${index+1}. ${child.nickname||childCopy.child}`} detail={`${child.birth_date||childCopy.incomplete} · ${saveProgress.current?.value.pending?.key===child.key?childCopy.pending:!validChildDraft(child)?childCopy.incomplete:child.id?childCopy.edit:childCopy.draft}`} onPress={()=>editChild(child)} disabled={saving} testID={`onboarding-child-row-${child.key}`} />
-          <Pressable accessibilityRole="button" disabled={saving} testID={child.id?`onboarding-delete-child-${child.key}`:`onboarding-remove-draft-${child.key}`} style={{minHeight:44,justifyContent:"center"}} onPress={()=>{if(capture()!==null&&!saveAction.current){if(child.id)setConfirmDelete(child);else removeDraft(child);}}}><NuriText secondary>{child.id?childCopy.deleteAction:childCopy.removeDraft}</NuriText></Pressable>
-        </View>)}</View>
-        {editingKey?<>
-        <NuriText role="H3" testID="onboarding-editor-title">{childCopy.child} {childOrdinal}{editingIndex>=0?` · ${childCopy.edit}`:""}</NuriText>
-        <NuriField label={childCopy.nickname} editable={!saving} value={childName} onChangeText={v=>{setChildName(v);setSkipChild(false);}} testID="onboarding-child-name" />
-        <NuriText secondary style={{fontSize:12}}>{t("宝宝出生了吗？")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{([false,true] as const).map(value=><ChoiceChip key={String(value)} label={value?t("还在肚子里"):t("已出生")} selected={expecting===value} disabled={saving} onPress={()=>chooseExpecting(value)} testID={value?"onboarding-expecting":"onboarding-born"} />)}</View>
-        <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期"):t("孩子的出生日期")}</NuriText>
-        <FrostedPressable disabled={saving} accessibilityRole="button" accessibilityLabel={expecting?t("选择预产期"):t("选择出生日期")} onPress={()=>setPickerOpen(true)} testID="onboarding-birth-picker" style={{minHeight:50,paddingHorizontal:16,paddingVertical:12,borderRadius:10,borderWidth:1,borderColor:theme.outline,backgroundColor:theme.composer,justifyContent:"center"}}><NuriText style={{fontSize:16,lineHeight:24}}>{birthLabel}</NuriText></FrostedPressable>
-        {birthDateError?<NuriText style={{fontSize:12,color:"#9a606a"}}>{birthDateError}</NuriText>:null}
-        <NuriText secondary style={{fontSize:12}}>{locale==="en"?"Gender (optional)":translate(locale, "性别（可选）")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{[["boy",locale==="en"?"Boy":translate(locale, "男孩")],["girl",locale==="en"?"Girl":translate(locale, "女孩")],["other",locale==="en"?"Prefer not to say":translate(locale, "不选择")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={childGender===key} disabled={saving} onPress={()=>setChildGender(key)} />)}</View>
-        </>:null}
-        <NuriButton secondary label={editingKey?childCopy.saveAndAdd:childCopy.addAnother} disabled={!loaded||saving||!!editingKey&&!editorValid} onPress={addAnother} testID="onboarding-add-another" />
-        {editingKey&&childDrafts.length>0?<NuriButton secondary label={childCopy.cancelNew} disabled={saving} onPress={()=>{if(capture()!==null&&!saveAction.current)setEditingKey(null);}} testID="onboarding-close-child-editor" />:null}
-        <NuriText secondary testID="onboarding-manage-children-later">{childCopy.manageLater}</NuriText>
-        <NuriText secondary style={{fontSize:12}}>{t("这些信息用于个性化 AI 建议。使用 AI 功能时，相关信息可能由第三方 AI 服务处理；详情请参阅隐私政策。")}</NuriText>
-      </>:<>
-        <NuriText testID="onboarding-children-summary">{childCopy.summary}: {childDrafts.length}</NuriText>
-        <NuriButton secondary label={childCopy.editChildren} disabled={saving} onPress={()=>{if(capture()!==null&&!saveAction.current){setEditingKey(childDrafts.length?null:"new-1");setPage(1);}}} testID="onboarding-review-children" />
-        <NuriText>{locale==="en"?"Choose a few topics to discuss with Nuri. You can change them later.":translate(locale, "选几个你想和 Nuri 聊的话题，之后可以修改。")}</NuriText>
-        <View style={{flexDirection:"row",flexWrap:"wrap",gap:10}}>{CONCERNS.filter(([key])=>["sleep","emotion","food","parenting","development","other"].includes(key)).map(([key,label])=><ChoiceChip key={key} label={t(label)} selected={concerns.includes(key)} onPress={()=>toggleConcern(key)} testID={`onboarding-concern-${key}`} />)}</View>
-        {concerns.includes("other")?<NuriField label={locale==="en"?"Other topics":translate(locale, "其他话题")} value={concernOther} onChangeText={setConcernOther} />:null}
-      </>}
-      <NuriButton label={saving?t("保存中..."):page===2?(locale==="en"?"Enter NURI":translate(locale, "进入 NURI")):t("继续")} disabled={!canNext||saving} busy={saving} onPress={next} testID="onboarding-next-btn" />
-      {page===2?<><NuriText secondary style={{fontSize:12}}>{childCopy.deferHint}</NuriText><NuriButton secondary label={childCopy.defer} disabled={!loaded||saving} onPress={()=>void save(true)} testID="onboarding-defer-children" /></>:null}
-      {page===0?<NuriButton secondary disabled={!loaded||!!syncError||saving} label={locale==="en"?"Set up later":translate(locale, "稍后设置")} onPress={()=>setPage(1)} testID="onboarding-skip-parent" />:null}
-      {page===1&&childDrafts.length===0?<NuriButton secondary disabled={!loaded||saving} label={locale==="en"?"Add a child later":translate(locale, "稍后添加")} onPress={()=>{if(capture()!==null&&!saveAction.current){setSkipChild(true);setEditingKey(null);setPage(2);}}} testID="onboarding-skip-child" />:null}
-      {page>0?<NuriButton secondary disabled={saving} label={t("返回")} onPress={goBack} />:null}
-    </AuthFrame>
-    {pickerOpen?<BirthPicker expecting={expecting} year={birthYear} month={birthMonth} day={birthDay} close={()=>setPickerOpen(false)} confirm={(year:number|null,month:number|null,day:number|null)=>{setBirthYear(year);setBirthMonth(month);setBirthDay(day);setSkipChild(false);setPickerOpen(false);}} />:null}
-    <ConfirmDialog visible={!!confirmDelete} title={childCopy.deleteTitle} message={childCopy.deleteBody} confirmText={childCopy.deleteConfirm} danger onConfirm={()=>void removeSavedChild()} onCancel={()=>setConfirmDelete(null)} />
+  if (recovery.blocked) return <ExpiredSessionRecoveryNotice pending={recovery.pending} onRetry={recover} />;
+  return <View style={styles.screen} testID="simplified-onboarding"><NuriKeyboardFrame><View style={styles.screen} testID="onboarding-keyboard-body">
+    <View style={styles.navigation}>
+      <Pressable accessibilityRole="button" accessibilityLabel={t("返回")} onPress={back} disabled={saving} style={styles.hit} testID="onboarding-back"><NuriIcon name="back" size={20} /></Pressable>
+      <View style={styles.progress} accessibilityLabel={cn("步骤 {step}，共 2 步", "Step {step} of 2", { step: page === 0 ? 1 : 2 })}>{[0, 1].map(step => <View key={step} style={[styles.segment, { backgroundColor: (page === 0 ? 0 : 1) === step ? "#BA94AC" : "#E1DAE2" }]} />)}</View>
+      <Pressable accessibilityRole="button" accessibilityLabel={cn("跳过当前步骤", "Skip this step")} disabled={!loaded || saving} onPress={skip} style={styles.hit} testID="onboarding-skip"><NuriText role="Caption" secondary>{t("跳过")}</NuriText></Pressable>
+    </View>
+    <OnboardingPrompt label={page === 0 ? cn("创建你的档案", "Your profile") : page === 1 ? cn("创建孩子档案", "Child profiles") : cn("确认孩子资料", "Review profiles")} />
+    {page === 1 ? <View style={styles.tabs}><View style={[styles.tabTrack, { backgroundColor: theme.composer, borderColor: theme.outline }]}>{[false, true].map(value => <Pressable key={String(value)} accessibilityRole="tab" accessibilityState={{ selected: expecting === value }} disabled={!loaded || saving} onPress={() => changeCategory(value)} testID={value ? "onboarding-expecting" : "onboarding-born"} style={[styles.tab, { backgroundColor: expecting === value ? "#C1A0DD" : "transparent" }]}><NuriText style={{ color: expecting === value ? "white" : theme.ink }}>{value ? cn("未出生", "Expecting") : cn("已出生", "Born")}</NuriText></Pressable>)}</View></View> : null}
+    <ScrollView key={page} ref={scroll} style={styles.viewport} contentContainerStyle={styles.content} removeClippedSubviews={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" scrollEventThrottle={32} showsVerticalScrollIndicator={false} testID="onboarding-scroll"
+      onScroll={event => { if (page === 1) offsets.current[expecting ? "unborn" : "born"] = event.nativeEvent.contentOffset.y; }} onContentSizeChange={revealPending}>
+      {error ? <View accessibilityLiveRegion="polite" testID="onboarding-error" style={styles.error}><NuriText role="Caption" style={{ color: "#A25563" }}>{errorMessage}</NuriText>{loaded ? <NuriButton secondary label={copy.refresh} disabled={saving} onPress={() => void reconcile()} testID="onboarding-reconcile-children" /> : <NuriButton secondary label={copy.reload} onPress={() => { if (capture() !== null) setReload(value => value + 1); }} testID="onboarding-reload" />}</View> : null}
+      {!loaded ? <ActivityIndicator testID="onboarding-loading" color={theme.ink} /> : page === 0 ? <ParentProfileCard value={parent} onChange={setParent} disabled={saving} /> : page === 1 ? <>
+        {rows.filter(row => row.expecting === expecting).map((row, index) => <View key={row.key} onLayout={event => { positions.current.set(row.key, event.nativeEvent.layout.y); revealPending(); }}><ChildProfileCard row={row} ordinal={index + 1} disabled={saving} onChange={update} onRemove={() => remove(row)} /></View>)}
+        <View style={styles.addClearance} testID="onboarding-add-clearance"><Pressable accessibilityRole="button" accessibilityLabel={expecting ? cn("添加未出生孩子", "Add an expected child") : cn("添加已出生孩子", "Add a born child")} disabled={saving} onPress={add} style={[styles.add, { backgroundColor: theme.night ? "#44384F" : "#FEFBF6" }]} testID="onboarding-add-another"><NuriIcon name="plus" size={20} /></Pressable></View>
+      </> : <View style={{ gap: 16 }} testID="onboarding-review">
+        {review.length === 0 ? <NuriText secondary role="Caption" testID="onboarding-empty-review">{cn("暂未添加孩子，之后可在设置中补充。", "No children added yet. You can add them later in Settings.")}</NuriText> : review.map((row, index) => editing?.key === row.key ? <ChildProfileCard key={row.key} row={editing} ordinal={index + 1} disabled={saving} onChange={update} onRemove={() => remove(row)} /> : <ChildReviewCard key={row.key} row={row} disabled={saving} onEdit={() => { if (available()) { setEditing(cloneChildDraft(row)); setError(""); } }} />)}
+      </View>}
+    </ScrollView>
+  </View></NuriKeyboardFrame>
+    <OnboardingKeyboardFooter hidden={keyboardVisible}><View style={styles.footer} testID="onboarding-fixed-footer"><NuriButton label={saving ? t("保存中...") : editing ? cn("保存", "Save") : page === 2 ? cn("确认", "Confirm") : t("继续")} disabled={!loaded || saving || keyboardVisible} busy={saving} onPress={next} style={{ width: 200 }} testID="onboarding-next-btn" /></View></OnboardingKeyboardFooter>
+    <ConfirmDialog visible={!!confirmDelete} title={copy.deleteTitle} message={copy.deleteBody} confirmText={copy.deleteConfirm} danger onConfirm={() => void deleteSaved()} onCancel={() => setConfirmDelete(null)} />
   </View>;
 }
-
-function Hero({ page }: { page: number }) {
-  if (page === 0) return <Image source={babyIcon} style={styles.babyIcon} resizeMode="contain" />;
-  if (page === 1) return <Image source={parentIcon} style={styles.parentIcon} resizeMode="contain" />;
-  return <View style={styles.choiceIcon}><View style={styles.iconBlockTall} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockShort} /><View style={styles.iconBlockTall} /></View>;
-}
-function TextPage({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) { const { t } = useT(); return <><Text style={styles.title}>{t(title)}</Text><Text style={styles.subtitle}>{t(subtitle)}</Text><View style={styles.pageBody}>{children}</View></>; }
-function ChildPage({ childName, setChildName, birthLabel, hasBirthDate, birthDateError, openPicker }: any) { const { t } = useT(); return <TextPage title="孩子基本信息" subtitle="这些信息用于个性化 AI 建议。使用 AI 功能时，相关信息可能由第三方 AI 服务处理；详情请参阅隐私政策。"><Field label="孩子怎么称呼？"><NuriTextInput value={childName} onChangeText={setChildName} placeholder={t("例如：小满")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} testID="onboarding-child-name" /></Field><Field label="孩子的出生日期"><Pressable onPress={openPicker} style={[styles.input, styles.picker, !!birthDateError && styles.inputError]} testID="onboarding-birth-picker"><Text style={[styles.inputText, !hasBirthDate && styles.placeholder]}>{birthLabel}</Text><Ionicons name="calendar-outline" size={20} color="#3A2F5A" /></Pressable>{birthDateError ? <Text style={styles.errorText}>{birthDateError}</Text> : null}</Field></TextPage>; }
-function ParentPage({ nickname, setNickname, city, setCity, parentRole, setParentRole }: any) { const { t } = useT(); return <TextPage title="家长基本信息" subtitle="AI 会用这个名字给你打招呼"><Field label="我应该怎么称呼你？"><NuriTextInput value={nickname} onChangeText={setNickname} placeholder={t("例如：小满妈")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field><Field label="您是孩子的？"><View style={styles.chipWrap}>{PARENT_ROLES.map(([key, label]) => { const active = parentRole === key; return <Pressable key={key} onPress={() => setParentRole(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-role-${key}`}><Ionicons name={active ? "radio-button-on" : "radio-button-off"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View></Field><Field label="您目前居住在哪里？"><NuriTextInput value={city} onChangeText={setCity} placeholder={t("例如：San Francisco／多伦多")} placeholderTextColor="rgba(58,47,90,0.6)" style={styles.input} /></Field></TextPage>; }
-function ConcernPage({ concerns, toggle, other, setOther }: any) { const { t } = useT(); return <TextPage title="目前最想要解决的育儿问题" subtitle="目前最困扰你的事情是什么？（可多选）"><View style={styles.chipWrap}>{CONCERNS.map(([key, label]) => { const active = concerns.includes(key); return <Pressable key={key} onPress={() => toggle(key)} style={[styles.chip, active && styles.chipActive]} testID={`onboarding-concern-${key}`}><Ionicons name={active ? "checkbox" : "square-outline"} size={16} color={active ? "#FFFFFF" : "#3A2F5A"} /><Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text></Pressable>; })}</View>{concerns.includes("other") && <NuriTextInput value={other} onChangeText={setOther} placeholder={t("请描述你的困扰...")} placeholderTextColor="rgba(58,47,90,0.6)" style={[styles.input, { marginTop: 12 }]} />}</TextPage>; }
-function ChoicePage({ title, subtitle, options, value, onChange }: any) { const { t } = useT(); return <TextPage title={title} subtitle={subtitle}><View style={styles.choiceList}>{options.map(([key, label]: [string, string]) => <Pressable key={key} onPress={() => onChange(key)} style={[styles.choice, value === key && styles.choiceActive]}><View style={[styles.radio, value === key && styles.radioActive]}>{value === key && <View style={styles.radioDot} />}</View><Text style={[styles.choiceText, value === key && styles.choiceTextActive]}>{t(label)}</Text></Pressable>)}</View></TextPage>; }
-function Field({ label, children }: { label: string; children: React.ReactNode }) { const { t } = useT(); return <View style={styles.field}><Text style={styles.label}>{t(label)}</Text>{children}</View>; }
-function BirthPicker({ expecting, year, month, day, close, confirm }: { expecting: boolean; year: number|null; month: number|null; day: number|null; close:()=>void; confirm:(year:number|null,month:number|null,day:number|null)=>void }) {
-  const { t, locale } = useT();
-  const theme = useNuriTheme();
-  const copy = onboardingChildCopy(locale);
-  const currentYear = new Date().getFullYear();
-  const [yearStart, setYearStart] = useState(Math.min(currentYear, (year ?? currentYear) + 12));
-  // Bounded pages avoid thousands of native views or a nested VirtualizedList
-  // inside the card's ScrollView. Every historical year remains reachable,
-  // including direct numeric input for distant years.
-  const years = expecting ? [currentYear, currentYear + 1] : Array.from({length:Math.min(24,yearStart)},(_,i)=>yearStart-i);
-  const [draftYear, setDraftYear] = useState<number | null>(year);
-  const [yearText, setYearText] = useState(year === null ? "" : String(year));
-  const [draftMonth, setDraftMonth] = useState<number | null>(month);
-  const [draftDay, setDraftDay] = useState<number | null>(day);
-  const dayCount = draftYear && draftMonth ? daysInMonth(draftYear, draftMonth) : 31;
-  const days = Array.from({ length: dayCount }, (_, i) => i + 1);
-  const updateYear = (value: number) => {
-    setYearText(String(value));
-    setDraftYear(value);
-    if (draftMonth) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(value, draftMonth)));
-  };
-  const updateMonth = (value: number) => {
-    setDraftMonth(value);
-    if (draftYear) setDraftDay((current) => current === null ? current : Math.min(current, daysInMonth(draftYear, value)));
-  };
-  const selected = draftYear && draftMonth && draftDay ? formatDateOnly({year:draftYear,month:draftMonth,day:draftDay}) : "";
-  const valid = expecting ? isValidDueDate(selected) : isValidBirthDate(selected);
-  const columns = [
-    {name:"month",values:MONTHS,value:draftMonth,change:updateMonth,label:(value:number)=>locale==="en"?String(value):t("{value} 月",{value})},
-    {name:"day",values:days,value:draftDay,change:setDraftDay,label:(value:number)=>locale==="en"?String(value):t("{value} 日",{value})},
-  ];
-  return <View style={[StyleSheet.absoluteFill,{backgroundColor:theme.night?"rgba(20,17,33,.7)":"rgba(66,49,66,.24)"}]} accessibilityViewIsModal>
-    <AuthFrame testID="onboarding-date-card" contentGap={16}>
-      <NuriText style={{fontSize:20,lineHeight:28,fontWeight:"500"}}>{expecting?t("选择预产期"):t("选择出生日期")}</NuriText>
-      <NuriText secondary style={{fontSize:12}}>{expecting?t("预产期要在今天之后的 40 周内"):t("请选择完整的出生年、月、日")}</NuriText>
-      <NuriField label={copy.year} testID="birth-picker-year-input" value={yearText} keyboardType="number-pad" maxLength={4} placeholder="YYYY" selectTextOnFocus onChangeText={text=>{
-        if(!/^\d{0,4}$/.test(text))return;setYearText(text);const value=Number(text);
-        if(value>=1&&value<=9999){setDraftYear(value);setYearStart(Math.min(currentYear,value+12));if(draftMonth)setDraftDay(current=>current===null?null:Math.min(current,daysInMonth(value,draftMonth)));}else setDraftYear(null);
-      }} />
-      {!expecting?<NuriText secondary style={{fontSize:12}}>{copy.yearHint}</NuriText>:null}
-      <View style={{flexDirection:"row",gap:8,height:184}}>
-        <ScrollView style={{flex:1}} showsVerticalScrollIndicator testID="birth-picker-year" keyboardShouldPersistTaps="handled">
-          {!expecting&&yearStart<currentYear?<Pressable accessibilityRole="button" testID="birth-picker-newer-years" onPress={()=>setYearStart(value=>Math.min(currentYear,value+24))} style={{minHeight:44,alignItems:"center",justifyContent:"center"}}><NuriText secondary>{copy.newerYears}</NuriText></Pressable>:null}
-          {years.map(value=><FrostedPressable key={value} accessibilityRole="button" accessibilityState={{selected:draftYear===value}} accessibilityLabel={`year: ${value}`} testID={`birth-picker-year-${value}`} onPress={()=>updateYear(value)} style={{height:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:draftYear===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{locale==="en"?String(value):t("{value} 年",{value})}</NuriText></FrostedPressable>)}
-          {!expecting&&yearStart>24?<Pressable accessibilityRole="button" testID="birth-picker-earlier-years" onPress={()=>setYearStart(value=>Math.max(1,value-24))} style={{minHeight:44,alignItems:"center",justifyContent:"center"}}><NuriText secondary>{copy.earlierYears}</NuriText></Pressable>:null}
-        </ScrollView>
-        {columns.map(column=><ScrollView key={column.name} style={{flex:1}} showsVerticalScrollIndicator={false} testID={`birth-picker-${column.name}`} keyboardShouldPersistTaps="handled">{column.values.map(value=><FrostedPressable key={value} accessibilityRole="button" accessibilityState={{selected:column.value===value}} accessibilityLabel={`${column.name}: ${value}`} testID={`birth-picker-${column.name}-${value}`} onPress={()=>column.change(value)} style={{minHeight:44,alignItems:"center",justifyContent:"center",borderRadius:22,backgroundColor:column.value===value?theme.composer:"transparent"}}><NuriText style={{fontSize:14}}>{column.label(value)}</NuriText></FrostedPressable>)}</ScrollView>)}
-      </View>
-      <NuriText testID="birth-picker-selection" style={{fontSize:14}}>{selected||"YYYY-MM-DD"}</NuriText>
-      <NuriButton label={t("确定")} disabled={!valid} onPress={()=>confirm(draftYear,draftMonth,draftDay)} testID="birth-picker-confirm" />
-      <NuriButton secondary label={locale==="en"?"Cancel":translate(locale, "取消")} onPress={close} testID="birth-picker-cancel" />
-    </AuthFrame>
-  </View>;
-}
-
 const styles = StyleSheet.create({
-  loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" }, gradient: { flex: 1 }, safe: { flex: 1 },
-  phoneCanvas: { alignSelf: "center", flex: 1, overflow: "hidden" },
-  topBar: { height: 54, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, backButton: { minWidth: 32, minHeight: 36, justifyContent: "center" }, hidden: { opacity: 0 }, progressText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 12, letterSpacing: 0.48 },
-  content: { paddingHorizontal: 16, paddingBottom: 30, flexGrow: 1 }, babyIcon: { alignSelf: "center", width: 44, height: 44, marginTop: 67 }, parentIcon: { alignSelf: "center", width: 37, height: 49, marginTop: 62 },
-  choiceIcon: { width: 48, height: 48, alignSelf: "center", marginTop: 62, flexDirection: "row", flexWrap: "wrap", gap: 4 }, iconBlockTall: { width: 22, height: 28, borderRadius: 4, backgroundColor: "#3A2F5A" }, iconBlockShort: { width: 22, height: 16, borderRadius: 4, backgroundColor: "#3A2F5A" },
-  form: { marginTop: 159 }, preferenceForm: { marginTop: 132 }, title: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 24 }, subtitle: { color: "#3A2F5A", fontFamily: "NotoSansSC_400Regular", fontSize: 16, lineHeight: 21, marginTop: 4 }, pageBody: { marginTop: 16 },
-  field: { marginTop: 12 }, label: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16, marginBottom: 8 }, input: { height: 48, borderRadius: 12, borderWidth: 1.5, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.18)", paddingHorizontal: 16, color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 12, letterSpacing: 0.48 }, inputError: { borderColor: "#C54444" }, errorText: { marginTop: 6, color: "#C54444", fontFamily: "NotoSansSC_400Regular", fontSize: 12 }, inputText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 12, letterSpacing: 0.48 }, picker: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, placeholder: { color: "rgba(58,47,90,0.6)" },
-  syncError: { color: "#C54444", backgroundColor: "#FFF2F0", borderColor: "#C54444", borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 8, fontFamily: "NotoSansSC_400Regular", fontSize: 12, lineHeight: 18 },
-  ctaRow: { alignItems: "flex-end", marginTop: 62 }, concernCta: { marginTop: 32 }, cta: { width: 148, height: 48, borderRadius: 12, borderWidth: 1, borderColor: "rgba(60,34,45,0.3)", backgroundColor: "rgba(255,255,255,0.6)", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }, ctaReady: { backgroundColor: "rgba(255,255,255,0.9)" }, ctaText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
-  chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 }, chip: { height: 41, borderRadius: 12, borderWidth: 1, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.2)", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14 }, chipActive: { backgroundColor: "#3A2F5A" }, chipText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, chipTextActive: { color: "#fff" },
-  choiceList: { gap: 10, marginTop: 4 }, choice: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: "rgba(58,47,90,0.6)", backgroundColor: "rgba(255,255,255,0.2)", flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 10 }, choiceActive: { backgroundColor: "#3A2F5A" }, radio: { width: 16, height: 16, borderRadius: 8, borderWidth: 1.5, borderColor: "#3A2F5A", alignItems: "center", justifyContent: "center" }, radioActive: { borderColor: "#fff" }, radioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff" }, choiceText: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 14 }, choiceTextActive: { color: "#fff" },
-  sheetRoot: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(58,47,90,0.32)", justifyContent: "flex-end" }, sheet: { backgroundColor: "#FDF9FF", height: 428, borderTopLeftRadius: 24, borderTopRightRadius: 24 }, sheetHeader: { height: 59, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16 }, sheetTitle: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16 }, done: { color: "#3A2F5A", fontFamily: "NotoSansSC_900Black", fontSize: 16 }, divide: { height: 1, marginHorizontal: 19, backgroundColor: "rgba(58,47,90,0.2)" }, pickerCols: { flex: 1, flexDirection: "row", gap: 10, padding: 12 }, pickerColumn: { flex: 1 }, pickerItem: { height: 46, alignItems: "center", justifyContent: "center", borderRadius: 8 }, pickerItemActive: { backgroundColor: "rgba(58,47,90,0.12)" }, pickerText: { color: "#3A2F5A", fontFamily: "NotoSansSC_400Regular", fontSize: 16 },
+  screen: { flex: 1, minHeight: 0 }, navigation: { height: 52, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16 }, hit: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  progress: { flex: 1, flexDirection: "row", gap: 8 }, segment: { flex: 1, height: 4, borderRadius: 2 },
+  tabs: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 12, alignItems: "center" }, tabTrack: { width: 276, maxWidth: "100%", minHeight: 48, flexDirection: "row", gap: 4, padding: 3, borderRadius: 24, borderWidth: 1 }, tab: { flex: 1, minHeight: 40, alignItems: "center", justifyContent: "center", borderRadius: 20 },
+  viewport: { flex: 1, minHeight: 0 }, content: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 64, gap: 16 },
+  addClearance: { alignItems: "center", paddingTop: 4, paddingBottom: 12, overflow: "visible", zIndex: 1 }, add: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", boxShadow: "0px 0px 5px rgba(0,0,0,.25)", elevation: 4, zIndex: 2 },
+  footer: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 8, alignItems: "center", flexShrink: 0, zIndex: 0 }, error: { gap: 12, padding: 12, borderRadius: 16, backgroundColor: "rgba(255,245,243,.9)" },
 });

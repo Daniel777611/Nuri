@@ -13,6 +13,8 @@ const publicBuildFingerprint = createHash("sha256")
     gallery: process.env.EXPO_PUBLIC_UIUX48_GALLERY === "1",
     flowPrototype: process.env.EXPO_PUBLIC_FLOW_PROTOTYPE === "1",
     channel: process.env.NURI_RELEASE_CHANNEL ?? null,
+    flavor: process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? null,
+    communityPrototype: process.env.EXPO_PUBLIC_COMMUNITY_PROTOTYPE ?? null,
     bundle: require("./app.json").expo.ios.bundleIdentifier,
     nativeBundle: process.env.PRODUCT_BUNDLE_IDENTIFIER ?? null,
     nativeSDK: process.env.SDK_NAME ?? null,
@@ -24,6 +26,12 @@ config.cacheVersion = `nuri-public-build-${publicBuildFingerprint}`;
 // Native QA still requires its scoped channel. The independent web handoff
 // channel enables ONLY Community's local reducer, never the API fixture mode.
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === "nuri-live-community") {
+    const enabled = process.env.NURI_RELEASE_CHANNEL === "live-alpha"
+      && process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha"
+      && ["EXPO_PUBLIC_PREVIEW_MODE", "EXPO_PUBLIC_UIUX48_GALLERY", "EXPO_PUBLIC_FLOW_PROTOTYPE", "EXPO_PUBLIC_COMMUNITY_PROTOTYPE"].every(key => process.env[key] === undefined || process.env[key] === "0");
+    return { type: "sourceFile", filePath: path.resolve(__dirname, enabled ? "src/uiuxfinal/CommunityFinal.tsx" : "src/uiuxfinal/CommunityUnavailable.tsx") };
+  }
   if (moduleName === "nuri-ux49-flow-preview") {
     const bundle = require("./app.json").expo.ios.bundleIdentifier;
     const requested = process.env.EXPO_PUBLIC_FLOW_PROTOTYPE === "1";
@@ -37,6 +45,19 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     const enabled = context.dev === true && process.env.EXPO_PUBLIC_PREVIEW_MODE === "1" && process.env.EXPO_PUBLIC_UIUX48_GALLERY === "1";
     return { type: "sourceFile", filePath: path.resolve(__dirname, enabled ? "src/dev/uiux48/Gallery.tsx" : "src/uiux48/GalleryUnavailable.tsx") };
   }
-  return context.resolveRequest(context, moduleName, platform);
+  const resolution = context.resolveRequest(context, moduleName, platform);
+  // api.ts and native hooks also import the preview-mode switch. A false
+  // runtime switch does not remove that module's fixture data from Hermes.
+  // Substitute only this app's resolved module, never another package's
+  // similarly named import, and leave main/Android/prototype channels intact.
+  const liveAlphaIOS = platform === "ios"
+    && process.env.NURI_RELEASE_CHANNEL === "live-alpha"
+    && process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha"
+    && ["EXPO_PUBLIC_PREVIEW_MODE", "EXPO_PUBLIC_UIUX48_GALLERY", "EXPO_PUBLIC_FLOW_PROTOTYPE", "EXPO_PUBLIC_COMMUNITY_PROTOTYPE"].every(key => process.env[key] === undefined || process.env[key] === "0");
+  if (liveAlphaIOS && resolution.type === "sourceFile"
+    && path.resolve(resolution.filePath) === path.resolve(__dirname, "src/preview-api.ts")) {
+    return { type: "sourceFile", filePath: path.resolve(__dirname, "src/preview-api.unavailable.ts") };
+  }
+  return resolution;
 };
 module.exports = config;

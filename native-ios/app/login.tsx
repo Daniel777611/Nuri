@@ -1,6 +1,7 @@
 import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import { useRef, useState as useLocalState } from "react";
+import { useNativeAuthDraft } from "@/src/uiux48/useNativeAuthDraft";
 import {
   View,
   Text,
@@ -23,6 +24,8 @@ import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { colors, radius, spacing, type } from "@/src/theme";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
 
+const loginReady = ({ email, password }: { email: string; password: string }) => !!email && !!password;
+
 export default function Login() {
   const { generation, capture, current, isMounted } = useAccountScope();
   const router = useRouter();
@@ -31,8 +34,7 @@ export default function Login() {
   const safeReturnTo = notificationReturn && /^\/notifications\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(notificationReturn) ? notificationReturn : null;
   const headerHeight = useHeaderHeight();
   const { t, locale, setLocale } = useT();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const draft = useNativeAuthDraft({ email: "", password: "" }, loginReady);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const loginAction = useRef(false);
@@ -60,7 +62,9 @@ export default function Login() {
 
   const submit = async () => {
     const ticket = capture();
-    if (ticket === null || submitting || !acquireLogin()) return;
+    const values = draft.read();
+    if (ticket === null || values === null || submitting || !acquireLogin()) return;
+    const { email, password } = values;
     let ownerIdentity: number | null = null;
     let ownerGeneration: number | null = null;
     const ownsStoragePhase = () => isMounted() && ownerIdentity === auth.getIdentityGeneration()
@@ -126,13 +130,13 @@ export default function Login() {
   return <AuthFrame testID="login-card">
     <FormTabs active="login" />
     <NuriText style={{fontSize:14,lineHeight:22}}>{locale === "en" ? "Continue your conversation with Nuri." : translate(locale, "和 Nuri 继续上次的对话。")}</NuriText>
-    <View style={{gap:16}}>
-      <NuriField label={t("邮箱")} value={email} onChangeText={setEmail} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" textContentType="username" testID="login-email" />
-      <NuriField label={t("密码")} value={password} onChangeText={setPassword} placeholder="••••••••" secureTextEntry textContentType="password" testID="login-password" />
+    <View key={draft.generation} style={{gap:16}}>
+      <NuriField label={t("邮箱")} defaultValue={draft.initial.email} onChangeText={text => draft.change("email", text)} placeholder="parent@example.com" autoCapitalize="none" keyboardType="email-address" autoComplete="email" textContentType="username" testID="login-email" />
+      <NuriField label={t("密码")} defaultValue={draft.initial.password} onChangeText={text => draft.change("password", text)} placeholder="••••••••" secureTextEntry textContentType="password" testID="login-password" />
     </View>
     <Pressable onPress={() => router.push("/forgot-password")} style={{alignSelf:"flex-end",minHeight:22,justifyContent:"center"}} testID="login-forgot-password"><NuriText style={{fontSize:13,lineHeight:22}}>{t("忘记密码？")}</NuriText></Pressable>
     {visibleError ? <NuriText testID="login-error" style={{color:colors.error,fontSize:13}}>{visibleError}</NuriText> : null}
-    <NuriButton label={submitting?t("登录中..."):t("登录")} busy={submitting} disabled={!email || !password || submitting} onPress={submit} testID="login-submit-btn" />
+    <NuriButton label={submitting?t("登录中..."):t("登录")} busy={submitting} disabled={!draft.ready || submitting} onPress={submit} testID="login-submit-btn" />
     <GoogleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
   </AuthFrame>;
 }

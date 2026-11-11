@@ -15,8 +15,11 @@ import { ChatImageInputError, pickWebChatImageFile, prepareChatImage, type Prepa
 import { MAX_VOICE_SECONDS, VoiceInputError, isVoiceInputSupported, startVoiceRecording, type VoiceRecording } from "@/src/chatVoiceInput";
 import { useComposerDockInset } from "@/src/uiux48/useComposerDock";
 import { singleLineInputStyle } from "@/src/uiux48/inputLayout";
-import { api, apiErrorDetail, isAuthError } from "@/src/api";
-import { childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
+import { aiConsent, api, apiErrorDetail, isAuthError } from "@/src/api";
+import { AI_CONSENT_VERSION } from "@/src/aiConsent";
+import { useAIConsent } from "@/src/useAIConsent";
+import { CommunityMessageTranslations, communityTranslationCopy, communityTranslationScope } from "@/src/communityMessageTranslation";
+import { childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type AIPurpose, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
 import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FINAL_COLOR } from "./Primitives";
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
 import { ParentChatAvatar, ParentChatHeader } from "./ParentChatHeader";
@@ -25,6 +28,9 @@ import { CommunityProfileEditor, GENDER_TAGS, type GenderTag } from "./Community
 import { CommunityReportSheet } from "./CommunityReportSheet";
 import { createFinalCommunity, finalCommunityReducer, isFinalCommunityScreen, selectedQuestionText, type FinalCommunityEvent, type FinalCommunityScreen, type FinalCommunityState, type ReceivedTab } from "./communityModel";
 import { communityHubTopPadding, HUB_PAGINATION, HUB_CARD_BOTTOM_GUTTER, HUB_PAGER_GAP } from "./communityHubLayout";
+import { useAccountScope } from "@/src/useAccountState";
+import { loadCommunityNotificationEntry } from "@/src/communityNotificationEntry";
+import { selectCommunityImage } from "@/src/communityImageSelection";
 
 const TITLE: Partial<Record<FinalCommunityScreen, readonly [string, string]>> = {
   hub: ["社区", "Community"],
@@ -64,6 +70,9 @@ const DISTANCE_FILTER = [null, 1, 3, 5, 10] as const;
 
 /** One server read, keyed: a new key (or reload) refetches; a stale answer is dropped. */
 type Remote<T> = { value?: T; error?: unknown; loading: boolean; reload: () => void };
+type ConsentSheet = { purpose: AIPurpose; mode: "request" | "decision"; conversationId: string; person: string;
+  noticeVersion: string; epoch: number; requestId?: string; ticket: number | null; revision: number };
+type ChatConsentLease = Pick<ConsentSheet, "conversationId" | "person" | "noticeVersion" | "epoch" | "ticket" | "revision"> & { screen: FinalCommunityScreen };
 function useRemote<T>(key: string | null, load: () => Promise<T>): Remote<T> {
   const [state, setState] = useState<{ key: string | null; value?: T; error?: unknown; loading: boolean }>({ key: null, loading: false });
   const [nonce, setNonce] = useState(0);
@@ -135,19 +144,35 @@ function UnreadBadge({count,style}:{count:number;style:ViewStyle}){
 }
 
 /** Signed read URLs are short-lived (300 s); keep each until shortly before it expires. */
-const mediaUrls=new Map<string,{url:string;until:number}>();
 function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
-  const cached=mediaUrls.get(mediaId);
-  const [url,setUrl]=useState<string|null>(cached&&cached.until>Date.now()?cached.url:null);
+  // Private signed URLs belong to this mounted account/route only. No module
+  // cache survives a sign-out, conversation change, or expired authorization.
+  const scope=useAccountScope();
+  const [url,setUrl]=useState<string|null>(null);
   const [failed,setFailed]=useState(false);
+  const currentURL=useRef<{url:string;live:boolean}|null>(null);
   useEffect(()=>{
-    if(url||failed)return;
     let live=true;
-    communityApi.mediaAccess(mediaId).then(result=>{mediaUrls.set(mediaId,{url:result.access.url,until:Date.now()+Math.max(30,result.access.expires_in_s-30)*1000});if(live)setUrl(result.access.url);},()=>{if(live)setFailed(true);});
-    return()=>{live=false;};
-  },[mediaId,url,failed]);
+    const ticket=scope.capture();
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    currentURL.current=null;setUrl(null);setFailed(false);
+    const load=()=>{
+      if(!live||!scope.current(ticket))return;
+      void communityApi.mediaAccess(mediaId).then(result=>{
+      if(!live||!scope.current(ticket))return;
+      const access=result?.access;
+      if(!access||typeof access.url!=="string"||!access.url.trim()||!Number.isFinite(access.expires_in_s)||access.expires_in_s<=0){currentURL.current=null;setUrl(null);setFailed(true);return;}
+      currentURL.current={url:access.url,live:true};
+      setUrl(access.url);setFailed(false);
+      timer=setTimeout(()=>void load(),Math.max(1,access.expires_in_s-30)*1000);
+    },()=>{if(live&&scope.current(ticket)){currentURL.current=null;setUrl(null);setFailed(true);}});
+    };
+    void load();
+    return()=>{live=false;currentURL.current=null;if(timer)clearTimeout(timer);};
+  },[mediaId,scope.capture,scope.current]);
+  const imageLease=currentURL.current;
   return <View testID={"final-parent-image-"+mediaId} accessible accessibilityLabel={label} style={{width:200,height:200,borderRadius:16,overflow:"hidden",backgroundColor:"rgba(115,92,132,.08)",alignItems:"center",justifyContent:"center"}}>
-    {url?<Image source={{uri:url}} style={{width:200,height:200}} contentFit="cover" accessible={false} onError={()=>{mediaUrls.delete(mediaId);setFailed(true);setUrl(null);}}/>:failed?<FinalText size={12} secondary>{label}</FinalText>:<ActivityIndicator color={FINAL_COLOR.accent}/>}
+    {url?<Image source={{uri:url}} cachePolicy="none" style={{width:200,height:200}} contentFit="cover" accessible={false} onError={()=>{if(imageLease?.live&&currentURL.current===imageLease&&imageLease.url===url){currentURL.current=null;setFailed(true);setUrl(null);}}}/>:failed?<FinalText size={12} secondary>{label}</FinalText>:<ActivityIndicator color={FINAL_COLOR.accent}/>}
   </View>;
 }
 
@@ -156,7 +181,8 @@ function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
  * invitation, block and consent decision is a server write, and a flow moves
  * on only after the server confirmed it. */
 export default function CommunityFinal() {
-  const { uiState } = useLocalSearchParams<{ uiState?: string; }>();
+  const { uiState, notificationId } = useLocalSearchParams<{ uiState?: string; notificationId?: string }>();
+  const accountScope=useAccountScope();
   const [state, dispatchState] = useReducer(finalCommunityReducer, isFinalCommunityScreen(uiState) ? uiState : "hub", createFinalCommunity);
   const [width, setWidth] = useState(0),
     [pagerHeight, setPagerHeight] = useState(0),
@@ -172,6 +198,19 @@ export default function CommunityFinal() {
     [consentNeeded,setConsentNeeded]=useState(false),
     [tick,setTick]=useState(0);
   const { locale } = useT();
+  const { state:localAI } = useAIConsent();
+  const deviceAIAllowed=localAI.status==="allowed"&&!!localAI.userId&&localAI.version===AI_CONSENT_VERSION;
+  const translationCopy=communityTranslationCopy(locale);
+  const [translations]=useState(()=>new CommunityMessageTranslations(communityApi.translateMessage,()=>communityKey("tr")));
+  const [,setTranslationRevision]=useState(0);
+  const [translationPaused,setTranslationPaused]=useState<string|null>(null);
+  const [translationPreferencePaused,setTranslationPreferencePaused]=useState(false);
+  const [consentSheet,setConsentSheet]=useState<ConsentSheet|null>(null);
+  const consentSheetRef=useRef(consentSheet);consentSheetRef.current=consentSheet;
+  const consentAction=useRef(false);
+  const [revokingConsent,setRevokingConsent]=useState<ChatConsentLease|null>(null);
+  const revokeAction=useRef<ChatConsentLease|null>(null);
+  useEffect(()=>()=>translations.clear(),[translations]);
   const en = locale === "en";
   const appKeyboardVisible=useAppKeyboardVisible();
   const router = useRouter(), path = usePathname();
@@ -180,13 +219,14 @@ export default function CommunityFinal() {
     pagerAligned = useRef<{host:ScrollView;width:number;page:0|1}|null>(null),
     messages = useRef<ScrollView>(null),
     latest = useRef(state),
+    navigationRevision=useRef(0),
     questionFocusEpoch=useRef(0),
     mounted=useRef(true),
     /** slot → the client key of its current text, so a retry reuses it. */
     writeKeys=useRef<Record<string,{text:string;key:string}>>({}),
     /** parent_id → a conversation already known from the inbox/contacts. */
     knownConversations=useRef<Record<string,string>>({}),
-    consentPrompted=useRef<string|null>(null),
+    consentPrompted=useRef(new Set<string>()),
     profileSeeded=useRef(false),
     /** How many parents the last sent question reached; the sent page says so. */
     lastRecipients=useRef<number|null>(null);
@@ -205,7 +245,7 @@ export default function CommunityFinal() {
     setFilter(null);setFilterAnchor(null);
   },[]);
   useEffect(()=>{filterMounted.current=true;return()=>{filterMounted.current=false;filterOpen.current=null;filterRequest.current++;};},[]);
-  useFocusEffect(useCallback(()=>{filterFocused.current=true;return()=>{filterFocused.current=false;closeFilter();};},[closeFilter]));
+  useFocusEffect(useCallback(()=>{filterFocused.current=true;return()=>{filterFocused.current=false;navigationRevision.current++;closeFilter();};},[closeFilter]));
   const openFilter=(key:"gender"|"distance")=>{
     if(!filterMounted.current||!filterFocused.current||latest.current.screen!=="suggestions")return;
     if(filterOpen.current){closeFilter();return;}
@@ -244,6 +284,7 @@ export default function CommunityFinal() {
   const title=presentation(state).flowTitle;
   const dispatch = (event:FinalCommunityEvent) => {
     const previous=latest.current,next=finalCommunityReducer(previous,event);
+    if(next.screen!==previous.screen||next.person!==previous.person)navigationRevision.current++;
     if(["compose","original","polished"].includes(previous.screen)&&!["compose","original","polished"].includes(next.screen)){
       questionFocusEpoch.current++;
       setQuestionFocusedInput(null);
@@ -252,6 +293,27 @@ export default function CommunityFinal() {
     latest.current=next;
     dispatchState(event);
   };
+  useEffect(()=>{
+    if(!notificationId)return;
+    let live=true;
+    const ticket=accountScope.capture();
+    const revision=navigationRevision.current;
+    const current=()=>live&&accountScope.current(ticket)&&filterFocused.current&&revision===navigationRevision.current;
+    void loadCommunityNotificationEntry(notificationId,communityApi).then(async entry=>{
+      if(!current())return;
+      if(entry.conversation)knownConversations.current[entry.conversation.parentId]=entry.conversation.id;
+      // One checked synchronous navigation transaction: its own reducer events
+      // increment revision, but must not invalidate later events in this entry.
+      for(const event of entry.events)dispatch(event);
+      router.setParams({notificationId:undefined});
+      // A read receipt is separate from navigation; a failed write is not
+      // reported as read, and never sends this event to the NURI AI chat.
+      try{await communityApi.markNotificationRead(notificationId);}catch{/* no false read receipt */}
+    },()=>{
+      if(current())dispatch({type:"notice",message:c("这条通知不存在或已过期","This notification is unavailable or has expired")});
+    });
+    return()=>{live=false;};
+  },[notificationId,accountScope.capture,accountScope.current]);
   /** What a failed write tells the parent. Never a fake success. */
   const failure=(error:unknown)=>{
     const code=communityErrorCode(error),detail=apiErrorDetail(error);
@@ -302,7 +364,7 @@ export default function CommunityFinal() {
   const allThread=replies.value?.all_thread;
   const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}:${tick}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
   const askedQuestion=useRemote(["respond","responsePrompt"].includes(s)&&state.questionID?`question:${state.questionID}`:null,()=>communityApi.question(state.questionID));
-  const prefs=useRemote(s==="preferences"?`prefs:${tick}`:null,()=>communityApi.preferences());
+  const prefs=useRemote(s==="preferences"||parentChat?`prefs:${tick}`:null,()=>communityApi.preferences());
   const blocks=useRemote(["blocked","blockedEmpty"].includes(s)?`blocks:${tick}`:null,()=>communityApi.blocks());
   const chat=useRemote(parentChat&&state.person?`chat:${state.person}:${tick}`:null,async()=>{
     let conversationId=knownConversations.current[state.person];
@@ -310,18 +372,47 @@ export default function CommunityFinal() {
     const [list,ai]=await Promise.all([communityApi.messages(conversationId),communityApi.aiParticipation(conversationId)]);
     return {conversationId,conversation:list.conversation,messages:list.items,ai};
   });
+  const chatAuthority=useRef(chat.value);chatAuthority.current=chat.value;
+  const translationScope=communityTranslationScope(String(accountScope.generation),chat.value?.conversationId,locale,chat.value?.ai);
+  const pausedKey=chat.value?`${chat.value.conversationId}:${chat.value.ai.epoch}`:"";
+  const translationEnabled=parentChat&&s!=="consent"&&!!prefs.value?.auto_translate_messages&&!prefs.error&&!chat.error
+    &&!!chat.value?.conversation.allowed_actions.includes("send_message")&&deviceAIAllowed&&translationPaused!==pausedKey&&!translationPreferencePaused;
+  // Synchronous configuration hides old results in the very render that
+  // withdraws authority; an effect must not flash a previous account's text.
+  translations.configure(translationScope,translationEnabled);
+  const translationKey=translationScope?JSON.stringify(translationScope):"";
+  const translationMessages=chat.value?.messages.map(message=>message.message_id+":"+message.seq).join("|")??"";
+  useEffect(()=>{
+    if(!translationEnabled||!translationScope||!chat.value)return;
+    const ticket=accountScope.capture(),person=state.person,revision=navigationRevision.current;
+    const expected={userId:localAI.userId,session:localAI.session};
+    const owns=()=>{
+      const live=aiConsent.getState();
+      return mounted.current&&accountScope.current(ticket)&&filterFocused.current&&latest.current.person===person
+        &&navigationRevision.current===revision&&live.status==="allowed"&&live.version===AI_CONSENT_VERSION
+        &&live.userId===expected.userId&&live.session===expected.session;
+    };
+    void translations.queue(chat.value.messages,owns,()=>{if(owns())setTranslationRevision(value=>value+1);});
+  },[translations,translationKey,translationMessages,translationEnabled,localAI.userId,localAI.session,accountScope.capture,accountScope.current]);
   // New messages from the other parent arrive while the chat is open.
   useEffect(()=>{if(!parentChat)return;const timer=setInterval(()=>chat.reload(),8000);return()=>clearInterval(timer);},[parentChat,chat.reload]);
   // Reading the chat moves this parent's read cursor, never the other's.
   const lastSeq=chat.value?.messages.at(-1)?.seq;
   useEffect(()=>{if(chat.value&&lastSeq)communityApi.markRead(chat.value.conversationId,lastSeq).catch(()=>{});},[chat.value?.conversationId,lastSeq]);
   // A consent request from the other parent opens the decision sheet once.
-  const incomingConsent=chat.value?.ai.requests.conversation_notes;
+  const incomingNotes=chat.value?.ai.requests.conversation_notes,incomingTranslation=chat.value?.ai.requests.translation;
   useEffect(()=>{
-    if(!incomingConsent||incomingConsent.state!=="pending"||incomingConsent.initiated_by!=="parent"||incomingConsent.my_decision!=="pending")return;
-    if(consentPrompted.current===incomingConsent.request_id||!["chat","chatOn"].includes(latest.current.screen))return;
-    consentPrompted.current=incomingConsent.request_id;dispatch({type:"requestConsent"});
-  },[incomingConsent?.request_id,incomingConsent?.state,incomingConsent?.my_decision]);
+    const value=chat.value;
+    if(!value||chat.loading||chat.error||busy||consentAction.current||!filterFocused.current||accountScope.capture()===null||!["chat","chatOn"].includes(latest.current.screen))return;
+    for(const purpose of ["conversation_notes","translation"] as const){
+      const request=value.ai.requests[purpose];
+      if(!request||request.purpose!==purpose||request.epoch!==value.ai.epoch||request.notice_version!==value.ai.notice_version
+        ||request.state!=="pending"||request.initiated_by!=="parent"||request.my_decision!=="pending"||consentPrompted.current.has(request.request_id))continue;
+      consentPrompted.current.add(request.request_id);
+      setConsentSheet({purpose,mode:"decision",conversationId:value.conversationId,person:state.person,noticeVersion:request.notice_version,epoch:request.epoch,requestId:request.request_id,ticket:accountScope.capture(),revision:navigationRevision.current+1});
+      dispatch({type:"requestConsent"});break;
+    }
+  },[s,chat.loading,!!chat.error,busy,chat.value?.ai.epoch,chat.value?.ai.notice_version,incomingNotes?.request_id,incomingNotes?.state,incomingNotes?.my_decision,incomingTranslation?.request_id,incomingTranslation?.state,incomingTranslation?.my_decision]);
   // The editor starts from the saved profile, once per visit.
   useEffect(()=>{
     if(!["intent","profile","profileSettings"].includes(s)){profileSeeded.current=false;return;}
@@ -445,18 +536,19 @@ export default function CommunityFinal() {
   const reportSheet=<CommunityReportSheet visible={!!report} busy={busy} title={report?.title??""} allowBlock={!!report?.allowBlock} onClose={()=>setReport(null)} onSubmit={submitReport}/>;
   const pickChatImage=async()=>{
     if(busy||voiceRef.current.slot)return;
+    const person=latest.current.person,screen=latest.current.screen,ticket=accountScope.capture(),revision=navigationRevision.current;
+    const current=()=>accountScope.current(ticket)&&mounted.current&&filterFocused.current&&navigationRevision.current===revision&&latest.current.person===person&&latest.current.screen===screen;
+    if(!person||!["chat","chatOn"].includes(screen)||!current())return;
     try{
-      let asset:ImagePicker.ImagePickerAsset|null=null;
-      if(Platform.OS==="web")asset=await pickWebChatImageFile();
-      else{
+      const prepared=await selectCommunityImage(current,async()=>{
+        if(Platform.OS==="web")return pickWebChatImageFile();
         // The system photo picker grants access to the chosen photo only.
         const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:["images"],allowsEditing:false,allowsMultipleSelection:false,base64:false,exif:false,quality:.78});
-        asset=result.canceled?null:result.assets[0]??null;
-      }
-      if(!asset)return;
-      const prepared=await prepareChatImage(asset);
-      if(mounted.current)setChatImage({person:latest.current.person,prepared});
+        return result.canceled?null:result.assets[0]??null;
+      },prepareChatImage);
+      if(prepared&&current())setChatImage({person,prepared});
     }catch(error){
+      if(!current())return;
       dispatch({type:"notice",message:error instanceof ChatImageInputError&&error.code==="too_large"?c("图片太大了，请换一张","That photo is too large"):c("无法读取这张图片，请换一张","Couldn't read that photo")});
     }
   };
@@ -555,7 +647,11 @@ export default function CommunityFinal() {
   });
   const togglePreference=(key:keyof Omit<Preferences,"version">)=>write(async()=>{
     const current=prefs.value;if(!current)return;
-    await communityApi.savePreferences({[key]:!current[key],expected_version:current.version});
+    // A parent's OFF intent stops local translation even if the preference
+    // write has an unknown outcome. Only an explicit confirmed ON clears it.
+    if(key==="auto_translate_messages"&&current.auto_translate_messages){setTranslationPreferencePaused(true);translations.clear();}
+    const saved=await communityApi.savePreferences({[key]:!current[key],expected_version:current.version});
+    if(key==="auto_translate_messages"&&saved.auto_translate_messages===true)setTranslationPreferencePaused(false);
     prefs.reload();
   });
   const saveProfile=(after:()=>void)=>write(async()=>{
@@ -583,20 +679,92 @@ export default function CommunityFinal() {
     setChatImage(null);
     dispatch({type:"messageSent",slot});chat.reload();
   });}
-  const toggleAI=(on:boolean)=>write(async()=>{
-    const value=chat.value;if(!value)return;
-    if(on){
-      const result=await communityApi.requestAI(value.conversationId,value.ai.notice_version,communityKey("air"));
-      if(!result.request.effective)dispatch({type:"notice",message:c("已邀请对方，双方都同意后 Nuri 才会参与","Invitation sent. Nuri joins only after both of you agree")});
-    }else await communityApi.revokeAI(value.conversationId);
-    chat.reload();
-  });
-  const decideAI=(allowed:boolean)=>write(async()=>{
-    const request=chat.value?.ai.requests.conversation_notes;
-    if(!request){dispatch({type:"consentClosed",effective:false});return;}
-    const result=await communityApi.decideAI(request.request_id,allowed?"allow":"decline",request.notice_version,communityKey("aid"));
-    dispatch({type:"consentClosed",effective:result.request.effective});chat.reload();
-  });
+  // Every callback belongs to the chat and notice rendered beside that button.
+  // Never rebind an old button to the latest chat/sheet when it finally fires.
+  const consentRenderLease:ChatConsentLease|null=chat.value?{conversationId:chat.value.conversationId,person:state.person,screen:state.screen,
+    epoch:chat.value.ai.epoch,noticeVersion:chat.value.ai.notice_version,ticket:accountScope.capture(),revision:navigationRevision.current}:null;
+  const currentConsentLease=(lease:ChatConsentLease|null)=>{
+    const value=chatAuthority.current;
+    return !!lease&&lease.ticket!==null&&mounted.current&&accountScope.current(lease.ticket)&&filterFocused.current
+      &&navigationRevision.current===lease.revision&&latest.current.person===lease.person&&latest.current.screen===lease.screen
+      &&value?.conversationId===lease.conversationId&&value.ai.epoch===lease.epoch&&value.ai.notice_version===lease.noticeVersion;
+  };
+  const revokeBusy=!!revokingConsent&&currentConsentLease(revokingConsent);
+  const openConsent=(purpose:AIPurpose)=>{
+    const lease=consentRenderLease,value=chatAuthority.current;
+    if(busy||consentAction.current||currentConsentLease(revokeAction.current)||!currentConsentLease(lease)||!lease||!value||!["chat","chatOn"].includes(lease.screen))return;
+    const request=value.ai.requests[purpose];
+    setConsentSheet({purpose,mode:request?.state==="pending"&&request.my_decision==="pending"?"decision":"request",
+      conversationId:lease.conversationId,person:lease.person,noticeVersion:lease.noticeVersion,epoch:lease.epoch,
+      requestId:request?.request_id,ticket:lease.ticket,revision:lease.revision+1});
+    dispatch({type:"requestConsent"});
+  };
+  const closeConsent=(expectedSheet:ConsentSheet|null)=>{
+    // The current sheet may be dismissed after its notice/epoch changes, but
+    // an old sheet's Cancel/Close must never dismiss its replacement.
+    if(!expectedSheet||expectedSheet!==consentSheetRef.current||!currentConsentLease(consentRenderLease)||consentRenderLease?.screen!=="consent")return;
+    setConsentSheet(null);dispatch({type:"consentClosed",effective:!!chatAuthority.current?.ai.effective});
+  };
+  const revokeConsent=async(purpose:AIPurpose)=>{
+    const lease=consentRenderLease;
+    if(busy||consentAction.current||!lease||!["chat","chatOn"].includes(lease.screen)||!currentConsentLease(lease)
+      ||currentConsentLease(revokeAction.current))return;
+    revokeAction.current=lease;setRevokingConsent(lease);
+    // The backend bumps the whole conversation epoch, even for a single
+    // purpose. Stop local work now; an unconfirmed withdrawal never resumes it.
+    setTranslationPaused(`${lease.conversationId}:${lease.epoch}`);translations.clear();
+    const current=()=>revokeAction.current===lease&&currentConsentLease(lease);
+    try{await communityApi.revokeAI(lease.conversationId,purpose);if(current())chat.reload();}
+    catch(error){if(current())dispatch({type:"notice",message:failure(error)});}
+    finally{const owns=current();if(revokeAction.current===lease)revokeAction.current=null;if(owns)setRevokingConsent(previous=>previous===lease?null:previous);}
+  };
+  const toggleAI=(on:boolean)=>{if(on)openConsent("conversation_notes");else void revokeConsent("conversation_notes");};
+  const decideAI=async(sheet:ConsentSheet|null,allowed:boolean)=>{
+    if(!sheet||sheet!==consentSheetRef.current||busy||consentAction.current)return;
+    const current=()=>{
+      const value=chatAuthority.current;
+      return mounted.current&&accountScope.current(sheet.ticket)&&filterFocused.current&&navigationRevision.current===sheet.revision&&consentSheetRef.current===sheet&&latest.current.screen==="consent"
+        &&latest.current.person===sheet.person&&value?.conversationId===sheet.conversationId
+        &&value.ai.epoch===sheet.epoch&&value.ai.notice_version===sheet.noticeVersion;
+    };
+    if(!current())return;
+    if(!allowed&&sheet.mode==="request"){closeConsent(sheet);return;}
+    const existing=chatAuthority.current?.ai.requests[sheet.purpose];
+    if(sheet.mode==="decision"&&(!existing||existing.request_id!==sheet.requestId||existing.purpose!==sheet.purpose))return;
+    consentAction.current=true;setBusy(true);
+    try{
+      const requestSlot="air:"+sheet.conversationId+":"+sheet.purpose;
+      const requestKey=sheet.mode==="request"?keyFor(requestSlot,sheet.noticeVersion+":"+sheet.epoch,"air"):null;
+      let result=sheet.mode==="request"
+        ?await communityApi.requestAI(sheet.conversationId,sheet.noticeVersion,requestKey!,sheet.purpose)
+        :await communityApi.decideAI(sheet.requestId!,allowed?"allow":"decline",sheet.noticeVersion,keyFor("aid:"+sheet.requestId,allowed+":"+sheet.noticeVersion,"aid"));
+      if(result.request.purpose!==sheet.purpose||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
+      // A confirmed response ends this logical P25 operation. A later explicit
+      // request (e.g. after refusal, without an epoch bump) needs a fresh key;
+      // unknown-outcome exceptions keep their original idempotency key.
+      if(requestKey&&accountScope.current(sheet.ticket)&&writeKeys.current[requestSlot]?.key===requestKey)delete writeKeys.current[requestSlot];
+      if(!current())return;
+      if(allowed&&!["pending","effective"].includes(result.request.state)){
+        dispatch({type:"notice",message:translationCopy.changed});chat.reload();return;
+      }
+      // A simultaneous request from the other parent may already exist. P25
+      // returns it without consenting on this parent's behalf; the explicit
+      // Allow click still needs its own P26 decision in that case.
+      if(allowed&&result.request.my_decision==="pending"){
+        result=await communityApi.decideAI(result.request.request_id,"allow",sheet.noticeVersion,keyFor("aid:"+result.request.request_id,"true:"+sheet.noticeVersion,"aid"));
+        if(!current())return;
+      }
+      if(result.request.purpose!==sheet.purpose||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
+      if(allowed&&!["pending","effective"].includes(result.request.state)){
+        dispatch({type:"notice",message:translationCopy.changed});chat.reload();return;
+      }
+      setConsentSheet(null);
+      dispatch({type:"consentClosed",effective:sheet.purpose==="conversation_notes"?result.request.effective:!!chatAuthority.current?.ai.effective});
+      if(sheet.purpose==="translation"&&allowed&&result.request.state==="pending"&&!result.request.effective)dispatch({type:"notice",message:translationCopy.sent});
+      chat.reload();
+    }catch(error){if(current())dispatch({type:"notice",message:communityErrorCode(error)==="CONSENT_REVOKED_OR_CHANGED"?translationCopy.changed:failure(error)});}
+    finally{consentAction.current=false;if(mounted.current&&accountScope.current(sheet.ticket))setBusy(false);}
+  };
 
   // ── Settings: preferences, blocked parents, a parent's safety menu ────────
   if (settingsScreen) {
@@ -1000,18 +1168,31 @@ export default function CommunityFinal() {
   const value=chat.value,ai:AIParticipation|undefined=value?.ai,mineAI=ai?.requests.conversation_notes;
   const canSend=!!value?.conversation.allowed_actions.includes("send_message");
   const waitingForParent=mineAI?.state==="pending"&&mineAI.initiated_by==="me";
+  const translationRequest=ai?.requests.translation,translationPending=translationRequest?.state==="pending";
+  const sheetCurrent=!!consentSheet&&accountScope.current(consentSheet.ticket)&&filterFocused.current&&consentSheet.revision===navigationRevision.current&&consentSheet.person===state.person
+    &&consentSheet.conversationId===value?.conversationId&&consentSheet.epoch===ai?.epoch&&consentSheet.noticeVersion===ai?.notice_version;
+  const translationStatus=prefs.error||chat.error||value&&!canSend?translationCopy.unavailable:!prefs.value?translationCopy.loading
+    :!prefs.value.auto_translate_messages?translationCopy.preferenceOff:translationPaused===pausedKey||translationPreferencePaused?translationCopy.paused
+    :!deviceAIAllowed?translationCopy.deviceOff:translationScope?translationCopy.active
+    :translationPending?translationCopy.waiting:translationCopy.required;
   const list:Message[]=value?.messages??[];
   return <NuriKeyboardFrame><ParentChatHeader person={state.personName} participating={!!ai?.effective} status={ai?.effective ? c("Nuri 参与中", "Nuri is on") : waitingForParent ? c("等待对方同意","Waiting for them") : c("Nuri 未参与", "Nuri is off")} backLabel={c("返回", "Back")} toggleHint={c("开启前需要双方同意；任何一方都可以随时关闭。", "Both parents must agree first; either can turn it off at any time.")} onBack={()=>{
       if(state.history.length)dispatch({type:"back"});else router.dismissTo("/(tabs)");
-    }} onToggle={toggleAI}/><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
+    }} onToggle={toggleAI}/><View testID="final-parent-translation-controls" style={{paddingHorizontal:24,paddingVertical:8,gap:6}}>
+      <FinalText size={12} secondary>{translationStatus}</FinalText>
+      {!prefs.value?.auto_translate_messages?<FinalButton small secondary label={translationCopy.preferences} onPress={()=>go("preferences")} testID="final-parent-translation-preferences"/>
+        :!deviceAIAllowed?<FinalButton small secondary label={translationCopy.devicePermission} onPress={()=>router.push(aiPermissionHref("/community"))} testID="final-parent-translation-device-permission"/>
+        :!translationScope&&canSend&&!prefs.error&&!chat.error?<FinalButton small secondary disabled={busy||revokeBusy} label={translationRequest?.my_decision==="pending"?translationCopy.review:translationCopy.request} onPress={()=>openConsent("translation")} testID="final-parent-translation-request"/>:null}
+      {translationScope||translationPending?<><FinalButton small secondary disabled={busy||revokeBusy} label={translationCopy.stop} onPress={()=>void revokeConsent("translation")} testID="final-parent-translation-revoke"/><FinalText size={11} secondary>{translationCopy.closeWarning}</FinalText></>:null}
+    </View><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
       {pending(chat)}
       {value&&!list.length?<FinalText secondary style={{textAlign:"center"}}>{c("打个招呼吧","Say hello")}</FinalText>:null}
-      {list.map(m => {const incoming=m.sender==="parent";return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><Pressable disabled={!incoming} delayLongPress={400} onLongPress={()=>setReport({kind:"message",id:m.message_id,title:c("举报这条消息","Report this message"),allowBlock:true})} accessibilityHint={incoming?c("长按可以举报","Long press to report"):undefined} testID={"final-parent-message-press-"+m.seq} style={{flex:1,maxWidth:incoming?306:258}}><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText>{m.text}</FinalText>:null}</FinalChatBubble></Pressable></View>;})}
+      {list.map(m => {const incoming=m.sender==="parent",translated=translations.text(m);return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><Pressable disabled={!incoming} delayLongPress={400} onLongPress={()=>setReport({kind:"message",id:m.message_id,title:c("举报这条消息","Report this message"),allowBlock:true})} accessibilityHint={incoming?c("长按可以举报","Long press to report"):undefined} testID={"final-parent-message-press-"+m.seq} style={{flex:1,maxWidth:incoming?306:258}}><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText testID={"final-parent-original-"+m.seq}>{m.text}</FinalText>:null}{translated?<View testID={"final-parent-translation-"+m.seq} style={{gap:4,paddingTop:8}}><FinalText size={11} secondary>{translationCopy.translated}</FinalText><FinalText>{translated}</FinalText></View>:null}</FinalChatBubble></Pressable></View>;})}
     </ScrollView><View testID="final-parent-composer-dock" style={{ padding: 24, paddingTop: 8, paddingBottom: dockBottom, gap: 8 }}>
       {notice}
       {value&&!canSend?<FinalText size={12} secondary style={{textAlign:"center"}}>{c("你们已不再联系，不能再发送消息","You're no longer connected and can't send messages")}</FinalText>:null}
       {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy} busy={busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} hasAttachment={!!chatImage} attachments={chatImage?[{id:"community-photo",kind:"image",uri:chatImage.prepared.previewUri,width:chatImage.prepared.width,height:chatImage.prepared.height,image:chatImage.prepared}]:undefined} onRemoveAttachment={()=>setChatImage(null)} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
-    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => decideAI(false)}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{c("允许Nuri记录本次对话？", "Allow Nuri to record this conversation?")}</FinalText><FinalText size={14} secondary>{c("对方邀请Nuri参与这次对话。同意后，Nuri可以读取并整理你们这段对话的全部内容，包括同意之前的消息。双方都可以随时关闭。", "The other parent invited Nuri into this conversation. If you agree, Nuri can read and organise everything in it, including earlier messages. Either of you can turn it off at any time.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy} label={c("暂不同意", "Not now")} onPress={() => decideAI(false)} /><FinalButton small disabled={busy} label={c("同意开启", "Allow")} onPress={() => decideAI(true)} testID="final-parent-consent-agree" /></View></FinalSurface></BlurView></Modal> : null}{reportSheet}</NuriKeyboardFrame>;
+    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => {if(!busy)closeConsent(consentSheet);}}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{consentSheet?.purpose==="translation"?translationCopy.titleTranslation:translationCopy.titleNotes}</FinalText><FinalText testID="final-parent-consent-purpose" size={14} secondary>{consentSheet?.purpose==="translation"?translationCopy.bodyTranslation:translationCopy.bodyNotes}</FinalText><FinalText size={12} secondary>{translationCopy.closeWarning}</FinalText>{!sheetCurrent?<FinalText>{translationCopy.changed}</FinalText>:null}{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?translationCopy.cancel:translationCopy.decline} onPress={() => void decideAI(consentSheet,false)} testID="final-parent-consent-decline"/><FinalButton small disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?translationCopy.allowRequest:consentSheet?.purpose==="translation"?translationCopy.allowTranslation:translationCopy.allowNotes} onPress={() => void decideAI(consentSheet,true)} testID="final-parent-consent-agree" /></View><FinalButton small secondary disabled={busy} label={translationCopy.close} onPress={()=>closeConsent(consentSheet)} testID="final-parent-consent-close"/></FinalSurface></BlurView></Modal> : null}{reportSheet}</NuriKeyboardFrame>;
 }
 const st = StyleSheet.create({
   main: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 32, gap: 16 },

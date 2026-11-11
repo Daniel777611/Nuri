@@ -43,11 +43,24 @@ test("actual post refuses a poisoned backend URL and shows actionable error", as
     await f.login("A"); await f.permit();
     f.responder = (path) => path.startsWith("/feed/daily-post") ? response({ state: "ready", card: {
       id: "daily-A", nickname: "A", platform: "facebook", source_url: "https://secret@public.example/article",
+      thumbnail_url: "https://scontent.fbcdn.net/poisoned-source.jpg", summary_source: "post",
     } }) : null;
     p = page(f); p.render(); await tick(); p.render();
-    await p.find("daily-post-source").props.onPress(); p.render();
+    const requestCount=f.calls.length,arrow=p.find("daily-post-source");
+    assert.equal(arrow.props.disabled,true);assert.equal(arrow.props.accessibilityState.disabled,true);
+    assert.ok(p.find("daily-post-thumbnail-unavailable"));assert.equal(p.find("daily-post-thumbnail"),undefined);
+    assert.match(p.visible(),/No safe original-post link is available/);
+    assert.doesNotMatch(p.visible(),/secret@|poisoned-source\.jpg/);
+    await arrow.props.onPress();p.render();assert.deepEqual(p.external,[]);
+    // A disabled image action is intentionally a no-op. Exercise the real,
+    // separately reachable source-caption action to retain controller/error
+    // coverage instead of pretending a native disabled button can be pressed.
+    const caption=p.find("daily-post-source-caption");assert.equal(caption.props.disabled,false);
+    await caption.props.onPress(); p.render();
     assert.deepEqual(p.external, []);
     assert.ok(p.find("daily-post-source-error"));
+    assert.equal(f.calls.length,requestCount,"unsafe source actions cannot send events or any app request");
+    assert.equal(await f.auth.getToken(),"account-A");
   } finally { p?.unmount(); f.restore(); }
 });
 

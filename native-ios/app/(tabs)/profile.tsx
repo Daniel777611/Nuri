@@ -32,6 +32,7 @@ import { NuriAvatar } from "@/src/uiux48/Scene";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { validCollectionName } from "@/src/collectionActions";
+import { isLiveCommunityEnabled } from "@/src/liveCommunityGate";
 const FIGMA_FRAME_WIDTH = 402;
 const SETTINGS_TRADITIONAL:Record<string,string>={
   "照护者":"照護者","最近想关注什么？":"最近想關注什麼？","家庭习惯":"家庭習慣","例如睡前一起读书":"例如睡前一起讀書","你更需要怎样的支持？":"你更需要怎樣的支持？",
@@ -249,10 +250,12 @@ export default function Profile() {
   return <View style={{flex:1}}>
     {section==="main"?<CardList testID="profile-card-stack" contentContainerStyle={{gap:0}}>
       {row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("家庭偏好","Family preferences"),"preferences")}
-      <MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />
+      {isLiveCommunityEnabled()?<MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />:null}
       {row(copy("我的收藏","Favorites"),"favorites")}
       <View style={{marginVertical:16}}><SettingsDivider/></View>
       <MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI","Privacy & AI"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}
+      <View style={{flex:1,minHeight:32}} />
+      <SettingsAction label={signingOut?copy("正在退出…","Signing out…"):copy("退出登录","Sign out")} disabled={signingOut} onPress={()=>setConfirmLogout(true)} testID="profile-logout-btn" />
     </CardList>:<CardList>
       {notice}
       {section==="personal"?<>

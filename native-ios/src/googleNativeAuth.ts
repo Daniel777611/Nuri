@@ -16,13 +16,20 @@ export class NativeGoogleAuthError extends Error {
 }
 
 const CLIENT_ID = /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/;
+const SUPPORTED_IOS_BUNDLES = new Set(["com.ordashtech.nuri.nativelab", "com.ordashtech.nuri.beta", "com.ordashtech.nuri.earlyaccess"]);
+const PRODUCTION_IOS_CLIENT_ID = "22059260132-gpd9u7gra897fs9p7ue6n62sa0nppfuv.apps.googleusercontent.com";
+const BETA_IOS_CLIENT_ID = "22059260132-d1bj5842fjq1f4g6v097flm5ubn6fsdo.apps.googleusercontent.com";
 let providerBusy = false;
 
 export function validNativeGoogleConfiguration(value: unknown): value is NativeGoogleConfiguration {
   const config = value as Partial<NativeGoogleConfiguration> | null;
-  return !!config && config.bundleId === "com.ordashtech.nuri.nativelab"
+  return !!config && typeof config.bundleId === "string" && SUPPORTED_IOS_BUNDLES.has(config.bundleId)
     && typeof config.iosClientId === "string" && CLIENT_ID.test(config.iosClientId)
     && typeof config.webClientId === "string" && CLIENT_ID.test(config.webClientId)
+    && (config.bundleId !== "com.ordashtech.nuri.beta" || config.iosClientId === BETA_IOS_CLIENT_ID)
+    && (config.bundleId !== "com.ordashtech.nuri.earlyaccess"
+      || ![PRODUCTION_IOS_CLIENT_ID, BETA_IOS_CLIENT_ID, config.webClientId].includes(config.iosClientId))
+    && (config.bundleId === "com.ordashtech.nuri.nativelab" || config.iosClientId !== config.webClientId)
     && config.callbackRegistered === true;
 }
 
