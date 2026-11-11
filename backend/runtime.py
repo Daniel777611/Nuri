@@ -51,6 +51,13 @@ OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL     = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_KEY     = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_ANON_KEY")
+
+# Fail closed if this Vercel deployment is pointed at another database.
+if os.getenv("VERCEL_GIT_COMMIT_REF") == "Testing-Backend-Alpha":
+    expected_url = "https://kyxnnrmyzmdutqylsxpw.supabase.co"
+    if (SUPABASE_URL or "").rstrip("/") != expected_url or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("Testing-Backend-Alpha requires the Nuri-Testing Supabase configuration")
+
 VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")
 FRONTEND_DIST    = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 VECTOR_TABLE     = os.getenv("SUPABASE_VECTOR_TABLE", "rag_chunks")
