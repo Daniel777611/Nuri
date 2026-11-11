@@ -2,31 +2,40 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd native-ios && npx -y pnpm@11.25.0 install --frozen-lockfile && npx -y pnpm@11.25.0 run build:web:ios-parity",
   "outputDirectory": "native-ios/dist",
-  "functions": {
-    "api/backend.py": {
-      "maxDuration": 300
-    }
-  },
-  "rewrites": [
+  "headers": [
     {
-      "source": "/api",
-      "destination": "/api/backend.py"
+      "source": "/api/:path*",
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
     },
     {
-      "source": "/api/(.*)",
-      "destination": "/api/backend.py"
-    },
-    {
-      "source": "/index",
-      "destination": "/api/backend.py"
+      "source": "/admin/:path*",
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
     },
     {
       "source": "/ask",
-      "destination": "/api/backend.py"
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api",
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/api"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/api/$1"
+    },
+    {
+      "source": "/index",
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/index"
+    },
+    {
+      "source": "/ask",
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/ask"
     },
     {
       "source": "/health",
-      "destination": "/api/backend.py"
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/health"
     },
     {
       "source": "/admin/logs",
@@ -34,21 +43,11 @@
     },
     {
       "source": "/admin/(.*)",
-      "destination": "/api/backend.py"
+      "destination": "https://nuri-git-testing-backend-beta-ordashtech.vercel.app/admin/$1"
     },
     {
       "source": "/(.*)",
       "destination": "/index.html"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/internal/push/dispatch",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/internal/care/generate",
-      "schedule": "0 15 * * *"
     }
   ]
 }

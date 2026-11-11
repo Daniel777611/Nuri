@@ -16,7 +16,7 @@ pnpm exec tsc --noEmit
 node scripts/test-web-ios-parity.mjs
 ```
 
-导出目录为 `native-ios/dist`。根 `vercel.json` 只更换 `buildCommand` 以使用本分支构建脚本，保留原有重写、函数和 cron 配置；没有更改云端项目设置或环境变量。
+导出目录为 `native-ios/dist`。Web Testing 在根 `vercel.json` 将原有 API 路由转发到 Beta 后端 `https://nuri-git-testing-backend-beta-ordashtech.vercel.app`，请求路径不变，`/admin/logs` 与普通页面仍由网页提供。网页部署不打包本地 Python API 或注册后端定时任务；包含鉴权数据的外部重写禁用边缘缓存。
 
 构建脚本显式设置：`EXPO_PUBLIC_BACKEND_URL=`、`EXPO_PUBLIC_PREVIEW_MODE=0`、`EXPO_PUBLIC_FLOW_PROTOTYPE=1`、`EXPO_PUBLIC_UIUX48_GALLERY=0`、`NURI_RELEASE_CHANNEL=web-local-prototype`。空 backend override 使网页使用同源 `/api`，不直接跨域指向生产域名；真实 API 模式保持开启，仅 Community 加载本地原型。
 
@@ -24,7 +24,7 @@ node scripts/test-web-ios-parity.mjs
 
 首页、Nuri 对话和附件草稿、推荐详情、设置、多孩 onboarding、日期选择、社区页面和暖色自定义键盘沿用这版 iOS UI。按钮的半透明底色在背景模糊之后合成，禁用状态不会把整组文字及模糊层一起变透明。当前仅有日间设计。
 
-Nuri 登录、账号、聊天、通知历史及偏好继续使用 main 既有接口和鉴权。没有新增、部署或迁移后端；预览部署的 API 环境是否已具备，需与部署负责人核对。不要用全局 `PREVIEW_MODE=1` 代替真实接口验收。
+Nuri 登录、账号、聊天、通知历史及偏好仍使用既有接口和鉴权，浏览器继续向同源 `/api` 请求，由 Vercel 转发到 Beta。部署后须确认该稳定地址指向正确的 Beta 构建、同源请求可达且鉴权仍生效。不要用全局 `PREVIEW_MODE=1` 代替真实接口验收。
 
 当前已核实的 Nuri 发送契约支持文本或单图。多图、视频的选择、预览、播放、移除与草稿已具备，但实际发送保留明确的未接通提示，不会默默只发第一张。此结论限于上述固定 main 源码，不代表其他历史网页版从未支持视频。
 

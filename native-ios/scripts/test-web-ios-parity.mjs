@@ -68,8 +68,19 @@ test('real same-origin API transport remains authenticated, non-cached and accou
  await C.auth.setToken('fixture-A');calls.length=0;assert.deepEqual(await C.api.getMessages('session-A'),[]);assert.equal(calls[0].url,'/api/chat/sessions/session-A/messages');assert.equal(calls[0].init.cache,'no-store');assert.equal(calls[0].init.headers.Authorization,'Bearer fixture-A');
  let resolve;held=new Promise(r=>resolve=r);const late=C.api.getMessages('session-A');while(calls.length<2)await new Promise(r=>setImmediate(r));await C.auth.setToken('fixture-B');resolve({ok:true,status:200,json:async()=>[{id:'A-private'}],text:async()=>''});await assert.rejects(late,e=>e.name==='SessionChangedError'||e.sessionChanged===true);assert.equal(await C.auth.getToken(),'fixture-B');
 });
-test('protected backend/native-shell/frontend trees remain main and Vercel changes only buildCommand',()=>{
- const changed=git(['diff','--name-only',BASE,'--','.',':(exclude)native-ios',':(exclude)vercel.json']).trim();assert.equal(changed,'','Changes outside independent native-ios frontend are forbidden');
+test('protected backend/native-shell/frontend trees remain main and Web Testing proxies the same routes to Beta',()=>{
+ const changed=git(['diff','--name-only',BASE,'--','.',':(exclude)native-ios',':(exclude)vercel.json',':(exclude).vercelignore']).trim();assert.equal(changed,'','Changes outside the independent web frontend and routing config are forbidden');
  const untracked=git(['ls-files','--others','--exclude-standard']).trim().split('\n').filter(Boolean);assert.ok(untracked.every(p=>p.startsWith('native-ios/')),'No new protected root/backend files');
- const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));assert.match(current.buildCommand,/cd native-ios .*run build:web:ios-parity$/);delete old.buildCommand;delete current.buildCommand;assert.deepEqual(current,old,'Rewrites/functions/crons/output and all remaining root deployment settings must remain main');
+ const old=JSON.parse(main('vercel.json')),current=JSON.parse(read('../vercel.json'));
+ const beta='https://nuri-git-testing-backend-beta-ordashtech.vercel.app';
+ const proxyPaths={'/api':'/api','/api/(.*)':'/api/$1','/index':'/index','/ask':'/ask','/health':'/health','/admin/(.*)':'/admin/$1'};
+ assert.match(current.buildCommand,/cd native-ios .*run build:web:ios-parity$/);
+ assert.deepEqual(current.rewrites,old.rewrites.map(rule=>Object.hasOwn(proxyPaths,rule.source)?{...rule,destination:beta+proxyPaths[rule.source]}:rule));
+ assert.deepEqual(current.headers,['/api/:path*','/admin/:path*','/ask'].map(source=>({source,headers:[{key:'x-vercel-enable-rewrite-caching',value:'0'}]})));
+ assert.equal(current.functions,undefined,'Web Testing must not configure the local Python function');
+ assert.equal(current.crons,undefined,'Web Testing must not schedule a second set of backend jobs');
+ const ignored=read('../.vercelignore').split(/\r?\n/).filter(line=>line&&!line.startsWith('#'));
+ assert.deepEqual(ignored,[...main('.vercelignore').split(/\r?\n/).filter(line=>line&&!line.startsWith('#')),'/api/']);
+ for(const key of ['buildCommand','rewrites','headers','functions','crons']){delete old[key];delete current[key];}
+ assert.deepEqual(current,old,'Unrelated root deployment settings must remain main');
 });
