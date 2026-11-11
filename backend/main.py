@@ -6859,6 +6859,7 @@ async def health():
         "supabase": bool(_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY),
         "vector_store": "supabase",
         "openai": oai is not None,
+        "google_sign_in": google_auth.enabled(),
         # Which turn pipeline this deployment is actually running. The A/B is
         # driven by an env var, so "which one is prod on right now" has to be
         # answerable without reading the Vercel dashboard.
