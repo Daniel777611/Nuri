@@ -35,6 +35,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 import asyncio, hmac, io, json, logging, os, secrets, time, uuid, hashlib, random, re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
+from ipaddress import ip_address
 from typing import List, Literal, NamedTuple, Optional, Sequence, get_args
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -46,7 +47,7 @@ from fastapi import FastAPI, APIRouter, BackgroundTasks, Depends, HTTPException,
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_context
@@ -55,7 +56,7 @@ from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
-from backend import google_auth
+from backend import apple_auth, google_auth
 from backend import community
 from backend import (
     account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
@@ -80,7 +81,7 @@ from backend.websearch import (
     search_sources,
     sources_prompt_block,
 )
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, TypeAdapter, ValidationError, field_validator, model_validator
 from starlette.background import BackgroundTask
 
 
@@ -353,9 +354,8 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
     stays in `detail` untouched and the flat message summarises it.
     """
     errors = exc.errors()
-    if _request.url.path == "/api/auth/account":
-        # Pydantic includes the rejected input in its errors. Reauthentication
-        # passwords must never be echoed in a response/error object.
+    if _request.url.path == "/api/auth/account" or _request.url.path.startswith("/api/auth/apple"):
+        # Pydantic includes rejected values by default, including secrets.
         errors = [{key: value for key, value in error.items() if key not in {"input", "ctx"}}
                   for error in errors]
     first = errors[0] if errors else {}
@@ -459,22 +459,23 @@ def _verify_pw(plain: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def _make_token(uid: str) -> str:
+def _make_token(uid: str, apple_generation: int | None = None) -> str:
     now = datetime.now(timezone.utc)
-    return jwt.encode(
-        {"sub": uid, "iat": now, "exp": now + timedelta(minutes=JWT_EXP_MIN)},
-        JWT_SECRET, algorithm=JWT_ALG,
-    )
+    claims = {"sub": uid, "iat": now, "exp": now + timedelta(minutes=JWT_EXP_MIN)}
+    if apple_generation is not None:
+        claims["apple_generation"] = apple_generation
+    return jwt.encode(claims, JWT_SECRET, algorithm=JWT_ALG)
 
-def _decode_token(token: str) -> Optional[str]:
+def _decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG]).get("sub")
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.PyJWTError:
-        return None
+        return {}
 
 async def _opt_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> Optional[str]:
     if creds and creds.scheme.lower() == "bearer":
-        uid = _decode_token(creds.credentials)
+        claims = _decode_token(creds.credentials)
+        uid = claims.get("sub")
         if not isinstance(uid, str) or not uid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid token",
                                 headers={"WWW-Authenticate": "Bearer"})
@@ -482,8 +483,17 @@ async def _opt_uid(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bear
         # valid signature must not resurrect a removed account or reach its
         # warm personalization caches. Check durable identity on every call,
         # including the optional-auth detail route; never use a local cache.
-        if not await account_deletion.load_account(_get_supabase(), uid, fields="id"):
+        apple_generation = claims.get("apple_generation")
+        fields = "id" if apple_generation is None else "id,apple_session_generation,apple_revoked_at"
+        account = await account_deletion.load_account(_get_supabase(), uid, fields=fields)
+        if not account:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer exists",
+                                headers={"WWW-Authenticate": "Bearer"})
+        if apple_generation is not None and (
+            type(apple_generation) is not int or apple_generation != account.get("apple_session_generation")
+            or account.get("apple_revoked_at")
+        ):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Apple session is no longer authorized",
                                 headers={"WWW-Authenticate": "Bearer"})
         return uid
     return None
@@ -503,6 +513,7 @@ def _to_public(doc: dict) -> dict:
     # would 500 /auth/me — which the client reads as a dead session.
     base = {k: doc.get(k) for k in ("id","email","nickname","city","parent_role","top_concerns","created_at")}
     base.update({
+        "apple_sign_in_linked": bool(doc.get("apple_subject") and not doc.get("apple_revoked_at")),
         "concern_other":        doc.get("concern_other", ""),
         "hobbies":              doc.get("hobbies", ""),
         "help_preference":      doc.get("help_preference", ""),
@@ -562,13 +573,46 @@ class UserLogin(BaseModel):
     password: str
     language: Optional[AuthLanguage] = None
 
+class AppleCredential(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    identity_token: str = Field(..., min_length=20, max_length=16000, strict=True, repr=False)
+    authorization_code: str = Field(..., min_length=1, max_length=4096, strict=True, repr=False)
+    nonce: str = Field(..., min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]+$", repr=False)
+    first_name: Optional[str] = Field(None, max_length=80)
+    last_name: Optional[str] = Field(None, max_length=80)
+    language: Optional[AuthLanguage] = None
+
+
+class AppleChallengeRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    purpose: apple_auth.ApplePurpose = "signin"
+
+
+class AppleNotificationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    payload: str = Field(..., min_length=20, max_length=16000, strict=True, repr=False)
+
+
 class AccountDelete(BaseModel):
     # No client-selected user ID/email and no administrator credential.
     model_config = {"extra": "forbid"}
     confirmation: Literal["DELETE"]
-    password: str = Field(..., min_length=1, strict=True)
+    password: Optional[str] = Field(None, min_length=1, strict=True, repr=False)
+    apple: Optional[AppleCredential] = Field(None, repr=False)
 
-    _password_length = field_validator("password")(_password_fits_bcrypt)
+    @field_validator("password")
+    @classmethod
+    def password_length(cls, value: str | None) -> str | None:
+        return _password_fits_bcrypt(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def exactly_one_credential(self):
+        if (self.password is None) == (self.apple is None):
+            raise ValueError("Provide exactly one reauthentication method")
+        return self
 
 class EmailCodeRequest(BaseModel):
     email: EmailStr
@@ -1099,8 +1143,9 @@ def _gen_feed_cards_sync(keywords: list[str], count: int = 3) -> list[dict]:
 # in the parent's language. "该邮箱已注册" and "邮箱或密码错误" predate that
 # and stay as they were, because clients already match on them.
 
-def _auth_response(doc: dict) -> dict:
-    return {"access_token": _make_token(doc["id"]), "token_type": "bearer", "user": _to_public(doc)}
+def _auth_response(doc: dict, apple_generation: int | None = None) -> dict:
+    return {"access_token": _make_token(doc["id"], apple_generation),
+            "token_type": "bearer", "user": _to_public(doc)}
 
 
 def _require_auth_storage():
@@ -1136,6 +1181,10 @@ async def _send_email_code(
     returned instead. Register and login want that; an explicit "resend" tap
     wants the 429.
     """
+    if email.endswith("@privaterelay.appleid.com"):
+        account = await _user_by_email(sb, email)
+        if account and account.get("apple_relay_disabled"):
+            raise HTTPException(503, "MAIL_SEND_FAILED")
     try:
         row_id, code = await anyio.to_thread.run_sync(
             lambda: email_verification.issue_code(sb, email, purpose)
@@ -1395,7 +1444,7 @@ async def forgot_password(body: EmailCodeRequest):
     sb = _require_auth_storage()
     email = email_verification.normalize(body.email)
     user = await _user_by_email(sb, email)
-    if user:
+    if user and not user.get("apple_relay_disabled"):
         try:
             await _send_email_code(sb, email, "reset", body.language)
         except HTTPException as exc:
@@ -1427,6 +1476,240 @@ async def reset_password(body: PasswordReset):
         raise HTTPException(503, "Account storage is temporarily unavailable") from exc
     return _auth_response({**user, **updates})
 
+
+_APPLE_LINK_REAUTH_SECONDS = 15 * 60
+_APPLE_EMAIL = TypeAdapter(EmailStr)
+
+
+def _apple_available() -> bool:
+    return bool(runtime.SUPABASE_SERVICE_ROLE_KEY and apple_auth.enabled())
+
+
+def _require_apple():
+    if not _apple_available():
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE")
+    return _require_auth_storage(), apple_auth.configured_provider()
+
+
+@api.get("/auth/apple/status")
+async def apple_signin_status(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    if not _apple_available():
+        return {"enabled": False}
+    try:
+        sb = _require_auth_storage()
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("apple_signin_challenges").select("nonce_hash").limit(0).execute()
+        )
+        await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select(
+                f"{apple_auth.ACCOUNT_FIELDS},{apple_auth.SESSION_FIELDS}"
+            ).limit(0).execute()
+        )
+    except Exception:
+        return {"enabled": False}
+    return {"enabled": True}
+
+
+@api.post("/auth/apple/notifications")
+async def apple_signin_notifications(body: AppleNotificationRequest):
+    # Keep accepting already-linked users' lifecycle events even when new
+    # Apple sign-in is suspended. Enable registration separately by environment.
+    if not runtime.SUPABASE_SERVICE_ROLE_KEY or os.getenv("APPLE_SIGNIN_NOTIFICATIONS_ENABLED") != "1":
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE")
+    sb = _require_auth_storage()
+    try:
+        provider = apple_auth.configured_provider()
+        def handle_notification():
+            event = apple_auth.verify_notification(body.payload, provider.config.client_id, provider.signing_key)
+            event.record(sb)
+        await anyio.to_thread.run_sync(handle_notification)
+    except apple_auth.AppleAuthError as exc:
+        if str(exc) == "APPLE_NOTIFICATION_INVALID":
+            raise HTTPException(401, "APPLE_NOTIFICATION_INVALID") from exc
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE") from exc
+    except Exception as exc:
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE") from exc
+    return Response(status_code=200, headers={"Cache-Control": "no-store"})
+
+
+def _require_recent_apple_link(creds: Optional[HTTPAuthorizationCredentials]) -> None:
+    try:
+        # Link must be backed by an existing recently authenticated NURI login.
+        # The application does not refresh JWTs in the background.
+        decoded = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALG], options={"require": ["iat"]})
+        issued = decoded["iat"]
+    except (jwt.PyJWTError, AttributeError):
+        issued = None
+    if type(issued) is not int or not 0 <= int(time.time()) - issued <= _APPLE_LINK_REAUTH_SECONDS:
+        raise HTTPException(403, "APPLE_LINK_REAUTH_REQUIRED")
+
+
+@api.post("/auth/apple/challenge")
+async def apple_signin_challenge(body: AppleChallengeRequest, request: Request,
+                                 creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)):
+    uid = None
+    if body.purpose != "signin":
+        uid = await _req_uid(creds)
+    if body.purpose == "link":
+        _require_recent_apple_link(creds)
+    sb, provider = _require_apple()
+    # Vercel overwrites this header at ingress. Local servers use the peer
+    # address and never trust an arbitrary forwarding header.
+    peer = request.headers.get("x-vercel-forwarded-for", "") if os.getenv("VERCEL") else ""
+    peer = peer or (request.client.host if request.client else "")
+    try:
+        address = str(ip_address(peer.split(",", 1)[0].strip()))
+    except ValueError:
+        address = "unknown"
+    rate_identity = f"user:{uid}" if uid else f"ip:{address}"
+    try:
+        nonce = await anyio.to_thread.run_sync(
+            lambda: apple_auth.issue_nonce(sb, provider.config.client_id, body.purpose, uid, rate_identity)
+        )
+    except apple_auth.AppleChallengeRateLimited as exc:
+        raise HTTPException(429, "APPLE_CHALLENGE_RATE_LIMITED",
+                            headers={"Retry-After": str(apple_auth.CHALLENGE_TTL)}) from exc
+    except Exception as exc:
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE") from exc
+    return {"nonce": nonce}
+
+
+async def _apple_exchange(sb, provider, body: AppleCredential,
+                          purpose: apple_auth.ApplePurpose, uid: Optional[str] = None) -> dict:
+    try:
+        def exchange() -> dict:
+            nonce = apple_auth.consume_nonce(sb, body.nonce, provider.config.client_id, purpose, uid)
+            return provider.exchange(code=body.authorization_code, identity_token=body.identity_token, nonce=nonce)
+        return await anyio.to_thread.run_sync(exchange)
+    except apple_auth.AppleAuthError as exc:
+        if str(exc) in {"APPLE_CHALLENGE_INVALID", "APPLE_TOKEN_INVALID", "APPLE_CODE_INVALID"}:
+            raise HTTPException(401, "APPLE_TOKEN_INVALID") from exc
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE") from exc
+    except Exception as exc:
+        raise HTTPException(503, "APPLE_SIGNIN_UNAVAILABLE") from exc
+
+
+async def _apple_user_by_subject(sb, subject: str) -> Optional[dict]:
+    try:
+        rows = (await anyio.to_thread.run_sync(
+            lambda: sb.table("users").select("*").eq("apple_subject", subject).limit(1).execute()
+        )).data
+    except Exception as exc:
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    return rows[0] if rows else None
+
+
+@api.post("/auth/apple")
+async def apple_login(body: AppleCredential):
+    sb, provider = _require_apple()
+    grant = await _apple_exchange(sb, provider, body, "signin")
+    updates = apple_auth.credentials(provider, grant)
+    user = await _apple_user_by_subject(sb, grant["subject"])
+    if user:
+        return await _resume_apple_signin(sb, user, grant, updates)
+
+    try:
+        email = email_verification.normalize(_APPLE_EMAIL.validate_python(grant["verified_email"]))
+    except ValidationError as exc:
+        raise HTTPException(409, "APPLE_EMAIL_UNAVAILABLE") from exc
+    if await _user_by_email(sb, email):
+        raise HTTPException(409, "APPLE_ACCOUNT_LINK_REQUIRED")
+    nickname = " ".join(
+        part.strip() for part in (body.first_name, body.last_name) if part and part.strip()
+    )[:40]
+    now = _now()
+    user = {
+        "id": str(uuid.uuid4()), "created_at": now, "email_verified_at": now,
+        "email": email, "nickname": nickname, "city": "", "top_concerns": [],
+        "hashed_password": await anyio.to_thread.run_sync(lambda: _hash_pw(secrets.token_urlsafe(32))),
+        "apple_authorized_at": grant["authorized_at"],
+        **updates,
+    }
+    try:
+        await anyio.to_thread.run_sync(lambda: sb.table("users").insert(user).execute())
+    except Exception as exc:
+        # A timed-out insert may have committed. A concurrent signup for the
+        # same subject also resolves to that row. Email collision still requires
+        # explicit ownership proof.
+        raced = await _apple_user_by_subject(sb, grant["subject"])
+        if raced:
+            return await _resume_apple_signin(sb, raced, grant, updates)
+        if str(getattr(exc, "code", "")) == "23505" and await _user_by_email(sb, email):
+            raise HTTPException(409, "APPLE_ACCOUNT_LINK_REQUIRED") from exc
+        raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    return {**_auth_response(user, apple_generation=0), "created": True}
+
+
+async def _resume_apple_signin(sb, user: dict, grant: dict, updates: dict) -> dict:
+    """Version-bind only sessions from a current Apple authorization."""
+    if user.get("apple_client_id") != updates["apple_client_id"]:
+        # An app group has a different callback configuration. Never mint a
+        # session for an audience whose lifecycle won't revoke this binding.
+        raise HTTPException(409, "APPLE_IDENTITY_ALREADY_LINKED")
+    revoked_at = user.get("apple_revoked_at") or 0
+    if revoked_at and revoked_at >= grant["authorized_at"]:
+        raise HTTPException(401, "APPLE_TOKEN_INVALID")
+    authorized_at = user.get("apple_authorized_at") or 0
+    if revoked_at or authorized_at < grant["authorized_at"]:
+        try:
+            rows = (await anyio.to_thread.run_sync(
+                lambda: sb.table("users").update({
+                    **updates, "apple_revoked_at": 0, "apple_authorized_at": grant["authorized_at"],
+                }).eq("id", user["id"]).eq("apple_subject", grant["subject"])
+                .eq("apple_revoked_at", revoked_at).eq("apple_authorized_at", authorized_at).execute()
+            )).data
+        except Exception as exc:
+            raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+        if not rows:
+            # A simultaneous grant or revocation superseded this request.
+            raise HTTPException(401, "APPLE_TOKEN_INVALID")
+        user = rows[0]
+    return {**_auth_response(user, apple_generation=user.get("apple_session_generation", 0)), "created": False}
+
+
+@api.post("/auth/apple/link")
+async def apple_link(body: AppleCredential, uid: str = Depends(_req_uid),
+                     creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)):
+    _require_recent_apple_link(creds)
+    sb, provider = _require_apple()
+    grant = await _apple_exchange(sb, provider, body, "link", uid)
+    current = await account_deletion.load_account(sb, uid, fields="*")
+    if not current:
+        raise HTTPException(401, "Account no longer exists")
+    if not current.get("email_verified_at"):
+        raise HTTPException(403, "EMAIL_NOT_VERIFIED")
+    existing = current.get("apple_subject")
+    if existing == grant["subject"]:
+        await _resume_apple_signin(sb, current, grant, apple_auth.credentials(provider, grant))
+        current = await account_deletion.load_account(sb, uid, fields="*")
+        if not current or current.get("apple_revoked_at"):
+            raise HTTPException(401, "APPLE_TOKEN_INVALID")
+        return {"access_token": creds.credentials, "token_type": "bearer",
+                "user": _to_public(current), "created": False}
+    if existing:
+        raise HTTPException(409, "APPLE_IDENTITY_ALREADY_LINKED")
+    try:
+        rows = (await anyio.to_thread.run_sync(
+            lambda: sb.table("users").update({
+                **apple_auth.credentials(provider, grant), "apple_authorized_at": grant["authorized_at"],
+            })
+            .eq("id", uid).is_("apple_subject", "null").execute()
+        )).data
+    except Exception as exc:
+        raced = await _apple_user_by_subject(sb, grant["subject"])
+        if raced and raced.get("id") == uid:
+            rows = [raced]
+        elif str(getattr(exc, "code", "")) == "23505":
+            raise HTTPException(409, "APPLE_IDENTITY_ALREADY_LINKED") from exc
+        else:
+            raise HTTPException(503, "Account storage is temporarily unavailable") from exc
+    linked = rows[0] if rows else await _apple_user_by_subject(sb, grant["subject"])
+    if not linked or linked.get("id") != uid:
+        raise HTTPException(409, "APPLE_IDENTITY_ALREADY_LINKED")
+    return {"access_token": creds.credentials, "token_type": "bearer",
+            "user": _to_public(linked), "created": False}
+
 @api.get("/auth/me")
 async def me(uid: str = Depends(_req_uid)):
     sb = _get_supabase()
@@ -1442,11 +1725,30 @@ async def me(uid: str = Depends(_req_uid)):
 @api.delete("/auth/account")
 async def delete_own_account(body: AccountDelete, uid: str = Depends(_req_uid)):
     """Permanently remove only the account proven by the caller's JWT."""
-    cancelled = await account_deletion.delete_account(
-        _get_supabase(), uid, body.password, _verify_pw,
+    sb = _get_supabase()
+    proof = None
+    if body.apple is not None:
+        sb, provider = _require_apple()
+        try:
+            grant = await _apple_exchange(sb, provider, body.apple, "delete", uid)
+        except HTTPException as exc:
+            if exc.status_code == 401:
+                raise HTTPException(403, {
+                    "code": "ACCOUNT_REAUTH_FAILED", "deletion_state": "not_started",
+                }) from exc
+            raise HTTPException(503, {
+                "code": "ACCOUNT_DELETION_UNAVAILABLE", "deletion_state": "not_started",
+            }) from exc
+        proof = apple_auth.credentials(provider, grant)
+    cancelled, apple_revocation_pending = await account_deletion.delete_account(
+        sb, uid, body.password, _verify_pw,
         privileged_storage=bool(runtime.SUPABASE_SERVICE_ROLE_KEY),
+        apple_proof=proof,
     )
-    return {"ok": True, "account_deleted": True, "subscription_cancelled": bool(cancelled)}
+    result = {"ok": True, "account_deleted": True, "subscription_cancelled": bool(cancelled)}
+    if apple_revocation_pending:
+        result["apple_revocation_pending"] = True
+    return result
 
 @api.put("/auth/me")
 async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
@@ -8038,6 +8340,10 @@ async def admin_trigger_daily_push(_: None = Depends(_require_admin)):
     for user in users:
         uid = user["id"]
         try:
+            if user["email"].endswith("@privaterelay.appleid.com"):
+                current = await _user_by_email(sb, user["email"])
+                if not current or current.get("apple_relay_disabled"):
+                    continue
             # A due follow-up outranks the generic card: being asked "9/1 托嬰
             # 適應得如何" is worth more to a parent than any article. One family
             # gets at most one per day, because the push runs daily and this

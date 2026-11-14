@@ -1,8 +1,9 @@
 """Consumer self-deletion for NURI's custom JWT / public.users identity.
 
-No Supabase Auth admin API, mail, or model provider is involved. Stripe is,
-once: a web subscription is cancelled before anything is deleted, because the
-identity DELETE cascades away the only link to it (backend/billing.py). The
+No Supabase Auth admin API, mail, or model provider is involved. A web
+subscription is cancelled before anything is deleted, because the identity
+DELETE cascades away the only link to it (backend/billing.py). A linked Apple
+authorization is revoked while its refresh grant is still available. The
 identity DELETE follows owned-content cleanup; its FK cascades are one DB
 statement. The protective privacy tombstone is erased only after identity loss.
 Ancillary FK-free stores require separate statements: preflight prevents known
@@ -22,7 +23,7 @@ from datetime import datetime, timezone
 import anyio
 from fastapi import HTTPException
 
-from backend import billing, memstore, stores
+from backend import apple_auth, billing, memstore, stores
 from backend.nuri_core import family, outcome
 from backend.nuri_core.outcome_store import event_setting_prefix
 from backend.recommendation_feedback import event_storage_key
@@ -75,6 +76,13 @@ async def load_account(sb, uid: str, *, fields: str = "id,email,hashed_password"
     return rows[0] if rows else None
 
 
+async def _deletion_account(sb, uid: str) -> dict | None:
+    # Asterisk keeps account deletion compatible with deployments where the
+    # additive Apple fields do not exist and with existing linked accounts when
+    # new Apple signup is subsequently turned off.
+    return await load_account(sb, uid, fields="*")
+
+
 def _optional_table_missing(exc: Exception, table: str) -> bool:
     # Missing optional rollout tables contain no data to delete. Permissions,
     # connection failures and missing required tables never get this exemption.
@@ -122,23 +130,31 @@ def _purge_memory(uid: str, email: str) -> None:
     outcome.invalidate(uid)
 
 
-async def delete_account(sb, uid: str, password: str,
+async def delete_account(sb, uid: str, password: str | None,
                          verify_password: Callable[[str, str], bool], *,
-                         privileged_storage: bool) -> list[str]:
-    """Returns the Stripe subscriptions that were cancelled ([] for most)."""
+                         privileged_storage: bool,
+                         apple_proof: dict | None = None) -> tuple[list[str], bool]:
+    """Returns cancelled Stripe IDs and whether Apple requires manual revocation."""
     # runtime also supports an anon-key fallback. RLS can silently hide rows
     # from that role, so empty SELECT/DELETE is not proof of complete erasure.
     # Only a deliberately configured server service role may enter this flow.
     if not privileged_storage:
         raise _failure("ACCOUNT_DELETION_UNAVAILABLE", state="not_started")
-    user = await load_account(sb, uid)
+    user = await _deletion_account(sb, uid)
     if user is None:
         raise HTTPException(401, "Account no longer exists")
     hashed = user.get("hashed_password")
     email = user.get("email")
     if not isinstance(hashed, str) or not isinstance(email, str) or not email:
         raise _failure("ACCOUNT_DELETION_UNAVAILABLE", state="not_started")
-    if not await anyio.to_thread.run_sync(lambda: verify_password(password, hashed)):
+    apple_subject = user.get("apple_subject")
+    if apple_proof is not None:
+        authorized = bool(apple_subject and apple_subject == apple_proof.get("apple_subject"))
+    else:
+        authorized = password is not None and await anyio.to_thread.run_sync(
+            lambda: verify_password(password, hashed)
+        )
+    if not authorized:
         # This is reauthentication failure, NOT expiration of a valid session.
         raise HTTPException(403, {"code": "ACCOUNT_REAUTH_FAILED", "deletion_state": "not_started"})
 
@@ -165,8 +181,9 @@ async def delete_account(sb, uid: str, password: str,
         ))
         # Password reset during preflight must not begin removing data under
         # the old proof. The final DELETE also compares the exact proven hash.
-        current = await load_account(sb, uid)
-        if current is None or current.get("hashed_password") != hashed:
+        current = await _deletion_account(sb, uid)
+        if (current is None or current.get("hashed_password") != hashed
+                or current.get("apple_subject") != apple_subject):
             raise HTTPException(403, {"code": "ACCOUNT_REAUTH_FAILED", "deletion_state": "not_started"})
     except HTTPException as exc:
         if exc.status_code == 403:
@@ -225,13 +242,26 @@ async def delete_account(sb, uid: str, password: str,
     except Exception as exc:
         raise _failure("ACCOUNT_DELETION_INCOMPLETE", state="partial") from exc
 
+    apple_revocation_pending = False
+    if apple_subject:
+        # Do not invalidate a working sign-in if preflight or owned-content
+        # cleanup fails. Revoke while the confirmed password/Apple grant is
+        # still available, just before the identity cascade.
+        apple_revocation_pending = await anyio.to_thread.run_sync(
+            lambda: apple_auth.revoke_account(apple_proof or current)
+        )
+
     # FK cascades and identity removal commit atomically in this one statement.
     # A timeout may mean it committed. Never label that an intact-account error.
     try:
-        await anyio.to_thread.run_sync(
-            lambda: sb.table("users").delete().eq("id", uid)
-            .eq("hashed_password", hashed).execute()
-        )
+        def remove_identity():
+            query = sb.table("users").delete().eq("id", uid).eq("hashed_password", hashed)
+            if apple_subject:
+                query = query.eq("apple_subject", apple_subject)
+            elif "apple_subject" in current:
+                query = query.is_("apple_subject", "null")
+            return query.execute()
+        await anyio.to_thread.run_sync(remove_identity)
     except Exception:
         pass  # Read durable state below, without exposing dependency details.
     try:
@@ -257,4 +287,4 @@ async def delete_account(sb, uid: str, password: str,
         raise _failure("ACCOUNT_DELETION_UNCONFIRMED", state="unknown") from exc
     if rows:
         raise _failure("ACCOUNT_DELETION_UNCONFIRMED", state="unknown")
-    return cancelled
+    return cancelled, apple_revocation_pending

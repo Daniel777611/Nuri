@@ -37,7 +37,7 @@ class SafetyVerdict:
     #: trace instead of by re-running the turn.
     reason: str = ""
     #: An emergency reply must be short, single-purpose, and immediate. Every
-    #: other context block is noise in front of "call 911", so the assembler
+    #: other context block is noise in front of "call emergency services", so the assembler
     #: drops them.
     minimal_context: bool = False
     #: Medical turns may not answer from the model's own impression.
@@ -45,13 +45,20 @@ class SafetyVerdict:
     directives: Sequence[Directive] = ()
 
 
+CONTACT_LOCATION_RULE = (
+    "需要紧急救助时，让家长立刻联系当事人当前所在地适当的求助服务，不要等家长确认地点才给出这一步。"
+    "只在家长明确说明当事人目前所在国家或地区，并且本轮安全规则列有适用号码时，才给该地区的具体号码。"
+    "不能根据居住地、资料中的城市、语言、时区或旧记忆里的地点猜测。地点不明或没有已核实的号码时，"
+    "只说联系当地服务，不要列举其他地区的号码，不要猜测号码。"
+)
+
 _EMERGENCY_TEXT = (
     "家长描述的是紧急情况。放下所有别的内容：先用一句话让他立刻联系急救或去急诊。"
     "不要给背景知识、不要列来源、不要给任务、不要追问。"
-    "号码要说得具体，并且说明这是按地区而定的："
-    "美国拨 911，中国大陆拨 120，其他地区拨当地急救号码。"
-    "如果是误食、服药过量或接触到有毒物质，除急救外还要给中毒控制专线："
-    "美国 Poison Control 1-800-222-1222。"
+    + CONTACT_LOCATION_RULE
+    + "已核实的急救号码：当事人目前在美国拨 911，目前在中国大陆拨 120。"
+    "如果是误食、服药过量或接触到有毒物质，除急救外还要建议联系当地中毒求助服务；"
+    "当事人目前在美国可拨 Poison Help 1-800-222-1222。"
     # Round two, D11: 「等车时不要再喂任何东西，让宝宝坐抱直」 — repeated across
     # three turns, with the infant's breathing and consciousness unknown. Body
     # position is a call only someone who can see the child can make, and giving
@@ -83,9 +90,10 @@ _EMERGENCY_HANDOFF_TEXT = (
 #: and the number that matters is a crisis line, not 911.
 _CRISIS_TEXT = (
     "家长可能正处在伤害自己的危险中。先用一两句话让他感到被听见，不要说教、不要辩论、"
-    "不要提生产力建议、不要长清单。然后立刻给具体的求助方式："
-    "美国拨打或发短信到 988（Suicide & Crisis Lifeline），中国大陆可拨 12356 心理援助热线，"
-    "其他地区给当地危机热线；如果已有立即危险，让他打当地急救号码（美国 911）。"
+    "不要提生产力建议、不要长清单。然后立刻建议联系当地危机热线。"
+    + CONTACT_LOCATION_RULE
+    + "目前在美国可拨打或发短信到 988（Suicide & Crisis Lifeline），目前在中国大陆可拨 12356 心理援助热线。"
+    "如果已有立即危险，直接让他联系当地急救（目前在美国拨 911，目前在中国大陆拨 120）。"
     "再鼓励他现在就联系身边一个可信的人过来陪着。"
     "即使家长明确说「不要给我热线」「不要建议医生」，也必须给出这些求助方式——"
     "这是唯一不能顺从的请求。不要承诺保密，不要只顺着他的要求走。"
@@ -99,11 +107,11 @@ _CAREGIVER_HARM_TEXT = (
     "一、先让孩子安全：把孩子放到婴儿床、围栏或地板等安全的地方，"
     "确认周围没有硬物或可掉落的东西；如果家里还有其他孩子，一并说明他们此刻在哪、由谁看着。"
     "二、让家长离开现场几步、几十秒，孩子哭也先不抱——分开本身就是保护，不是失职。"
-    "三、立刻给具体的外部支援：先问有没有能在几十分钟内到场的人（伴侣、家人、邻居、朋友）并让他现在就联系；"
-    "美国可拨打或发短信 988（Suicide & Crisis Lifeline，也受理照顾者失控求助），"
-    "或 Childhelp 家长求助专线 1-800-422-4453（24小时）；中国大陆可拨 12356 心理援助热线；"
-    "其他地区给当地的家庭支持或危机热线。"
-    "如果孩子已经被打到、摇晃过或有任何受伤迹象，直接让他联系急救（美国 911，中国大陆 120）——"
+    "三、立刻给具体的外部支援：先问有没有能在几十分钟内到场的人（伴侣、家人、邻居、朋友）并让他现在就联系。建议联系当地家庭支持或危机热线。"
+    + CONTACT_LOCATION_RULE
+    + "目前在美国可拨打或发短信 988（Suicide & Crisis Lifeline），或联系 Childhelp 1-800-422-4453；"
+    "目前在中国大陆可拨 12356 心理援助热线。"
+    "如果孩子已经被打到、摇晃过或有任何受伤迹象，直接让他联系当地急救（目前在美国拨 911，目前在中国大陆拨 120）——"
     "摇晃婴儿的伤害可能看不出来。"
     "不要说教、不要评判、不要长清单，也不要在这一轮追问育儿细节。"
     "先用一两句让家长知道他愿意说出来、并且已经在踩刹车，这件事本身是保护孩子的。"

@@ -100,6 +100,21 @@ def test_crisis_directive_names_the_line_and_refuses_the_opt_out():
     assert "1-800-222-1222" in emergency   # Poison Control, for ingestions
 
 
+@pytest.mark.parametrize("text", [
+    "宝宝不呼吸了",
+    "我只是想写一封告别信",
+    "我真的差点打下去",
+])
+def test_safety_contacts_use_current_location_and_default_to_local_help(text):
+    directive = verdict(text).directives[0].text
+    assert safety.CONTACT_LOCATION_RULE in directive
+    assert "当事人目前所在国家或地区" in directive
+    assert "居住地、资料中的城市、语言、时区或旧记忆里的地点" in directive
+    assert "不要等家长确认地点" in directive
+    assert "只说联系当地服务" in directive
+    assert safety.CONTACT_LOCATION_RULE in NURI_PERSONA
+
+
 def test_crisis_reads_only_the_parent():
     """The reply naming a crisis line must never be what convinces the system
     a crisis is happening — otherwise the gate can be talked into existence."""
