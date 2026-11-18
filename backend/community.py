@@ -41,9 +41,10 @@ from typing import Any, Callable, Literal, Optional
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend import llm_usage, push_service, runtime
+from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit
 
 PREFIX = "/api/community/v1"
 
@@ -58,6 +59,7 @@ ABOUT_MAX = 300
 DISPLAY_NAME_MAX = 30
 CITY_MAX = 60
 MESSAGE_MEDIA_MAX = 9
+ALPHA_MESSAGE_MEDIA_MAX = 10
 QUESTIONS_PER_DAY = int(os.getenv("COMMUNITY_QUESTIONS_PER_DAY", "10"))
 INVITATIONS_PER_DAY = int(os.getenv("COMMUNITY_INVITATIONS_PER_DAY", "20"))
 DELIVERY_FANOUT = int(os.getenv("COMMUNITY_DELIVERY_FANOUT", "5"))
@@ -117,6 +119,7 @@ _CODE_STATUS = {
     "IDEMPOTENCY_CONFLICT": (409, False),
     "VERSION_CONFLICT": (409, False),
     "MEDIA_NOT_READY_OR_NOT_OWNED": (422, False),
+    CHINESE_NAME_TOO_LONG: (422, False),
     "RATE_LIMITED": (429, True),
     "STORAGE_OR_SERVICE_UNAVAILABLE": (503, True),
 }
@@ -662,9 +665,16 @@ class ConversationIn(_Strict):
 
 class MessageIn(_Strict):
     text: str = Field("", max_length=MESSAGE_MAX * 2)
-    media_ids: list[str] = Field(default_factory=list, max_length=MESSAGE_MEDIA_MAX)
+    media_ids: list[str] = Field(default_factory=list, max_length=ALPHA_MESSAGE_MEDIA_MAX)
     language: str = Field("zh-CN", max_length=16)
     client_message_id: str = ClientKey
+
+    @field_validator("media_ids")
+    @classmethod
+    def check_photo_limit(cls, values: list[str]) -> list[str]:
+        if not runtime.is_alpha_backend() and len(values) > MESSAGE_MEDIA_MAX:
+            raise ValueError(f"A message can have up to {MESSAGE_MEDIA_MAX} photos")
+        return values
 
 
 class ReadCursorIn(_Strict):
@@ -782,7 +792,11 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
     profile = await _profile(uid)
     patch: dict[str, Any] = {}
     if body.display_name is not None:
-        patch["display_name"] = _clean_text(body.display_name, field="display_name", max_len=DISPLAY_NAME_MAX)
+        if exceeds_chinese_name_limit(body.display_name):
+            if profile is None or body.display_name.strip() != (profile.get("display_name") or "").strip():
+                raise CommunityError(CHINESE_NAME_TOO_LONG, "Names containing Chinese characters can have up to 8 characters")
+        else:
+            patch["display_name"] = _clean_text(body.display_name, field="display_name", max_len=DISPLAY_NAME_MAX)
     if body.gender_tag is not None:
         patch["gender_tag"] = body.gender_tag
     if body.about is not None:
@@ -817,6 +831,8 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
         nickname = (account or {}).get("nickname") or ""
         if not nickname.strip():
             raise _invalid("display_name is required to create a community profile")
+        if exceeds_chinese_name_limit(nickname):
+            raise CommunityError(CHINESE_NAME_TOO_LONG, "Names containing Chinese characters can have up to 8 characters")
         patch["display_name"] = _clean_text(nickname, field="display_name", max_len=DISPLAY_NAME_MAX)
     if profile is None:
         row = {"user_id": uid, "about": "", "city_label": "", "intent_codes": [],
@@ -1952,6 +1968,7 @@ async def _conversation_dto(uid: str, conv: dict) -> dict:
         "parent": public_parent(profiles[other], roles.get(other, "")) if other in profiles else None,
         "relationship_state": "blocked_or_disconnected" if not can_send and rel else (rel or {}).get("state", "none"),
         "allowed_actions": ["send_message", "request_ai", "mark_read"] if can_send else ["mark_read"],
+        **({"message_media_limit": ALPHA_MESSAGE_MEDIA_MAX} if runtime.is_alpha_backend() else {}),
         "ai": {"effective": ai["effective"], "epoch": ai["epoch"]},
         "last_message_seq": conv.get("last_message_seq"),
         "last_message_at": conv.get("last_message_at"),

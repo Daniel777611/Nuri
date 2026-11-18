@@ -58,6 +58,7 @@ from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import apple_auth, google_auth
 from backend import community
+from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit, generated_display_name
 from backend import (
     account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
     push_fcm, push_service, quota, runtime, stores, usage_dashboard,
@@ -346,6 +347,9 @@ async def _http_error(_request: Request, exc: HTTPException):
     )
 
 
+_CHAT_TURN_PATH = re.compile(r"/api/chat/sessions/[^/]+/messages(?:/stream)?$")
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_error(_request: Request, exc: RequestValidationError):
     """Keep FastAPI's field-level errors; add the envelope around them.
@@ -354,8 +358,10 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
     stays in `detail` untouched and the flat message summarises it.
     """
     errors = exc.errors()
-    if _request.url.path == "/api/auth/account" or _request.url.path.startswith("/api/auth/apple"):
-        # Pydantic includes rejected values by default, including secrets.
+    path = _request.url.path
+    if path == "/api/auth/account" or path.startswith("/api/auth/apple") or _CHAT_TURN_PATH.fullmatch(path):
+        # Pydantic includes rejected values by default, including passwords and
+        # private chat content.
         errors = [{key: value for key, value in error.items() if key not in {"input", "ctx"}}
                   for error in errors]
     first = errors[0] if errors else {}
@@ -389,10 +395,7 @@ async def _protect_personalized_feed_cache(request: Request, call_next):
     # A decoded image is capped at 2.5 MB. Base64 plus the surrounding JSON
     # must remain below the serverless request ceiling and must not be allowed
     # to consume an unbounded local worker before Pydantic can validate it.
-    if request.method == "POST" and re.search(
-        r"/api/chat/sessions/[^/]+/messages(?:/stream)?$",
-        request.url.path,
-    ):
+    if request.method == "POST" and _CHAT_TURN_PATH.fullmatch(request.url.path):
         raw_length = request.headers.get("content-length")
         if raw_length:
             try:
@@ -766,6 +769,8 @@ class UserMessageIn(BaseModel):
     @classmethod
     def validate_image_base64(cls, value: Optional[str]) -> Optional[str]:
         try:
+            if runtime.is_alpha_backend():
+                return core_image_input.validate_chat_image_input(value)
             return core_image_input.validate_image_data_uri(value)
         except core_image_input.InvalidChatImage as exc:
             raise ValueError(str(exc)) from exc
@@ -1245,6 +1250,8 @@ async def _check_email_code(
 
 @api.post("/auth/register", status_code=201)
 async def register(body: UserRegister):
+    if exceeds_chinese_name_limit(body.nickname):
+        raise HTTPException(422, CHINESE_NAME_TOO_LONG)
     sb = _require_auth_storage()
     email = email_verification.normalize(body.email)
     problem = await anyio.to_thread.run_sync(
@@ -1419,7 +1426,7 @@ async def google_login(body: GoogleLogin):
     doc = {
         "id": str(uuid.uuid4()), "email": email, "created_at": _now(),
         "email_verified_at": _now(),
-        "nickname": google_auth.display_name(claims), "city": "", "top_concerns": [],
+        "nickname": generated_display_name(google_auth.display_name(claims)), "city": "", "top_concerns": [],
         # Unknowable to anyone: the account signs in through Google.
         "hashed_password": _hash_pw(secrets.token_urlsafe(32)),
     }
@@ -1621,7 +1628,7 @@ async def apple_login(body: AppleCredential):
     now = _now()
     user = {
         "id": str(uuid.uuid4()), "created_at": now, "email_verified_at": now,
-        "email": email, "nickname": nickname, "city": "", "top_concerns": [],
+        "email": email, "nickname": generated_display_name(nickname), "city": "", "top_concerns": [],
         "hashed_password": await anyio.to_thread.run_sync(lambda: _hash_pw(secrets.token_urlsafe(32))),
         "apple_authorized_at": grant["authorized_at"],
         **updates,
@@ -1761,6 +1768,12 @@ async def update_me(body: UserUpdate, uid: str = Depends(_req_uid)):
     if not res.data:
         raise HTTPException(404, "user not found")
     updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if "nickname" in updates and exceeds_chinese_name_limit(updates["nickname"]):
+        old_name = (res.data[0].get("nickname") or "").strip()
+        if updates["nickname"].strip() != old_name:
+            raise HTTPException(422, CHINESE_NAME_TOO_LONG)
+        # An old client may echo a legacy name when it saves another field.
+        del updates["nickname"]
     if updates:
         await anyio.to_thread.run_sync(
             lambda: sb.table("users").update(updates).eq("id", uid).execute()
@@ -4117,6 +4130,19 @@ def _visible_chat_messages(messages: list[dict]) -> list[dict]:
 MAX_CHAT_HISTORY_IMAGE_CHARS = 3_300_000
 
 
+def _chat_message_with_photo_batch(message: dict, batch: Optional[list[str]]) -> dict:
+    if batch is None:
+        return dict(message)
+    # Old clients can still display the first photo from an Alpha batch.
+    return {**message, "image_base64": batch[0], "images_base64": batch}
+
+
+def _chat_user_message_for_client(message: dict) -> dict:
+    return _chat_message_with_photo_batch(
+        message, core_image_input.read_image_batch(message.get("image_base64")),
+    )
+
+
 def _bound_chat_history_images(messages: list[dict]) -> list[dict]:
     """Keep history responses below the serverless response-body ceiling.
 
@@ -4128,16 +4154,29 @@ def _bound_chat_history_images(messages: list[dict]) -> list[dict]:
     """
 
     remaining = MAX_CHAT_HISTORY_IMAGE_CHARS
-    bounded = [dict(message) for message in messages]
-    for message in reversed(bounded):
+    bounded = []
+    for message in reversed(messages):
         image = message.get("image_base64")
         if not isinstance(image, str) or not image:
+            bounded.append(dict(message))
             continue
-        if len(image) <= remaining:
-            remaining -= len(image)
-        else:
-            message["image_base64"] = None
-    return bounded
+        if len(image) > remaining:
+            bounded.append({**message, "image_base64": None})
+            continue
+        try:
+            batch = core_image_input.read_image_batch(image)
+        except core_image_input.InvalidChatImage:
+            # Retain the message and its text if stored photos are malformed.
+            bounded.append({**message, "image_base64": None})
+            continue
+        # The array and the legacy first-image field share one response budget.
+        cost = len(image) + (len(batch[0]) + 20 if batch else 0)
+        if cost > remaining:
+            bounded.append({**message, "image_base64": None})
+            continue
+        remaining -= cost
+        bounded.append(_chat_message_with_photo_batch(message, batch))
+    return list(reversed(bounded))
 
 
 MEMORY_CONTEXT = "memory_context"
@@ -5933,7 +5972,7 @@ def _turn_envelope(
     # about — see `_prompt_version`. `_prepare_turn` has already warmed this.
     model = (metrics.row.get("model") if metrics else "") or ""
     return {
-        "user_message": turn.user_msg,
+        "user_message": _chat_user_message_for_client(turn.user_msg),
         "ai_messages": ai_messages,
         "request_id": llm_usage.current_request_id(),
         "events": _turn_events(rc, turn.session),
@@ -6152,7 +6191,7 @@ async def post_message_stream(
                     yield _sse({"type": "delta", "text": replay_text})
                 yield _sse({
                     "type": "done",
-                    "user_message": turn.user_msg,
+                    "user_message": _chat_user_message_for_client(turn.user_msg),
                     "ai_messages": [turn.replayed_ai_message],
                 })
                 return

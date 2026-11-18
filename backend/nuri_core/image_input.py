@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 from io import BytesIO
+import json
 import re
 import warnings
 from typing import Optional
@@ -24,6 +25,10 @@ MAX_IMAGE_BYTES = 2_500_000
 MAX_IMAGE_BASE64_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4
 MAX_IMAGE_PIXELS = 16_000_000
 MAX_IMAGE_DIMENSION = 4_096
+MAX_BATCH_IMAGES = 10
+MAX_BATCH_IMAGE_CHARS = 295_000
+# Compact JSON for up to ten quoted, comma-separated data URIs.
+MAX_BATCH_CHARS = MAX_BATCH_IMAGES * (MAX_BATCH_IMAGE_CHARS + 3) + 2
 
 _DATA_URI_RE = re.compile(
     r"^data:image/(?P<mime>jpeg|jpg|png|webp);base64,(?P<data>[A-Za-z0-9+/]*={0,2})$",
@@ -109,14 +114,49 @@ def validate_image_data_uri(value: object) -> Optional[str]:
     return f"data:image/{declared};base64,{payload}"
 
 
-def openai_user_content(text: object, image_data_uri: object) -> object:
-    """Build Chat Completions content for one user image message."""
+def read_image_batch(value: object) -> Optional[list[str]]:
+    """Read a replay-safe, ordered batch stored in the legacy text column."""
+    if not isinstance(value, str) or not value.startswith("["):
+        return None
+    if len(value) > MAX_BATCH_CHARS:
+        raise InvalidChatImage("Chat photo batch exceeds the size limit")
+    try:
+        items = json.loads(value)
+    except (ValueError, RecursionError) as exc:
+        raise InvalidChatImage("Invalid chat photo batch") from exc
+    if not isinstance(items, list) or not 2 <= len(items) <= MAX_BATCH_IMAGES:
+        raise InvalidChatImage("A chat photo batch must contain 2 to 10 photos")
+    images = []
+    for item in items:
+        if not isinstance(item, str) or len(item) > MAX_BATCH_IMAGE_CHARS:
+            raise InvalidChatImage("A photo in the chat batch exceeds the size limit")
+        image = validate_image_data_uri(item)
+        if image is None:
+            raise InvalidChatImage("The chat photo batch includes an empty photo")
+        images.append(image)
+    return images
 
-    image = validate_image_data_uri(image_data_uri)
-    rendered_text = str(text or "").strip() or "请结合这张图片回答。"
-    if not image:
-        return rendered_text
+
+def validate_chat_image_input(value: object) -> Optional[str]:
+    batch = read_image_batch(value)
+    if batch is not None:
+        # Comparing the canonical value keeps retries idempotent even when a
+        # client used a different amount of JSON whitespace or MIME casing.
+        return json.dumps(batch, separators=(",", ":"))
+    return validate_image_data_uri(value)
+
+
+def openai_user_content(text: object, image_data_uri: object) -> object:
+    """Build Chat Completions content for the newest photo-bearing turn."""
+
+    images = read_image_batch(image_data_uri)
+    if images is None:
+        image = validate_image_data_uri(image_data_uri)
+        images = [image] if image else []
+    if not images:
+        return str(text or "").strip() or "请结合这张图片回答。"
+    instruction = "请按顺序结合这些图片回答。" if len(images) > 1 else "请结合这张图片回答。"
     return [
-        {"type": "text", "text": rendered_text},
-        {"type": "image_url", "image_url": {"url": image, "detail": "auto"}},
+        {"type": "text", "text": str(text or "").strip() or instruction},
+        *({"type": "image_url", "image_url": {"url": image, "detail": "auto"}} for image in images),
     ]

@@ -683,6 +683,43 @@ def test_media_upload_validate_send_access_delete(env):
     err(env.call("u_ben", "DELETE", f"/media/{media_id}"), 422, "MEDIA_NOT_READY_OR_NOT_OWNED")
 
 
+def test_message_accepts_ten_photos_in_order(env, monkeypatch):
+    make_profile(env, "u_ann")
+    make_profile(env, "u_ben")
+    conv = connect(env, "u_ann", "u_ben")
+    endpoint = f"/conversations/{conv}/messages"
+    media_ids = []
+    for index in range(11):
+        raw = _png((index, 0, 255))
+        encoded = base64.b64encode(raw).decode("ascii")
+        uploaded = ok(env.call("u_ann", "POST", "/media", json={
+            "purpose": "message", "data_uri": f"data:image/png;base64,{encoded}",
+            "client_request_id": f"media-large-batch-{index}",
+        }), 201)
+        media_ids.append(uploaded["media"]["media_id"])
+
+    payload = {"text": "Ten photos", "media_ids": media_ids[:10], "client_message_id": "media-ten-photos"}
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Beta")
+    err(env.call("u_ann", "POST", endpoint, json=payload), 422, "VALIDATION_FAILED")
+    legacy = ok(env.call("u_ben", "GET", endpoint))
+    assert "message_media_limit" not in legacy["conversation"]
+    assert legacy["items"] == []
+
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Alpha")
+    err(env.call("u_ann", "POST", endpoint, json={
+        "text": "Check the limit", "media_ids": media_ids, "client_message_id": "media-over-limit",
+    }), 422, "VALIDATION_FAILED")
+    sent = ok(env.call("u_ann", "POST", endpoint, json=payload), 201)
+    assert sent["message"]["media"] == [{"media_id": media_id} for media_id in media_ids[:10]]
+    repeated = ok(env.call("u_ann", "POST", endpoint, json=payload))
+    assert repeated == {"message": sent["message"], "created": False}
+    received = ok(env.call("u_ben", "GET", endpoint))
+    assert received["conversation"]["message_media_limit"] == 10
+    inbox = received["items"]
+    assert len(inbox) == 1
+    assert inbox[0]["media"] == sent["message"]["media"]
+
+
 def test_avatar_media_is_bound_to_the_profile(env):
     make_profile(env, "u_ann"); make_profile(env, "u_ben")
     avatar = _upload(env, "u_ann", _png(), "avatar-0001", purpose="avatar")
