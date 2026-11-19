@@ -1902,20 +1902,29 @@ async def delete_child(child_id: str, uid: str = Depends(_req_uid)):
 
 
 @api.get("/feed/daily-post")
-async def get_daily_post(tz: Optional[str] = None, uid: str = Depends(_req_uid)):
+async def get_daily_post(tz: Optional[str] = None, locale: Optional[Literal["en", "zh-CN", "zh-TW"]] = None, uid: str = Depends(_req_uid)):
     """Home's daily card: one real post from another parent, fixed for the
     parent's local day (`tz` is the device's IANA zone). The first request of
     the day builds it, which takes several seconds; `state` tells the client
     whether to render, wait (`pending`, retry in `retry_after_s`), or show the
     empty state. See backend/feed/daily_post.py."""
-    return await feed_daily_post.get_daily_post(uid, tz)
+    try:
+        if locale is None:
+            return await feed_daily_post.get_daily_post(uid, tz)
+        return await feed_daily_post.get_daily_post(uid, tz, locale=locale)
+    except feed_daily_post.PostLocaleUnavailable:
+        raise HTTPException(503, "Summary translation is temporarily unavailable. Please retry.")
 
 
 @api.get("/feed/daily-post/{row_id}")
-async def get_daily_post_by_id(row_id: str, uid: str = Depends(_req_uid)):
+async def get_daily_post_by_id(row_id: str, locale: Optional[Literal["en", "zh-CN", "zh-TW"]] = None,
+                               translate: bool = False, uid: str = Depends(_req_uid)):
     """One earlier card of this parent's, for a notification that named it.
     Someone else's card answers 404, like one that does not exist."""
-    card = await feed_daily_post.get_card(uid, row_id)
+    try:
+        card = await feed_daily_post.get_card(uid, row_id, locale=locale, translate=translate) if locale else await feed_daily_post.get_card(uid, row_id)
+    except feed_daily_post.PostLocaleUnavailable:
+        raise HTTPException(503, "Summary translation is temporarily unavailable. Please retry.")
     if not card:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "daily post not found")
     return {"state": "ready", "day": card.get("day"), "card": card}

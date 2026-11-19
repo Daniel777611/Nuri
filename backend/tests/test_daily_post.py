@@ -7,6 +7,8 @@ is an in-memory stand-in.
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import threading
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -310,7 +312,13 @@ class _Query:
     def select(self, *_a, **_k): return self
     def insert(self, row): self._op, self._payload = "insert", row; return self
     def update(self, patch): self._op, self._payload = "update", patch; return self
-    def eq(self, c, v): self._filters.append(lambda r: str(r.get(c)) == str(v)); return self
+    def eq(self, c, v):
+        if c == "card":
+            expected = json.loads(v) if isinstance(v, str) else v
+            self._filters.append(lambda row: row.get(c) == expected)
+        else:
+            self._filters.append(lambda row: str(row.get(c)) == str(v))
+        return self
     def gte(self, c, v): self._filters.append(lambda r: str(r.get(c)) >= str(v)); return self
     def is_(self, c, _v): self._filters.append(lambda r: r.get(c) is None); return self
     def limit(self, n, **_k): self._limit = n; return self
@@ -630,3 +638,130 @@ def test_a_card_showing_a_pulled_post_is_rebuilt_on_the_next_visit(world, monkey
     # The only post the fake search knows is the pulled one, so nothing replaces it.
     assert again["state"] == "empty" and world.generated == 1
     assert asyncio.run(dp.get_card("mom-1", first["card"]["id"])) is None
+
+
+# Requested-language summaries keep the same owned post and original excerpt.
+def _fake_summary_translation(fields, locale):
+    return {key: [f"{locale}: {item}" for item in value] if isinstance(value, list)
+            else f"{locale}: {value}" for key, value in fields.items()}
+
+
+def test_post_locale_overlay_is_cached_and_preserves_original_identity_and_excerpt(world, monkeypatch):
+    original = _get()["card"]
+    calls = []
+    def translate(fields, locale):
+        calls.append((copy.deepcopy(fields), locale))
+        return _fake_summary_translation(fields, locale)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    first = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    again = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    traditional = asyncio.run(dp.get_card("mom-1", original["id"], locale="zh-TW", translate=True))
+    assert first == again and len(calls) == 2
+    assert first["locale"] == "en" and traditional["locale"] == "zh-TW"
+    assert first["headline"] == "en: " + original["headline"]
+    for key in ("id", "card_id", "source_url", "excerpt", "excerpt_lang", "summary_source"):
+        assert first.get(key) == original.get(key)
+    assert "i18n" not in first
+    assert all("excerpt" not in fields and "source_url" not in fields for fields, _locale in calls)
+    assert asyncio.run(dp.get_card("mom-1", original["id"])) == original
+
+
+def test_requested_locale_applies_to_first_generation_and_cached_today_card(world, monkeypatch):
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    first = asyncio.run(dp.get_daily_post("mom-1", "America/Chicago", now=NOW, locale="en"))
+    again = asyncio.run(dp.get_daily_post("mom-1", "America/Chicago", now=NOW, locale="en"))
+    assert first["card"]["locale"] == "en" and again["card"] == first["card"]
+    assert world.generated == 1
+
+
+def test_simultaneous_locale_cache_writes_preserve_both_languages(world, monkeypatch):
+    original = _get()["card"]
+    barrier = threading.Barrier(2)
+    def translate(fields, locale):
+        barrier.wait(timeout=3)
+        return _fake_summary_translation(fields, locale)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    async def both():
+        return await asyncio.gather(dp.get_card("mom-1", original["id"], locale="en", translate=True),
+                                   dp.get_card("mom-1", original["id"], locale="zh-TW", translate=True))
+    results = asyncio.run(both())
+    assert {result["locale"] for result in results} == {"en", "zh-TW"}
+    stored = world.db.tables["daily_post_cards"][0]["card"]
+    assert set(stored["i18n"]) == {"en", "zh-TW"}
+    assert stored["headline"] == original["headline"]
+
+
+def test_translation_of_changed_summary_retries_against_latest_source(world, monkeypatch):
+    original = _get()["card"]
+    save = dp.DailyPostStore.save_translation
+    calls = []
+    def translate(fields, locale):
+        calls.append(fields["headline"])
+        return _fake_summary_translation(fields, locale)
+    def conflict(store, uid, row_id, expected, card):
+        if len(calls) == 1:
+            world.db.tables["daily_post_cards"][0]["card"] = {**expected, "headline": "Updated original summary"}
+            return False
+        return save(store, uid, row_id, expected, card)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    monkeypatch.setattr(dp.DailyPostStore, "save_translation", conflict)
+    result = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert calls == [original["headline"], "Updated original summary"]
+    assert result["headline"] == "en: Updated original summary"
+
+
+def test_post_translation_failure_is_explicit_and_can_be_retried(world, monkeypatch):
+    original = _get()["card"]
+    def fail(*_args):
+        raise RuntimeError("mock provider unavailable")
+    monkeypatch.setattr(dp, "translate_summary_fields", fail)
+    with pytest.raises(dp.PostLocaleUnavailable):
+        asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert "i18n" not in world.db.tables["daily_post_cards"][0]["card"]
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    assert asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))["locale"] == "en"
+
+
+def test_post_translation_validates_every_generated_field_and_keeps_takeaway_order(monkeypatch):
+    fields = {"headline": "Original heading", "takeaways": ["First step", "Second step"]}
+    calls = []
+    def model(site, messages, response_format):
+        calls.append((site, messages, response_format))
+        return {"headline": "Translated heading", "takeaways": ["First translated step", "Second translated step"]}
+    monkeypatch.setattr(dp, "_model_json", model)
+    assert dp.translate_summary_fields(fields, "en")["takeaways"] == ["First translated step", "Second translated step"]
+    assert calls[0][0] == "feed.daily_post_translate"
+    assert calls[0][2]["json_schema"]["schema"]["properties"]["takeaways"]["type"] == "array"
+    for malformed in ({"headline": "Translated"}, {"headline": "Translated", "takeaways": ["one"]}, {"headline": "", "takeaways": ["a", "b"]}):
+        monkeypatch.setattr(dp, "_model_json", lambda *_args: malformed)
+        with pytest.raises(dp.PostLocaleUnavailable):
+            dp.translate_summary_fields(fields, "en")
+
+
+def test_post_locale_routes_use_same_owned_id_and_return_retryable_error(world, monkeypatch):
+    original = _get()["card"]
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    client = TestClient(main.app)
+    owner = {"Authorization": f"Bearer {main._make_token('mom-1')}"}
+    other = {"Authorization": f"Bearer {main._make_token('someone-else')}"}
+    path = f"/api/feed/daily-post/{original['id']}"
+    localized = client.get(path + "?locale=en&translate=1", headers=owner)
+    assert localized.status_code == 200 and localized.json()["card"]["locale"] == "en"
+    assert client.get(path + "?locale=en", headers=other).status_code == 404
+    assert client.get(path + "?locale=fr", headers=owner).status_code == 422
+    monkeypatch.setattr(dp, "translate_summary_fields", lambda *_args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    failure = client.get(path + "?locale=zh-TW&translate=1", headers=owner)
+    assert failure.status_code == 503 and "retry" in failure.json()["detail"].lower()
+    assert "把菠菜" not in json.dumps(failure.json(), ensure_ascii=False)
+
+
+def test_saved_post_locale_reads_do_not_invoke_ai_without_explicit_opt_in(world, monkeypatch):
+    original = _get()["card"]
+    calls = []
+    monkeypatch.setattr(dp, "translate_summary_fields", lambda *args: calls.append(args) or _fake_summary_translation(*args))
+    uncached = asyncio.run(dp.get_card("mom-1", original["id"], locale="en"))
+    assert uncached == original and calls == []
+    translated = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert translated["locale"] == "en" and len(calls) == 1
+    cached = asyncio.run(dp.get_card("mom-1", original["id"], locale="en"))
+    assert cached == translated and len(calls) == 1
