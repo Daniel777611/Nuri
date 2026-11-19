@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from io import BytesIO
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,6 +106,73 @@ def test_text_only_history_keeps_plain_string_content():
     assert messages[-1] == {"role": "user", "content": "你好"}
 
 
+def test_ten_ordered_photos_form_one_durable_message_and_model_turn(monkeypatch):
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Alpha")
+    images = [_raster_data_uri("PNG", "png", color=(index, 76, 190))
+              for index in range(10)]
+    # Incoming legacy field stays a string and is deterministic across retries.
+    request = main.UserMessageIn(text="请按上传顺序看图", image_base64=json.dumps(images))
+    canonical = json.dumps(images, separators=(",", ":"))
+    assert request.image_base64 == canonical
+    entry = {"id": "batch", "role": "user", "text": request.text, "image_base64": canonical}
+    messages, _ = nuri_messages(
+        [{"role": "user", "text": "旧照片", "image_base64": JPEG}, entry],
+        system_prompt="TEST",
+    )
+    photo_turns = [m["content"] for m in messages if isinstance(m.get("content"), list)]
+    assert len(photo_turns) == 1
+    assert photo_turns[0][0] == {"type": "text", "text": request.text}
+    assert [part["image_url"]["url"] for part in photo_turns[0][1:]] == images
+    wire = {**entry, "image_base64": images[0], "images_base64": images}
+    assert main._chat_user_message_for_client(entry) == wire
+    assert main._bound_chat_history_images([entry]) == [wire]
+    assert entry["image_base64"] == canonical
+    assert main._verify_existing_message(entry, entry) == entry
+    with pytest.raises(main.HTTPException) as collision:
+        main._verify_existing_message(entry, {**entry, "image_base64": json.dumps(images[::-1])})
+    assert collision.value.status_code == 409
+
+
+@pytest.mark.parametrize("payload", [
+    "[",
+    json.dumps([JPEG]),
+    json.dumps([JPEG] * 11),
+    json.dumps([JPEG, None]),
+    json.dumps([JPEG, ""]),
+    json.dumps([JPEG, "https://example.com/family-photo.jpg"]),
+    json.dumps([JPEG, "a" * (image_input.MAX_BATCH_IMAGE_CHARS + 1)]),
+    "[" + " " * image_input.MAX_BATCH_CHARS + "]",
+])
+def test_malformed_or_over_limit_batch_rejects_the_whole_turn(payload, monkeypatch):
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Alpha")
+    with pytest.raises(ValidationError):
+        main.UserMessageIn(text="private text", image_base64=payload)
+
+
+def test_history_budget_preserves_all_or_none_of_a_batch(monkeypatch):
+    images = [JPEG, PNG]
+    stored = {"role": "user", "text": "photos", "image_base64": json.dumps(images)}
+    monkeypatch.setattr(main, "MAX_CHAT_HISTORY_IMAGE_CHARS", len(stored["image_base64"]))
+    assert main._bound_chat_history_images([stored]) == [{**stored, "image_base64": None}]
+
+
+@pytest.mark.parametrize("branch", [None, "main", "unreleased-preview", "Testing-Backend-Alpha-preview"])
+def test_unreleased_channels_reject_batch_writes_but_read_saved_batches(branch, monkeypatch):
+    monkeypatch.setenv("VERCEL_ENV", "preview")
+    if branch is None:
+        monkeypatch.delenv("VERCEL_GIT_COMMIT_REF", raising=False)
+    else:
+        monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", branch)
+    images = [JPEG, PNG]
+    stored = json.dumps(images)
+    assert main.UserMessageIn(image_base64=JPEG).image_base64 == JPEG
+    with pytest.raises(ValidationError):
+        main.UserMessageIn(image_base64=stored)
+    assert main._bound_chat_history_images([{"image_base64": stored}]) == [{
+        "image_base64": JPEG, "images_base64": images,
+    }]
+
+
 def test_chat_request_rejects_oversized_content_length_before_parsing():
     with TestClient(main.app) as client:
         response = client.post(
@@ -120,7 +188,21 @@ def test_private_chat_responses_are_never_cacheable():
         response = client.get("/api/chat/sessions/session-a/messages")
     assert response.status_code == 401
     assert response.headers["cache-control"] == "private, no-store"
-    assert response.headers["vary"] == "Authorization"
+    assert "authorization" in {part.strip().lower() for part in response.headers["vary"].split(",")}
+
+
+def test_invalid_chat_photo_payload_is_not_echoed(monkeypatch):
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Alpha")
+    monkeypatch.setitem(main.app.dependency_overrides, main._req_uid, lambda: "fixture-account")
+    private = "private-image-marker"
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/chat/sessions/session-a/messages/stream",
+            json={"image_base64": json.dumps([JPEG, private])},
+        )
+    assert response.status_code == 422
+    assert private not in response.text
+    assert JPEG not in response.text
 
 
 def test_history_keeps_newest_images_without_unbounded_response_payloads():
