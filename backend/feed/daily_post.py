@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 import anyio
 
-from backend import llm_usage, locales, runtime
+from backend import llm_usage, locales, runtime, topic_keywords
 from backend.feed import search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.feed.post_media import social_image_url, source_image_urls
@@ -420,6 +420,16 @@ def _stage_topics(months: Optional[int]) -> list[tuple[str, str, str, str]]:
 _BABY_TOPICS = {"sleep", "starting solids", "teething"}
 
 
+def _search_words(topic_zh: str, topic_en: str, months: Optional[int]) -> tuple[str, str]:
+    """The two searches for one topic: "18个月 宝宝 夜醒 宝妈" and "18 month old
+    sleep moms" — the age band and the words mom groups post in."""
+    query_age_zh, query_age_en = _query_age_words(months)
+    zh = " ".join(p for p in (query_age_zh, "宝宝", topic_zh, "宝妈") if p) if topic_zh else ""
+    who = query_age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
+    en = " ".join((who, topic_en, "moms")) if topic_en else ""
+    return zh, en
+
+
 def profile_plans(
     children: list[dict], concerns: list[str], day: date, locale: str = "zh-CN",
     limit: int = PROFILE_PLANS,
@@ -433,7 +443,6 @@ def profile_plans(
     """
     months = youngest_age_months(children)
     age_zh, age_en = _age_words(months)
-    query_age_zh, query_age_en = _query_age_words(months)
     usable = list(dict.fromkeys(c for c in concerns if c in CONCERN_EN))
     start = day.toordinal() % len(usable) if usable else 0
     topics = [_concern_topic(c, months) for c in usable[start:] + usable[:start]]
@@ -443,9 +452,7 @@ def profile_plans(
 
     plans = []
     for label_zh, label_en, topic_zh, topic_en in topics[:limit]:
-        zh = " ".join(p for p in (query_age_zh, "宝宝", topic_zh, "宝妈") if p)
-        who = query_age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
-        en = " ".join((who, topic_en, "moms"))
+        zh, en = _search_words(topic_zh, topic_en, months)
         if locale == "en":
             shown = " · ".join(p for p in (age_en, label_en) if p)
         else:
@@ -528,12 +535,12 @@ def _scrub(text: str, children: list[dict]) -> str:
     ).replace("[名字]", "").replace("[name]", "").strip()
 
 
-def conversation_plan(
+def _llm_conversation_plan(
     user_messages: list[str], child_age_context: str, children: list[dict], locale: str = "zh-CN",
     standing: Sequence[str] = (),
 ) -> Optional[Plan]:
-    """Search words from what the parent has actually been saying. None when
-    the recent messages hold no parenting question to search for."""
+    """The model writes the search words from the recent messages
+    (DAILY_POST_QUERY_MODE=llm, the behaviour before 2026-11-18)."""
     from backend.content_research import redact_conversation_text
 
     lines = [redact_conversation_text(text, 300) for text in user_messages if text.strip()]
@@ -560,6 +567,95 @@ def conversation_plan(
     if not concern or not (query_zh or query_en):
         return None
     return Plan(basis="conversation", concern=concern, query_zh=query_zh, query_en=query_en)
+
+
+#: How the conversation plan gets its search words: "template" builds them
+#: from the chat router's topic (no model call); "llm" asks a model, as before.
+QUERY_MODE = os.getenv("DAILY_POST_QUERY_MODE", "template")
+
+#: Router topics that say nothing about a problem worth a post. The router
+#: writes these for greetings, thanks and follow-up turns.
+_GENERIC_TOPICS = {
+    "寒暄", "问候", "打招呼", "道谢", "感谢", "闲聊", "继续追问", "追问", "确认", "其他", "无",
+    "育儿", "带娃", "育儿问题", "情绪安抚", "安抚情绪", "家长情绪", "未知",
+}
+ROUTE_TOPIC_WINDOW_DAYS = 7
+
+
+async def recent_route_topics(user_id: str, *, now: Optional[datetime] = None) -> list[str]:
+    """What the chat router said this parent's recent turns were about, newest
+    first. The router already wrote these (chat_turn_logs.route_topic) with
+    the child's details scrubbed, so the card needs no model of its own."""
+    since = ((now or _now()) - timedelta(days=ROUTE_TOPIC_WINDOW_DAYS)).isoformat()
+
+    def read() -> list[dict]:
+        return (runtime.get_supabase().table("chat_turn_logs").select("route_topic,created_at")
+                .eq("user_id", user_id).gte("created_at", since)
+                .order("created_at", desc=True).limit(20).execute().data or [])
+
+    try:
+        rows = await anyio.to_thread.run_sync(read)
+    except Exception as exc:  # the profile plans still make a card
+        print(f"[warn] daily post route topics: {type(exc).__name__}")
+        return []
+    topics: list[str] = []
+    for row in rows:
+        # "寒暄/继续追问": each side is its own subject.
+        for part in re.split(r"[/／、,，]", str(row.get("route_topic") or "")):
+            part = normalize_space(part)
+            if part and part not in _GENERIC_TOPICS and part not in topics:
+                topics.append(part)
+    return topics
+
+
+def template_plan(
+    topics: Sequence[str], user_messages: Sequence[str], children: list[dict], locale: str = "zh-CN",
+) -> Optional[Plan]:
+    """Search words from what the parent has been talking about, by template.
+
+    The newest router topic is the subject ("入园分离焦虑" → "18个月 宝宝
+    入园分离焦虑 宝妈"); the keyword table says which onboarding concern it
+    belongs to, and that concern's English words make the English search.
+    With no topic, the recent messages themselves are matched against the
+    keyword table. Nothing matched → None, and the profile plans carry the day."""
+    months = youngest_age_months(children)
+    for topic in topics:
+        topic = _scrub(topic, children)[:20]
+        concern = topic_keywords.main_topic(topic)
+        if not topic or (locale == "en" and not concern):
+            continue
+        topic_en = _concern_topic(concern, months)[1] if concern else ""
+        zh, en = _search_words(topic, topic_en, months)
+        shown = topic_en if locale == "en" else topic
+        if locale == "zh-TW":
+            shown = shown.translate(_TO_TRADITIONAL)
+        return Plan(basis="conversation", concern=shown, query_zh=zh, query_en=en)
+
+    from backend.content_research import redact_conversation_text
+
+    # Newest message first: what the parent said last is what is on their mind.
+    for text in reversed([t for t in user_messages if t.strip()][-8:]):
+        concern = topic_keywords.main_topic(redact_conversation_text(text, 300))
+        if concern in CONCERN_EN:
+            label_zh, label_en, topic_zh, topic_en = _concern_topic(concern, months)
+            zh, en = _search_words(topic_zh, topic_en, months)
+            shown = label_en if locale == "en" else label_zh
+            if locale == "zh-TW":
+                shown = shown.translate(_TO_TRADITIONAL)
+            if shown:
+                return Plan(basis="conversation", concern=shown, query_zh=zh, query_en=en)
+    return None
+
+
+def conversation_plan(
+    user_messages: list[str], child_age_context: str, children: list[dict], locale: str = "zh-CN",
+    standing: Sequence[str] = (), *, topics: Sequence[str] = (),
+) -> Optional[Plan]:
+    """Search words from what the parent has actually been saying. None when
+    the recent messages hold no parenting question to search for."""
+    if QUERY_MODE == "llm":
+        return _llm_conversation_plan(user_messages, child_age_context, children, locale, standing)
+    return template_plan(topics, user_messages, children, locale)
 
 
 # ── Which post ───────────────────────────────────────────────────────────────
@@ -727,7 +823,161 @@ def validate_pick(data: dict, candidates: list[Candidate]) -> Optional[dict]:
 PICK_ATTEMPTS = 3
 
 
+#: How the day's post is chosen: "rank" (default) filters and ranks the
+#: candidates by rule and shows the model one post at a time, only to check it
+#: and write the card; "llm" hands the model every candidate, as before.
+PICK_MODE = os.getenv("DAILY_POST_PICK_MODE", "rank")
+
+#: Never a card: selling something, or about a pet. 躲猫猫 (peekaboo) is a baby
+#: game, so the Chinese pet words are the ones only pets go by.
+_AD_WORDS = re.compile(
+    r"优惠|折扣|下单|团购|代购|抽奖|包邮|限时|促销|私信|giveaway|discount|promo code|use code|"
+    r"link in bio|shop now|sponsored|\d+% off",
+    re.IGNORECASE,
+)
+_PET_WORDS = re.compile(
+    r"猫咪|小猫|狗狗|小狗|宠物|毛孩子|\b(?:pupp(?:y|ies)|kittens?|dogs?|cats?|pets?)\b", re.IGNORECASE,
+)
+#: A parent telling their own story, and other parents answering in a group.
+_PARENT_VOICE = re.compile(
+    r"我家|我们家|我儿子|我女儿|我闺女|我娃|我宝|我的宝宝|娃爸|孩子他爸|"
+    r"\bmy (?:son|daughter|toddler|baby|kid|kids|little one|lo|boy|girl|husband)\b|\bLO\b|"
+    r"\bour (?:son|daughter|toddler|baby|kids?)\b|\bwe (?:tried|did|started|stopped)\b",
+    re.IGNORECASE,
+)
+_ANSWER_WORDS = re.compile(
+    r"我家也|我们家也|我也是|可以试试|试试看|亲测|what worked|worked for us|same here|"
+    r"\bhelped us\b|\btry (?:to|this|giving|putting)\b",
+    re.IGNORECASE,
+)
+#: Search filler that says nothing about the problem itself.
+_FILLER = {"宝宝", "宝妈", "moms", "mom", "month", "months", "old", "year", "years", "baby", "toddler",
+           "kid", "kids", "child"}
+_AGE_PATTERNS = (
+    (re.compile(r"(\d{1,2})\s*个?月"), 1),
+    (re.compile(r"(\d{1,2})\s*[岁歲]"), 12),
+    (re.compile(r"(\d{1,2})\s*(?:-|\s)?(?:months?|mos?)\b", re.IGNORECASE), 1),
+    (re.compile(r"(\d{1,2})\s*(?:-|\s)?(?:years?|yrs?)\b", re.IGNORECASE), 12),
+)
+RANK_WEIGHTS = {"relevance": 0.45, "parent": 0.25, "age": 0.2, "language": 0.1}
+
+
+def is_unusable(candidate: Candidate) -> bool:
+    """Selling something, or about a pet: never a card, so never shown to the model."""
+    text = f"{candidate.title}\n{candidate.text}"
+    return bool(_AD_WORDS.search(text) or _PET_WORDS.search(text))
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = []
+    for word in re.split(r"\s+", (query or "").lower()):
+        if word and word not in _FILLER and not re.search(r"\d", word) and word not in terms:
+            terms.append(word)
+    return terms
+
+
+def _term_hit(term: str, text: str) -> float:
+    """1 when the term is in the text; for a long Chinese phrase ("入园分离焦虑")
+    half credit by how many of its two-character pieces are."""
+    if term in text:
+        return 1.0
+    stem = re.sub(r"(?:ing|es|ed|s)$", "", term)
+    if stem != term and len(stem) >= 3 and re.search(rf"\b{re.escape(stem)}", text):
+        return 1.0  # tantrums ~ tantrum, eating ~ eater
+    if len(term) >= 4 and re.search(r"[\u4e00-\u9fff]", term):
+        pieces = [term[i:i + 2] for i in range(len(term) - 1)]
+        return 0.5 * sum(p in text for p in pieces) / len(pieces)
+    return 0.0
+
+
+def relevance(text: str, query: str) -> float:
+    """0–1: how much of the search's subject the post is about. The search
+    words count most; the concern's keyword table catches posts that word the
+    same problem differently."""
+    lowered = text.lower()
+    terms = _query_terms(query)
+    # The query holds both languages' words; a post is written in one.
+    by_lang = ([t for t in terms if re.search(r"[\u4e00-\u9fff]", t)],
+               [t for t in terms if not re.search(r"[\u4e00-\u9fff]", t)])
+    words = max((sum(_term_hit(t, lowered) for t in group) / len(group) for group in by_lang if group),
+                default=0.0)
+    concern = topic_keywords.main_topic(query)
+    keywords = bool(concern) and any(w in lowered for w in topic_keywords.TOPIC_KEYWORDS[concern])
+    return 0.7 * words + 0.3 * keywords
+
+
+def mentioned_ages(text: str) -> list[int]:
+    """Ages the post names, in months ("18个月", "2岁", "18 month", "2 year old")."""
+    ages = []
+    for pattern, scale in _AGE_PATTERNS:
+        ages.extend(int(m.group(1)) * scale for m in pattern.finditer(text))
+    if re.search(r"\btoddler", text, re.IGNORECASE):
+        ages.append(24)
+    if re.search(r"\bnewborn|新生儿", text, re.IGNORECASE):
+        ages.append(1)
+    return ages
+
+
+def age_fit(text: str, months: Optional[int]) -> float:
+    ages = mentioned_ages(text)
+    if months is None or not ages:
+        return 0.5  # unknown, not wrong
+    return max(0.0, 1 - min(abs(a - months) for a in ages) / 24)
+
+
+def parent_voice(candidate: Candidate) -> float:
+    text = f"{candidate.title}\n{candidate.text}"
+    score = 0.6 * bool(_PARENT_VOICE.search(text)) + 0.4 * bool(_ANSWER_WORDS.search(text))
+    if "/groups/" in candidate.url:
+        score += 0.2
+    return min(1.0, score)
+
+
+def rank_score(candidate: Candidate, *, query: str, months: Optional[int], locale: str) -> float:
+    text = f"{candidate.title}\n{candidate.text}"
+    want = "en" if locale == "en" else "zh"
+    return (RANK_WEIGHTS["relevance"] * relevance(text, query)
+            + RANK_WEIGHTS["parent"] * parent_voice(candidate)
+            + RANK_WEIGHTS["age"] * age_fit(text, months)
+            + RANK_WEIGHTS["language"] * (candidate.lang == want))
+
+
+def rank_candidates(
+    candidates: list[Candidate], *, query: str, months: Optional[int], locale: str,
+) -> list[Candidate]:
+    """Usable candidates, best first. Ties keep the search engine's order."""
+    usable = [c for c in candidates if not is_unusable(c)]
+    return sorted(usable, key=lambda c: -rank_score(c, query=query, months=months, locale=locale))
+
+
 def pick_post(
+    candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    basis: str = "conversation", standing: Sequence[str] = (), query: str = "",
+    months: Optional[int] = None,
+) -> Optional[dict]:
+    if PICK_MODE == "llm":
+        return _pick_post_llm(candidates, concern=concern, child_age_context=child_age_context,
+                              locale=locale, basis=basis, standing=standing)
+    # The model sees one post at a time, best ranked first: it only checks the
+    # post is a parent's and on the question, and writes the card. Same prompt,
+    # same checks, about a tenth of the tokens of showing it all twelve.
+    for candidate in rank_candidates(candidates, query=query or concern, months=months,
+                                     locale=locale)[:PICK_ATTEMPTS]:
+        data = _ask_pick(
+            [candidate], concern=concern, child_age_context=child_age_context, locale=locale, basis=basis,
+            standing=standing,
+        )
+        picked = validate_pick(data, [candidate])
+        if picked and standing and standing_guard.conflicts(
+            pick_text(picked), standing, call_site="feed.daily_post_standing_check",
+        ):
+            continue
+        if picked:
+            return picked
+    return None
+
+
+def _pick_post_llm(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
     basis: str = "conversation", standing: Sequence[str] = (),
 ) -> Optional[dict]:
@@ -1172,8 +1422,9 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
         user_texts = [
             str(m.get("text") or "") for m in messages if m.get("role") == "user"
         ]
+        topics = await recent_route_topics(user_id, now=now) if QUERY_MODE != "llm" else []
         plan = await anyio.to_thread.run_sync(
-            lambda: conversation_plan(user_texts, child_age_context, children, locale, standing)
+            lambda: conversation_plan(user_texts, child_age_context, children, locale, standing, topics=topics)
         )
         if plan:
             plans.append(plan)
@@ -1199,7 +1450,8 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_post(
             candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
-            basis=plan.basis, standing=standing,
+            basis=plan.basis, standing=standing, query=f"{plan.query_zh} {plan.query_en}",
+            months=youngest_age_months(children),
         ))
         if pick:
             return build_card(pick, plan, locale=locale), plan

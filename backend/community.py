@@ -44,7 +44,7 @@ import anyio
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import llm_usage, push_service, runtime
+from backend import llm_usage, push_service, runtime, topic_keywords
 
 PREFIX = "/api/community/v1"
 
@@ -1197,23 +1197,13 @@ async def _family_features(uids: list[str], profiles: dict[str, dict]) -> dict[s
     return out
 
 
-#: Question text → the family concerns it is about (users.top_concerns codes).
-#: Plain keyword rules: cheap, explainable, and the same answer every time.
-TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "sleep": ("睡", "觉", "夜醒", "哄睡", "午休", "作息", "sleep", "nap", "bedtime"),
-    "food": ("吃", "饭", "奶", "辅食", "挑食", "喂", "断奶", "零食", "eat", "food", "feed", "milk"),
-    "emotion": ("哭", "情绪", "脾气", "发火", "安抚", "焦虑", "害怕", "分离", "tantrum", "cry", "emotion", "anxious"),
-    "development": ("说话", "走路", "发育", "语言", "爬", "大运动", "认知", "迟", "speech", "walk", "develop"),
-    "health": ("发烧", "生病", "咳", "感冒", "疫苗", "过敏", "湿疹", "医院", "便秘", "fever", "sick", "vaccine", "allergy"),
-    "childcare": ("托育", "幼儿园", "托班", "保姆", "阿姨", "上学", "入园", "daycare", "nursery", "preschool"),
-    "parenting": ("管教", "规矩", "教育", "习惯", "屏幕", "手机", "电视", "奖励", "惩罚", "discipline", "screen", "rules"),
-    "family": ("老人", "爷爷", "奶奶", "外婆", "老公", "伴侣", "二胎", "兄弟", "姐妹", "家人", "partner", "sibling", "grandparent"),
-}
+#: Question text → the family concerns it is about (users.top_concerns codes),
+#: by the keyword table the daily cards share.
+TOPIC_KEYWORDS = topic_keywords.TOPIC_KEYWORDS
 
 
 def question_topics(body: str) -> set[str]:
-    text = (body or "").lower()
-    return {topic for topic, words in TOPIC_KEYWORDS.items() if any(word in text for word in words)}
+    return topic_keywords.topics_in(body)
 
 
 def _age_fit(a: Optional[int], b: Optional[int]) -> float:

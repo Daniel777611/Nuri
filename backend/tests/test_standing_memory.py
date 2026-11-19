@@ -368,6 +368,7 @@ def test_a_post_that_conflicts_is_struck_and_the_next_one_chosen(monkeypatch):
         asked.append((len(remaining), kwargs["standing"]))
         return _pick_for(0, "哭声免疫法训睡" if training in remaining else "固定睡前仪式")
 
+    monkeypatch.setattr(dp, "PICK_MODE", "llm")
     monkeypatch.setattr(dp, "_ask_pick", ask)
     monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "训睡" in text)
 
@@ -376,6 +377,23 @@ def test_a_post_that_conflicts_is_struck_and_the_next_one_chosen(monkeypatch):
 
     assert picked["candidate"] is routine
     assert asked == [(2, [NO_TRAINING]), (1, [NO_TRAINING])]
+
+
+def test_ranked_mode_strikes_a_conflicting_post_and_asks_about_the_next(monkeypatch):
+    training = _post("我们家用哭声免疫法训睡，夜醒三天就好了")
+    routine = _post("我们把睡前仪式固定下来，夜醒少了")
+    asked = []
+
+    def ask(remaining, **kwargs):
+        asked.append(([c.text for c in remaining], kwargs["standing"]))
+        return _pick_for(0, "哭声免疫法训睡" if remaining[0] is training else "固定睡前仪式")
+
+    monkeypatch.setattr(dp, "_ask_pick", ask)
+    monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "训睡" in text)
+    picked = dp.pick_post([routine, training], concern="夜醒", child_age_context="",
+                          locale="zh-CN", standing=[NO_TRAINING], query="夜醒")
+    assert picked["candidate"] is routine
+    assert asked == [([training.text], [NO_TRAINING]), ([routine.text], [NO_TRAINING])]
 
 
 def test_without_standing_memories_the_post_is_not_checked(monkeypatch):
@@ -421,6 +439,7 @@ def test_a_video_that_conflicts_falls_back_to_the_next_best(monkeypatch):
         seen["standing"] = kwargs["standing"]
         return [_score(0, 5), _score(1, 4)]
 
+    monkeypatch.setattr(dv, "SCORE_MODE", "llm")
     monkeypatch.setattr(dv, "_ask_scores", scores)
     monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "Sleep Training" in text)
 
@@ -432,6 +451,7 @@ def test_a_video_that_conflicts_falls_back_to_the_next_best(monkeypatch):
 
 def test_when_every_video_conflicts_there_is_no_video(monkeypatch):
     cands = _videos("Sleep Training 101", "Sleep Training Ferber")
+    monkeypatch.setattr(dv, "SCORE_MODE", "llm")
     monkeypatch.setattr(dv, "_ask_scores", lambda _c, **_k: [_score(0, 5), _score(1, 4)])
     monkeypatch.setattr(standing, "conflicts", lambda *_a, **_k: True)
     assert dv.pick_video(cands, concern="夜醒", child_age_context="", locale="zh-CN",
@@ -449,3 +469,32 @@ def test_the_video_prompt_turns_a_conflict_into_unsafe(monkeypatch):
     dv._ask_scores(_videos("x"), concern="夜醒", child_age_context="", locale="zh-CN",
                    standing=[NO_TRAINING])
     assert NO_TRAINING in seen["prompt"] and "safe 填 false" in seen["prompt"]
+
+
+# ── the keyword prefilter in front of the check ─────────────────────────────
+
+@pytest.mark.parametrize("card,standing_lines,expected", [
+    # Nothing in the card can touch "no sleep training": no model call.
+    ("固定睡前仪式，白天多晒太阳", [NO_TRAINING], False),
+    ("Picky eater: offer one new food next to a favourite", ["孩子腿骨折打了石膏"], False),
+    # A clash with no shared word is still caught by the concept group.
+    ("多带孩子去公园跑跑跳跳", ["孩子下肢瘫痪，坐轮椅"], True),
+    ("用法伯法训睡", [NO_TRAINING], True),
+    ("Add peanut butter to toast", ["孩子花生过敏"], True),
+    # A constraint the groups don't know always goes to the model.
+    ("固定睡前仪式", ["孩子确诊了自闭症"], True),
+    # One constraint that needs the model is enough.
+    ("固定睡前仪式", [NO_TRAINING, "孩子确诊了自闭症"], True),
+])
+def test_the_prefilter_skips_the_model_only_when_nothing_can_clash(card, standing_lines, expected):
+    assert standing.needs_check(card, standing_lines) is expected
+
+
+def test_a_card_the_prefilter_clears_never_reaches_the_model(monkeypatch):
+    never = _Client(error=AssertionError("must not be called"))
+    monkeypatch.setattr(runtime, "oai", never)
+    assert standing.conflicts("固定睡前仪式，白天多晒太阳", [NO_TRAINING], call_site="t") is False
+    assert never.calls == []
+    monkeypatch.setattr(standing, "PREFILTER", False)
+    monkeypatch.setattr(runtime, "oai", _Client({"reason": "", "conflict": False}))
+    assert standing.conflicts("固定睡前仪式，白天多晒太阳", [NO_TRAINING], call_site="t") is False
