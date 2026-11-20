@@ -21,7 +21,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import urlparse
 
 import anyio
@@ -1481,6 +1481,28 @@ def _conversation_focus_for_terms(
     return "", "current_session"
 
 
+#: Marks a reason term that came from long-term memory, not the chat.
+_MEMORY_TERM = "memory:"
+#: How a concern memory is worded ("担心自己在语言开发上做得不够"), not what it
+#: is about: left in, every concern would match the emotions card.
+_MEMORY_FRAMING = re.compile(r"担心|擔心|担忧|擔憂")
+
+#: The memory kinds that describe what is going on; preferences and facts
+#: ("用户在 Houston") say nothing about which article fits.
+MEMORY_SIGNAL_CATEGORIES = ("concern", "child_state")
+MEMORY_SIGNAL_LIMIT = 10
+
+
+def memory_signal_texts(memories: Sequence[dict]) -> list[str]:
+    """The values of the family's concern / child_state memories, newest
+    first (as family_store.load_known_memories returns them)."""
+    return [
+        str(m.get("value") or "")
+        for m in memories
+        if str(m.get("category") or "") in MEMORY_SIGNAL_CATEGORIES and str(m.get("value") or "").strip()
+    ][:MEMORY_SIGNAL_LIMIT]
+
+
 def rank_learning_content(
     messages: list[dict],
     count: int = 4,
@@ -1490,8 +1512,15 @@ def rank_learning_content(
     include_detail: bool = False,
     behavior_events: Optional[list[dict]] = None,
     preferred_locale: Optional[str] = None,
+    memory_texts: Sequence[str] = (),
 ) -> tuple[list[dict], bool]:
     """Rank candidates by conversation relevance, affinity, and freshness.
+
+    `memory_texts` are what NURI remembers about the family (the values of
+    its concern / child_state memories, from memory_signal_texts). They count
+    between recent chat and old chat: enough on their own to tie a card to
+    the family ("刚会扶站" → walking), never enough to outrank what the parent
+    said this week.
 
     `preferred_locale` is only for the reason lines, which are composed with
     the family's own words and so cannot be translated downstream. Defaulted
@@ -1608,6 +1637,10 @@ def rank_learning_content(
     else:
         assistant_context_text = ""
 
+    memory_text = _MEMORY_FRAMING.sub(
+        "", " ".join(clean_parenting_signal(t) for t in memory_texts if t)
+    ).casefold()
+
     ranked: list[
         tuple[int, int, int, int, dict, Optional[str], str, str, dict]
     ] = []
@@ -1622,6 +1655,7 @@ def rank_learning_content(
         latest_history_matches = _matched_terms(latest_history_text, terms)
         older_history_matches = _matched_terms(older_history_text, terms)
         assistant_matches = _matched_terms(assistant_context_text, terms)
+        memory_matches = _matched_terms(memory_text, terms) if memory_text else []
 
         latest_score = _signal_score(latest_matches, 14, 5, 3)
         recent_score = _signal_score(recent_matches, 10, 3, 3)
@@ -1654,7 +1688,9 @@ def rank_learning_content(
             2,
         )
         history_score += _signal_score(older_history_matches, 1, 0, 1)
-        user_signal_score = latest_score + recent_score + older_score + history_score
+        # Long-term memory: below recent chat (10), above old chat (5).
+        memory_score = _signal_score(memory_matches, 8, 2, 2)
+        user_signal_score = latest_score + recent_score + older_score + history_score + memory_score
         assistant_score = 0
         if assistant_context_text and (latest_matches or recent_matches or history_score):
             # Assistant text may clarify a user-established goal, never create
@@ -1682,6 +1718,11 @@ def rank_learning_content(
             ),
             None,
         )
+        # Matched only through memory: the reason must say "you told NURI",
+        # not "you have been talking about".
+        memory_term = None
+        if not reason_term and not (latest_matches or recent_matches or latest_history_matches):
+            memory_term = next((t for t in memory_matches if t not in _WEAK_MATCH_TERMS), None)
         focus_text, focus_scope = _conversation_focus_for_terms(messages, terms)
         ranked.append(
             (
@@ -1690,7 +1731,7 @@ def rank_learning_content(
                 user_signal_score,
                 index,
                 card,
-                reason_term,
+                reason_term or (f"{_MEMORY_TERM}{memory_term}" if memory_term else None),
                 focus_text,
                 focus_scope,
                 behavior,
@@ -1716,7 +1757,7 @@ def rank_learning_content(
         )
     )
     has_conversation_match = bool(
-        raw_current_user_texts
+        (raw_current_user_texts or memory_text)
         and ranked
         and any(_eligible_match(item) for item in ranked)
     )
@@ -1798,6 +1839,11 @@ def rank_learning_content(
                         ),
                         focus=safe_focus,
                         topic=topic,
+                    )
+                if reason_term and reason_term.startswith(_MEMORY_TERM):
+                    return locales.phrase(
+                        "reason.memory", for_locale,
+                        term=reason_term.removeprefix(_MEMORY_TERM), topic=topic,
                     )
                 if reason_term:
                     return locales.phrase(

@@ -133,6 +133,11 @@ _PHRASES: dict[str, dict[str, str]] = {
         "zh-TW": "因為你最近重點聊到「{term}」，這篇內容與「{topic}」直接相關",
         "en": "Because you have been focusing on “{term}”, and this is directly about “{topic}”",
     },
+    "reason.memory": {
+        "zh-CN": "因为你之前跟 NURI 说过“{term}”，这篇内容与“{topic}”有关",
+        "zh-TW": "因為你之前跟 NURI 說過「{term}」，這篇內容與「{topic}」有關",
+        "en": "Because you told NURI about “{term}” before, and this is about “{topic}”",
+    },
     "reason.topic": {
         "zh-CN": "因为你最近和 NURI 聊到了“{topic}”",
         "zh-TW": "因為你最近和 NURI 聊到了「{topic}」",

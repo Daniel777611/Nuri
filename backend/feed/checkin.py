@@ -15,6 +15,13 @@ last stretch of the one conversation and, once it is over, writes:
 the model is told to skip past subjects the parent dropped for another, and
 past chatter that is not a subject, and to take the last real one.
 
+**What NURI remembers.** The check-in also sees a few of the family's
+long-term memories (what the parent worries about, where the child is at).
+They make the question concrete ("刚会扶站" → how is the walking going), and
+when the last stretch of chat holds no real subject — a thank-you, a
+language switch — the line asks after the ongoing thing NURI remembers
+instead of leaving Home empty. Same single model call; a few hundred tokens.
+
 One check-in per last parent message: it is written the first time Home asks
 after the conversation went quiet, and reused until the parent says
 something new. Tapping the card puts the line in the conversation as NURI's
@@ -40,6 +47,9 @@ WINDOW_MESSAGES = 30
 CHARS_PER_MESSAGE = 400
 #: Marked in the transcript so the model can see where one sitting ended.
 SITTING_GAP_S = 3 * 3600
+#: Long-term memories shown with the transcript, newest first, each clipped.
+MEMORY_LINES = 6
+MEMORY_CHARS = 60
 
 #: (asked of the model, hard cut) per field. A Chinese character carries about
 #: what three English characters do, so English gets its own budget.
@@ -136,7 +146,9 @@ _SYSTEM = """你是 NURI，一位记得家长家里在发生什么的育儿伙�
 - 话题是关于孩子或家庭的一件具体的事（睡眠、发脾气、辅食、入托、夫妻分工、家长自己很累……）。
 - 不算话题的：切换语言（例如"繁中"、"English"）、设置、测试、打招呼、道谢、"好的"、问 NURI 是谁。
 - 家长中途换了话题，前一个就是聊完了；以最后一个真正的话题为准。最后几句如果都不算话题，就往前找。
-- 整段对话里一个真正的话题都没有，has_topic 返回 false，其余字段返回空字符串。
+- 整段对话里一个真正的话题都没有时：如果"你记得的这个家庭的事"里有一件还在进行、值得回头关心的事（例如刚开始学走路、要送托儿所、在戒夜奶），
+  就以那件事为话题；那里也没有，has_topic 返回 false，其余字段返回空字符串。
+- "你记得的这个家庭的事"是家长以前说过的，可能已经过去一阵了：可以用它把问题问得更具体，但一次只提一件事，不要把好几件事堆在一句里，也不要背诵这些记录。
 
 然后写：
 - topic：不超过 {topic_max} 个字，点出这件事（例如"午睡哭闹"、"爸爸带娃分工"）。
@@ -209,9 +221,19 @@ def _model_json(messages: list[dict]) -> dict:
     return json.loads(resp.choices[0].message.content or "{}")
 
 
-def write_checkin(messages: list[dict], *, now: datetime, locale: str = "zh-CN") -> Optional[dict]:
-    """The model's check-in for a finished conversation, or None when the
-    conversation held no real subject to follow up on."""
+def memory_block(memories: list[str]) -> str:
+    lines = [_clip(m, MEMORY_CHARS) for m in memories if str(m or "").strip()][:MEMORY_LINES]
+    if not lines:
+        return ""
+    return "【你记得的这个家庭的事（家长以前说过，新的在前）】\n" + "\n".join(f"- {line}" for line in lines) + "\n\n"
+
+
+def write_checkin(
+    messages: list[dict], *, now: datetime, locale: str = "zh-CN", memories: list[str] = (),
+) -> Optional[dict]:
+    """The model's check-in for a finished conversation, or None when neither
+    the conversation nor what NURI remembers holds a subject to follow up on.
+    `memories` are the values of the family's concern / child_state memories."""
     last = last_user_message(messages)
     at = _parse((last or {}).get("created_at")) or now
     elapsed = _ago((now - at).total_seconds(), locale)
@@ -230,7 +252,8 @@ def write_checkin(messages: list[dict], *, now: datetime, locale: str = "zh-CN")
         {"role": "system", "content": system},
         {
             "role": "user",
-            "content": f"【对话（旧→新），家长最后一句是{elapsed}说的】\n{transcript(messages)}",
+            "content": memory_block(list(memories))
+            + f"【对话（旧→新），家长最后一句是{elapsed}说的】\n{transcript(messages)}",
         },
     ])
     line = _clip(data.get("line"), limits["line"][1])

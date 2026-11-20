@@ -1728,6 +1728,7 @@ async def get_personalized_feed(
     requested_count = max(1, min(count, 3 if presentation == "category_cards" else 6))
     items, used_conversation = feed_signals.rank_learning_content(
         context.get("messages") or [],
+        memory_texts=await _memory_signal_texts(uid, context),
         count=1 if presentation == "category_cards" else requested_count,
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
@@ -2005,6 +2006,7 @@ async def prepare_feed_research(
     behavior_events = await core_outcome_store.get_events(uid)
     ranked, _ = feed_signals.rank_learning_content(
         context.get("messages") or [],
+        memory_texts=await _memory_signal_texts(uid, context),
         count=len(LEARNING_CONTENT_CARDS),
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
@@ -2506,6 +2508,7 @@ async def get_card_detail(
             raise HTTPException(404, "recommendation not found")
         ranked, _ = feed_signals.rank_learning_content(
             context.get("messages") or [],
+            memory_texts=await _memory_signal_texts(uid, context),
             count=len(LEARNING_CONTENT_CARDS),
             session_id=context.get("session_id"),
             context_created_at=context.get("context_created_at"),
@@ -2751,6 +2754,7 @@ async def get_card_research(
         return {"research_status": "urgent_suppressed"}
     ranked, _ = feed_signals.rank_learning_content(
         context.get("messages") or [],
+        memory_texts=await _memory_signal_texts(uid, context),
         count=len(LEARNING_CONTENT_CARDS),
         session_id=context.get("session_id"),
         context_created_at=context.get("context_created_at"),
@@ -3497,6 +3501,15 @@ async def get_main_chat_preview(uid: str = Depends(_req_uid)):
         ) from exc
 
 
+async def _memory_signal_texts(uid: str, context: dict) -> list[str]:
+    """What NURI remembers about the family, for ranking the knowledge cards
+    (feed_signals.memory_signal_texts). None when the parent turned history
+    off or it couldn't be read: the cards then stay on the conversation alone."""
+    if context.get("state") in ("privacy_off", "unavailable"):
+        return []
+    return feed_signals.memory_signal_texts(await core_family_store.load_known_memories(uid))
+
+
 @api.get("/chat/main/checkin")
 async def get_main_checkin(uid: str = Depends(_req_uid)):
     """What NURI asks on Home about the last conversation (backend/feed/checkin.py).
@@ -3550,9 +3563,15 @@ async def get_main_checkin(uid: str = Depends(_req_uid)):
 
     privacy = await stores.get_privacy(uid, fail_closed=True)
     locale = locales.normalize_preferred_locale(privacy.get("language"))
+    # What NURI remembers about the family makes the question concrete, and
+    # carries Home when the last stretch of chat was only a thank-you.
+    memories = (
+        [] if privacy.get("allow_history_training") is False
+        else feed_signals.memory_signal_texts(await core_family_store.load_known_memories(uid))
+    )
     try:
         written = await anyio.to_thread.run_sync(
-            lambda: feed_checkin.write_checkin(messages, now=now, locale=locale)
+            lambda: feed_checkin.write_checkin(messages, now=now, locale=locale, memories=memories)
         )
     except Exception as exc:
         print(f"[warn] home check-in failed: {type(exc).__name__}: {exc}")
