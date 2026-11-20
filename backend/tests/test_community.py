@@ -250,7 +250,7 @@ def test_transcription_returns_a_draft_and_reuses_the_chat_path(env, monkeypatch
 
 # ── P06–P10 Questions ────────────────────────────────────────────────────────
 
-def test_question_publish_delivers_notifies_and_is_idempotent(env):
+def test_question_publish_delivers_notifies_and_is_idempotent(env, monkeypatch):
     err(ask(env, "u_ann"), 422, "VALIDATION_FAILED")  # no profile yet
     for u in ("u_ann", "u_ben", "u_cat"):
         make_profile(env, u)
@@ -279,6 +279,9 @@ def test_question_publish_delivers_notifies_and_is_idempotent(env):
     seen = ok(env.call("u_ben", "GET", f"/questions/{q['question_id']}"))["question"]
     assert seen["author"]["anonymous"] is True and seen["author"]["parent_id"] is None
     assert seen["delivery"]["state"] == "waiting" and not seen["is_mine"]
+    # A parent the question was never handed to cannot open it (backfill off
+    # here; with it on, a later joiner is handed it — see the backfill tests).
+    monkeypatch.setattr(community, "BACKFILL_MAX", 0)
     make_profile(env, "u_dan")
     err(env.call("u_dan", "GET", f"/questions/{q['question_id']}"), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
 
@@ -848,6 +851,53 @@ def test_d06_received_questions_stay_open_for_thirty_days(env):
     ok(ask(env, "u_ann"), 201)
     expires = datetime.fromisoformat(env.db.rows("community_question_deliveries")[0]["expires_at"])
     assert timedelta(days=29) < expires - datetime.now(timezone.utc) <= timedelta(days=30)
+
+
+def _received(env, uid):
+    return [d["question_id"] for d in env.db.rows("community_question_deliveries") if d["recipient_id"] == uid]
+
+
+def test_a_parent_who_joins_later_is_handed_recent_open_questions(env):
+    """2026-11-19: delivery ran once at posting, so later profiles never saw a question."""
+    from datetime import timedelta
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    qs = [ok(ask(env, "u_ann", body=f"问题{i}：孩子总哭怎么办？", key=f"late-q-000{i}"), 201)["question"]["question_id"]
+          for i in range(4)]
+    rows = {r["id"]: r for r in env.db.rows("community_questions")}
+    rows[qs[1]]["status"] = "closed"
+    rows[qs[2]]["created_at"] = community._iso(community._now() - timedelta(days=community.BACKFILL_DAYS + 1))
+    for i in range(community.DELIVERY_FANOUT - 1):  # qs[3] already reached a full fan-out
+        env.db.rows("community_question_deliveries").append({
+            "id": f"full-{i}", "question_id": qs[3], "recipient_id": f"u_x{i}", "state": "waiting",
+            "expires_at": "2099-01-01T00:00:00+00:00", "created_at": community._iso(), "seq": 20_000 + i})
+    assert _received(env, "u_cat") == []
+    make_profile(env, "u_cat")
+    assert _received(env, "u_cat") == [qs[0]]
+    d = _delivery(env, "u_cat")
+    assert [x["question"]["question_id"] for x in d] == [qs[0]] and d[0]["state"] == "waiting"
+    assert [n for n in env.db.rows("notification_events") if n["user_id"] == "u_cat"]
+    # Editing the profile afterwards hands out nothing more.
+    make_profile(env, "u_cat", about="hi")
+    assert _received(env, "u_cat") == [qs[0]]
+
+
+def test_unhiding_backfills_but_skips_own_blocked_and_respects_the_cap(env, monkeypatch):
+    for u in ("u_ann", "u_ben", "u_cat", "u_dan"):
+        make_profile(env, u)
+    ok(env.call("u_cat", "PATCH", "/preferences", json={"profile_hidden": True}))
+    ok(env.call("u_cat", "PUT", f"/me/blocks/{pid(env, 'u_ben')}", json={"confirmed": True}))
+    qa = ok(ask(env, "u_ann", key="hid-q-0001"), 201)["question"]["question_id"]
+    ok(ask(env, "u_ben", key="hid-q-0002"), 201)
+    ok(ask(env, "u_cat", key="hid-q-0003"), 201)
+    qd = ok(ask(env, "u_dan", key="hid-q-0004"), 201)["question"]["question_id"]
+    assert _received(env, "u_cat") == []  # hidden while they were posted
+    monkeypatch.setattr(community, "BACKFILL_MAX", 1)
+    ok(env.call("u_cat", "PATCH", "/preferences", json={"profile_hidden": False}))
+    assert _received(env, "u_cat") == [qd]  # newest first on a tie; not Ben's, not their own
+    monkeypatch.setattr(community, "BACKFILL_MAX", 3)
+    ok(env.call("u_cat", "PATCH", "/preferences", json={"profile_hidden": False}))
+    assert sorted(_received(env, "u_cat")) == sorted([qd, qa])
 
 
 # ── Reports (Google Play UGC policy) ─────────────────────────────────────────

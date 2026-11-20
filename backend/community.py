@@ -68,6 +68,10 @@ DELIVERY_TTL_DAYS = int(os.getenv("COMMUNITY_DELIVERY_TTL_DAYS", "30"))
 # cost 5–7 s per question in prod; the team decided on 2026-11-18 to drop it).
 #: Parents with this many questions already waiting this week drop in the order.
 DELIVERY_LOAD_WINDOW_DAYS = 7
+#: A parent who joins later is handed this many recent open questions (see
+#: backfill_deliveries); 0 turns the backfill off.
+BACKFILL_MAX = int(os.getenv("COMMUNITY_BACKFILL_MAX", "3"))
+BACKFILL_DAYS = int(os.getenv("COMMUNITY_BACKFILL_DAYS", "14"))
 MEDIA_UPLOAD_TTL_MIN = 30
 MEDIA_ACCESS_TTL_S = 300
 MEDIA_BUCKET = os.getenv("COMMUNITY_MEDIA_BUCKET", "community-media")
@@ -782,8 +786,10 @@ async def get_my_profile(uid: str) -> dict:
     return _own_profile_dto(profile, roles.get(uid, ""), await _preferences(uid))
 
 
-async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
+async def patch_my_profile(uid: str, body: ProfilePatch,
+                           schedule: Optional[Callable[..., Any]] = None) -> dict:
     profile = await _profile(uid)
+    created = profile is None
     patch: dict[str, Any] = {}
     if body.display_name is not None:
         patch["display_name"] = _clean_text(body.display_name, field="display_name", max_len=DISPLAY_NAME_MAX)
@@ -839,8 +845,18 @@ async def patch_my_profile(uid: str, body: ProfilePatch) -> dict:
     if avatar_row and avatar_row["state"] != "committed":
         await _update("community_media", {"state": "committed", "bound_to": "avatar", "updated_at": _iso()},
                       lambda q: q.eq("id", avatar_row["id"]))
+    if created:
+        await _backfill(uid, schedule)
     roles = await _roles([uid])
     return _own_profile_dto(profile, roles.get(uid, ""), await _preferences(uid))
+
+
+async def _backfill(uid: str, schedule: Optional[Callable[..., Any]]) -> None:
+    """Run `backfill_deliveries` after the response when a scheduler is given."""
+    if schedule is not None:
+        schedule(backfill_deliveries, uid)
+    else:
+        await backfill_deliveries(uid)
 
 
 async def _sync_account_name(uid: str, name: str) -> None:
@@ -1271,22 +1287,70 @@ async def _deliver(question: dict) -> int:
     # Ties are broken at random so the same parents are not always first.
     ranked = sorted(eligible, key=lambda uid: (delivery_score(asker, features[uid], topics, load.get(uid, 0)),
                                                random.random()), reverse=True)
-    chosen = ranked[:DELIVERY_FANOUT]
+    return await _hand_out([(question, recipient) for recipient in ranked[:DELIVERY_FANOUT]])
+
+
+async def _hand_out(pairs: list[tuple[dict, str]]) -> int:
+    """Create a waiting delivery for each (question, recipient) and notify them."""
     expires = _iso(_now() + timedelta(days=DELIVERY_TTL_DAYS))
-    rows = []
-    for recipient in chosen:
+    made = []
+    for question, recipient in pairs:
         try:
-            rows.append(await _insert("community_question_deliveries", {
+            made.append((question, await _insert("community_question_deliveries", {
                 "question_id": question["id"], "recipient_id": recipient,
                 "state": "waiting", "expires_at": expires,
-            }))
+            })))
         except _UniqueViolation:
             continue
     await asyncio.gather(*(
         _notify(row["recipient_id"], "community_question", str(row["id"]),
-                {"delivery_id": str(row["id"]), "question_id": str(question["id"])}, actor=author)
-        for row in rows))
-    return len(rows)
+                {"delivery_id": str(row["id"]), "question_id": str(question["id"])},
+                actor=question["author_id"])
+        for question, row in made))
+    return len(made)
+
+
+async def backfill_deliveries(uid: str) -> int:
+    """Give a parent who just joined (or un-hid their profile) recent open questions.
+
+    Delivery used to happen once, when a question was posted, so anyone who
+    created a profile later never saw it (2026-11-19: the boss's question had
+    reached only the three profiles that existed that day). Up to BACKFILL_MAX
+    questions from the last BACKFILL_DAYS that are still open, not the parent's
+    own, not yet with DELIVERY_FANOUT parents and with no block either way,
+    ranked by the same `delivery_score`, newest first on ties.
+    """
+    return await _hand_out([(x, uid) for x in await backfill_picks(uid)])
+
+
+async def backfill_picks(uid: str) -> list[dict]:
+    """The questions `backfill_deliveries` would hand `uid`, best first."""
+    if BACKFILL_MAX <= 0 or not await _profile(uid) or (await _preferences(uid)).get("profile_hidden"):
+        return []
+    since = _iso(_now() - timedelta(days=BACKFILL_DAYS))
+    questions = await _select("community_questions", lambda q: q.eq("status", "open").neq("author_id", uid)
+                              .gte("created_at", since).order("created_at", desc=True).limit(100))
+    if not questions:
+        return []
+    deliveries = await _select("community_question_deliveries",
+                               lambda q: q.in_("question_id", [str(x["id"]) for x in questions]))
+    reach: dict[str, int] = {}
+    mine: set[str] = set()
+    for d in deliveries:
+        reach[str(d["question_id"])] = reach.get(str(d["question_id"]), 0) + 1
+        if d["recipient_id"] == uid:
+            mine.add(str(d["question_id"]))
+    i_blocked, blocked_me = await _block_sets(uid)
+    open_qs = [x for x in questions if str(x["id"]) not in mine and reach.get(str(x["id"]), 0) < DELIVERY_FANOUT
+               and x["author_id"] not in i_blocked and x["author_id"] not in blocked_me]
+    if not open_qs:
+        return []
+    people = list({x["author_id"] for x in open_qs} | {uid})
+    features = await _family_features(people, await _profiles(people))
+    ranked = sorted(open_qs, key=lambda x: (delivery_score(features[x["author_id"]], features[uid],
+                                                           question_topics(x["body"]), 0),
+                                            str(x.get("created_at") or "")), reverse=True)
+    return ranked[:BACKFILL_MAX]
 
 
 async def create_question(uid: str, body: QuestionIn,
@@ -2161,7 +2225,16 @@ async def get_preferences(uid: str) -> dict:
     return _prefs_dto(await _preferences(uid))
 
 
-async def patch_preferences(uid: str, body: PreferencesPatch) -> dict:
+async def patch_preferences(uid: str, body: PreferencesPatch,
+                            schedule: Optional[Callable[..., Any]] = None) -> dict:
+    """Turning "hide my profile" off hands the parent recent open questions too."""
+    row = await _apply_preferences(uid, body)
+    if body.profile_hidden is False:
+        await _backfill(uid, schedule)
+    return row
+
+
+async def _apply_preferences(uid: str, body: PreferencesPatch) -> dict:
     patch = {k: v for k, v in body.model_dump().items()
              if k in ("parent_message_notifications_enabled", "profile_hidden", "auto_translate_messages")
              and v is not None}
@@ -2756,7 +2829,8 @@ def build_router(req_uid: Callable) -> APIRouter:
     async def _p01(uid: str = U): return await get_my_profile(uid)
 
     @r.patch("/profiles/me")
-    async def _p02(body: ProfilePatch, uid: str = U): return await patch_my_profile(uid, body)
+    async def _p02(body: ProfilePatch, background: BackgroundTasks, uid: str = U):
+        return await patch_my_profile(uid, body, schedule=background.add_task)
 
     @r.get("/parents/{parent_id}")
     async def _p03(parent_id: str, uid: str = U): return await get_parent(uid, parent_id)
@@ -2879,7 +2953,8 @@ def build_router(req_uid: Callable) -> APIRouter:
     async def _p24a(uid: str = U): return await get_preferences(uid)
 
     @r.patch("/preferences")
-    async def _p24b(body: PreferencesPatch, uid: str = U): return await patch_preferences(uid, body)
+    async def _p24b(body: PreferencesPatch, background: BackgroundTasks, uid: str = U):
+        return await patch_preferences(uid, body, schedule=background.add_task)
 
     @r.post("/conversations/{conversation_id}/ai-consent-requests")
     async def _p25(conversation_id: str, body: ConsentRequestIn, uid: str = U):
