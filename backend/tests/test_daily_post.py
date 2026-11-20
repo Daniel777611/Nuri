@@ -675,8 +675,9 @@ def test_a_spent_budget_with_nothing_pooled_is_recorded_without_a_model_call(wor
     assert row["query"] == {"searches": 0}
     # No words written from the chat: they could not be searched for anyway.
     assert world.conversation_calls == 0 and world.generated == 0
-    # Every profile plan was asked, in case the pool held one of them.
-    assert [basis for basis, _ in world.searched] == ["profile"] * dp.PROFILE_PLANS
+    # Every plan was asked, in case the pool held one of them — no more than
+    # the profile plans were before: no extra plan for words nobody can search.
+    assert len(world.searched) == dp.PROFILE_PLANS
 
 
 def test_a_spent_budget_still_makes_a_card_from_the_pool(world, monkeypatch):

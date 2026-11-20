@@ -870,7 +870,7 @@ async def get_daily_video(
     queries = None
     if plan:
         query_zh, query_en = video_queries(plan)
-        queries = {"zh": query_zh, "en": query_en, "searches": spent[0]}
+        queries = {"zh": query_zh, "en": query_en, "why": plan.why, "searches": spent[0]}
     if not card:
         await finish(status="empty", basis=plan.basis if plan else None, queries=queries)
         return {**base, "state": "empty", "retry_after_s": dp.EMPTY_RETRY_S}
@@ -889,19 +889,8 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
     exclude = await anyio.to_thread.run_sync(lambda: store.recent_urls(user_id, now))
     standing = await family_store.load_standing_memories(user_id, children)
-
-    plans: list[dp.Plan] = []
-    # See daily_post._generate: conversation words are rarely in the pool.
-    if budget_left and context.get("external_research_allowed"):
-        messages = family_store.redact_child_profile_history(list(context.get("messages") or []), children)
-        user_texts = [str(m.get("text") or "") for m in messages if m.get("role") == "user"]
-        topics = await dp.recent_route_topics(user_id, now=now) if dp.QUERY_MODE != "llm" else []
-        plan = await anyio.to_thread.run_sync(
-            lambda: dp.conversation_plan(user_texts, child_age_context, children, locale, standing, topics=topics)
-        )
-        if plan:
-            plans.append(plan)
-    plans.extend(dp.profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
+    plans = await dp.plans_for_today(user_id, children, profile, day, now, context=context, locale=locale,
+                                     standing=standing, budget_left=budget_left)
 
     started = time.monotonic()
     refused: Optional[Exception] = None

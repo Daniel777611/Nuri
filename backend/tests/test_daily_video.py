@@ -205,8 +205,11 @@ def world(monkeypatch):
 
     monkeypatch.setattr(family_store, "load_profile", fake_profile)
     monkeypatch.setattr(feed_signals, "load_recent_main_chat", fake_chat)
-    monkeypatch.setattr(dp, "conversation_plan", lambda *_a, **_k: dp.Plan(
-        basis="conversation", concern="躺地哭闹", query_zh="20个月 发脾气 宝妈", query_en="toddler tantrums moms"))
+    async def fake_plans(*_a, **_k):
+        return [dp.Plan(basis="conversation", concern="躺地哭闹", query_zh="20个月 发脾气 宝妈",
+                        query_en="toddler tantrums moms")]
+
+    monkeypatch.setattr(dp, "plans_for_today", fake_plans)
     monkeypatch.setattr(dv, "find_candidates", fake_find)
     monkeypatch.setattr(dv, "pick_video", fake_pick)
     monkeypatch.setattr(dv, "write_summary", fake_summary)
