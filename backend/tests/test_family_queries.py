@@ -19,7 +19,6 @@ from backend.nuri_core import family_store
 
 DAY = date(2026, 11, 19)
 FAMILY = {f.name: f for f in FAMILIES}
-OFF_DOMAIN_WORDS = ("基督", "教会", "AI", "ai ", "程序员", "创业", "开发", "Houston")
 
 
 @pytest.fixture(autouse=True)
@@ -43,19 +42,21 @@ def queries(ps: list[dp.Plan]) -> str:
 
 # ── The two reports from testing ─────────────────────────────────────────────
 
-def test_a_christian_ai_developers_faith_and_job_never_reach_a_search():
+def test_a_christian_ai_developers_own_interest_is_kept_as_an_extension():
+    """The parent liked the "基督徒怎么看AI" card: an extension from his own
+    world, not a keyword match. It stays, alongside what the child needs."""
     f = FAMILY["christian_ai_dad"]
-    before = dp.template_plan(f.topics, f.user_texts, f.children, f.locale)
-    assert before and "基督徒怎么看AI" in before.query_zh  # what testing saw
-
-    after = plans(f)
-    text = queries(after)
-    assert not any(word in text for word in OFF_DOMAIN_WORDS), text
-    # What the family is going through leads: he said the baby just started
-    # cruising, and ticked development at sign-up.
-    assert "学步" in after[0].query_zh and after[0].basis == "conversation"
-    assert "memory" in after[0].why
-    assert any("陪玩" in p.query_zh for p in after)  # "worried I'm not around enough"
+    days = [plans(f, DAY + timedelta(days=i)) for i in range(2)]
+    for after in days:
+        leads = [p.query_zh for p in after[:2]]
+        assert any("基督徒怎么看AI" in q for q in leads)
+        # He said the baby just started cruising and ticked development.
+        assert any("学步" in q for q in leads)
+        assert any("陪玩" in p.query_zh for p in after)  # "worried I'm not around enough"
+    # The extension leads every other day.
+    assert {"基督徒怎么看AI" in d[0].query_zh for d in days} == {True, False}
+    interest = next(p for p in days[0] if "基督徒怎么看AI" in p.query_zh)
+    assert interest.basis == "conversation" and "memory_soft×2" in interest.why
 
 
 def test_a_one_year_olds_family_gets_what_a_one_year_old_needs_for_going_out():
@@ -77,29 +78,33 @@ def test_a_stage_only_family_sees_the_whole_stage_across_a_week():
 
 # ── What may become a search ─────────────────────────────────────────────────
 
-@pytest.mark.parametrize("topic", ["基督徒怎么看AI", "基督徒如何管教孩子", "AI会不会取代程序员", "创业妈妈如何哄睡"])
-def test_a_topic_about_the_parents_world_is_never_searched_as_written(topic):
-    assert fq.clean_topic(topic) == ""
-
-
 def test_a_parenting_topic_is_kept_without_its_age():
     assert fq.clean_topic("入园分离焦虑") == "入园分离焦虑"
     assert fq.clean_topic("1岁零3个月零食选择") == "零食选择"
-    assert fq.clean_topic("寒暄") == ""
-    assert fq.clean_topic("康复训练") == ""  # parenting-adjacent, but no need it maps to
+    assert fq.clean_topic("基督徒如何管教孩子") == "基督徒如何管教孩子"  # parenting, in his own terms
+    assert fq.clean_topic("基督徒怎么看AI") == ""
 
 
-def test_english_words_match_whole():
-    assert not fq.is_off_domain("potty training")
-    assert not fq.is_off_domain("waiting for daycare")
-    assert fq.is_off_domain("基督徒怎么看AI")
-    assert fq.is_off_domain("what does the Bible say")
+def test_a_topic_about_the_parents_world_becomes_the_interest():
+    assert fq.interest_topic("基督徒怎么看AI") == "基督徒怎么看AI"
+    assert fq.interest_topic("AI会不会取代程序员") == "AI会不会取代程序员"
+    assert fq.interest_topic("入园分离焦虑") == ""
 
 
-def test_off_domain_chat_still_cannot_choose_a_need():
-    f = Family("only_off_topic", 30, {"parent_role": "mom", "top_concerns": []},
-               topics=["AI时代孩子怎么教育"], user_texts=["AI时代孩子要学编程吗"])
-    assert all(p.basis == "profile" for p in plans(f))
+def test_only_the_newest_interest_counts_and_only_one():
+    f = FAMILY["christian_ai_dad"]  # two interest topics, newest first
+    ranked = fq.rank_needs(months=12, profile=f.profile, memories=f.memories, topics=f.topics)
+    interests = [c for c in ranked if c.is_interest]
+    assert [c.topic for c in interests] == ["基督徒怎么看AI"]
+
+
+def test_a_stray_interest_without_memory_still_ranks_below_a_remembered_need():
+    f = Family("one_off", 12, {"top_concerns": []}, topics=["怎么报税"],
+               memories=[{"category": "child_state", "key": "walk", "value": "刚会走路"}])
+    ranked = fq.rank_needs(months=12, profile=f.profile, memories=f.memories, topics=f.topics)
+    interest = next(c for c in ranked if c.is_interest)
+    walking = next(c for c in ranked if c.need.id == "walking")
+    assert interest.score < walking.score
 
 
 # ── Long-term memory ─────────────────────────────────────────────────────────
@@ -141,6 +146,9 @@ def test_the_research_switch_off_leaves_only_the_profile_and_age():
     assert all(p.basis == "profile" for p in after)
     assert len(after) <= dp.PROFILE_PLANS
     assert "sleep" in after[0].query_en
+    # With the switch off no chat topic leaves, interest or not.
+    off = Family("off", 12, {"top_concerns": []}, topics=["基督徒怎么看AI"], personal=False)
+    assert "基督徒" not in queries(plans(off))
 
 
 def test_a_hobby_can_choose_a_need_but_never_becomes_a_word():
@@ -193,7 +201,7 @@ def _run_plans_for_today(monkeypatch, f: Family, *, budget_left=True):
 
 def test_plans_for_today_reads_memory_and_chat(monkeypatch):
     out = _run_plans_for_today(monkeypatch, FAMILY["christian_ai_dad"])
-    assert "学步" in out[0].query_zh and "AI" not in queries(out)
+    assert "学步" in queries(out[:2]) and "基督徒怎么看AI" in queries(out[:2])
 
 
 def test_memory_is_not_read_when_the_research_switch_is_off(monkeypatch):

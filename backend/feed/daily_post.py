@@ -693,7 +693,7 @@ def family_plans(
     months = youngest_age_months(children)
     # A chat topic may be searched as written, so it is scrubbed like any
     # other text that leaves NURI (the router already redacts; this is the net).
-    topics = [_scrub(t, children) for t in topics]
+    topics = [t for t in (_scrub(t, children) for t in topics) if t and t not in _GENERIC_TOPICS]
     ranked = family_queries.rotate_lead(family_queries.rank_needs(
         months=months, profile=profile, memories=memories, topics=topics, user_texts=user_texts,
         standing=standing, personal=personal,

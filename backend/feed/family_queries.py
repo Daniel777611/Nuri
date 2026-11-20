@@ -12,19 +12,23 @@ Before this, the search words came from two places only (see daily_post):
 
 Here the plan starts from the family instead:
 
-1. **Needs, not words.** A fixed table of parenting needs (``NEEDS``), each
-   with its own search words, the ages it belongs to and the words that point
-   to it. Only these curated words reach a search. A parent's identity, faith,
-   job or city is never pasted in: memory, hobbies and chat can *choose* a
-   need, they can't write the query.
-2. **Signals, weighted.** Long-term memory (what the parent said is going on:
+1. **Needs, not loose keywords.** A fixed table of parenting needs
+   (``NEEDS``), each with its own search words, the ages it belongs to and the
+   words that point to it. Memory, hobbies and chat *choose* a need; the
+   need's own words make the search, so a one-year-old's family gets a
+   stroller and car-seat search without ever having typed "stroller".
+2. **The parent's own world, as an extension.** A recent chat topic that is
+   about the parent rather than a parenting need ("基督徒怎么看AI" from a
+   Christian who builds AI) is not dropped: testing found that exactly this
+   kind of card was one the parent liked. It leads every other day.
+3. **Signals, weighted.** Long-term memory (what the parent said is going on:
    ``concern`` / ``child_state`` rows) counts most, then the onboarding
    concerns, then the child's stage by age; the recent chat only adds weight
    to a need — it is the supplement, not the source.
-3. **Standing constraints** drop needs that would clash outright (a child who
+4. **Standing constraints** drop needs that would clash outright (a child who
    can't walk gets no "learning to walk" search). The post-pick check still
    runs on the finished card.
-4. **Same search budget.** At most as many plans as before (three, plus one
+5. **Same search budget.** At most as many plans as before (three, plus one
    when personal signals were usable), two searches each; the strongest needs
    rotate by day so the card isn't the same subject every morning.
 
@@ -38,7 +42,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 from backend import topic_keywords
 from backend.feed import standing as standing_guard
@@ -161,7 +165,7 @@ def concern_need(concern: str, months: Optional[int]) -> Optional[str]:
 
 #: How much each source counts. Memory is what the parent has told NURI is
 #: going on, kept until it is overturned; chat is only the last few turns.
-WEIGHTS = {"memory": 3, "memory_soft": 1, "concern": 2, "stage": 1, "chat": 1, "hobby": 1}
+WEIGHTS = {"memory": 3, "memory_soft": 1, "concern": 2, "stage": 1, "chat": 1, "hobby": 1, "interest": 2}
 #: One need can't win on a pile of near-duplicate rows: the memory extractor
 #: often writes the same fact under three keys.
 MEMORY_HITS_CAP = 2
@@ -171,17 +175,6 @@ CHAT_HITS_CAP = 2
 #: weaning and means the opposite.
 _STRONG_MEMORY = {"concern", "child_state"}
 _SOFT_MEMORY = {"preference", "fact"}
-
-#: Words that mark a chat topic as being about the parent's world rather than
-#: the child: faith, work, technology, money, politics. A topic carrying one of
-#: these never reaches a search as written — at most the need it also touches.
-OFF_DOMAIN = (
-    "基督", "信仰", "教会", "教會", "圣经", "聖經", "祷告", "禱告", "上帝", "佛教", "佛法", "穆斯林", "伊斯兰",
-    "宗教", "AI", "人工智能", "大模型", "编程", "編程", "程序员", "程序員", "开发", "開發", "工程师", "工程師",
-    "创业", "創業", "公司", "职场", "職場", "工作", "老板", "老闆", "股票", "投资", "投資", "理财", "理財",
-    "政治", "选举", "選舉", "科技", "技术", "技術", "christian", "church", "bible", "faith", "religio",
-    "software", "developer", "engineer", "startup", "career", "invest", "politic",
-)
 
 _AGE_IN_TEXT = re.compile(
     r"(\d+|[一二两兩三四五六七八九十半]+)\s*(个月|個月|岁|歲|周|週|天)(零?(\d+|[一二两兩三四五六七八九十]+)\s*(个月|個月))?"
@@ -194,28 +187,37 @@ def needs_in(text: str) -> list[str]:
     return [n.id for n in NEEDS if any(t.lower() in lowered for t in n.triggers)]
 
 
-_OFF_DOMAIN_EN = re.compile(
-    "|".join(rf"(?<![a-z]){re.escape(w.lower())}" + (r"(?![a-z])" if len(w) <= 3 else "")
-             for w in OFF_DOMAIN if w.isascii()),
-)
+def _strip_topic(topic: str) -> str:
+    """Ages out (the plan adds the age band itself), spaces tidied."""
+    return re.sub(r"\s+", " ", _AGE_IN_TEXT.sub("", topic or "")).strip(" /／、,，")[:20]
 
 
-def is_off_domain(text: str) -> bool:
-    """English words match whole ("AI" is not the "ai" in "training")."""
-    lowered = (text or "").lower()
-    return any(w in lowered for w in OFF_DOMAIN if not w.isascii()) or bool(_OFF_DOMAIN_EN.search(lowered))
+def is_parenting(topic: str) -> bool:
+    return bool(needs_in(topic) or topic_keywords.main_topic(topic))
 
 
 def clean_topic(topic: str) -> str:
-    """A router topic fit to search as written, or "" — only parenting topics
-    that say nothing about the parent's own world; ages stripped (the plan
-    adds the age band itself)."""
-    topic = re.sub(r"\s+", " ", _AGE_IN_TEXT.sub("", topic or "")).strip(" /／、,，")
-    if not topic or is_off_domain(topic):
-        return ""
-    if not needs_in(topic) and not topic_keywords.main_topic(topic):
-        return ""
-    return topic[:20]
+    """A router topic that names a parenting need, ages stripped; else ""."""
+    topic = _strip_topic(topic)
+    return topic if topic and is_parenting(topic) else ""
+
+
+def interest_topic(topic: str) -> str:
+    """A router topic about the parent's own world (faith, work, a hobby),
+    ages stripped; else "". Greetings and thanks are already gone by here
+    (daily_post._GENERIC_TOPICS)."""
+    topic = _strip_topic(topic)
+    return topic if len(topic) >= 2 and not is_parenting(topic) else ""
+
+
+def _pieces(text: str) -> set[str]:
+    """Two-character pieces and lower-case words, to tell whether a memory
+    row is about the same thing as a chat topic."""
+    out = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text or ""):
+        out.update(run[i:i + 2] for i in range(len(run) - 1))
+    out.update(re.findall(r"[a-z]{2,}", (text or "").lower()))
+    return out - set(standing_guard._COMMON_PIECES)
 
 
 @dataclass
@@ -234,7 +236,11 @@ class Candidate:
     @property
     def personal(self) -> bool:
         """Whether the parent said something that points here."""
-        return bool({"memory", "chat"} & set(self.sources))
+        return bool({"memory", "chat", "interest"} & set(self.sources))
+
+    @property
+    def is_interest(self) -> bool:
+        return self.need.id == INTEREST_ID
 
 
 def _fits_age(need: Need, months: Optional[int]) -> bool:
@@ -326,14 +332,14 @@ def rank_needs(
             for need_id in ids[:1]:
                 hit(need_id, "chat", CHAT_HITS_CAP, topic=topic)
         for text in reversed([t for t in user_texts if t.strip()][-8:]):
-            if is_off_domain(text):
-                continue
             ids = needs_in(text)
             if not ids:
                 concern = topic_keywords.main_topic(text)
                 ids = [concern_need(concern, months)] if concern else []
             for need_id in ids[:1]:
                 hit(need_id, "chat", CHAT_HITS_CAP)
+
+    interest = _interest_candidate(topics, memories, profile) if personal else None
 
     ranked = [
         c for c in cands.values()
@@ -347,24 +353,52 @@ def rank_needs(
         # questions parents of any young child ask most, as before.
         ranked = [Candidate(NEEDS_BY_ID["sleep"], 0, {"fallback": 1}),
                   Candidate(NEEDS_BY_ID["tantrums"], 0, {"fallback": 1})]
+    if interest:
+        ranked.insert(1, interest)  # rotate_lead decides whether it leads today
     return ranked
+
+
+INTEREST_ID = "interest"
+
+
+def _interest_candidate(topics: Sequence[str], memories: Sequence[dict], profile: dict) -> Optional[Candidate]:
+    """The newest chat topic about the parent's own world, as a candidate of
+    its own, searched as written. Memory rows and hobbies about the same thing
+    ("用户是基督徒", "做AI开发") add to it: an interest the parent keeps coming
+    back to is worth more than one stray question."""
+    topic = next((t for t in (interest_topic(raw) for raw in topics) if t), "")
+    if not topic:
+        return None
+    cand = Candidate(Need(INTEREST_ID, topic, topic, topic, "", _ANY_AGE), topic=topic)
+    cand.add("interest")
+    pieces = _pieces(topic)
+    texts = [f"{r.get('key') or ''} {r.get('value') or ''}" for r in memories
+             if str(r.get("category") or "") in _SOFT_MEMORY | _STRONG_MEMORY] + _hobby_texts(profile)
+    for text in texts:
+        if pieces & _pieces(text):
+            cand.add("memory_soft", MEMORY_HITS_CAP)
+    return cand
 
 
 def rotate_lead(ranked: list[Candidate], day: date) -> list[Candidate]:
     """The needs tied for the top take turns leading, one per day, so a
     stage-only family sees walking one morning and a stroller the next, and
-    a family with two equal worries sees both. The rest keep their order."""
-    if not ranked:
-        return ranked
-    top = [c for c in ranked if c.score == ranked[0].score]
-    start = day.toordinal() % len(top)
-    return top[start:] + top[:start] + ranked[len(top):]
+    a family with two equal worries sees both. The parent's own interest, if
+    there is one, leads every other day and is second otherwise. The rest
+    keep their order."""
+    interest = [c for c in ranked if c.is_interest]
+    needs = [c for c in ranked if not c.is_interest]
+    if needs:
+        top = [c for c in needs if c.score == needs[0].score]
+        start = day.toordinal() % len(top)
+        needs = top[start:] + top[:start] + needs[len(top):]
+    if not interest:
+        return needs
+    at = 0 if day.toordinal() % 2 == 0 else 1
+    return needs[:at] + interest + needs[at:]
 
 
 def explain(cand: Candidate) -> str:
     """"memory×2+stage" — which signals chose a need, for the admin row."""
     return "+".join(f"{s}×{n}" if n > 1 else s for s, n in cand.sources.items())
 
-
-def chosen(cands: Iterable[Candidate], limit: int) -> list[Candidate]:
-    return list(cands)[:max(limit, 0)]
