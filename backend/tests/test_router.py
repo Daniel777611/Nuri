@@ -273,3 +273,57 @@ def test_route_metrics_carry_the_reason():
 def test_route_metrics_of_a_failure_are_loggable():
     row = route_metrics(TurnRoute(ok=False, error="timeout"))
     assert row["route_ok"] is False and row["route_error"] == "timeout"
+
+
+# ── Rule fast path ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "谢谢", "谢谢NURI！", "好的谢谢~", "晚安", "你好呀", "哈喽", "Thanks!", "thank you 😊", "嗯嗯，明白了，谢谢", "拜拜",
+])
+def test_greetings_and_thanks_skip_the_model_and_the_search(text):
+    client = _Client(exc=AssertionError("must not be called"))
+    route = asyncio.run(route_turn([{"role": "assistant", "text": "要不要试试固定睡前流程？"},
+                                    {"role": "user", "text": text}], client=client))
+    assert route.ok and not route.needs_search and route.topic == ""
+    assert route.reason.startswith("规则")
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("text", [
+    "好的",                      # may be the go-ahead NURI asked for
+    "嗯",
+    "ok",
+    "谢谢，那他晚上还醒怎么办",  # thanks plus a question
+    "hi, my baby has a fever",
+    "你好，宝宝4个月不吃奶",
+])
+def test_anything_else_still_goes_to_the_model(text):
+    client = _Client(raw=_raw())
+    asyncio.run(route_turn([{"role": "user", "text": text}], client=client))
+    assert len(client.calls) == 1
+
+
+def test_the_fast_path_can_be_switched_off(monkeypatch):
+    import backend.router as router_module
+
+    monkeypatch.setattr(router_module, "FAST_PATH", False)
+    client = _Client(raw=_raw())
+    asyncio.run(route_turn([{"role": "user", "text": "谢谢"}], client=client))
+    assert len(client.calls) == 1
+
+
+def test_the_fast_path_sees_through_the_time_label_main_adds():
+    from datetime import datetime, timezone
+
+    from backend.nuri_core import temporal
+
+    now = datetime(2026, 11, 18, 20, 0, tzinfo=timezone.utc)
+    context = temporal.build_context("America/Los_Angeles", now_utc=now)
+    history = temporal.annotate_history([
+        {"role": "assistant", "text": "试试固定睡前流程", "created_at": "2026-11-18T19:58:00+00:00"},
+        {"role": "user", "text": "谢谢NURI", "created_at": "2026-11-18T19:59:00+00:00"},
+    ], context)
+    assert history[-1]["text"].startswith("[本轮消息时间：")
+    client = _Client(exc=AssertionError("must not be called"))
+    route = asyncio.run(route_turn(history, client=client))
+    assert route.ok and not route.needs_search and client.calls == []

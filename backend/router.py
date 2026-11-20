@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, replace
 from typing import Literal, Optional, Sequence
@@ -88,6 +89,58 @@ class TurnRoute:
 
 
 NO_ROUTE = TurnRoute(ok=True)
+
+#: ROUTER_FAST_PATH=0 sends every turn to the model again.
+FAST_PATH = os.getenv("ROUTER_FAST_PATH", "1") == "1"
+
+#: A whole message made only of these, with at least one SMALL_TALK word, is
+#: answered without a search and without asking the model. Acknowledgements
+#: alone ("好的", "嗯", "ok") are NOT enough: after NURI offers to explain
+#: something, a bare "好的" is the go-ahead for an answer that needs sources.
+_SMALL_TALK = (
+    "你好", "您好", "嗨", "哈喽", "哈囉", "在吗", "在嗎", "早上好", "早安", "午安", "晚上好", "晚安",
+    "谢谢你", "謝謝你", "谢谢", "謝謝", "谢啦", "謝啦", "感谢", "感謝", "多谢", "多謝", "辛苦了",
+    "拜拜", "再见", "再見", "下次聊", "hello", "hi", "hey", "thank you", "thanks", "thx", "bye", "goodbye",
+    "good morning", "good night",
+)
+_ACKS = ("好的", "好滴", "好", "嗯嗯", "嗯", "明白了", "明白", "知道了", "收到", "了解", "ok", "okay", "nuri")
+_FILLER = re.compile(r"[\s\W_]+|[呀啊哦噢呢啦吧嘛~～]", re.UNICODE)
+FAST_PATH_MAX_CHARS = 12
+FAST_ROUTE = TurnRoute(needs_search=False, topic="", reason="规则：寒暄/道谢", ok=True)
+
+
+#: The clock label core_temporal.annotate_history puts in front of each
+#: message the router sees: "[本轮消息时间：…]" and a line break, then the text.
+_TIME_LABEL = re.compile(r"^\s*\[(?:历史|本轮)消息时间：[^\]]*\]\s*")
+
+
+def is_small_talk(text: str) -> bool:
+    """A greeting, thanks or goodbye and nothing else: "谢谢NURI！", "晚安~",
+    "好的谢谢". Emoji, punctuation, particles and the time label are ignored."""
+    rest = _FILLER.sub("", _TIME_LABEL.sub("", text or "").lower())
+    if not rest or len(rest) > FAST_PATH_MAX_CHARS:
+        return False
+    found = False
+    while rest:
+        for word in sorted(_SMALL_TALK + _ACKS, key=len, reverse=True):
+            plain = word.replace(" ", "")
+            if rest.startswith(plain):
+                found = found or word in _SMALL_TALK
+                rest = rest[len(plain):]
+                break
+        else:
+            return False
+    return found
+
+
+def fast_route(history: Sequence[dict]) -> Optional[TurnRoute]:
+    """The route for a turn the rules can settle, or None for the model."""
+    if not FAST_PATH:
+        return None
+    said = [m for m in history if (m.get("text") or "").strip() and not (m.get("transition") or {}).get("kind")]
+    if said and said[-1].get("role") == "user" and is_small_talk(said[-1]["text"]):
+        return FAST_ROUTE
+    return None
 
 
 def _failed(error: str) -> TurnRoute:
@@ -216,6 +269,9 @@ async def route_turn(
     useless without it, since advice for a 4-month-old and a 2-year-old share
     almost nothing.
     """
+    fast = fast_route(history)
+    if fast is not None:
+        return fast
     if client is None:
         return _failed("no model client")
 

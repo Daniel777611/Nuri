@@ -7,6 +7,8 @@ is an in-memory stand-in.
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import threading
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -197,11 +199,62 @@ def test_a_rejected_choice_is_struck_and_the_model_asked_again(monkeypatch):
         calls.append([c.url for c in candidates])
         return answers[len(calls) - 1]
 
+    monkeypatch.setattr(dp, "PICK_MODE", "llm")
     monkeypatch.setattr(dp, "_ask_pick", fake_ask)
     first, second = _cand(url="https://www.facebook.com/groups/aaaaaaaa/posts/1"), _cand()
     picked = dp.pick_post([first, second], concern="c", child_age_context="", locale="zh-CN")
     assert picked["candidate"].url == second.url
     assert calls == [[first.url, second.url], [second.url]]
+
+
+def test_ranked_mode_shows_the_model_one_post_at_a_time_best_first(monkeypatch):
+    calls = []
+
+    def fake_ask(candidates, **_k):
+        calls.append([c.url for c in candidates])
+        return _pick(author_kind="professional") if len(calls) == 1 else _pick()
+
+    monkeypatch.setattr(dp, "_ask_pick", fake_ask)
+    off_topic = _cand(url="https://www.facebook.com/groups/a1/posts/1",
+                      text="Anyone know a good pediatric dentist near Irvine? Looking for recommendations please.")
+    on_topic = _cand(url="https://www.facebook.com/groups/a2/posts/2",
+                     text="My son is 18 months and a picky eater, refuses veggies. What worked for us was blending them.")
+    also = _cand(url="https://www.facebook.com/groups/a3/posts/3",
+                 text="Picky eater toddler here too. We tried hiding spinach in pancakes and it helped us a lot.")
+    picked = dp.pick_post([off_topic, on_topic, also], concern="挑食", child_age_context="", locale="en",
+                          query="18 month old picky eating moms", months=18)
+    assert calls[0] == [on_topic.url]          # the best-ranked post, alone
+    assert picked["candidate"].url == also.url  # rejected → the next one, alone
+    assert len(calls) == 2
+
+
+def test_ads_and_pets_never_reach_the_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dp, "_ask_pick", lambda c, **_k: calls.append(c) or _pick())
+    ad = _cand(text="Picky eater? Our toddler snack box helps! Use code MOM20 for 20% off, link in bio.")
+    pet = _cand(text="My puppy is such a picky eater, won't touch his kibble unless I add chicken on top.")
+    assert dp.pick_post([ad, pet], concern="挑食", child_age_context="", locale="en", query="picky eating") is None
+    assert calls == []
+    # 躲猫猫 is peekaboo, not a cat.
+    assert not dp.is_unusable(_cand(text="我家宝宝18个月，最喜欢玩躲猫猫，每次都笑个不停，分享给大家参考一下。"))
+
+
+@pytest.mark.parametrize("text,months,expected", [
+    ("我家宝宝18个月了，晚上总是夜醒", 18, 1.0),
+    ("My 2 year old won't sleep", 24, 1.0),
+    ("孩子5岁了还尿床", 12, 0.0),
+    ("no age at all here", 12, 0.5),
+    ("我家宝宝18个月了", None, 0.5),
+])
+def test_the_age_a_post_names_is_compared_with_the_childs(text, months, expected):
+    assert dp.age_fit(text, months) == pytest.approx(expected)
+
+
+def test_relevance_counts_the_search_subject_in_either_language():
+    query = "18个月 宝宝 入园分离焦虑 宝妈 18 month old daycare drop off crying moms"
+    assert dp.relevance("我家孩子入园分离焦虑特别严重，每天哭", query) > 0.9
+    assert dp.relevance("Daycare drop off crying every morning, any tips?", query) > 0.9
+    assert dp.relevance("Best stroller for travel?", query) == 0.0
 
 
 def test_nothing_usable_stops_after_one_question(monkeypatch):
@@ -244,11 +297,23 @@ def _months_old(months):
 def test_no_usable_concern_searches_the_childs_stage(concerns):
     """The new-account case: nothing chosen, or only "我不知道从哪开始"."""
     plans = dp.profile_plans(_months_old(8), concerns, date(2026, 9, 11))
-    assert plans[0].query_zh == "8个月 宝宝 辅食 添加 宝妈"
+    # Search words round 8 months to 9 so babies can share pooled searches;
+    # the label on the card keeps the real age.
+    assert plans[0].query_zh == "9个月 宝宝 辅食 添加 宝妈"
+    assert plans[0].concern.startswith("8个月")
     # The age band first, then what parents of any young child ask.
     assert [p.query_en for p in plans] == [
-        "8 month old starting solids moms", "8 month old sleep moms", "8 month old tantrums moms",
+        "9 month old starting solids moms", "9 month old sleep moms", "9 month old tantrums moms",
     ]
+
+
+@pytest.mark.parametrize("months, words", [
+    (0, "1个月"), (2, "1个月"), (3, "3个月"), (5, "6个月"), (8, "9个月"), (11, "12个月"),
+    (16, "18个月"), (22, "2岁"), (30, "2岁"), (50, "4岁"),
+])
+def test_search_words_use_an_age_band(months, words):
+    plan = dp.profile_plan(_months_old(months), ["sleep"], date(2026, 9, 11))
+    assert plan.query_zh.startswith(words + " ")
 
 
 def test_with_no_child_on_file_it_still_searches_for_a_baby():
@@ -293,11 +358,60 @@ def test_family_searches_what_onboarding_asked_about():
 
 
 def test_search_words_leave_without_the_childs_name(monkeypatch):
+    monkeypatch.setattr(dp, "QUERY_MODE", "llm")
     monkeypatch.setattr(dp, "_model_json", lambda *_a, **_k: {
         "concern": "小满挑食", "query_zh": "小满 18个月 挑食 妈妈经验", "query_en": "Xiaoman picky eater",
     })
     plan = dp.conversation_plan(["小满最近不吃菜"], "孩子当前年龄：18个月", [{"nickname": "小满", "birth_date": "2025-03-05"}])
     assert "小满" not in plan.query_zh
+
+
+def _no_model(monkeypatch):
+    def refuse(*_a, **_k):
+        raise AssertionError("the template plan must not call a model")
+    monkeypatch.setattr(dp, "_model_json", refuse)
+
+
+def test_the_routers_topic_becomes_the_search_without_a_model(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan(["随便说说"], "", _months_old(18), topics=["入园分离焦虑", "睡眠倒退"])
+    assert plan.basis == "conversation" and plan.concern == "入园分离焦虑"
+    assert plan.query_zh == "18个月 宝宝 入园分离焦虑 宝妈"
+    assert plan.query_en == "18 month old daycare drop off crying moms"
+
+
+def test_an_english_parent_sees_the_concern_in_english(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan([], "", _months_old(18), "en", topics=["夜醒"])
+    assert plan.concern == "sleep" and plan.query_en == "18 month old sleep moms"
+    # A topic the keyword table cannot put into English is skipped for an English reader.
+    assert dp.conversation_plan([], "", _months_old(18), "en", topics=["产后抑郁"]) is None
+
+
+def test_without_a_topic_the_messages_are_matched_by_keyword(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan(["你好", "宝宝最近晚上总是夜醒好几次"], "", _months_old(8))
+    assert plan.concern == "睡眠" and plan.query_zh == "9个月 宝宝 睡眠 夜醒 宝妈"
+    assert dp.conversation_plan(["你好", "谢谢"], "", _months_old(8)) is None
+
+
+def test_the_routers_topic_leaves_without_the_childs_name(monkeypatch):
+    _no_model(monkeypatch)
+    children = [{"nickname": "小满", "birth_date": "2025-03-05"}]
+    plan = dp.conversation_plan([], "", children, topics=["小满挑食"])
+    assert "小满" not in plan.query_zh and "挑食" in plan.query_zh
+
+
+def test_generic_router_topics_are_skipped(monkeypatch):
+    db = _DB()
+    db.tables["chat_turn_logs"] = [
+        {"user_id": "mom-1", "route_topic": "寒暄/继续追问", "created_at": "2026-09-11T15:00:00+00:00"},
+        {"user_id": "mom-1", "route_topic": "辅食添加", "created_at": "2026-09-11T14:00:00+00:00"},
+        {"user_id": "mom-2", "route_topic": "睡眠倒退", "created_at": "2026-09-11T14:00:00+00:00"},
+        {"user_id": "mom-1", "route_topic": "长牙", "created_at": "2026-08-01T14:00:00+00:00"},
+    ]
+    monkeypatch.setattr(runtime, "get_supabase", lambda: db)
+    assert asyncio.run(dp.recent_route_topics("mom-1", now=NOW)) == ["辅食添加"]
 
 
 # ── The daily row ────────────────────────────────────────────────────────────
@@ -310,7 +424,13 @@ class _Query:
     def select(self, *_a, **_k): return self
     def insert(self, row): self._op, self._payload = "insert", row; return self
     def update(self, patch): self._op, self._payload = "update", patch; return self
-    def eq(self, c, v): self._filters.append(lambda r: str(r.get(c)) == str(v)); return self
+    def eq(self, c, v):
+        if c == "card":
+            expected = json.loads(v) if isinstance(v, str) else v
+            self._filters.append(lambda row: row.get(c) == expected)
+        else:
+            self._filters.append(lambda row: str(row.get(c)) == str(v))
+        return self
     def gte(self, c, v): self._filters.append(lambda r: str(r.get(c)) >= str(v)); return self
     def is_(self, c, _v): self._filters.append(lambda r: r.get(c) is None); return self
     def limit(self, n, **_k): self._limit = n; return self
@@ -374,7 +494,7 @@ def world(monkeypatch):
             "messages": [{"role": "user", "text": "小满最近只吃白米饭"}],
         }
 
-    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN", _standing=()):
+    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN", _standing=(), **_k):
         state.conversation_calls += 1
         return dp.Plan(basis="conversation", concern="挑食", query_zh="18个月 挑食", query_en="picky")
 
@@ -534,15 +654,44 @@ def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monke
     assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
 
 
-def test_a_spent_search_budget_is_recorded_before_any_model_call(world, monkeypatch):
+def _budget_spent(monkeypatch):
     async def spent(_kind):
         raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
 
     monkeypatch.setattr(search_budget, "require_some_left", spent)
+
+
+def test_a_spent_budget_with_nothing_pooled_is_recorded_without_a_model_call(world, monkeypatch):
+    _budget_spent(monkeypatch)
+
+    async def not_pooled(plan, _locale, _exclude):
+        world.searched.append((plan.basis, set()))
+        raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
+
+    monkeypatch.setattr(dp, "find_candidates", not_pooled)
     assert _get()["state"] == "empty"
     row = world.db.tables["daily_post_cards"][0]
     assert row["status"] == "failed" and "search limit" in row["error"]
-    assert world.conversation_calls == 0 and not world.searched
+    assert row["query"] == {"searches": 0}
+    # No words written from the chat: they could not be searched for anyway.
+    assert world.conversation_calls == 0 and world.generated == 0
+    # Every profile plan was asked, in case the pool held one of them.
+    assert [basis for basis, _ in world.searched] == ["profile"] * dp.PROFILE_PLANS
+
+
+def test_a_spent_budget_still_makes_a_card_from_the_pool(world, monkeypatch):
+    _budget_spent(monkeypatch)
+    calls = []
+
+    async def second_plan_pooled(plan, _locale, _exclude):
+        calls.append(plan.query_en)
+        if len(calls) == 1:
+            raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
+        return [_cand(url=world.card_url)]
+
+    monkeypatch.setattr(dp, "find_candidates", second_plan_pooled)
+    assert _get()["state"] == "ready"
+    assert len(calls) == 2 and world.conversation_calls == 0
 
 
 def test_one_language_failing_keeps_the_other_languages_posts(monkeypatch):
@@ -630,3 +779,130 @@ def test_a_card_showing_a_pulled_post_is_rebuilt_on_the_next_visit(world, monkey
     # The only post the fake search knows is the pulled one, so nothing replaces it.
     assert again["state"] == "empty" and world.generated == 1
     assert asyncio.run(dp.get_card("mom-1", first["card"]["id"])) is None
+
+
+# Requested-language summaries keep the same owned post and original excerpt.
+def _fake_summary_translation(fields, locale):
+    return {key: [f"{locale}: {item}" for item in value] if isinstance(value, list)
+            else f"{locale}: {value}" for key, value in fields.items()}
+
+
+def test_post_locale_overlay_is_cached_and_preserves_original_identity_and_excerpt(world, monkeypatch):
+    original = _get()["card"]
+    calls = []
+    def translate(fields, locale):
+        calls.append((copy.deepcopy(fields), locale))
+        return _fake_summary_translation(fields, locale)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    first = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    again = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    traditional = asyncio.run(dp.get_card("mom-1", original["id"], locale="zh-TW", translate=True))
+    assert first == again and len(calls) == 2
+    assert first["locale"] == "en" and traditional["locale"] == "zh-TW"
+    assert first["headline"] == "en: " + original["headline"]
+    for key in ("id", "card_id", "source_url", "excerpt", "excerpt_lang", "summary_source"):
+        assert first.get(key) == original.get(key)
+    assert "i18n" not in first
+    assert all("excerpt" not in fields and "source_url" not in fields for fields, _locale in calls)
+    assert asyncio.run(dp.get_card("mom-1", original["id"])) == original
+
+
+def test_requested_locale_applies_to_first_generation_and_cached_today_card(world, monkeypatch):
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    first = asyncio.run(dp.get_daily_post("mom-1", "America/Chicago", now=NOW, locale="en"))
+    again = asyncio.run(dp.get_daily_post("mom-1", "America/Chicago", now=NOW, locale="en"))
+    assert first["card"]["locale"] == "en" and again["card"] == first["card"]
+    assert world.generated == 1
+
+
+def test_simultaneous_locale_cache_writes_preserve_both_languages(world, monkeypatch):
+    original = _get()["card"]
+    barrier = threading.Barrier(2)
+    def translate(fields, locale):
+        barrier.wait(timeout=3)
+        return _fake_summary_translation(fields, locale)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    async def both():
+        return await asyncio.gather(dp.get_card("mom-1", original["id"], locale="en", translate=True),
+                                   dp.get_card("mom-1", original["id"], locale="zh-TW", translate=True))
+    results = asyncio.run(both())
+    assert {result["locale"] for result in results} == {"en", "zh-TW"}
+    stored = world.db.tables["daily_post_cards"][0]["card"]
+    assert set(stored["i18n"]) == {"en", "zh-TW"}
+    assert stored["headline"] == original["headline"]
+
+
+def test_translation_of_changed_summary_retries_against_latest_source(world, monkeypatch):
+    original = _get()["card"]
+    save = dp.DailyPostStore.save_translation
+    calls = []
+    def translate(fields, locale):
+        calls.append(fields["headline"])
+        return _fake_summary_translation(fields, locale)
+    def conflict(store, uid, row_id, expected, card):
+        if len(calls) == 1:
+            world.db.tables["daily_post_cards"][0]["card"] = {**expected, "headline": "Updated original summary"}
+            return False
+        return save(store, uid, row_id, expected, card)
+    monkeypatch.setattr(dp, "translate_summary_fields", translate)
+    monkeypatch.setattr(dp.DailyPostStore, "save_translation", conflict)
+    result = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert calls == [original["headline"], "Updated original summary"]
+    assert result["headline"] == "en: Updated original summary"
+
+
+def test_post_translation_failure_is_explicit_and_can_be_retried(world, monkeypatch):
+    original = _get()["card"]
+    def fail(*_args):
+        raise RuntimeError("mock provider unavailable")
+    monkeypatch.setattr(dp, "translate_summary_fields", fail)
+    with pytest.raises(dp.PostLocaleUnavailable):
+        asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert "i18n" not in world.db.tables["daily_post_cards"][0]["card"]
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    assert asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))["locale"] == "en"
+
+
+def test_post_translation_validates_every_generated_field_and_keeps_takeaway_order(monkeypatch):
+    fields = {"headline": "Original heading", "takeaways": ["First step", "Second step"]}
+    calls = []
+    def model(site, messages, response_format):
+        calls.append((site, messages, response_format))
+        return {"headline": "Translated heading", "takeaways": ["First translated step", "Second translated step"]}
+    monkeypatch.setattr(dp, "_model_json", model)
+    assert dp.translate_summary_fields(fields, "en")["takeaways"] == ["First translated step", "Second translated step"]
+    assert calls[0][0] == "feed.daily_post_translate"
+    assert calls[0][2]["json_schema"]["schema"]["properties"]["takeaways"]["type"] == "array"
+    for malformed in ({"headline": "Translated"}, {"headline": "Translated", "takeaways": ["one"]}, {"headline": "", "takeaways": ["a", "b"]}):
+        monkeypatch.setattr(dp, "_model_json", lambda *_args: malformed)
+        with pytest.raises(dp.PostLocaleUnavailable):
+            dp.translate_summary_fields(fields, "en")
+
+
+def test_post_locale_routes_use_same_owned_id_and_return_retryable_error(world, monkeypatch):
+    original = _get()["card"]
+    monkeypatch.setattr(dp, "translate_summary_fields", _fake_summary_translation)
+    client = TestClient(main.app)
+    owner = {"Authorization": f"Bearer {main._make_token('mom-1')}"}
+    other = {"Authorization": f"Bearer {main._make_token('someone-else')}"}
+    path = f"/api/feed/daily-post/{original['id']}"
+    localized = client.get(path + "?locale=en&translate=1", headers=owner)
+    assert localized.status_code == 200 and localized.json()["card"]["locale"] == "en"
+    assert client.get(path + "?locale=en", headers=other).status_code == 404
+    assert client.get(path + "?locale=fr", headers=owner).status_code == 422
+    monkeypatch.setattr(dp, "translate_summary_fields", lambda *_args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    failure = client.get(path + "?locale=zh-TW&translate=1", headers=owner)
+    assert failure.status_code == 503 and "retry" in failure.json()["detail"].lower()
+    assert "把菠菜" not in json.dumps(failure.json(), ensure_ascii=False)
+
+
+def test_saved_post_locale_reads_do_not_invoke_ai_without_explicit_opt_in(world, monkeypatch):
+    original = _get()["card"]
+    calls = []
+    monkeypatch.setattr(dp, "translate_summary_fields", lambda *args: calls.append(args) or _fake_summary_translation(*args))
+    uncached = asyncio.run(dp.get_card("mom-1", original["id"], locale="en"))
+    assert uncached == original and calls == []
+    translated = asyncio.run(dp.get_card("mom-1", original["id"], locale="en", translate=True))
+    assert translated["locale"] == "en" and len(calls) == 1
+    cached = asyncio.run(dp.get_card("mom-1", original["id"], locale="en"))
+    assert cached == translated and len(calls) == 1

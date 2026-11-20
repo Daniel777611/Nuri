@@ -26,6 +26,7 @@ through `runtime.get_supabase` on every call (the one test seam).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -40,10 +41,10 @@ from io import BytesIO
 from typing import Any, Callable, Literal, Optional
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend import llm_usage, push_service, runtime
+from backend import llm_usage, push_service, runtime, topic_keywords
 
 PREFIX = "/api/community/v1"
 
@@ -63,11 +64,10 @@ INVITATIONS_PER_DAY = int(os.getenv("COMMUNITY_INVITATIONS_PER_DAY", "20"))
 DELIVERY_FANOUT = int(os.getenv("COMMUNITY_DELIVERY_FANOUT", "5"))
 # D06 (meeting 2026-11-06): a received question can be answered for 30 days.
 DELIVERY_TTL_DAYS = int(os.getenv("COMMUNITY_DELIVERY_TTL_DAYS", "30"))
-# D04: rank recipients by family fit, then let the AI order the shortlist by
-# relevance to the question. Off → the rule-based score alone.
-AI_MATCHING = os.getenv("COMMUNITY_AI_MATCHING", "1") == "1"
-MATCH_SHORTLIST = 20
-MATCH_TIMEOUT_S = float(os.getenv("COMMUNITY_MATCH_TIMEOUT_S", "8"))
+# D04: recipients are picked by an algorithm, never an AI call (an AI shortlist
+# cost 5–7 s per question in prod; the team decided on 2026-11-18 to drop it).
+#: Parents with this many questions already waiting this week drop in the order.
+DELIVERY_LOAD_WINDOW_DAYS = 7
 MEDIA_UPLOAD_TTL_MIN = 30
 MEDIA_ACCESS_TTL_S = 300
 MEDIA_BUCKET = os.getenv("COMMUNITY_MEDIA_BUCKET", "community-media")
@@ -75,6 +75,10 @@ MEDIA_MAX_BYTES = 2_500_000  # the existing NURI single-image ceiling
 MEDIA_MIMES = {"image/jpeg": "jpeg", "image/png": "png", "image/webp": "webp"}
 AI_MODEL = os.getenv("COMMUNITY_AI_MODEL", "gpt-5-mini")
 AI_TIMEOUT_S = float(os.getenv("COMMUNITY_AI_TIMEOUT_S", "20"))
+#: Polish, translate and match are short rewrites, not reasoning problems. At the
+#: model default they spent 128–384 reasoning tokens and 2.4–8 s a call in prod
+#: (2026-11-10); the router uses "minimal" for the same model at ~2 s.
+AI_REASONING_EFFORT = os.getenv("COMMUNITY_AI_REASONING_EFFORT", "minimal")
 #: The app's own NURI AI consent version (native-ios/src/aiConsent.ts). The
 #: client sends what the parent agreed to; a stale version is CONSENT_REQUIRED.
 NURI_AI_CONSENT_VERSION = os.getenv("NURI_AI_CONSENT_VERSION", "2026-10-01.1")
@@ -898,26 +902,40 @@ async def recommendations(uid: str, role: str = "any", distance_miles: Optional[
         raise _invalid("Share an approximate location to filter by distance")
 
     i_blocked, blocked_me = await _block_sets(uid)
-    contacts = {row["other"] for row in await _active_relationships(uid)}
-    before = _decode_cursor(cursor)
-    batch = 200
-    candidates = await _select("community_profiles", lambda q: (
-        (q.lt("seq", before) if before is not None else q).neq("user_id", uid)
-        .order("seq", desc=True).limit(batch)))
-    ids = [c["user_id"] for c in candidates]
+    # Every relationship and open invitation of the viewer, read once — not
+    # five queries per candidate, which made this page slow.
+    rels = (await _select("community_relationships", lambda q: q.eq("user_low", uid))
+            + await _select("community_relationships", lambda q: q.eq("user_high", uid)))
+    rel_by = {(r["user_high"] if r["user_low"] == uid else r["user_low"]): r for r in rels}
+    contacts = {other for other, r in rel_by.items() if r.get("state") == "active"}
+    sent = {i["recipient_id"]: i for i in await _select("community_invitations", lambda q: q.eq("sender_id", uid).eq("state", "pending"))}
+    received = {i["sender_id"]: i for i in await _select("community_invitations", lambda q: q.eq("recipient_id", uid).eq("state", "pending"))}
+
+    def relation(other: str) -> dict:
+        inv = received.get(other) or sent.get(other)
+        rel = rel_by.get(other)
+        state = ("blocked_by_me" if other in i_blocked else "invitation_received" if other in received
+                 else "invitation_sent" if other in sent else "disconnected" if rel else "none")
+        actions = {"blocked_by_me": ["unblock"], "invitation_received": ["accept_invitation", "decline_invitation", "block"],
+                   "invitation_sent": ["block"]}.get(state, ["invite", "block"])
+        return {"state": state, "relationship_id": str(rel["id"]) if rel else None,
+                "invitation_id": str(inv["id"]) if inv else None, "conversation_id": None, "allowed_actions": actions}
+
+    offset = _decode_cursor(cursor) or 0
+    pool = await _select("community_profiles", lambda q: q.neq("user_id", uid).order("seq", desc=True).limit(500))
+    ids = [c["user_id"] for c in pool]
     hidden_rows = await _select("community_preferences", lambda q: q.in_("user_id", ids)) if ids else []
     hidden = {row["user_id"] for row in hidden_rows if row.get("profile_hidden")}
     roles = await _roles(ids)
-    items: list[dict] = []
-    last_seq = None
-    for cand in candidates:
-        last_seq = cand["seq"]
+    features = await _family_features(ids + [uid], {**{c["user_id"]: c for c in pool}, uid: me})
+    mine = features[uid]
+    scored = []
+    for cand in pool:
         other = cand["user_id"]
         if other in i_blocked or other in blocked_me or other in hidden or other in contacts:
             continue
         if role != "any" and cand.get("gender_tag") != role:
             continue
-        shared = [c for c in (cand.get("intent_codes") or []) if c in set(me.get("intent_codes") or [])]
         if wanted and not set(wanted) & set(cand.get("intent_codes") or []):
             continue
         distance = None
@@ -926,24 +944,24 @@ async def recommendations(uid: str, role: str = "any", distance_miles: Optional[
                                     cand["approx_lat"], cand["approx_lng"]) * 2) / 2
         if distance_miles is not None and (distance is None or distance > distance_miles):
             continue
-        items.append({
-            "parent": public_parent(cand, roles.get(other, "")),
-            # Rounded to half a mile, and only when both shared a location.
-            "distance_miles": distance,
-            "shared_intents": shared,
-            "relationship": await _relation_view(uid, other),
-        })
-        if len(items) > size:
-            break
-    has_more = len(items) > size or len(candidates) == batch
-    if len(items) > size:
-        items = items[:size]
-        # Resume after the last item actually returned.
-        last_seq = next(c["seq"] for c in candidates
-                        if str(c["public_id"]) == items[-1]["parent"]["parent_id"])
+        # Family fit decides the order (intents filter but never rank, D02);
+        # a known short distance adds a little.
+        score = _fit(mine, features[other]) + (0.2 * (1 - min(distance, 10) / 10) if distance is not None else 0.0)
+        scored.append((score, cand["seq"], cand, distance))
+    # Stable order (score, then newest profile) so pages never repeat or skip.
+    scored.sort(key=lambda t: (-t[0], -t[1]))
+    page = scored[offset:offset + size]
+    items = [{
+        "parent": public_parent(cand, roles.get(cand["user_id"], "")),
+        # Rounded to half a mile, and only when both shared a location.
+        "distance_miles": distance,
+        "shared_intents": [c for c in (cand.get("intent_codes") or []) if c in set(me.get("intent_codes") or [])],
+        "relationship": relation(cand["user_id"]),
+    } for _score, _seq, cand, distance in page]
+    has_more = offset + size < len(scored)
     return {
         "items": items,
-        "next_cursor": _encode_cursor(last_seq) if has_more and last_seq is not None else None,
+        "next_cursor": _encode_cursor(offset + size) if has_more else None,
         "has_more": has_more,
         "filters": {"roles": list(ROLE_FILTERS), "distance_miles": list(DISTANCE_FILTERS),
                     "intents": list(INTENT_CODES)},
@@ -963,12 +981,18 @@ async def _complete(call_site: str, uid: str, system: str, text: str) -> str:
     if not client:
         raise CommunityError("STORAGE_OR_SERVICE_UNAVAILABLE", "AI is unavailable")
     started = time.perf_counter()
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": text}]
     try:
-        resp = await client.chat.completions.create(
-            model=AI_MODEL,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
-            timeout=AI_TIMEOUT_S,
-        )
+        try:
+            resp = await client.chat.completions.create(
+                model=AI_MODEL, messages=messages, timeout=AI_TIMEOUT_S,
+                **({"reasoning_effort": AI_REASONING_EFFORT} if AI_REASONING_EFFORT else {}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A model that takes no reasoning_effort: same call without it.
+            if not AI_REASONING_EFFORT or "reasoning" not in str(exc):
+                raise
+            resp = await client.chat.completions.create(model=AI_MODEL, messages=messages, timeout=AI_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001
         llm_usage.record(call_site, AI_MODEL, user_id=uid, status="error",
                          duration_ms=runtime.elapsed_ms(started), error=type(exc).__name__)
@@ -1173,65 +1197,62 @@ async def _family_features(uids: list[str], profiles: dict[str, dict]) -> dict[s
     return out
 
 
+#: Question text → the family concerns it is about (users.top_concerns codes),
+#: by the keyword table the daily cards share.
+TOPIC_KEYWORDS = topic_keywords.TOPIC_KEYWORDS
+
+
+def question_topics(body: str) -> set[str]:
+    return topic_keywords.topics_in(body)
+
+
+def _age_fit(a: Optional[int], b: Optional[int]) -> float:
+    if a is None or b is None:
+        return 0.0
+    return max(0.0, 1 - abs(a - b) / 24)  # full at the same age, gone at two years apart
+
+
+def _concern_overlap(a: set[str], b: set[str]) -> float:
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
+
+
 def _fit(asker: dict, other: dict) -> float:
-    """Rule-based family fit, 0–1: child age, region, shared concerns."""
-    age = 0.0
-    if asker["age"] is not None and other["age"] is not None:
-        age = max(0.0, 1 - abs(asker["age"] - other["age"]) / 24)  # within two years
+    """Family fit, 0–1: youngest child's age, region, shared family concerns."""
     region = 1.0 if asker["region"] and asker["region"] == other["region"] else 0.0
-    union = asker["concerns"] | other["concerns"]
-    concerns = len(asker["concerns"] & other["concerns"]) / len(union) if union else 0.0
-    return 0.4 * age + 0.25 * region + 0.35 * concerns
+    return 0.45 * _age_fit(asker["age"], other["age"]) + 0.3 * region + 0.25 * _concern_overlap(asker["concerns"], other["concerns"])
 
 
-def _age_band(months: Optional[int]) -> str:
-    if months is None:
-        return "unknown"
-    return f"{months} months" if months < 24 else f"{months // 12} years"
+def delivery_score(asker: dict, other: dict, topics: set[str], waiting: int) -> float:
+    """Who should get a question (D04): someone whose child is about the same
+    age, nearby, with the same family concerns, and who cares about what the
+    question is about — minus a little for every question already waiting on
+    them this week, so the same few parents are not asked everything."""
+    region = 1.0 if asker["region"] and asker["region"] == other["region"] else 0.0
+    relevant = 1.0 if topics & other["concerns"] else 0.0
+    score = (0.35 * _age_fit(asker["age"], other["age"]) + 0.2 * region
+             + 0.2 * _concern_overlap(asker["concerns"], other["concerns"]) + 0.25 * relevant)
+    return score - min(0.3, 0.05 * waiting)
 
 
-async def _ai_rank(question: dict, shortlist: list[str], features: dict[str, dict], asker: dict) -> list[str]:
-    """D04 "让ai写": order the shortlist by relevance to the question.
-
-    The model sees the question and, per candidate, only a number, a child age
-    band, concern codes, intents and whether the region matches — no names, ids
-    or free text about anyone else. Any failure keeps the rule-based order.
-    """
-    if not AI_MATCHING or len(shortlist) <= 1 or not runtime.aoai:
-        return shortlist
-    lines = []
-    for index, uid in enumerate(shortlist):
-        f = features[uid]
-        lines.append(f"{index}: child {_age_band(f['age'])}; concerns {','.join(sorted(f['concerns'])) or '-'}; "
-                     f"intents {','.join(f['intents']) or '-'}; same region {'yes' if f['region'] and f['region'] == asker['region'] else 'no'}")
-    system = ("You match a parent's question to other parents who could answer it from experience. "
-              "Rank the candidates by how well their family situation fits the question. "
-              "Reply with only the candidate numbers, best first, comma separated.")
-    text = f"Question: {question['body']}\nAsker's child: {_age_band(asker['age'])}\nCandidates:\n" + "\n".join(lines)
-    try:
-        out = await _timed_complete(question["author_id"], system, text)
-    except Exception:  # noqa: BLE001 - ranking is an improvement, never a requirement
-        return shortlist
-    order: list[str] = []
-    for token in out.replace("\n", ",").split(","):
-        token = token.strip()
-        if token.isdigit() and int(token) < len(shortlist) and shortlist[int(token)] not in order:
-            order.append(shortlist[int(token)])
-    return order + [uid for uid in shortlist if uid not in order]
-
-
-async def _timed_complete(uid: str, system: str, text: str) -> str:
-    with anyio.fail_after(MATCH_TIMEOUT_S):
-        return await _complete("community.match", uid, system, text)
+async def _waiting_load(uids: list[str]) -> dict[str, int]:
+    if not uids:
+        return {}
+    since = _iso(_now() - timedelta(days=DELIVERY_LOAD_WINDOW_DAYS))
+    rows = await _select("community_question_deliveries", lambda q: q.in_("recipient_id", uids)
+                         .eq("state", "waiting").gte("created_at", since).limit(2000))
+    load: dict[str, int] = {}
+    for row in rows:
+        load[row["recipient_id"]] = load.get(row["recipient_id"], 0) + 1
+    return load
 
 
 async def _deliver(question: dict) -> int:
     """Hand a new question to up to DELIVERY_FANOUT parents (meeting D04).
 
     Eligible: other parents with a visible community profile and no block in
-    either direction. Ranked by family fit — youngest child's age, region and
-    shared family concerns — then the AI orders the top MATCH_SHORTLIST by
-    relevance to the question (falls back to the rule order on any failure).
+    either direction, ranked by `delivery_score`. No AI call: picking is a
+    handful of queries and arithmetic, so it never holds anything up.
     """
     author = question["author_id"]
     i_blocked, blocked_me = await _block_sets(author)
@@ -1245,27 +1266,34 @@ async def _deliver(question: dict) -> int:
     author_profile = await _profiles([author])
     features = await _family_features(eligible + [author], {**profiles, **author_profile})
     asker = features[author]
+    topics = question_topics(question["body"])
+    load = await _waiting_load(eligible)
     # Ties are broken at random so the same parents are not always first.
-    ranked = sorted(eligible, key=lambda uid: (_fit(asker, features[uid]), random.random()), reverse=True)
-    shortlist = await _ai_rank(question, ranked[:MATCH_SHORTLIST], features, asker)
-    chosen = (shortlist + ranked[MATCH_SHORTLIST:])[:DELIVERY_FANOUT]
+    ranked = sorted(eligible, key=lambda uid: (delivery_score(asker, features[uid], topics, load.get(uid, 0)),
+                                               random.random()), reverse=True)
+    chosen = ranked[:DELIVERY_FANOUT]
     expires = _iso(_now() + timedelta(days=DELIVERY_TTL_DAYS))
-    delivered = 0
+    rows = []
     for recipient in chosen:
         try:
-            row = await _insert("community_question_deliveries", {
+            rows.append(await _insert("community_question_deliveries", {
                 "question_id": question["id"], "recipient_id": recipient,
                 "state": "waiting", "expires_at": expires,
-            })
+            }))
         except _UniqueViolation:
             continue
-        delivered += 1
-        await _notify(recipient, "community_question", str(row["id"]),
-                      {"delivery_id": str(row["id"]), "question_id": str(question["id"])}, actor=author)
-    return delivered
+    await asyncio.gather(*(
+        _notify(row["recipient_id"], "community_question", str(row["id"]),
+                {"delivery_id": str(row["id"]), "question_id": str(question["id"])}, actor=author)
+        for row in rows))
+    return len(rows)
 
 
-async def create_question(uid: str, body: QuestionIn) -> dict:
+async def create_question(uid: str, body: QuestionIn,
+                          schedule: Optional[Callable[..., Any]] = None) -> dict:
+    """Publish a question. Delivery (ranking, the AI shortlist, notifications)
+    runs after the response when `schedule` is given — it took 5–7 s in prod,
+    and the parent should not wait on it to see "sent"."""
     await _require_profile(uid)
     text = _clean_text(body.body, field="body", max_len=QUESTION_MAX)
     if body.version_source == "polished":
@@ -1292,12 +1320,22 @@ async def create_question(uid: str, body: QuestionIn) -> dict:
             "status": "open", "updated_at": _iso(),
         },
     )
-    if created:
-        await _deliver(row)
-    deliveries = await _select("community_question_deliveries", lambda q: q.eq("question_id", row["id"]))
+    deliveries = [] if created else await _select("community_question_deliveries",
+                                                  lambda q: q.eq("question_id", row["id"]))
+    # A retry of a question whose background delivery never landed delivers it
+    # now; deliveries are unique per (question, recipient), so this is safe.
+    pending_delivery = created or not deliveries
+    if pending_delivery and schedule is not None:
+        schedule(_deliver, row)
+        delivery = {"recipient_count": None, "state": "delivering"}
+    else:
+        if pending_delivery:
+            await _deliver(row)
+            deliveries = await _select("community_question_deliveries", lambda q: q.eq("question_id", row["id"]))
+        delivery = {"recipient_count": len(deliveries), "state": "delivered" if deliveries else "no_recipients"}
     return {
         "question": await _question_dto(uid, row),
-        "delivery": {"recipient_count": len(deliveries), "state": "delivered" if deliveries else "no_recipients"},
+        "delivery": delivery,
         # Publishing is synchronous; the operation is already terminal.
         "operation": {"operation_id": f"question:{row['id']}", "state": "succeeded"},
         "created": created,
@@ -2732,8 +2770,8 @@ def build_router(req_uid: Callable) -> APIRouter:
     async def _p05(body: PolishIn, uid: str = U): return await polish_question(uid, body)
 
     @r.post("/questions", status_code=status.HTTP_201_CREATED)
-    async def _p06(body: QuestionIn, response: Response, uid: str = U):
-        result = await create_question(uid, body)
+    async def _p06(body: QuestionIn, response: Response, background: BackgroundTasks, uid: str = U):
+        result = await create_question(uid, body, schedule=background.add_task)
         if not result["created"]:
             response.status_code = status.HTTP_200_OK
         return result

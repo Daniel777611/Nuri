@@ -401,7 +401,13 @@ _REFUSED_DAYS = ("2026-10-27", "2026-10-31")
 def card_searches(row: dict) -> int:
     """Tavily requests behind one card, at the fewest: one plan, one request per
     language. Fallback plans and same-day retries leave no trace in the row, so
-    the real number can only be higher."""
+    the real number can only be higher.
+
+    Rows made since the shared search pool record the exact count in
+    `query.searches` (0 when every search came from the pool), which wins."""
+    recorded = (row.get("query") or {}).get("searches")
+    if isinstance(recorded, int) and not isinstance(recorded, bool):
+        return recorded
     if row.get("status") == "failed":
         return 0
     if row.get("status") == "empty" and _REFUSED_DAYS[0] <= str(row.get("day")) <= _REFUSED_DAYS[1]:

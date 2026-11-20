@@ -225,3 +225,13 @@ test("reports: every kind of community content and parents can be reported in-ap
   for (const reason of ["harassment", "sexual", "hate", "child_safety", "self_harm", "spam", "other"]) assert.ok(sheet.includes(`"${reason}"`), reason);
   assert.doesNotMatch(sheet, /\bfetch\(|communityApi\./);  // the sheet only collects; the screen sends
 });
+
+test("a refresh keeps showing the current data; only another resource starts blank", () => {
+  const source = read("src/uiuxfinal/CommunityFinal.tsx");
+  assert.match(source, /const resourceOf = \(key: string \| null\) => key === null \? null : key\.split\("#"\)\[0\]/);
+  // Every refresh-after-write key versions the same resource with #tick, never a new resource.
+  assert.equal((source.match(/:\$\{tick\}`/g) || []).length, 0);
+  assert.ok((source.match(/#\$\{tick\}`/g) || []).length >= 10);
+  // The spinner shows only while there is nothing to show yet.
+  assert.match(source, /remote\.loading&&remote\.value===undefined/);
+});

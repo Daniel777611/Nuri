@@ -256,7 +256,9 @@ def test_question_publish_delivers_notifies_and_is_idempotent(env):
         make_profile(env, u)
     created = ok(ask(env, "u_ann", anonymous=True, show_child_age=True), 201)
     q = created["question"]
-    assert created["delivery"]["recipient_count"] == 2 and created["created"] is True
+    # Delivery runs after the response (the TestClient runs it before returning).
+    assert created["delivery"] == {"recipient_count": None, "state": "delivering"} and created["created"] is True
+    assert len(env.db.rows("community_question_deliveries")) == 2
     assert q["child_age_months"] and q["status"] == "open" and q["is_mine"]
     assert created["operation"]["state"] == "succeeded"
     op = ok(env.call("u_ann", "GET", f"/operations/{created['operation']['operation_id']}"))
@@ -796,39 +798,47 @@ def test_d04_questions_go_to_the_best_family_fit_first(env, monkeypatch):
         u["top_concerns"] = ["sleep"] if u["id"] in ("u_ann", "u_cat") else ["food"]
     for u in ("u_ann", "u_ben", "u_cat"):
         make_profile(env, u)
-    q = ok(ask(env, "u_ann"), 201)
-    assert q["delivery"]["recipient_count"] == 1
+    ok(ask(env, "u_ann"), 201)
     assert [d["recipient_id"] for d in env.db.rows("community_question_deliveries")] == ["u_cat"]
 
 
-def test_d04_the_ai_reorders_the_shortlist_without_seeing_identities(env, monkeypatch):
-    monkeypatch.setattr(community, "DELIVERY_FANOUT", 1)
-    seen = {}
+def test_d04_picking_recipients_never_calls_an_ai(env, monkeypatch):
+    """2026-11-18: an AI shortlist per question was too slow; picking is an algorithm."""
+    async def no_ai(*_a, **_k):
+        raise AssertionError("delivery must not call the AI")
 
-    async def fake_complete(site, uid, system, text):
-        seen["text"] = text
-        return "1, 0"
-
-    monkeypatch.setattr(community, "_complete", fake_complete)
+    monkeypatch.setattr(community, "_complete", no_ai)
     monkeypatch.setattr(runtime, "aoai", object())
     for u in ("u_ann", "u_ben", "u_cat"):
-        make_profile(env, u, about="secret about text")
-    ok(ask(env, "u_ann"), 201)
-    assert seen["text"].startswith("Question:")
-    for leak in ("u_ben", "u_cat", "Ben", "Cat", "secret about", "@example.test"):
-        assert leak not in seen["text"], leak
-    assert len(env.db.rows("community_question_deliveries")) == 1
-
-
-def test_d04_a_failing_ai_keeps_the_rule_order(env, monkeypatch):
-    async def broken(*_a, **_k):
-        raise RuntimeError("provider down")
-
-    monkeypatch.setattr(community, "_complete", broken)
-    monkeypatch.setattr(runtime, "aoai", object())
-    for u in ("u_ann", "u_ben"):
         make_profile(env, u)
-    assert ok(ask(env, "u_ann"), 201)["delivery"]["recipient_count"] == 1
+    ok(ask(env, "u_ann"), 201)
+    assert len(env.db.rows("community_question_deliveries")) == 2
+
+
+def test_d04_the_question_topic_steers_who_is_asked(env, monkeypatch):
+    monkeypatch.setattr(community, "DELIVERY_FANOUT", 1)
+    for u in env.db.rows("users"):
+        u["top_concerns"] = {"u_ben": ["food"], "u_cat": ["sleep"]}.get(u["id"], [])
+    env.db.rows("children").clear()
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u)
+    assert community.question_topics("孩子晚上总是夜醒，怎么哄睡？") == {"sleep"}
+    ok(ask(env, "u_ann", body="孩子晚上总是夜醒，怎么哄睡？"), 201)
+    assert [d["recipient_id"] for d in env.db.rows("community_question_deliveries")] == ["u_cat"]
+
+
+def test_d04_parents_with_many_waiting_questions_move_down(env, monkeypatch):
+    monkeypatch.setattr(community, "DELIVERY_FANOUT", 1)
+    env.db.rows("children").clear()
+    for u in ("u_ann", "u_ben", "u_cat"):
+        make_profile(env, u)
+    # Ben already has six questions waiting this week; Cat has none.
+    for i in range(6):
+        env.db.rows("community_question_deliveries").append({
+            "id": f"busy-{i}", "question_id": f"q-{i}", "recipient_id": "u_ben", "state": "waiting",
+            "expires_at": "2099-01-01T00:00:00+00:00", "created_at": community._iso(), "seq": 10_000 + i})
+    ok(ask(env, "u_ann", key="load-q-0001"), 201)
+    assert [d["recipient_id"] for d in env.db.rows("community_question_deliveries") if not d["id"].startswith("busy")] == ["u_cat"]
 
 
 def test_d06_received_questions_stay_open_for_thirty_days(env):
@@ -906,3 +916,68 @@ def test_admin_reviews_reports_and_can_take_content_down(env, monkeypatch):
     assert not [m for m in env.db.rows("community_messages") if m["id"] == msg["message_id"]]
     assert env.client.get("/admin/community-reports", headers=admin).json()["total"] == 0
     assert env.client.get("/admin/community-reports?status=all", headers=admin).json()["total"] == 1
+
+
+
+def test_sending_a_question_does_not_wait_for_delivery_or_the_ai(env, monkeypatch):
+    """2026-11-10: the AI shortlist took 5–7 s in prod inside the send request."""
+    import asyncio as _asyncio
+    calls = []
+
+    async def slow_deliver(question):
+        calls.append(question["id"])
+
+    for u in ("u_ann", "u_ben"):
+        make_profile(env, u)
+    monkeypatch.setattr(community, "_deliver", slow_deliver)
+    scheduled = []
+    result = _asyncio.run(community.create_question(
+        "u_ann", community.QuestionIn(body="睡前总哭？", client_request_id="bg-q-0001"),
+        schedule=lambda fn, *a: scheduled.append((fn, a))))
+    assert result["delivery"]["state"] == "delivering" and calls == []  # nothing ran inline
+    assert len(scheduled) == 1 and scheduled[0][0] is slow_deliver
+    # A retry of a question whose delivery never landed schedules it again.
+    again = _asyncio.run(community.create_question(
+        "u_ann", community.QuestionIn(body="睡前总哭？", client_request_id="bg-q-0001"),
+        schedule=lambda fn, *a: scheduled.append((fn, a))))
+    assert again["created"] is False and len(scheduled) == 2
+
+
+def test_community_ai_calls_ask_for_minimal_reasoning(env, monkeypatch):
+    seen = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            seen.update(kwargs)
+            msg = type("M", (), {"content": "ok"})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()], "usage": None})()
+
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    monkeypatch.setattr(runtime, "aoai", client)
+    import asyncio as _asyncio
+    assert _asyncio.run(community._complete("community.polish", "u_ann", "sys", "text")) == "ok"
+    assert seen["reasoning_effort"] == "minimal"
+
+
+
+def test_recommendations_are_ranked_by_family_fit_and_page_cleanly(env):
+    env.db.rows("children").clear()
+    env.db.rows("children").extend([
+        {"id": "c-a", "user_id": "u_ann", "nickname": "A", "birth_date": "2024-05-01"},
+        {"id": "c-b", "user_id": "u_ben", "nickname": "B", "birth_date": "2015-01-01"},
+        {"id": "c-c", "user_id": "u_cat", "nickname": "C", "birth_date": "2024-06-01"},
+        {"id": "c-d", "user_id": "u_dan", "nickname": "D", "birth_date": "2024-04-01"},
+    ])
+    for u in ("u_ann", "u_ben", "u_cat", "u_dan"):
+        make_profile(env, u, city="Savannah" if u in ("u_ann", "u_cat") else "Atlanta")
+    rec = ok(env.call("u_ann", "GET", "/recommendations"))
+    names = [i["parent"]["display_name"] for i in rec["items"]]
+    assert names[0] == "Cat" and names[-1] == "Ben"  # same city + age first; a much older child last
+    pages, cursor = [], None
+    while True:
+        page = ok(env.call("u_ann", "GET", "/recommendations", params={"page_size": 1, **({"cursor": cursor} if cursor else {})}))
+        pages += [i["parent"]["display_name"] for i in page["items"]]
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            break
+    assert pages == names

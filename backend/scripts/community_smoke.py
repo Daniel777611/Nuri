@@ -121,7 +121,7 @@ def run(client: httpx.Client, a: Account, b: Account) -> bool:
     q = a("POST", "/questions", json={"body": "【冒烟测试】宝宝托育告别时总哭，你们怎么做的？",
                                      "client_request_id": (qk := key("q"))})
     qj = j(q)
-    if not step("P06 A 发布问题", q.status_code == 201, f"{q.status_code} 投递 {qj.get('delivery', {}).get('recipient_count')} 人"):
+    if not step("P06 A 发布问题", q.status_code == 201, f"{q.status_code} {qj.get('delivery', {}).get('state')}，耗时 {q.elapsed.total_seconds():.1f}s"):
         print(q.text[:300])
         return False
     qid = qj["question"]["question_id"]
@@ -130,8 +130,14 @@ def run(client: httpx.Client, a: Account, b: Account) -> bool:
     step("P07 操作状态", j(a("GET", f"/operations/{qjson_op(qj)}")).get("state") == "succeeded")
     step("P08 我的问题列表包含它", any(i["question_id"] == qid for i in j(a("GET", "/me/questions"))["items"]))
 
-    waiting = j(b("GET", "/me/question-deliveries", params={"tab": "waiting"}))["items"]
-    delivery = next((d for d in waiting if d["question"]["question_id"] == qid), None)
+    # Delivery runs after the send returns; give it a few seconds to land.
+    delivery = None
+    for _ in range(15):
+        waiting = j(b("GET", "/me/question-deliveries", params={"tab": "waiting"}))["items"]
+        delivery = next((d for d in waiting if d["question"]["question_id"] == qid), None)
+        if delivery:
+            break
+        time.sleep(1)
     answered = False
     if step("P11 B 收到这个问题", delivery is not None,
             "" if delivery else "随机投递没选中 B（社区里已有超过 5 个资料时可能发生）；跳过回答相关步骤"):

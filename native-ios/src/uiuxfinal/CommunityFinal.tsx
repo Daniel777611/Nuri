@@ -62,22 +62,30 @@ const INTENT_LABELS: readonly (readonly [string, string, string])[] = [
 const ROLE_FILTER = ["any", "mom", "dad"] as const;
 const DISTANCE_FILTER = [null, 1, 3, 5, 10] as const;
 
-/** One server read, keyed: a new key (or reload) refetches; a stale answer is dropped. */
+/** One server read, keyed: a new key (or reload) refetches; a stale answer is dropped.
+ * `resource#version`: a new version of the SAME resource (a refresh after a
+ * write, a poll) keeps showing the current data until the new one arrives —
+ * blanking it on every refresh is what made Community feel slow. A different
+ * resource (another parent, question or tab) never shows the old one's data. */
 type Remote<T> = { value?: T; error?: unknown; loading: boolean; reload: () => void };
+const resourceOf = (key: string | null) => key === null ? null : key.split("#")[0];
 function useRemote<T>(key: string | null, load: () => Promise<T>): Remote<T> {
   const [state, setState] = useState<{ key: string | null; value?: T; error?: unknown; loading: boolean }>({ key: null, loading: false });
   const [nonce, setNonce] = useState(0);
   const loader = useRef(load); loader.current = load;
+  const resource = resourceOf(key);
   useEffect(() => {
     if (!key) { setState({ key: null, loading: false }); return; }
     let live = true;
-    setState(previous => ({ key, value: previous.key === key ? previous.value : undefined, loading: true }));
+    const same = (previous: { key: string | null }) => resourceOf(previous.key) === resource;
+    setState(previous => ({ key, value: same(previous) ? previous.value : undefined, loading: true }));
     loader.current().then(value => { if (live) setState({ key, value, loading: false }); },
-      error => { if (live) setState(previous => ({ key, value: previous.key === key ? previous.value : undefined, error, loading: false })); });
+      error => { if (live) setState(previous => ({ key, value: same(previous) ? previous.value : undefined, error, loading: false })); });
     return () => { live = false; };
   }, [key, nonce]);
   const reload = useCallback(() => setNonce(n => n + 1), []);
-  return { value: state.key === key ? state.value : undefined, error: state.key === key ? state.error : undefined, loading: state.loading || state.key !== key, reload };
+  const current = resourceOf(state.key) === resource;
+  return { value: current ? state.value : undefined, error: state.key === key ? state.error : undefined, loading: state.loading || state.key !== key, reload };
 }
 
 function SampleAvatar({
@@ -280,31 +288,31 @@ export default function CommunityFinal() {
   // ── Server reads, by screen ───────────────────────────────────────────────
   const s=state.screen;
   const onProfile=["intent","profile","profileSettings","compose","preview","hub"].includes(s);
-  const me=useRemote(onProfile?`profile:${tick}`:null,()=>communityApi.myProfile());
+  const me=useRemote(onProfile?`profile#${tick}`:null,()=>communityApi.myProfile());
   const account=useRemote<{nickname?:string;city?:string}>(["profile","profileSettings","intent"].includes(s)?"account":null,()=>api.me());
-  const hub=useRemote(home?`hub:${tick}`:null,async()=>{
+  const hub=useRemote(home?`hub#${tick}`:null,async()=>{
     const [questions,waiting,inbox]=await Promise.all([communityApi.myQuestions({status:"all"}),communityApi.deliveries("waiting"),communityApi.inbox()]);
     for(const item of inbox.items)if(item.parent?.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
     return {questions:questions.items,waiting:waiting.items,inbox};
   });
-  const relations=useRemote(["contacts","invitations"].includes(s)?`relations:${tick}`:null,async()=>{
+  const relations=useRemote(["contacts","invitations"].includes(s)?`relations#${tick}`:null,async()=>{
     const [contacts,received,sent,inbox]=await Promise.all([communityApi.contacts(),communityApi.invitations("received"),communityApi.invitations("sent"),communityApi.inbox()]);
     for(const item of contacts.items)if(item.conversation_id&&item.parent.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
     return {contacts:contacts.items,received:received.items,sent:sent.items,pending:inbox.summary.pending_invitations};
   });
   const roleFilter=ROLE_FILTER[state.filters.gender]??"any",distanceFilter=DISTANCE_FILTER[state.filters.distance]??null;
-  const suggestions=useRemote(s==="suggestions"?`rec:${roleFilter}:${distanceFilter}:${tick}`:null,()=>communityApi.recommendations({role:roleFilter,distance_miles:distanceFilter}));
-  const parentView=useRemote(["parent","incomingParent","connected","parentSettings","safetyConfirm"].includes(s)&&state.person?`parent:${state.person}:${tick}`:null,()=>communityApi.parent(state.person));
-  const mine=useRemote(["myQuestions","selection","close","delete"].includes(s)?`mine:${tick}`:null,()=>communityApi.myQuestions({status:"all"}));
-  const received=useRemote(["received","receivedReplied","receivedLocked"].includes(s)?`received:${state.receivedTab}:${tick}`:null,()=>communityApi.deliveries(state.receivedTab));
+  const suggestions=useRemote(s==="suggestions"?`rec:${roleFilter}:${distanceFilter}#${tick}`:null,()=>communityApi.recommendations({role:roleFilter,distance_miles:distanceFilter}));
+  const parentView=useRemote(["parent","incomingParent","connected","parentSettings","safetyConfirm"].includes(s)&&state.person?`parent:${state.person}#${tick}`:null,()=>communityApi.parent(state.person));
+  const mine=useRemote(["myQuestions","selection","close","delete"].includes(s)?`mine#${tick}`:null,()=>communityApi.myQuestions({status:"all"}));
+  const received=useRemote(["received","receivedReplied","receivedLocked"].includes(s)?`received:${state.receivedTab}#${tick}`:null,()=>communityApi.deliveries(state.receivedTab));
   const threadScreens=["replies","comments","replyExpanded","replyDetail","replyKeyboard"];
-  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${state.questionID}:${tick}`:null,()=>communityApi.replies(state.questionID));
+  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${state.questionID}#${tick}`:null,()=>communityApi.replies(state.questionID));
   const allThread=replies.value?.all_thread;
-  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}:${tick}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
+  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}#${tick}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
   const askedQuestion=useRemote(["respond","responsePrompt"].includes(s)&&state.questionID?`question:${state.questionID}`:null,()=>communityApi.question(state.questionID));
-  const prefs=useRemote(s==="preferences"?`prefs:${tick}`:null,()=>communityApi.preferences());
-  const blocks=useRemote(["blocked","blockedEmpty"].includes(s)?`blocks:${tick}`:null,()=>communityApi.blocks());
-  const chat=useRemote(parentChat&&state.person?`chat:${state.person}:${tick}`:null,async()=>{
+  const prefs=useRemote(s==="preferences"?`prefs#${tick}`:null,()=>communityApi.preferences());
+  const blocks=useRemote(["blocked","blockedEmpty"].includes(s)?`blocks#${tick}`:null,()=>communityApi.blocks());
+  const chat=useRemote(parentChat&&state.person?`chat:${state.person}#${tick}`:null,async()=>{
     let conversationId=knownConversations.current[state.person];
     if(!conversationId){conversationId=(await communityApi.openConversation(state.person,communityKey("conv"))).conversation.conversation_id;knownConversations.current[state.person]=conversationId;}
     const [list,ai]=await Promise.all([communityApi.messages(conversationId),communityApi.aiParticipation(conversationId)]);
