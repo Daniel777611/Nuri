@@ -12,7 +12,7 @@ import { CardList, CenteredCard, NuriButton, NuriText, MenuRow } from "@/src/uiu
 import { FinalArticle } from "@/src/uiuxfinal/Article";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { api, type DailyPostCard } from "@/src/api";
-import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
+import { dailyPostGreeting, dailyPostTag, isSummaryCard } from "@/src/components/DailyPostCard";
 import { externalSourceUrl } from "@/src/externalContent";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { shortResourceSummary, hasPostSummarySource, RESOURCE_SUMMARY_DISCLOSURE } from "@/src/resourceSummary";
@@ -139,7 +139,10 @@ export default function DailyPostScreen() {
   const sourceAvailable=hasPostSummarySource(card)&&Boolean(externalSourceUrl(card.source_url));
   const question=sourceAvailable?shortResourceSummary(card.question,110)||shortResourceSummary(card.headline,110):null;
   const situation=sourceAvailable?shortResourceSummary(card.situation,240):null;
-  const takeaways=sourceAvailable&&Array.isArray(card.takeaways)?card.takeaways.slice(0,2).map(v=>shortResourceSummary(v,120)).filter((v):v is string=>Boolean(v)):[];
+  const summaryCard=isSummaryCard(card);
+  // A summary's points are the card; a single post's first two are enough.
+  const takeaways=sourceAvailable&&Array.isArray(card.takeaways)?card.takeaways.slice(0,summaryCard?5:2).map(v=>shortResourceSummary(v,120)).filter((v):v is string=>Boolean(v)):[];
+  const summarySources=summaryCard?(card.sources||[]).filter(s=>externalSourceUrl(s.url)).map(s=>({n:s.n,title:s.title,label:s.label,url:s.url})):[];
   const reason=sourceAvailable?shortResourceSummary(card.why_this,200):null;
   const hasSummary=Boolean(question||situation||takeaways.length);
   const selectedPoint = validId && uiState === "takeaway" && requestedPoint !== null ? takeaways[requestedPoint] : undefined;
@@ -176,6 +179,9 @@ export default function DailyPostScreen() {
     sourceActive={sourceActive}
     summary={situation||question}
     points={takeaways}
+    pointSources={summaryCard?card.takeaway_sources:undefined}
+    sources={summarySources}
+    onOpenSource={(s)=>{const url=externalSourceUrl(s.url);if(!url)return;void api.dailyPostEvent(card.id,"source_click").catch(()=>{});Linking.openURL(url).catch(()=>setSourceFailure(true));}}
     onSource={()=>void openSource()}
     onTalk={talkItThrough}
     busy={openingChat}

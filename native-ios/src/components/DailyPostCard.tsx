@@ -31,12 +31,37 @@ export function dailyPostGreeting(
     : t("你好呀，一起看看这个育儿话题");
 }
 
-/** "Facebook 家长群讨论" / "Instagram 家长分享" */
+const SUMMARY_PLATFORM_NAMES: Record<string, string> = {
+  xiaohongshu: "小红书",
+  facebook: "Facebook",
+  instagram: "Instagram",
+  threads: "Threads",
+};
+
+export function isSummaryCard(card: Card): boolean {
+  return card.format === "summary" && Array.isArray(card.sources) && card.sources.length > 0;
+}
+
+/** "参考小红书与全网25篇内容": built here rather than read from source_label,
+ * so it follows the app's language rather than the language it was made in. */
+export function summarySourceLine(
+  t: (s: string, v?: Record<string, string | number>) => string,
+  card: Card,
+): string {
+  const count = card.source_count || card.sources?.length || 0;
+  const named = (card.source_platforms || []).filter((p) => p !== "web").map((p) => t(SUMMARY_PLATFORM_NAMES[p] || p));
+  return named.length
+    ? t("参考{platforms}与全网{count}篇内容", { platforms: named.join("、"), count })
+    : t("参考全网{count}篇内容", { count });
+}
+
+/** "Facebook 家长群讨论" / "Instagram 家长分享" / "参考小红书与全网25篇内容" */
 export function dailyPostTag(
   t: (s: string, v?: Record<string, string | number>) => string,
   card: Card,
 ): string {
-  const platform = PLATFORM_NAMES[card.platform] || card.platform;
+  if (isSummaryCard(card)) return summarySourceLine(t, card);
+  const platform = PLATFORM_NAMES[card.platform as keyof typeof PLATFORM_NAMES] || card.platform;
   return card.author_kind === "parent_group_answers"
     ? t("{platform} 家长群讨论", { platform })
     : t("{platform} 家长分享", { platform });
@@ -145,7 +170,7 @@ export default function DailyPostCard({
   const sourceTag = dailyPostTag(t, card);
   const tag = sourceTag;
   const question = dailyPostQuestion(t, card);
-  const summaryLabel = dailyPostPreview(card) ? t("AI 检索摘要") : t("NURI 导读");
+  const summaryLabel = isSummaryCard(card) ? t("AI 多篇汇总") : dailyPostPreview(card) ? t("AI 检索摘要") : t("NURI 导读");
   return (
     <View style={styles.wrap}>
       <Pressable

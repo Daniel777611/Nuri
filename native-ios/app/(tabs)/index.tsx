@@ -35,7 +35,7 @@ import {
   type MainConversationPreview,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
-import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
+import DailyPostCard, { type DailyPostStatus, isSummaryCard, summarySourceLine } from "@/src/components/DailyPostCard";
 import DailyVideoCard from "@/src/components/DailyVideoCard";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 import { useT, translate } from "@/src/i18n";
@@ -443,7 +443,7 @@ export default function Home() {
             <Pressable onPress={()=>dailyPost?openDailyPost(dailyPost):handleFailure(dailyFailure,()=>void loadDailyPost())} accessibilityRole="button" testID={dailyPost?"home-daily-post-card":"home-daily-post-empty"}>
               <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingTop:33,paddingBottom:20,justifyContent:"space-between"}}>
                 <FinalText size={18} numberOfLines={1} style={{fontWeight:"500",lineHeight:26}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</FinalText>
-                <FinalText size={12} secondary style={{fontWeight:"500"}}>{en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
+                <FinalText size={12} secondary numberOfLines={1} style={{fontWeight:"500"}} testID="home-daily-post-source-line">{dailyPost&&isSummaryCard(dailyPost)?summarySourceLine(t,dailyPost):en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
               </FinalSurface>
             </Pressable>
             <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>

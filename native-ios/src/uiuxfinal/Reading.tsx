@@ -36,8 +36,10 @@ export function ReadingStep({index,children,testID}:{index:number;children:React
 
 /** Presentation only. Controllers retain source validation, request guards,
  * permission handling, summary provenance and the real linked-chat operation. */
-export function FinalReadingPage({kind,title,source,mediaUrl,sourceUrl,sourceActive=true,onSource,sourceBusy=false,onTalk,busy,talkLabel,allowSavePreview=false,notice,children}:{
+export function FinalReadingPage({kind,title,source,mediaUrl,sourceUrl,sourceActive=true,onSource,sourceBusy=false,onTalk,busy,talkLabel,allowSavePreview=false,hideMedia=false,notice,children}:{
  kind:"post"|"video";title:string;source:string;onSource:()=>void;sourceBusy?:boolean;
+ /** A summary of many sources lists them instead of embedding one. */
+ hideMedia?:boolean;
  mediaUrl?:string|null;sourceUrl?:string|null;sourceActive?:boolean;
  onTalk:()=>void;busy:boolean;talkLabel:string;allowSavePreview?:boolean;notice?:ReactNode;children:ReactNode;
 }){
@@ -52,7 +54,7 @@ export function FinalReadingPage({kind,title,source,mediaUrl,sourceUrl,sourceAct
      {allowSavePreview?<Pressable testID={video?"final-video-save-preview":"final-article-save-preview"} accessibilityRole="checkbox" accessibilityState={{checked:saved}} aria-checked={saved} accessibilityLabel={c("收藏状态预览（不保存到云端）","Preview saved state (not saved to cloud)")} onPress={()=>setSaved(v=>!v)} style={{position:"absolute",right:-10,top:-10,width:44,height:44,alignItems:"center",justifyContent:"center",opacity:saved?.5:1}}><Image accessible={false} source={require("@/assets/final-flow-20261101/heart.png")} style={{width:24,height:24}} contentFit="contain"/></Pressable>:null}
     </View>
     {video?<FinalText size={12} secondary>{source}</FinalText>:<Pressable testID="daily-post-source-caption" accessibilityRole="link" accessibilityLabel={c("打开原站链接","Open original source")} disabled={sourceBusy} onPress={onSource} hitSlop={{top:10,bottom:10}}><FinalText size={12} style={{color:FINAL_COLOR.accent}}>{source}</FinalText></Pressable>}
-    <ReadingMedia kind={kind} uri={mediaUrl} sourceUrl={sourceUrl} active={sourceActive} source={source} busy={sourceBusy} onPress={onSource}/>
+    {hideMedia?null:<ReadingMedia kind={kind} uri={mediaUrl} sourceUrl={sourceUrl} active={sourceActive} source={source} busy={sourceBusy} onPress={onSource}/>}
     {children}
    </ScrollView>
   </FinalSurface>

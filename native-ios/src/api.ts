@@ -265,14 +265,31 @@ function createRecommendationEventId(): string {
 }
 
 // ── Daily post card (backend/feed/daily_post.py) ────────────────────────────
+/** One source of a summary card (backend/feed/daily_summary.py), numbered as shown. */
+export type DailyPostSource = {
+  n: number;
+  title: string;
+  url: string;
+  platform: "xiaohongshu" | "facebook" | "instagram" | "threads" | "web";
+  label: string;
+};
+
 export type DailyPostCard = {
   id: string;
   /** Pass to startSession({ card_id }) to talk it through with NURI. */
   card_id: string;
   day: string;
-  platform: "facebook" | "instagram" | "threads";
+  /** A summary card names its first source's site here ("小红书", "全网"). */
+  platform: "facebook" | "instagram" | "threads" | (string & {});
   source_url: string;
   source_label: string;
+  /** "summary": written from many sources; absent or "post": one post. */
+  format?: "post" | "summary";
+  source_count?: number;
+  source_platforms?: DailyPostSource["platform"][];
+  sources?: DailyPostSource[];
+  /** For each takeaway, the numbers of the sources behind it. */
+  takeaway_sources?: number[][];
   /** Forward-compatible optional source media; never substitute design art. */
   thumbnail_url?: string | null;
   image_url?: string | null;
@@ -288,7 +305,7 @@ export type DailyPostCard = {
   why_this: string;
   caution: string;
   author_kind: "parent" | "parent_group_answers";
-  summary_source: "post" | "facebook_ai_summary";
+  summary_source: "post" | "facebook_ai_summary" | "summary";
   concern: string;
   basis: "conversation" | "profile";
   locale: string;

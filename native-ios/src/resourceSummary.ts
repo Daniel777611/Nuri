@@ -9,7 +9,7 @@ export type ResourceSummaryOptions = { limit?: number; locale?: string };
  * turn arbitrary legacy fields into an AI summary. This is not a permission,
  * copyright, or factual-accuracy certification. */
 export function hasPostSummarySource(card: {summary_source?: unknown} | null | undefined): boolean {
-  return card?.summary_source === "post" || card?.summary_source === "facebook_ai_summary";
+  return card?.summary_source === "post" || card?.summary_source === "facebook_ai_summary" || card?.summary_source === "summary";
 }
 
 /** Detect a known mismatch, not a language/translation certification. Unknown
