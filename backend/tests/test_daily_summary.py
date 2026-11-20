@@ -7,7 +7,7 @@ runtime.get_supabase is patched so nothing can reach the database in .env.
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -162,7 +162,7 @@ def test_points_without_a_real_source_are_dropped():
     assert ds.validate_summary(data, _sources()) is None  # two backed points < MIN_POINTS
 
 
-def test_summarize_makes_one_model_call_and_respects_standing(monkeypatch):
+def test_summarize_makes_one_model_call_about_the_topic_not_the_family(monkeypatch):
     calls = []
 
     def fake_model(call_site, messages, fmt):
@@ -170,19 +170,30 @@ def test_summarize_makes_one_model_call_and_respects_standing(monkeypatch):
         return _data()
 
     monkeypatch.setattr(dp, "_model_json", fake_model)
-    sources = _sources()
-    assert ds.summarize(sources, concern="学步", child_age_context="", locale="zh-CN")
+    assert ds.summarize(_sources(), topic="12个月 宝宝 学步 走路", locale="zh-CN")
     assert len(calls) == 1 and calls[0][0] == "feed.daily_post_summary"
-    assert "[5]" in calls[0][1]  # every source shown, numbered
+    prompt = calls[0][1]
+    assert prompt.startswith("话题：12个月 宝宝 学步 走路") and "[5]" in prompt
+    assert "这位家长" not in prompt  # shared: nothing about one family goes in
 
-    monkeypatch.setattr(ds.standing_guard, "conflicts", lambda *_a, **_k: True)
-    assert ds.summarize(sources, concern="学步", child_age_context="", locale="zh-CN",
-                        standing=["孩子下肢瘫痪"]) is None
+
+def test_the_topic_is_the_search_words_without_the_group_word():
+    plan = dp.Plan(basis="profile", concern="13个月 · 学步", query_zh=QUERY, query_en="12 month old learning to walk moms")
+    assert ds.topic_of(plan, "zh-CN") == "12个月 宝宝 学步 走路"
+    assert ds.topic_of(plan, "en") == "12 month old learning to walk"
 
 
 def test_too_few_sources_never_reach_the_model(monkeypatch):
     monkeypatch.setattr(dp, "_model_json", lambda *_a: pytest.fail("model called"))
-    assert ds.summarize(_sources(2), concern="学步", child_age_context="", locale="zh-CN") is None
+    assert ds.summarize(_sources(2), topic="学步", locale="zh-CN") is None
+
+
+def test_at_most_twelve_sources_of_about_three_hundred_characters():
+    results = [result(f"https://www.xiaohongshu.com/explore/{i:024x}", f"学步{i}",
+                      "宝宝12个月学走路，" + "我们每天在地垫上练扶站和迈步。" * 40) for i in range(20)]
+    sources = ds.to_sources(results, query=QUERY)
+    assert len(sources) == ds.MAX_SOURCES == 12
+    assert all(len(s.text) <= ds.SOURCE_CHARS == 300 for s in sources)
 
 
 # ── The card ─────────────────────────────────────────────────────────────────
@@ -195,6 +206,7 @@ def test_the_card_says_how_many_sources_and_from_where():
     assert card["source_label"] == "参考小红书与全网5篇内容"
     assert card["source_count"] == 5 and len(card["sources"]) == 5
     assert card["sources"][0]["n"] == 1 and card["source_url"] == card["sources"][0]["url"]
+    assert card["why_this"] == "适合孩子现在这个阶段的家长参考。"  # a template: the summary is shared
     # Older apps still get a readable one-source card.
     assert card["headline"] and card["takeaways"] and card["platform"] == "小红书"
 
@@ -247,3 +259,114 @@ def test_generation_uses_the_summary_and_falls_through_plans(monkeypatch):
                                           datetime(2026, 11, 19, tzinfo=timezone.utc)))
     assert asked == ["A", "B"] and plan.concern == "B"
     assert card["format"] == "summary" and card["concern"] == "B"
+
+
+# ── Shared across families ───────────────────────────────────────────────────
+
+class _PoolTable:
+    """content_search_pool, enough of it for search_pool._load/_save/_bump."""
+
+    def __init__(self, rows):
+        self.rows, self.filters, self.op, self.payload = rows, {}, "select", None
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, col, val):
+        self.filters[col] = val
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def upsert(self, row, **_k):
+        self.op, self.payload = "upsert", row
+        return self
+
+    def update(self, patch):
+        self.op, self.payload = "update", patch
+        return self
+
+    def execute(self):
+        key = lambda r: (r["kind"], r["lang"], r["query"])
+        if self.op == "upsert":
+            self.rows[key(self.payload)] = dict(self.payload)
+            return SimpleNamespace(data=[self.payload])
+        hits = [r for r in self.rows.values() if all(r.get(c) == v for c, v in self.filters.items())]
+        if self.op == "update":
+            for r in hits:
+                r.update(self.payload)
+        return SimpleNamespace(data=[dict(r) for r in hits])
+
+
+@pytest.fixture
+def pool(monkeypatch):
+    rows: dict = {}
+    db = SimpleNamespace(table=lambda _name: _PoolTable(rows))
+    monkeypatch.setattr(runtime, "get_supabase", lambda: db)
+    state = SimpleNamespace(rows=rows, searches=0, model=0, answer=_data())
+
+    async def fake_find(plan, locale, exclude):
+        state.searches += 1
+        return _sources()
+
+    def fake_model(*_a):
+        state.model += 1
+        return state.answer
+
+    monkeypatch.setattr(ds, "find_sources", fake_find)
+    monkeypatch.setattr(dp, "_model_json", fake_model)
+    return state
+
+
+NOW = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+PLAN = dp.Plan(basis="profile", concern="12个月 · 学步", query_zh=QUERY, query_en="12 month old learning to walk moms")
+
+
+def test_two_families_with_the_same_words_share_one_summary(pool):
+    first = asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW))
+    other = dp.Plan(basis="conversation", concern="13个月 · 学步", query_zh=QUERY)
+    second = asyncio.run(ds.summary_for(other, "zh-CN", set(), now=NOW + timedelta(hours=5)))
+    assert first and second and first["headline"] == second["headline"]
+    assert pool.model == 1 and pool.searches == 1
+    assert [s.url for s in second["sources"]] == [s.url for s in first["sources"]]
+    (row,) = pool.rows.values()
+    assert row["uses"] == 2 and row["query"].startswith("[summary:zh-cn]")
+    # Each family still gets its own reason line, for free.
+    assert ds.why_this(other, "zh-CN") != ds.why_this(PLAN, "zh-CN")
+
+
+def test_a_summary_is_written_again_once_it_is_a_week_old(pool):
+    asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW))
+    asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW + timedelta(days=8)))
+    assert pool.model == 2
+
+
+def test_each_language_has_its_own_summary(pool):
+    asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW))
+    asyncio.run(ds.summary_for(PLAN, "zh-TW", set(), now=NOW))
+    assert pool.model == 2 and len(pool.rows) == 2
+
+
+def test_words_that_made_no_card_are_not_asked_again_for_a_day(pool):
+    pool.answer = _data(relevant=[], points=[])
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW)) is None
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW + timedelta(hours=6))) is None
+    assert pool.model == 1
+    pool.answer = _data()
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW + timedelta(days=2)))
+    assert pool.model == 2
+
+
+def test_a_family_that_already_saw_it_moves_on(pool):
+    seen = asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW))["sources"][0].url
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", {seen}, now=NOW)) is None
+    assert pool.model == 1
+
+
+def test_a_shared_summary_still_answers_to_each_familys_standing_memories(pool, monkeypatch):
+    monkeypatch.setattr(ds.standing_guard, "conflicts", lambda *_a, **_k: True)
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), ["孩子下肢瘫痪"], now=NOW)) is None
+    # The clash is this family's, not the summary's: it stays shared.
+    assert asyncio.run(ds.summary_for(PLAN, "zh-CN", set(), now=NOW))
+    assert pool.model == 1

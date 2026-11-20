@@ -9,11 +9,23 @@ one model call writes a short card from all of them: a question, a one-line
 answer, three to five points that each name the sources behind them. The card
 says how many sources it read ("参考小红书与全网 18 篇内容") and lists them.
 
-Same search budget as the one-post card: two searches per plan, through the
-shared pool, each now asking for twenty results instead of ten (Tavily's
-price is per request, not per result). Short on purpose: replies that grew
-longer scored worse in evaluation, so the points replace detail rather than
-add it.
+Cost, the way content apps keep it down — compute once, serve many:
+
+* **Searches** are the one-post card's: two per plan, through the shared
+  pool, twenty results each instead of ten (Tavily prices per request).
+* **The summary is shared.** It is written about the search words, not the
+  family, and kept in the same pool table for TTL days under
+  "[summary:<locale>] <words>": every family whose plan produces those words
+  (same age band, same need) reads it without a model call. What stays
+  per family costs nothing or nearly: a source they were already shown, the
+  standing-memory check (a keyword prefilter first), and why_this, which is a
+  template.
+* **The input is trimmed**: the twelve most on-topic sources, about three
+  hundred characters each — about 4k prompt tokens, against ~9k per card
+  for the one-post picker (2.4 tries of ~3.7k, measured on November's rows).
+
+Short on purpose: replies that grew longer scored worse in evaluation, so the
+points replace detail rather than add it.
 
 ``DAILY_POST_FORMAT=single`` goes back to picking one post.
 """
@@ -22,10 +34,12 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 from urllib.parse import urlparse
 
+from backend import runtime
 from backend.feed import daily_post as dp
 from backend.feed import search_pool
 from backend.feed import standing as standing_guard
@@ -35,10 +49,13 @@ XHS_DOMAINS = ("xiaohongshu.com",)
 SEARCH_RESULTS = 20
 #: Fewer sources than this and it is not a summary, it is one post retold.
 MIN_SOURCES = int(os.getenv("DAILY_SUMMARY_MIN_SOURCES", "4"))
-MAX_SOURCES = 25
-SOURCE_CHARS = 420
+MAX_SOURCES = int(os.getenv("DAILY_SUMMARY_MAX_SOURCES", "12"))
+SOURCE_CHARS = 300
 MIN_SOURCE_CHARS = 50
 MIN_POINTS, MAX_POINTS = 3, 5
+#: Words that made no card are not asked again for this long: the same
+#: results would make the same empty answer, and each ask is a model call.
+EMPTY_TTL = timedelta(days=1)
 
 
 @dataclass
@@ -183,7 +200,7 @@ async def find_sources(plan: dp.Plan, locale: str, exclude_urls: set[str]) -> li
 
 # ── Writing the card ─────────────────────────────────────────────────────────
 
-_SUMMARY_SYSTEM = """你为 NURI 的每日卡片写一份"多篇内容汇总"，给一位家长看。
+_SUMMARY_SYSTEM = """你为 NURI 的每日卡片写一份"多篇内容汇总"。同一份汇总会给所有关心这个话题、孩子在这个年龄段的家长看，所以不要写成对某一位家长说的话。
 下面是围绕同一个话题搜到的多条内容（小红书笔记、家长帖子、网页文章的片段，可能不完整），每条有编号。
 
 先挑出真正在讲这个话题、对这个年龄段有用的内容，编号填进 relevant。广告、带货、和话题无关、只有标题没有内容的，不要选。
@@ -192,7 +209,6 @@ _SUMMARY_SYSTEM = """你为 NURI 的每日卡片写一份"多篇内容汇总"，
 - headline：不超过 24 个字，一句话回答：多数内容的共同结论。
 - points：3 到 5 条，每条不超过 40 个字，是具体、可以照做或可以参考的做法或判断；优先写多条内容都提到的。每条的 sources 填支撑它的内容编号（至少一个）。内容之间说法不一致时，如实写出分歧，不要替它们下结论。
 - situation：不超过 60 个字，交代这些内容大体在讲什么情况、来自什么样的人（家长经验还是医生科普）。
-- why_this：不超过 50 个字，说明为什么和这位家长有关；不要编造家长没说过的细节。
 - caution：有安全风险（用药剂量、偏方、违背安全睡眠、学步车等）时写一句提醒，没有就返回空字符串。
 规则：
 - 不能补充内容里没有的做法、数字或结论。不推荐药物剂量和偏方。
@@ -225,26 +241,27 @@ _SUMMARY_FORMAT = {
                     },
                 },
                 "situation": {"type": "string"},
-                "why_this": {"type": "string"},
                 "caution": {"type": "string"},
             },
-            "required": ["relevant", "question", "headline", "points", "situation", "why_this", "caution"],
+            "required": ["relevant", "question", "headline", "points", "situation", "caution"],
             "additionalProperties": False,
         },
     },
 }
 
+_MOM_WORDS = re.compile(r"\s*(宝妈|moms?)\s*$", re.IGNORECASE)
 
-def _prompt(sources: list[Source], *, concern: str, child_age_context: str, basis: str,
-            standing: Sequence[str]) -> str:
+
+def topic_of(plan: dp.Plan, locale: str) -> str:
+    """What the summary is about, from the search words alone, so every family
+    with these words gets the same summary ("12个月 宝宝 学步 走路")."""
+    words = plan.query_en if locale == "en" else (plan.query_zh or plan.query_en)
+    return _MOM_WORDS.sub("", words or "").strip() or plan.concern
+
+
+def _prompt(sources: list[Source], *, topic: str) -> str:
     blocks = [f"[{i}] 来源：{s.label}\n标题：{s.title}\n内容：{s.text}" for i, s in enumerate(sources)]
-    rules_out = standing_guard.prompt_block(standing)
-    return (
-        (f"{dp._PROFILE_BASIS_NOTE}\n关注方向：{concern}\n" if basis == "profile" else f"这位家长关心的话题：{concern}\n")
-        + (f"{child_age_context}\n" if child_age_context else "")
-        + (f"{rules_out}\n" if rules_out else "")
-        + "\n搜到的内容：\n\n" + "\n\n".join(blocks)
-    )
+    return f"话题：{topic}\n\n搜到的内容：\n\n" + "\n\n".join(blocks)
 
 
 def validate_summary(data: dict, sources: list[Source]) -> Optional[dict]:
@@ -278,34 +295,116 @@ def validate_summary(data: dict, sources: list[Source]) -> Optional[dict]:
         "takeaways": [text for text, _ in points],
         "takeaway_sources": [[number[i] for i in refs] for _, refs in points],
         "situation": dp._trim(data.get("situation"), 240),
-        "why_this": dp._trim(data.get("why_this"), 200),
         "caution": dp._trim(data.get("caution"), 200),
     }
 
 
-def summarize(
-    sources: list[Source], *, concern: str, child_age_context: str, locale: str,
-    basis: str = "conversation", standing: Sequence[str] = (),
-) -> Optional[dict]:
-    """One model call over all the sources; None when they don't make a card
-    or the card clashes with what the family ruled out."""
+def summarize(sources: list[Source], *, topic: str, locale: str) -> Optional[dict]:
+    """One model call over all the sources, about the topic and not about any
+    one family; None when they don't make a card."""
     if len(sources) < MIN_SOURCES:
         return None
     system = (_SUMMARY_SYSTEM.replace("{locale_rule}", dp._LOCALE_RULE.get(locale, dp._LOCALE_RULE["zh-CN"]))
               .replace("{min_sources}", str(MIN_SOURCES)))
     data = dp._model_json(
         "feed.daily_post_summary",
-        [{"role": "system", "content": system},
-         {"role": "user", "content": _prompt(sources, concern=concern, child_age_context=child_age_context,
-                                             basis=basis, standing=standing)}],
+        [{"role": "system", "content": system}, {"role": "user", "content": _prompt(sources, topic=topic)}],
         _SUMMARY_FORMAT,
     )
-    summary = validate_summary(data, sources)
-    if summary and standing and standing_guard.conflicts(
-        dp.pick_text(summary), standing, call_site="feed.daily_post_standing_check",
-    ):
-        return None
+    return validate_summary(data, sources)
+
+
+# ── Sharing it ───────────────────────────────────────────────────────────────
+
+def cache_key(plan: dp.Plan, locale: str) -> tuple[str, str]:
+    """(pool lang, pool query) for the summary of these words in this language.
+    The pool's lang column is zh/en; the locale rides in the key, since a
+    zh-TW summary is written in Traditional characters."""
+    words = plan.query_en if locale == "en" else (plan.query_zh or plan.query_en)
+    return ("en" if locale == "en" else "zh"), search_pool.query_key(f"[summary:{locale}] {words}")
+
+
+def to_json(summary: Optional[dict]) -> list[dict]:
+    if not summary:
+        return [{"empty": True}]
+    return [{**summary, "sources": [asdict(s) for s in summary["sources"]]}]
+
+
+def from_json(items) -> tuple[bool, Optional[dict]]:
+    """(usable entry?, summary or None for "no card from these words")."""
+    item = (items or [None])[0]
+    if not isinstance(item, dict):
+        return False, None
+    if item.get("empty"):
+        return True, None
+    try:
+        sources = [Source(**s) for s in item.get("sources") or []]
+    except TypeError:
+        return False, None
+    if not sources or not item.get("headline") or not item.get("takeaways"):
+        return False, None
+    return True, {**item, "sources": sources}
+
+
+async def shared_summary(plan: dp.Plan, locale: str, *, now: Optional[datetime] = None) -> Optional[dict]:
+    """The summary for these search words: from the pool while fresh, else
+    searched and written once and put in the pool for every family after."""
+    now = now or datetime.now(timezone.utc)
+    sb = runtime.get_supabase()
+    lang, key = cache_key(plan, locale)
+    row = await search_pool._quietly(lambda: search_pool._load(sb, "post", lang, key), "read") if sb else None
+    if row:
+        usable, summary = from_json(row.get("results"))
+        fetched = search_pool._parse(row.get("fetched_at"))
+        ttl = timedelta(days=search_pool.ttl_days()) if summary else EMPTY_TTL
+        if usable and fetched and now - fetched < ttl:
+            await search_pool._quietly(
+                lambda: search_pool._bump(sb, "post", lang, key, int(row.get("uses") or 0)), "count")
+            return summary
+
+    sources = await find_sources(plan, locale, set())
+    if len(sources) < MIN_SOURCES:
+        return None  # nothing was asked; next time the pool may hold more
+    import anyio
+
+    summary = await anyio.to_thread.run_sync(lambda: summarize(sources, topic=topic_of(plan, locale), locale=locale))
+    if sb:
+        payload = to_json(summary)
+        await search_pool._quietly(lambda: search_pool._save(sb, "post", lang, key, payload, now), "write")
     return summary
+
+
+async def summary_for(
+    plan: dp.Plan, locale: str, exclude_urls: set[str], standing: Sequence[str] = (),
+    *, now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """The shared summary, if this family may have it: not one they were
+    already shown, and nothing in it that their standing memories rule out."""
+    summary = await shared_summary(plan, locale, now=now)
+    if not summary or summary["sources"][0].url in exclude_urls:
+        return None
+    if standing:
+        import anyio
+
+        clash = await anyio.to_thread.run_sync(lambda: standing_guard.conflicts(
+            dp.pick_text(summary), standing, call_site="feed.daily_post_standing_check"))
+        if clash:
+            return None
+    return summary
+
+
+_WHY_THIS = {
+    "zh-CN": ("和你最近关心的「{concern}」有关，整理了大家的做法。", "适合孩子现在这个阶段的家长参考。"),
+    "zh-TW": ("和你最近關心的「{concern}」有關，整理了大家的做法。", "適合孩子現在這個階段的家長參考。"),
+    "en": ("About {concern}, which you have been asking about.", "For parents of a child at this stage."),
+}
+
+
+def why_this(plan: dp.Plan, locale: str) -> str:
+    """Per family and free: the summary itself is shared, so this line is the
+    template, not the model's."""
+    personal, stage = _WHY_THIS.get(locale, _WHY_THIS["zh-CN"])
+    return personal.format(concern=plan.concern) if plan.basis == "conversation" else stage
 
 
 def platforms_of(sources: Sequence[Source]) -> list[str]:
@@ -355,7 +454,7 @@ def build_card(summary: dict, plan: dp.Plan, *, locale: str) -> dict:
         "takeaway_sources": summary["takeaway_sources"],
         "excerpt": "",
         "excerpt_lang": "",
-        "why_this": summary["why_this"],
+        "why_this": why_this(plan, locale),
         "caution": summary["caution"],
         "author_kind": "parent",
         "summary_source": "summary",

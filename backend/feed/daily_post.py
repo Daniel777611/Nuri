@@ -1636,16 +1636,13 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
         if index and time.monotonic() - started > GENERATION_BUDGET_S:
             break
         if daily_summary.FORMAT == "summary":
-            # Many sources, one card (feed/daily_summary.py); same two searches.
+            # Many sources, one card, shared by every family with these search
+            # words (feed/daily_summary.py); same two searches when not pooled.
             try:
-                sources = await daily_summary.find_sources(plan, locale, exclude)
+                summary = await daily_summary.summary_for(plan, locale, exclude, standing, now=now)
             except search_budget.SearchBudgetSpent as exc:
                 refused = exc
                 continue
-            summary = await anyio.to_thread.run_sync(lambda: daily_summary.summarize(
-                sources, concern=plan.concern, child_age_context=child_age_context, locale=locale,
-                basis=plan.basis, standing=standing,
-            ))
             if summary:
                 return daily_summary.build_card(summary, plan, locale=locale), plan
             continue
