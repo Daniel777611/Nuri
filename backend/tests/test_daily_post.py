@@ -461,6 +461,15 @@ class _DB:
 
 
 @pytest.fixture(autouse=True)
+def _one_post_format(monkeypatch):
+    """These tests are about the one-post card; the summary card has its own
+    (test_daily_summary.py)."""
+    from backend.feed import daily_summary
+
+    monkeypatch.setattr(daily_summary, "FORMAT", "single")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_database(monkeypatch):
     attempts: list = []
 

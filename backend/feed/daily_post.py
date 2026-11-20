@@ -45,6 +45,18 @@ from backend.feed import standing as standing_guard
 from backend.feed.post_media import social_image_url, source_image_urls
 from backend.nuri_core import family_store
 
+
+class _LazySummary:
+    """feed/daily_summary.py imports this module; reach it on first use."""
+
+    def __getattr__(self, name):
+        from backend.feed import daily_summary as module
+
+        return getattr(module, name)
+
+
+daily_summary = _LazySummary()
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 CARD_ID_PREFIX = "dailypost:"
@@ -1214,6 +1226,8 @@ def build_card(pick: dict, plan: Plan, *, locale: str) -> dict:
 
 def chat_context(card: dict) -> str:
     """What the reply model is told when a parent opens this card in chat."""
+    if card.get("format") == "summary":
+        return daily_summary.chat_context(card)
     kind = (
         "一个家长群里的提问和其他家长的回答"
         if card.get("author_kind") == "parent_group_answers"
@@ -1621,6 +1635,20 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
         # plan is only worth starting while that wait is still reasonable.
         if index and time.monotonic() - started > GENERATION_BUDGET_S:
             break
+        if daily_summary.FORMAT == "summary":
+            # Many sources, one card (feed/daily_summary.py); same two searches.
+            try:
+                sources = await daily_summary.find_sources(plan, locale, exclude)
+            except search_budget.SearchBudgetSpent as exc:
+                refused = exc
+                continue
+            summary = await anyio.to_thread.run_sync(lambda: daily_summary.summarize(
+                sources, concern=plan.concern, child_age_context=child_age_context, locale=locale,
+                basis=plan.basis, standing=standing,
+            ))
+            if summary:
+                return daily_summary.build_card(summary, plan, locale=locale), plan
+            continue
         try:
             candidates = await find_candidates(plan, locale, exclude)
         except search_budget.SearchBudgetSpent as exc:
