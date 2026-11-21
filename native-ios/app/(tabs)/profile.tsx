@@ -19,6 +19,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { api, auth } from "@/src/api";
 import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
+import MemoriesSection from "@/src/components/MemoriesSection";
 import { LOCALE_LABELS, LOCALES, useT, translate } from "@/src/i18n";
 import { usePurchaseAllowed } from "@/src/nativeShell";
 import { openNotificationSettings } from "@/src/nativePush";
@@ -239,7 +240,7 @@ export default function Profile() {
   const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:locale==="zh-TW"&&SETTINGS_TRADITIONAL[cn]?SETTINGS_TRADITIONAL[cn]:translate(locale,cn);
   const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch{if(current(ticket))setActionError(copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
-  const titles:Record<string,string>={personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
+  const titles:Record<string,string>={memories:copy("NURI 记得的事","What NURI remembers"),personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
@@ -250,7 +251,7 @@ export default function Profile() {
     {section==="main"?<CardList testID="profile-card-stack" contentContainerStyle={{gap:0}}>
       {row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("家庭偏好","Family preferences"),"preferences")}
       <MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />
-      {row(copy("我的收藏","Favorites"),"favorites")}
+      {row(copy("我的收藏","Favorites"),"favorites")}{row(copy("NURI 记得的事","What NURI remembers"),"memories")}
       <View style={{marginVertical:16}}><SettingsDivider/></View>
       <MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI","Privacy & AI"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}
     </CardList>:<CardList>
@@ -263,6 +264,7 @@ export default function Profile() {
         <SettingsFormFooter><NuriButton label={copy("保存","Save")} busy={saving} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({nickname:parentName.trim(),city:city.trim(),parent_role:role||undefined}))} /></SettingsFormFooter>
       </>:null}
       {section==="children"?<>{children.map(c=><MenuRow key={c.id} label={c.nickname} detail={(({key,vars})=>t(key,vars))(ageLabel(c.birth_date))} onPress={()=>router.push({pathname:"/child/[id]",params:{id:c.id,uiState:"edit"}})} testID={`profile-child-${c.id}`} />)}{loadState==="ready"&&!children.length?<NuriText secondary>{copy("还没有添加孩子资料。","No child profiles added.")}</NuriText>:null}<NuriButton label={copy("添加孩子","Add a child")} onPress={()=>router.push("/child/new")} testID="profile-add-child" /></>:null}
+      {section==="memories"?<MemoriesSection />:null}
       {section==="favorites"?<>{favorites.map(f=><MenuRow key={f.id} label={f.title} detail={f.type_label} onPress={()=>router.push(`/saved/${f.id}` as never)} testID={`profile-fav-${f.id}`} />)}{loadState==="ready"&&!favorites.length?<InlineState message={copy("这里还没有收藏。","No saved content yet.")} action={copy("回到首页","Go home")} onPress={()=>router.dismissTo("/(tabs)")} />:null}<MenuRow label={copy("管理收藏分类","Manage collections")} onPress={()=>go("collections")} /></>:null}
       {section==="collections"?<>{collections.map(c=><MenuRow key={c.id} label={c.name} onPress={()=>{setCollectionTarget(c.id);setCollectionName(c.name);}} />)}<NuriField label={collectionTarget?copy("编辑分类","Edit collection"):copy("新建分类","New collection")} value={collectionName} onChangeText={setCollectionName} /><NuriText secondary style={{fontSize:12,lineHeight:16}} testID="profile-collection-name-limit">{copy("分类名称最多 20 个字符。","Collection names can contain up to 20 characters.")}</NuriText><NuriButton label={copy("保存分类","Save collection")} disabled={saving||!validCollectionName(collectionName)||loadState!=="ready"} onPress={()=>{const name=validCollectionName(collectionName);if(!name)return;void run(async()=>{if(collectionTarget)await api.renameCollection(collectionTarget,name);else await api.createCollection(name);setCollectionName("");setCollectionTarget(null);});}} />{collectionTarget?<><NuriButton secondary label={copy("取消编辑","Cancel editing")} onPress={()=>{setCollectionTarget(null);setCollectionName("");}} /><NuriButton secondary label={copy("删除分类","Delete collection")} onPress={()=>setCollectionDelete(collectionTarget)} /></>:null}</>:null}
       {section==="preferences"?<>
