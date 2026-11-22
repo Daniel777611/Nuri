@@ -1,0 +1,3 @@
+# Supabase CLI settings. Only used to run migrations against the hosted
+# projects (see supabase/README.md); there is no local Supabase stack.
+project_id = "nuri"

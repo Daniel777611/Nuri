@@ -107,6 +107,6 @@
 0. 2026-11-06 起新增：执行 `supabase/migrations/20261106010000_community_gender_tag.sql`（给 `community_profiles` 加 `gender_tag` 列）。**要在部署这版代码之前执行**，否则保存性别标签会报 503。
 
 
-1. 在 prod Supabase（`cxxidflulsdmcnazrouw`）的 SQL Editor 中执行 `supabase/migrations/20261105010000_community.sql`。文件里的语句都可重复执行（`if not exists` / `on conflict do nothing`），并且会创建私有存储桶 `community-media`。
+1. 按 `supabase/README.md` 的流程（先 testing 后 prod，用 `supabase db push`）上 `supabase/migrations/20261105010000_community.sql`，不要再直接在 SQL Editor 里跑。文件里的语句都可重复执行（`if not exists` / `on conflict do nothing`），并且会创建私有存储桶 `community-media`。
 2. 确认 `storage.buckets` 里有 `community-media`，且 `public = false`。
 3. 可选的环境变量（都有默认值）：`COMMUNITY_AI_MODEL`、`COMMUNITY_DELIVERY_FANOUT`、`COMMUNITY_DELIVERY_TTL_DAYS`、`COMMUNITY_QUESTIONS_PER_DAY`、`COMMUNITY_INVITATIONS_PER_DAY`、`COMMUNITY_AI_NOTICE_VERSION`、`NURI_AI_CONSENT_VERSION`、`COMMUNITY_MEDIA_BUCKET`。
