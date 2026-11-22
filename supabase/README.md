@@ -19,8 +19,8 @@ brew install supabase/tap/supabase   # 或者不装，用 npx supabase@latest �
 supabase login                       # 浏览器里授权一次
 ```
 
-`db push` 要数据库密码：Supabase 后台 → Project Settings → Database。可以每次输入，
-也可以临时 `export SUPABASE_DB_PASSWORD=...`，不要写进仓库。
+CLI 3.x 的数据库命令默认连本地（这里没有本地库），**每条命令都要带 `--remote=<ref>`** 指明是哪个项目。
+登录后一般不用数据库密码；如果提示要，去 Supabase 后台 → Project Settings → Database 找，用 `-p` 传，不要写进仓库。
 
 ## 加一个新迁移
 
@@ -30,21 +30,19 @@ supabase login                       # 浏览器里授权一次
 2. 先推到 **testing**：
 
    ```bash
-   supabase link --project-ref kyxnnrmyzmdutqylsxpw
-   supabase db push --dry-run   # 看会跑哪些文件
-   supabase db push
+   supabase db push --remote=kyxnnrmyzmdutqylsxpw --dry-run   # 看会跑哪些文件
+   supabase db push --remote=kyxnnrmyzmdutqylsxpw
    ```
 
 3. 用连 testing 的后端验证功能。
 4. 分支合进 `main`、准备上线时，再推到 **正式库**，并且要在部署依赖它的代码**之前**：
 
    ```bash
-   supabase link --project-ref cxxidflulsdmcnazrouw
-   supabase db push --dry-run
-   supabase db push
+   supabase db push --remote=cxxidflulsdmcnazrouw --dry-run
+   supabase db push --remote=cxxidflulsdmcnazrouw
    ```
 
-5. `supabase migration list` 可以对照本地文件和库里的记录。
+5. `supabase migration list --remote=<ref>` 可以对照本地文件和库里的记录（只读）。
 
 ## 规矩
 
