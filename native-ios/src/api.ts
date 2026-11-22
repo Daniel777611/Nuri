@@ -266,6 +266,24 @@ function createRecommendationEventId(): string {
 
 // ── Daily post card (backend/feed/daily_post.py) ────────────────────────────
 /** One source of a summary card (backend/feed/daily_summary.py), numbered as shown. */
+/** One critical period in one week of the growth calendar. */
+export type GrowthPeriod = {
+  id: string;
+  label: string;
+  about: string;
+  status: "active" | "possible" | "upcoming" | "closing";
+  starts_this_week: boolean;
+  confirmed_by: { tag: string; label: string; said: string; observed: string }[];
+  need: string;
+};
+export type GrowthCalendar = {
+  child_id: string;
+  state: "ready" | "not_born";
+  nickname?: string;
+  weeks: { start: string; end: string; is_current: boolean; age_weeks: number; age_months: number; periods: GrowthPeriod[] }[];
+  released_tags: { tag: string; label: string }[];
+};
+
 export type DailyPostSource = {
   n: number;
   title: string;
@@ -1246,6 +1264,9 @@ export const api = {
     const tz = deviceTimeZone();
     return req<BillingUsage>(`/billing/usage${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`);
   },
+  /** Critical periods week by week; see backend/nuri_core/critical_periods.py. */
+  growthCalendar: (childId: string, weeks = 12) =>
+    req<GrowthCalendar>(`/children/${encodeURIComponent(childId)}/growth-calendar?weeks=${weeks}&past=1`),
   /** What NURI remembers about this family; `standing` rows apply to every reply. */
   listMemories: () =>
     req<{ id: string; child_id: string | null; standing: boolean; text: string; updated_at: string }[]>(

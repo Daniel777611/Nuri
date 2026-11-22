@@ -33,6 +33,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/admin/memory",
+      "destination": "/index.html"
+    },
+    {
       "source": "/admin/(.*)",
       "destination": "/api/backend.py"
     },

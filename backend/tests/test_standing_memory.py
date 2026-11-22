@@ -175,7 +175,8 @@ def test_the_extractor_sees_what_is_remembered_and_can_retire_it(monkeypatch):
 
     request = client.calls[0]
     system, conversation = (m["content"] for m in request["messages"])
-    assert "[child_state] 睡眠训练：正在用法伯法训睡" in conversation
+    # Shown with its subcategory (inferred for a row from before them).
+    assert "[child_state/routine] 睡眠训练：正在用法伯法训睡" in conversation
     assert "我们不训睡了" in conversation
     assert "category=constraint" in system and "retire" in system
     schema = request["response_format"]["json_schema"]["schema"]

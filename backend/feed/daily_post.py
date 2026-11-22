@@ -43,7 +43,7 @@ from backend import llm_usage, locales, runtime, topic_keywords
 from backend.feed import family_queries, search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.feed.post_media import social_image_url, source_image_urls
-from backend.nuri_core import family_store
+from backend.nuri_core import critical_periods, family_store
 
 
 class _LazySummary:
@@ -391,6 +391,28 @@ def _query_age_words(months: Optional[int]) -> tuple[str, str]:
     return _age_words(months)
 
 
+def youngest_child(children: list[dict]) -> Optional[dict]:
+    """The born child with the latest birth date."""
+    born = [
+        (b, c) for c in children
+        for b in [critical_periods.parse_birth(c.get("birth_date"))]
+        if b is not None and b <= date.today()
+    ]
+    return max(born, key=lambda bc: bc[0])[1] if born else None
+
+
+def period_signals(children: list[dict], memories: Sequence[dict], day: date) -> tuple[list[str], list[str]]:
+    """critical_periods.push_signals for the youngest child."""
+    child = youngest_child(children)
+    if child is None:
+        return [], []
+    return critical_periods.push_signals(
+        critical_periods.parse_birth(child.get("birth_date")), day, memories,
+        child_id=str(child.get("id") or ""), nickname=str(child.get("nickname") or ""),
+        other_nicknames=[str(c.get("nickname") or "") for c in children if c is not child],
+    )
+
+
 def youngest_age_months(children: list[dict]) -> Optional[int]:
     ages = [
         m for m in (family_store.age_in_months(str(c.get("birth_date") or "")) for c in children)
@@ -706,9 +728,10 @@ def family_plans(
     # A chat topic may be searched as written, so it is scrubbed like any
     # other text that leaves NURI (the router already redacts; this is the net).
     topics = [t for t in (_scrub(t, children) for t in topics) if t and t not in _GENERIC_TOPICS]
+    period_needs, confirmed_needs = period_signals(children, memories if personal else (), day)
     ranked = family_queries.rotate_lead(family_queries.rank_needs(
         months=months, profile=profile, memories=memories, topics=topics, user_texts=user_texts,
-        standing=standing, personal=personal,
+        standing=standing, personal=personal, period_needs=period_needs, confirmed_needs=confirmed_needs,
     ), day)
     limit = PROFILE_PLANS + (1 if personal and not pool_only else 0)
     return [plan_for_need(c, months, locale, pool_only=pool_only) for c in ranked[:limit]]

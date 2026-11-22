@@ -355,6 +355,9 @@ export default function AdminPage() {
             <Link href="/admin/logs" style={styles.navLink}>
               对话性能日志 →
             </Link>
+            <Link href={"/admin/memory" as never} style={styles.navLink}>
+              长期记忆画像 →
+            </Link>
             <Pressable onPress={logout}>
               <Text style={styles.logoutText}>退出</Text>
             </Pressable>

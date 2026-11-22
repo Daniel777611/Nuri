@@ -29,7 +29,7 @@ from typing import Optional
 
 import anyio
 
-from backend.nuri_core import context_budget, temporal
+from backend.nuri_core import context_budget, memory_taxonomy, temporal
 from backend import llm_usage, runtime
 from backend.runtime import (
     OPENAI_FAST_TIMEOUT_S,
@@ -522,10 +522,10 @@ def _known_memories_block(known: Optional[list[dict]]) -> str:
     for m in (known or [])[:KNOWN_MEMORIES_FOR_EXTRACTION]:
         key, value = (m.get("key") or "").strip(), (m.get("value") or "").strip()
         if key and value:
-            lines.append(f"- [{m.get('category') or 'fact'}] {key}：{value[:80]}")
+            lines.append(f"- [{memory_taxonomy.known_label(m)}] {key}：{value[:80]}")
     if not lines:
         return ""
-    return "已经记住的信息（category / key：value）：\n" + "\n".join(lines)
+    return "已经记住的信息（[category/subcategory] key：value）：\n" + "\n".join(lines)
 
 
 def extract_memories_sync(
@@ -556,7 +556,8 @@ def extract_memories_sync(
         "（例如「不再训睡了」「不想用配方奶」），以及会让一般育儿建议不适用的家庭处境。"
         "constraint 的 value 写成一句能直接拿来检查推荐的话，不超过 40 字，"
         "例如「已决定不做睡眠训练，不要再推荐训睡方法」「孩子下肢瘫痪，不能建议跑跳类活动」。\n"
-        "- 同一件事有了新情况，沿用已记住的那条 key 写新的 value。\n\n"
+        "- 同一件事有了新情况，原样照抄已记住的那条 key（包括斜杠前面的部分）写新的 value。\n"
+        + memory_taxonomy.extraction_guide() + "\n\n"
         "retire：已经记住的信息里，被这段对话明确推翻、不再成立的条目"
         "（例如以前记着在训睡，现在家长说不训了），填它原来的 category 和 key。"
         "只是没提到的不算推翻；拿不准就不要填。\n\n"
@@ -601,11 +602,21 @@ def extract_memories_sync(
                                             "type": "string",
                                             "enum": ["preference", "concern", "child_state", "fact", "constraint"],
                                         },
+                                        "subcategory": {
+                                            "type": "string",
+                                            "enum": memory_taxonomy.subcategory_ids(),
+                                        },
+                                        # A behavior the child is showing, from the
+                                        # closed vocabulary; "" for everything else.
+                                        "tag": {
+                                            "type": "string",
+                                            "enum": ["", *memory_taxonomy.BEHAVIOR_TAGS_BY_ID],
+                                        },
                                         "key": {"type": "string"},
                                         "value": {"type": "string"},
                                         "confidence": {"type": "number"},
                                     },
-                                    "required": ["category", "key", "value", "confidence"],
+                                    "required": ["category", "subcategory", "tag", "key", "value", "confidence"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -649,13 +660,27 @@ def extract_memories_sync(
         )
         data = json.loads(resp.choices[0].message.content)
         return {
-            "memories": data.get("memories", [])[:5],
+            "memories": [labelled_memory(m) for m in data.get("memories", [])[:5]],
             "follow_ups": data.get("follow_ups", [])[:3],
             "retire": data.get("retire", [])[:5],
         }
     except Exception as e:
         print(f"[error] extract_memories_sync failed: {type(e).__name__}: {e}")
         return {"memories": [], "follow_ups": [], "retire": []}
+
+def labelled_memory(m: dict) -> dict:
+    """An extracted memory with its subcategory and tag folded into the key
+    (memory_taxonomy.make_key). `replaces` keeps the key the extractor copied,
+    so a row stored before subcategories existed is renamed, not duplicated."""
+    if not isinstance(m, dict):
+        return m
+    raw = (m.get("key") or "").strip()
+    out = {k: v for k, v in m.items() if k not in ("subcategory", "tag")}
+    out["key"] = memory_taxonomy.make_key(m.get("subcategory") or "", raw, m.get("tag") or "")
+    if raw and raw != out["key"]:
+        out["replaces"] = raw
+    return out
+
 
 async def upsert_memories(
     memories: list[dict], *, user_id: str, child_id: Optional[str],
@@ -676,12 +701,19 @@ async def upsert_memories(
         if not key or not value:
             continue
         try:
-            q = sb.table("user_memories").select("id,confidence,status").eq("user_id", user_id).eq("category", category).eq("key", key)
+            # The same fact may be stored under its key from before
+            # subcategories (memory_taxonomy): find it and rename it.
+            keys = list(dict.fromkeys(
+                k for k in (key, (m.get("replaces") or "").strip(), memory_taxonomy.bare_key(key)) if k
+            ))
+            q = sb.table("user_memories").select("id,key,confidence,status").eq("user_id", user_id).eq("category", category)
+            q = q.eq("key", key) if len(keys) == 1 else q.in_("key", keys)
             q = q.is_("child_id", "null") if child_id is None else q.eq("child_id", child_id)
             existing = await anyio.to_thread.run_sync(lambda: q.execute())
             if existing.data:
-                row_id = existing.data[0]["id"]
-                old_confidence = existing.data[0].get("confidence") or 0
+                match = next((r for r in existing.data if r.get("key") == key), existing.data[0])
+                row_id = match["id"]
+                old_confidence = match.get("confidence") or 0
                 updates = {
                     "source_id": source_id,
                     "last_confirmed_at": now_iso,
@@ -691,7 +723,9 @@ async def upsert_memories(
                 }
                 # A retired row's confidence described a fact that is no
                 # longer true; it gives no reason to keep the old wording.
-                retired = (existing.data[0].get("status") or "active") != "active"
+                retired = (match.get("status") or "active") != "active"
+                if match.get("key") != key:
+                    updates["key"] = key
                 if confidence >= old_confidence or retired:
                     updates["value"] = value
                     updates["confidence"] = confidence
@@ -1066,7 +1100,8 @@ async def load_known_memories(user_id: Optional[str]) -> list[dict]:
         return []
     try:
         res = await anyio.to_thread.run_sync(
-            lambda: sb.table("user_memories").select("category,key,value")
+            # The dates let a behavior tag run out (critical_periods).
+            lambda: sb.table("user_memories").select("category,key,value,child_id,updated_at,last_confirmed_at")
             .eq("user_id", user_id).eq("status", "active")
             .order("updated_at", desc=True).limit(KNOWN_MEMORIES_FOR_EXTRACTION).execute()
         )

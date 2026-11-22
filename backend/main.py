@@ -53,6 +53,7 @@ from backend.nuri_core import CorePorts, PIPELINE_VERSION, TurnBundle, run_turn_
 from backend.nuri_core import dialogue as core_dialogue
 from backend.nuri_core import family as core_family
 from backend.nuri_core import family_store as core_family_store
+from backend.nuri_core import critical_periods, memory_taxonomy
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import google_auth
@@ -1526,6 +1527,48 @@ async def list_children(uid: str = Depends(_req_uid)):
     except Exception as exc:
         print(f"[warn] listChildren Supabase error: {type(exc).__name__}")
         raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
+
+#: How far the growth calendar looks, in weeks.
+GROWTH_CALENDAR_MAX_WEEKS = 26
+
+
+@api.get("/children/{child_id}/growth-calendar")
+async def growth_calendar(
+    child_id: str, weeks: int = 12, past: int = 1, uid: str = Depends(_req_uid),
+):
+    """Week by week: the critical periods this child is in or coming up to,
+    and which of them what the parent told NURI confirms
+    (nuri_core/critical_periods.py). Rules only; no model call.
+
+    With history personalization off, no memory is read: the calendar is
+    age alone, every period "possible"."""
+    sb = _get_supabase()
+    if not sb:
+        raise HTTPException(503, "Child profile storage is unavailable")
+    weeks = max(1, min(int(weeks), GROWTH_CALENDAR_MAX_WEEKS))
+    past = max(0, min(int(past), 8))
+    try:
+        children = await anyio.to_thread.run_sync(
+            lambda: sb.table("children").select("id,nickname,birth_date")
+            .eq("user_id", uid).execute().data or []
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Child profile storage is temporarily unavailable") from exc
+    child = next((c for c in children if str(c.get("id")) == child_id), None)
+    if child is None:
+        raise HTTPException(404, "Child not found")
+    birth = critical_periods.parse_birth(child.get("birth_date"))
+    today = datetime.now(timezone.utc).date()
+    if birth is None or birth > today:
+        return {"child_id": child_id, "state": "not_born", "weeks": [], "released_tags": []}
+    privacy = await stores.get_privacy(uid, fail_closed=True)
+    rows = [] if privacy.get("allow_history_training") is False else await core_family_store.load_known_memories(uid)
+    out = critical_periods.calendar(
+        birth, today, rows, weeks=weeks, past=past, locale=str(privacy.get("language") or "zh-CN"),
+        child_id=child_id, nickname=str(child.get("nickname") or ""),
+        other_nicknames=[str(c.get("nickname") or "") for c in children if c is not child],
+    )
+    return {"child_id": child_id, "state": "ready", "nickname": child.get("nickname"), **out}
 
 @api.post("/children", status_code=201)
 async def add_child(body: ChildCreate, uid: str = Depends(_req_uid)):
@@ -7061,6 +7104,57 @@ async def admin_delete_book(doc_id: str, _: None = Depends(_require_admin)):
         raise HTTPException(503, "Supabase not configured")
     sb.table("books").delete().eq("doc_id", doc_id).execute()
     return {"ok": True}
+
+@app.get("/admin/memory-profile")
+async def admin_memory_profile(_: None = Depends(_require_admin)):
+    """The long-term memory profile's subdivision, and how the live memories
+    fall into it (nuri_core/memory_taxonomy.py). Counts only; no values."""
+    taxonomy = memory_taxonomy.taxonomy()
+    counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+    inferred = 0
+    total = 0
+    sb = _get_supabase()
+    error = None
+    if sb:
+        try:
+            rows = await anyio.to_thread.run_sync(
+                lambda: sb.table("user_memories").select("category,key,value")
+                .eq("status", "active").limit(5000).execute().data or []
+            )
+        except Exception as exc:
+            rows, error = [], type(exc).__name__
+        for row in rows:
+            c = memory_taxonomy.classify(row)
+            total += 1
+            inferred += c.inferred
+            counts[f"{c.category}/{c.subcategory}"] = counts.get(f"{c.category}/{c.subcategory}", 0) + 1
+            for tag in c.tags:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    for cat in taxonomy:
+        cat["count"] = sum(v for k, v in counts.items() if k.startswith(cat["id"] + "/"))
+        cat["unsorted"] = counts.get(f"{cat['id']}/{memory_taxonomy.UNSORTED}", 0)
+        for sub in cat["subcategories"]:
+            sub["count"] = counts.get(f"{cat['id']}/{sub['id']}", 0)
+            for tag in sub["tags"]:
+                tag["count"] = tag_counts.get(tag["id"], 0)
+    periods = [
+        {
+            "id": p.id, "label": p.label_zh, "weeks": list(p.weeks),
+            "months": [round(p.weeks[0] * 7 / 30.44, 1), round(p.weeks[1] * 7 / 30.44, 1)],
+            "need": p.need, "about": p.about_zh,
+            "tags": [{"id": t, "label": memory_taxonomy.BEHAVIOR_TAGS_BY_ID[t].label_zh} for t in p.tags],
+        }
+        for p in critical_periods.PERIODS
+    ]
+    return {
+        "categories": taxonomy,
+        "periods": periods,
+        "total": total,
+        "inferred": inferred,
+        "error": error,
+        "grace_weeks": critical_periods.GRACE_WEEKS,
+    }
 
 # NURI 的"规则文档"：由 #fix 聊天指令自动写入，也可以在这里直接管理。
 # active=true 不再等于"进入这一轮的 prompt"：mode='must' 的规则每轮都在，

@@ -394,6 +394,36 @@ const newest = (items: any[]) =>
       `${b?.created_at || ""}:${b?.id || ""}`,
     )
   ).pop() || null;
+// A static stand-in for the growth calendar: the real one is computed by
+// backend/nuri_core/critical_periods.py from the birth date and memories.
+function previewGrowthCalendar(childId: string) {
+  const monday = new Date();
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7) - 7);
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const period = (id: string, label: string, about: string, status: string, extra: Record<string, unknown> = {}) =>
+    ({ id, label, about, status, starts_this_week: false, confirmed_by: [], need: id, ...extra });
+  const weeks = Array.from({ length: 13 }, (_, i) => {
+    const start = new Date(monday);
+    start.setDate(monday.getDate() + i * 7);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    const ageWeeks = 138 + i;
+    const periods = [
+      period("autonomy", "自我意识与发脾气", "想自己做主却还表达不清，说「不」和发脾气是这个阶段的常态。",
+        ageWeeks < 154 ? "active" : "closing",
+        ageWeeks < 154 ? { confirmed_by: [{ tag: "tantrums", label: "发脾气", said: "小满最近一不顺心就躺地上哭", observed: iso(monday) }] } : {}),
+      period("potty_ready", "如厕准备", "能保持尿布干一段时间、会表示尿了，是可以开始的信号。", ageWeeks >= 154 ? "closing" : "possible"),
+      ...(ageWeeks >= 144 ? [period("bedtime_fears", "怕黑与睡前分离", "想象力变丰富后，怕黑、睡前要人陪很常见。", "possible", { starts_this_week: ageWeeks === 144 })]
+        : ageWeeks >= 142 ? [period("bedtime_fears", "怕黑与睡前分离", "想象力变丰富后，怕黑、睡前要人陪很常见。", "upcoming")] : []),
+      period("pretend_play", "假装游戏", "喂娃娃吃饭、假装打电话，想象力和社交在这类游戏里长出来。", "possible"),
+      period("picky_eating", "挑食期", "长得没那么快了，胃口和偏好变化大，挑食很常见。", "possible"),
+    ];
+    return { start: iso(start), end: iso(end), is_current: i === 1, age_weeks: ageWeeks, age_months: Math.round(ageWeeks * 7 / 30.44 * 10) / 10, periods };
+  });
+  return { child_id: childId, state: "ready", nickname: "小满", weeks, released_tags: [{ tag: "first_words", label: "说出第一个词" }] };
+}
+
 let previewMemories = [
   { id: "mem-1", child_id: null, standing: true, text: "小满对鸡蛋过敏", updated_at: "2026-07-16T08:00:00.000Z" },
   { id: "mem-2", child_id: "child-1", standing: false, text: "小满最近一晚醒两次", updated_at: "2026-07-17T08:00:00.000Z" },
@@ -827,6 +857,7 @@ export async function previewRequest(path: string, init?: RequestInit): Promise<
   // instead of leaving for Stripe.
   if (path.split("?")[0] === "/billing/status") return billingPreview;
   if (routePath === "/billing/usage") return billingPreview.usage;
+  if (/^\/children\/[^/]+\/growth-calendar$/.test(routePath)) return previewGrowthCalendar(routePath.split("/")[2]);
   if (routePath === "/memories" && method === "GET") return previewMemories;
   if (/^\/memories\/[^/]+$/.test(routePath) && method === "DELETE") {
     previewMemories = previewMemories.filter((m) => m.id !== routePath.split("/")[2]);

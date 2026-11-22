@@ -21,10 +21,16 @@ Here the plan starts from the family instead:
    about the parent rather than a parenting need ("基督徒怎么看AI" from a
    Christian who builds AI) is not dropped: testing found that exactly this
    kind of card was one the parent liked. It leads every other day.
-3. **Signals, weighted.** Long-term memory (what the parent said is going on:
-   ``concern`` / ``child_state`` rows) counts most, then the onboarding
-   concerns, then the child's stage by age; the recent chat only adds weight
-   to a need — it is the supplement, not the source.
+3. **Signals, weighted.** A critical period the parent has confirmed (the
+   child's age is in its window *and* a live behavior tag says it is
+   happening, see nuri_core/critical_periods) counts most, then long-term
+   memory (``concern`` / ``child_state`` rows), the onboarding concerns, and
+   the open periods and stage by age; the recent chat only adds weight to a
+   need — it is the supplement, not the source.
+3b. **At least one important tag.** A need backed by none of age (period /
+   stage), behaviour, memory or the onboarding concerns — chat alone — ranks
+   behind every need that has one. The parent's own interest extension is
+   the exception, placed by rotate_lead as before.
 4. **Standing constraints** drop needs that would clash outright (a child who
    can't walk gets no "learning to walk" search). The post-pick check still
    runs on the finished card.
@@ -165,7 +171,15 @@ def concern_need(concern: str, months: Optional[int]) -> Optional[str]:
 
 #: How much each source counts. Memory is what the parent has told NURI is
 #: going on, kept until it is overturned; chat is only the last few turns.
-WEIGHTS = {"memory": 3, "memory_soft": 1, "concern": 2, "stage": 1, "chat": 1, "hobby": 1, "interest": 2}
+WEIGHTS = {"behavior": 4, "memory": 3, "memory_soft": 1, "concern": 2, "period": 0, "stage": 1,
+           "chat": 1, "hobby": 1, "interest": 2}
+#: An open period nothing confirms is age again, which the stage table
+#: already counts: it marks the need as resting on an important tag but adds
+#: no weight, so the stroller and car-seat searches a one-year-old's family
+#: also needs keep their turn. Confirmed, it brings "behavior" (4) with it.
+#: The tags a push has to rest on: the child's age and behaviour, what the
+#: parent told NURI, what they picked at onboarding.
+IMPORTANT = frozenset({"behavior", "period", "stage", "memory", "concern"})
 #: One need can't win on a pile of near-duplicate rows: the memory extractor
 #: often writes the same fact under three keys.
 MEMORY_HITS_CAP = 2
@@ -234,6 +248,10 @@ class Candidate:
         self.score += WEIGHTS[source]
 
     @property
+    def important(self) -> bool:
+        return bool(IMPORTANT & set(self.sources))
+
+    @property
     def personal(self) -> bool:
         """Whether the parent said something that points here."""
         return bool({"memory", "chat", "interest"} & set(self.sources))
@@ -287,8 +305,14 @@ def rank_needs(
     user_texts: Sequence[str] = (),
     standing: Sequence[str] = (),
     personal: bool = True,
+    period_needs: Sequence[str] = (),
+    confirmed_needs: Sequence[str] = (),
 ) -> list[Candidate]:
     """Every need this family has a reason for, best first (ties in table order).
+
+    ``period_needs`` / ``confirmed_needs`` come from
+    critical_periods.push_signals: needs of the periods open at the child's
+    age, and of those a live behavior tag confirms.
 
     ``personal`` False (the 外部内容检索 switch is off) leaves only the
     onboarding answers and the child's age, as before."""
@@ -308,7 +332,11 @@ def rank_needs(
     for need in NEEDS:
         if _in_stage(need, months):
             hit(need.id, "stage")
+    for need_id in dict.fromkeys([*period_needs, *confirmed_needs]):
+        hit(need_id, "period")
     if personal:
+        for need_id in dict.fromkeys(confirmed_needs):
+            hit(need_id, "behavior")
         for text in _hobby_texts(profile):
             for need_id in needs_in(text):
                 hit(need_id, "hobby")
@@ -347,7 +375,7 @@ def rank_needs(
         and not blocked_by_standing(c.need, standing)
     ]
     order = {n.id: i for i, n in enumerate(NEEDS)}
-    ranked.sort(key=lambda c: (-c.score, order[c.need.id]))
+    ranked.sort(key=lambda c: (not c.important, -c.score, order[c.need.id]))
     if not ranked:
         # Nothing at all (no age, no concern, nothing said): the two
         # questions parents of any young child ask most, as before.
@@ -389,7 +417,7 @@ def rotate_lead(ranked: list[Candidate], day: date) -> list[Candidate]:
     interest = [c for c in ranked if c.is_interest]
     needs = [c for c in ranked if not c.is_interest]
     if needs:
-        top = [c for c in needs if c.score == needs[0].score]
+        top = [c for c in needs if c.score == needs[0].score and c.important == needs[0].important]
         start = day.toordinal() % len(top)
         needs = top[start:] + top[:start] + needs[len(top):]
     if not interest:
