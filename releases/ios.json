@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "channels": {
+    "alpha": {
+      "appId": "6831012896",
+      "bundleId": "com.ordashtech.nuri.beta",
+      "version": "0.4.0",
+      "build": "1084",
+      "minimumOSVersion": "15.1",
+      "publishedAt": "2026-11-22T18:07:08.408Z",
+      "expiresAt": "2027-02-20T17:11:51.000Z",
+      "installable": true
+    },
+    "beta": {
+      "appId": "6831131920",
+      "bundleId": "com.ordashtech.nuri.earlyaccess",
+      "version": "0.3.0",
+      "build": "1081",
+      "minimumOSVersion": "15.1",
+      "publishedAt": "2026-11-22T18:07:08.408Z",
+      "expiresAt": "2027-02-17T05:25:23.000Z",
+      "installable": true
+    }
+  }
+}

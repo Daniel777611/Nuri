@@ -1,7 +1,0 @@
-allowBuilds:
-  unrs-resolver: true
-  sharp: true
-onlyBuiltDependencies:
-  - unrs-resolver
-  - sharp
-nodeLinker: hoisted
