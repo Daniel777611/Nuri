@@ -57,6 +57,20 @@ def is_alpha_backend() -> bool:
     return os.getenv("VERCEL_GIT_COMMIT_REF") == "Testing-Backend-Alpha"
 
 
+def alpha_features_available() -> bool:
+    if os.getenv("VERCEL_ENV") == "production":
+        return False
+    if is_alpha_backend():
+        return True
+    # Vercel's Python preview runtime can omit the Git ref. The explicit
+    # setting is scoped to the Alpha preview branch in the deployment config.
+    return (
+        os.getenv("NURI_ALPHA_FEATURES") == "1"
+        and (SUPABASE_URL or "").rstrip("/") == "https://kyxnnrmyzmdutqylsxpw.supabase.co"
+        and bool(SUPABASE_SERVICE_ROLE_KEY)
+    )
+
+
 # Fail closed if this Vercel deployment is pointed at another database.
 if is_alpha_backend():
     expected_url = "https://kyxnnrmyzmdutqylsxpw.supabase.co"

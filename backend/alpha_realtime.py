@@ -191,7 +191,7 @@ class _EndCall(BaseModel):
 
 
 def _ensure_alpha() -> None:
-    if not runtime.is_alpha_backend():
+    if not runtime.alpha_features_available():
         raise HTTPException(404)
 
 

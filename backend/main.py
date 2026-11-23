@@ -5082,7 +5082,7 @@ async def _load_finished_ai_reply(sb, session_id: str, message_id: str) -> dict:
 @api.post("/chat/sessions/{session_id}/messages/{message_id}/audio")
 async def read_chat_reply(session_id: str, message_id: str, part: int = Query(0, ge=0, le=120),
                           uid: str = Depends(_req_uid)):
-    if not runtime.is_alpha_backend():
+    if not runtime.alpha_features_available():
         raise HTTPException(404, "Reply audio is unavailable")
     sb = _require_chat_storage()
     await _load_owned_session(session_id, uid, sb)
@@ -6100,7 +6100,7 @@ async def _require_chat_allowance(session_id: str, body: "UserMessageIn", uid: s
 
 
 async def _find_turn_products(body: UserMessageIn):
-    if not (runtime.is_alpha_backend() and body.compare_products and body.text and not body.image_base64):
+    if not (runtime.alpha_features_available() and body.compare_products and body.text and not body.image_base64):
         return None
     locale = body.client_context.locale if body.client_context else "en"
     return await lookup_product_comparison(body.text, locale or "en")

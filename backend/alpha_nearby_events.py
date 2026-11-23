@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .runtime import is_alpha_backend
+from .runtime import alpha_features_available as is_alpha_backend
 from .search_tavily import SearchUnavailable, TavilySearchProvider
 from .websearch import SearchRequest, SearchResult
 
