@@ -1,6 +1,8 @@
 """Broad shopping requests attach retailer media without replacing the chat reply."""
 
 import asyncio
+import json
+from datetime import datetime, timezone
 
 import httpx
 
@@ -23,8 +25,10 @@ def resolve(text, history=(), reply="", load=None):
     def handle(request):
         requests.append(str(request.url))
         body_type = "image/jpeg" if request.headers["accept"] == "image/*" else "text/html"
-        status = load(request) if load else 200
-        return httpx.Response(status, headers={"Content-Type": body_type})
+        result = load(request) if load else 200
+        if isinstance(result, httpx.Response):
+            return result
+        return httpx.Response(result, headers={"Content-Type": body_type})
 
     async def run():
         request = requested_recommendations(text, list(history))
@@ -60,10 +64,67 @@ def test_bounded_followup_does_not_take_an_unrelated_media_or_exact_checkout_req
     assert requested_recommendations("能把上面的文章链接给我吗？", history) is None
     assert requested_recommendations("推荐几个玩具的使用视频", history) is None
     assert requested_recommendations("发 Dear Zoo 的图和链接", []).categories == ("books",)
+    assert requested_recommendations("发 Dear Zoo 的图、链接和价格", []).categories == ("books",)
+    assert requested_recommendations("把刚才的价格也发一下", history).categories == ("books", "toys")
+    assert requested_recommendations("推荐绘本和玩具，带图片、链接和价格", []).categories == ("books", "toys")
     assert requested_recommendations("Dear Zoo 绘本多少钱？", history) is None
     assert requested_recommendations("Buy Dear Zoo board book 9781416947370", history) is None
     assert requested_recommendations("推荐绘本和玩具之前，宝宝阿莫西林用量？", history) is None
     assert requested_recommendations("昨天提到哪些故事？", history) is None
+
+
+def product_markup(url, title, price, currency, *, isbn=None, expires=None, image=None):
+    offer = {
+        "@type": "Offer", "price": price, "priceCurrency": currency,
+        "availability": "https://schema.org/InStock", "url": url,
+    }
+    if expires:
+        offer["priceValidUntil"] = expires
+    product = {"@type": "Product", "name": title, "offers": offer}
+    if isbn:
+        product["gtin13"] = isbn
+    if image:
+        product["image"] = image
+    html = '<script type="application/ld+json">' + json.dumps(product) + "</script>"
+    return httpx.Response(200, headers={"Content-Type": "text/html"}, text=html)
+
+
+def test_live_recommendation_prices_use_exact_products_and_current_timestamp():
+    def load(request):
+        if request.headers["accept"] == "image/*":
+            return 200
+        if "9781416947370" in str(request.url):
+            return product_markup(str(request.url), "Dear Zoo", "7.99", "USD", isbn="9781416947370")
+        if "70513884" in str(request.url):
+            return product_markup(str(request.url), "Stack & Nest Cups", "2.99", "USD")
+        return 200
+
+    before = datetime.now(timezone.utc)
+    history = earlier_reply("推荐绘本 Dear Zoo 和玩具叠叠杯。")
+    cards, _ = resolve("把刚才这些的价格、图和链接发给我", history, load=load)
+    assert cards["status"] == "ready" and cards["best_price_url"] is None
+    assert datetime.fromisoformat(cards["checked_at"]) >= before
+    assert [(offer["price_amount"], offer["currency"], offer["availability"]) for offer in cards["offers"]] == [
+        ("7.99", "USD", "in_stock"), ("2.99", "USD", "in_stock"),
+    ]
+
+
+def test_expired_or_wrong_edition_prices_keep_the_picture_and_link():
+    def load(request):
+        if request.headers["accept"] == "image/*":
+            return 200
+        if "9781416947370" in str(request.url):
+            return product_markup(str(request.url), "Dear Zoo", "7.99", "USD", isbn="9781416947370", expires="2000-01-01")
+        if "9780805047905" in str(request.url):
+            return httpx.Response(302, headers={"Location": str(request.url).replace("9780805047905", "9780805017441")})
+        return 200
+
+    history = earlier_reply("推荐绘本 Dear Zoo 和 Brown Bear。")
+    cards, calls = resolve("把刚才这些的图和链接发给我", history, load=load)
+    assert cards["status"] == "links_only"
+    assert len(cards["offers"]) == 2
+    assert all(row["image_url"] and row["price_amount"] is None for row in cards["offers"])
+    assert not any("9780805017441" in url for url in calls)
 
 
 def test_age_filters_toy_options_and_definitely_unavailable_pages_are_dropped():
@@ -97,11 +158,7 @@ def test_searches_a_non_us_store_for_older_children_without_sharing_the_conversa
         if str(request.url) == image:
             return httpx.Response(200, headers={"Content-Type": "image/jpeg"})
         assert str(request.url) == product
-        return httpx.Response(200, headers={"Content-Type": "text/html"}, text=f"""
-          <meta property="og:type" content="product">
-          <meta property="og:title" content="Story collection">
-          <meta property="og:image" content="{image}">
-        """)
+        return product_markup(product, "Story collection", "12.99", "GBP", image=image)
 
     async def run():
         request = requested_recommendations("给 8 岁孩子推荐绘本。叫她小九，英国买。", [])
@@ -112,3 +169,4 @@ def test_searches_a_non_us_store_for_older_children_without_sharing_the_conversa
     assert calls[0].query == "children's picture books 6-8 years"
     assert calls[0].include_domains == ("amazon.co.uk",)
     assert [(row["url"], row["image_url"]) for row in cards["offers"]] == [(product, image)]
+    assert [(row["price_amount"], row["currency"]) for row in cards["offers"]] == [("12.99", "GBP")]

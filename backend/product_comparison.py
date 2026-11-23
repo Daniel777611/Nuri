@@ -421,7 +421,10 @@ def retailer_listing_data(html: str, canonical: str, *, now: datetime) -> dict[s
     }
 
 
-async def _page_markup(client: httpx.AsyncClient, page: str) -> tuple[str, str] | None:
+async def _read_listing_page(client: httpx.AsyncClient, page: str, *,
+                             exact: bool = False) -> tuple[str, str | None] | None:
+    """Return an empty body marker for a confirmed removed listing."""
+    wanted = (*_listing_key(page), urlsplit(page).query) if exact else None
     active = page
     for _ in range(3):
         valid = retailer_listing_url(active)
@@ -433,8 +436,12 @@ async def _page_markup(client: httpx.AsyncClient, page: str) -> tuple[str, str] 
                     redirect = retailer_listing_url(urljoin(active, response.headers.get("location", "")))
                     if not redirect or redirect[1] != valid[1] or redirect[0] == valid[0]:
                         return None
+                    if wanted and (*_listing_key(redirect[0]), urlsplit(redirect[0]).query) != wanted:
+                        return None
                     active = redirect[0]
                     continue
+                if response.status_code in {404, 410}:
+                    return valid[0], None
                 if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
                     return None
                 chunked = bytearray()
@@ -446,6 +453,11 @@ async def _page_markup(client: httpx.AsyncClient, page: str) -> tuple[str, str] 
         except (httpx.HTTPError, LookupError):
             return None
     return None
+
+
+async def _page_markup(client: httpx.AsyncClient, page: str) -> tuple[str, str] | None:
+    result = await _read_listing_page(client, page)
+    return (result[0], result[1]) if result is not None and result[1] is not None else None
 
 
 def _pick_search_hits(results: list[SearchResult]) -> list[tuple[SearchResult, str, str]]:

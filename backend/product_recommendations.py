@@ -6,6 +6,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
@@ -16,9 +17,9 @@ from .product_comparison import (
     _PUBLIC_ITEM_ID,
     _RESTRICTED,
     _listing_key,
-    _page_markup,
     _pick_search_hits,
     _product_image,
+    _read_listing_page,
     retailer_listing_data,
     retailer_listing_url,
 )
@@ -87,7 +88,8 @@ _CATALOG = (
             "https://www.barnesandnoble.com/w/wheres-spot-eric-hill/1100469008?ean=9780399240461",
             "https://cdn.shopify.com/s/files/1/0674/5433/7265/files/9780399240461_p0.jpg?v=1764988900", maximum_months=60),
     Listing("books", "Goodnight Moon", ("goodnight moon", "晚安月亮"),
-            "https://www.target.com/p/-/A-11340485", "https://target.scene7.com/is/image/Target/GUEST_f220e321-9c5e-43dc-b94c-a2e4063e6ecb?wid=360", maximum_months=72),
+            "https://www.barnesandnoble.com/w/goodnight-moon-margaret-wise-brown/1105127857?ean=9780694003617",
+            "https://cdn.shopify.com/s/files/1/0674/5433/7265/files/9780694003617_p0.jpg?v=1768976243", maximum_months=72),
     Listing("toys", "Melissa & Doug First Play Wooden Animal Stacking Cars",
             ("stacking cars", "车车", "車車", "toy cars", "小车", "小車"),
             "https://www.target.com/p/-/A-53401107", "https://target.scene7.com/is/image/Target/GUEST_c1e8c7c3-2186-467f-8912-e02fcff2e5cf?wid=360", 9, 36),
@@ -101,7 +103,7 @@ _CATALOG = (
             "https://www.target.com/p/fisher-price-chatter-telephone-vehicle-push-along-toy-with-sounds-for-baby-38-toddler/-/A-94748553",
             "https://target.scene7.com/is/image/Target/GUEST_a51b555f-038f-475a-9e9c-c091df249e5d?wid=300&hei=300&qlt=80",
             6, 36),
-    Listing("toys", "IKEA UPPSTÅ Stacking Rings", ("stacking ring", "叠叠环", "疊疊環", "套圈"),
+    Listing("toys", "IKEA UPPSTÅ Stacking Rings", ("stacking ring", "叠叠环", "疊疊環", "叠环", "疊環", "套圈"),
             "https://www.ikea.com/us/en/p/uppsta-stacking-rings-multicolor-00513892/",
             "https://www.ikea.com/us/en/images/products/uppsta-stacking-rings-multicolor__1609662_pe1046436_s5.jpg?f=s",
             12, 36),
@@ -128,15 +130,17 @@ def requested_recommendations(text: str, history: list) -> DiscoveryRequest | No
     categories = _categories(text) or tuple(dict.fromkeys(item.category for item in named))
     wants_recommendations = _RECOMMEND.search(text)
     wants_attachments = _ATTACHMENT.search(text)
+    follow_up = _FOLLOW_UP.search(text)
+    wants_price = _PRICE.search(text)
     # An explicit price or named-item checkout stays on the SKU lookup path.
-    if _PRICE.search(text) or named and _BUY.search(text) and not wants_attachments:
+    if named and not wants_attachments and (wants_price or _BUY.search(text)):
         return None
-    if not (wants_recommendations or wants_attachments):
+    if not (wants_recommendations or wants_attachments or wants_price and follow_up):
         return None
     prior = ""
-    if wants_attachments and (_FOLLOW_UP.search(text) or not wants_recommendations):
+    if (wants_attachments or wants_price) and (follow_up or not wants_recommendations):
         prior = next((row.get("text") or "" for row in reversed(history[-8:]) if row.get("role") == "ai"), "")
-    if not categories and wants_attachments and _FOLLOW_UP.search(text):
+    if not categories and follow_up:
         prior_matches = (item.category for item in _CATALOG if _match_position(item, prior) < len(prior.casefold()))
         categories = _categories(prior) or tuple(dict.fromkeys(prior_matches))
     return DiscoveryRequest(categories, text, prior) if categories else None
@@ -184,8 +188,8 @@ def _public_query(category: str, age: int | None) -> str:
     return f"{subject} ages 12 and up"
 
 
-async def _search_listings(http: httpx.AsyncClient, search: SearchProvider, category: str,
-                           age: int | None, stores: tuple[str, ...]) -> list[Listing]:
+async def _search_listings(search: SearchProvider, category: str,
+                           age: int | None, stores: tuple[str, ...]) -> list[str]:
     if search.name in {"null", "stub"}:
         return []
     try:
@@ -196,31 +200,20 @@ async def _search_listings(http: httpx.AsyncClient, search: SearchProvider, cate
     except Exception:
         return []
 
-    async def inspect(url: str) -> Listing | None:
-        try:
-            async with asyncio.timeout(2.2):
-                page = await _page_markup(http, url)
-        except TimeoutError:
-            return None
-        if not page or _listing_key(page[0])[0] not in stores:
-            return None
-        data = retailer_listing_data(page[1], page[0], now=datetime.now(timezone.utc))
-        if not data or data.get("_restricted") or not data["image_url"]:
-            return None
-        return Listing(category, data["title"], (), page[0], data["image_url"])
-
-    urls = [url for _, url, _ in _pick_search_hits(rows) if _listing_key(url)[0] in stores]
-    resolved = await asyncio.gather(*(inspect(url) for url in urls[:4]))
-    return [item for item in resolved if item]
+    urls = {}
+    for _, url, _ in _pick_search_hits(rows):
+        key = _listing_key(url)
+        if key[0] in stores:
+            urls.setdefault((*key, urlsplit(url).query), url)
+    return list(urls.values())[:4]
 
 
-async def _probe_public_asset(client: httpx.AsyncClient, url: str, content_type: str) -> bool | None:
-    accept = "image/*" if content_type == "image/" else content_type
+async def _probe_image(client: httpx.AsyncClient, url: str) -> bool | None:
     try:
         async with asyncio.timeout(2.2):
-            async with client.stream("GET", url, headers={"Accept": accept}) as response:
+            async with client.stream("GET", url, headers={"Accept": "image/*"}) as response:
                 if response.status_code == 200:
-                    return response.headers.get("content-type", "").lower().startswith(content_type)
+                    return response.headers.get("content-type", "").lower().startswith("image/")
                 if response.status_code in {404, 410}:
                     return False
                 # Some shops decline automated access. A previously verified
@@ -230,30 +223,59 @@ async def _probe_public_asset(client: httpx.AsyncClient, url: str, content_type:
         return None
 
 
+async def _load_listing(http: httpx.AsyncClient, url: str) -> tuple[str, str | None] | None:
+    try:
+        async with asyncio.timeout(3.6):
+            return await _read_listing_page(http, url, exact=True)
+    except TimeoutError:
+        return None
+
+
 async def recommendation_transition(request: DiscoveryRequest, reply: str, *, locale: str = "en",
                                     client: httpx.AsyncClient | None = None,
                                     provider: SearchProvider | None = None) -> dict | None:
-    async def inspect(http: httpx.AsyncClient, item: Listing):
-        checked = retailer_listing_url(item.retailer_url)
-        image_url = _product_image(item.image_url, item.retailer_url)
-        if not checked or not image_url:
+    now = datetime.now(timezone.utc)
+
+    async def inspect(http: httpx.AsyncClient, source: str, fallback: Listing | None = None):
+        checked = retailer_listing_url(source)
+        if not checked:
             return None
         url, retailer = checked
-        page_ok, image_ok = await asyncio.gather(
-            _probe_public_asset(http, url, "text/html"),
-            _probe_public_asset(http, image_url, "image/"),
-        )
-        if page_ok is False or image_ok is False:
+        image_url = _product_image(fallback.image_url, url) if fallback else None
+        if image_url:
+            page, image_ok = await asyncio.gather(_load_listing(http, url), _probe_image(http, image_url))
+        else:
+            page, image_ok = await _load_listing(http, url), False
+        if page and page[1] is None:
             return None
+        fetched_url, markup = page or (url, None)
+        data = retailer_listing_data(markup, fetched_url, now=now) if markup else None
+        if data and data.get("_restricted"):
+            return None
+        details = data or {}
+        if not fallback and not data:
+            return None
+        if not image_url or image_ok is False:
+            image_url = details.get("image_url")
+            if not image_url or await _probe_image(http, image_url) is not True:
+                return None
+        edition = dict(parse_qsl(urlsplit(url).query)).get("ean")
+        if edition and details.get("_identity") != "gtin:" + edition.zfill(14):
+            # A bookseller can serve a different format or generic page meta
+            # for the requested book. Quote only the exact edition's offer.
+            details = {}
+        offer_url = details.get("_offer_url", fetched_url)
+        if (*_listing_key(offer_url), urlsplit(offer_url).query) != (*_listing_key(url), urlsplit(url).query):
+            offer_url, details = fetched_url, {}
         return ({
-            "title": item.title,
-            "url": url,
+            "title": fallback.title if fallback else data["title"],
+            "url": offer_url,
             "retailer": retailer,
             "image_url": image_url,
-            "price_amount": None,
-            "currency": None,
-            "availability": "unknown",
-        }, page_ok is True and image_ok is True)
+            "price_amount": details.get("price_amount"),
+            "currency": details.get("currency"),
+            "availability": details.get("availability", "unknown"),
+        }, bool(markup))
 
     stores = _market_stores(request.text, locale)
     search = provider if provider is not None else get_provider()
@@ -267,17 +289,14 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
         chosen = [item for item in snapshot if _match_position(item, requested) < len(requested)]
         if not chosen:
             chosen = [item for item in snapshot if _match_position(item, context) < len(context)]
-        if not chosen:
-            discovered = {}
-            for item in await _search_listings(http, search, category, age, stores):
-                discovered.setdefault(_listing_key(item.retailer_url), item)
-            chosen = list(discovered.values())
-        initial = (chosen or snapshot)[:limit]
-        fallback = [item for item in snapshot if item not in initial][:limit]
+        initial = [(item.retailer_url, item) for item in chosen[:limit]]
+        if not initial:
+            initial = [(url, None) for url in await _search_listings(search, category, age, stores)]
+        fallback = [(item.retailer_url, item) for item in snapshot if item not in chosen[:limit]][:limit]
         for group in (initial, fallback):
-            results = await asyncio.gather(*(inspect(http, item) for item in group))
+            results = await asyncio.gather(*(inspect(http, url, item) for url, item in group))
             if cards := [result for result in results if result]:
-                return cards
+                return cards[:limit]
         return []
 
     async def get_cards(http: httpx.AsyncClient):
@@ -285,19 +304,20 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
         return [result for group in groups for result in group]
 
     if client is None:
-        async with httpx.AsyncClient(timeout=1.8, follow_redirects=False, trust_env=False,
-                                     limits=httpx.Limits(max_connections=12)) as http:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=False, trust_env=False,
+                                     limits=httpx.Limits(max_connections=12), headers={"Accept": "text/html"}) as http:
             cards = await get_cards(http)
     else:
         cards = await get_cards(client)
     if not cards:
         return None
-    checked_at = datetime.now(timezone.utc) if all(live for _, live in cards) else _CATALOG_CHECKED_AT
+    offers = [offer for offer, _ in cards]
+    checked_at = now if any(live for _, live in cards) else _CATALOG_CHECKED_AT
     return {
         "kind": "product_comparison",
-        "status": "links_only",
+        "status": "ready" if any(offer["price_amount"] for offer in offers) else "links_only",
         "checked_at": checked_at.isoformat(),
-        "offers": [offer for offer, _ in cards],
+        "offers": offers,
         "best_price_url": None,
         "is_medication": False,
     }
