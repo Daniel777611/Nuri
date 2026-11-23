@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 openai==2.50.0
+websockets>=14,<16
 supabase
 pypdf
 Pillow>=10.4.0

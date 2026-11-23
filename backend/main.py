@@ -33,6 +33,7 @@ Table of contents (search for the "── name ──" marker to jump to a secti
 """
 
 import asyncio, hmac, io, json, logging, os, secrets, time, uuid, hashlib, random, re
+from base64 import b64encode
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta, date, time as dt_time
 from ipaddress import ip_address
@@ -57,7 +58,8 @@ from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import apple_auth, google_auth
-from backend import community
+from backend import alpha_nearby_events, alpha_realtime, community, reply_speech
+from backend.product_comparison import lookup_product_comparison
 from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit, generated_display_name
 from backend import (
     account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
@@ -764,6 +766,7 @@ class UserMessageIn(BaseModel):
     # Optional for backward compatibility. Old clients get an explicit UTC
     # timeline rather than an inferred timezone based on city or locale.
     client_context: Optional[ClientContext] = None
+    compare_products: bool = False
 
     @field_validator("image_base64")
     @classmethod
@@ -5076,6 +5079,30 @@ async def _load_finished_ai_reply(sb, session_id: str, message_id: str) -> dict:
     return message
 
 
+@api.post("/chat/sessions/{session_id}/messages/{message_id}/audio")
+async def read_chat_reply(session_id: str, message_id: str, part: int = Query(0, ge=0, le=120),
+                          uid: str = Depends(_req_uid)):
+    if not runtime.is_alpha_backend():
+        raise HTTPException(404, "Reply audio is unavailable")
+    sb = _require_chat_storage()
+    await _load_owned_session(session_id, uid, sb)
+    message = await _load_finished_ai_reply(sb, session_id, message_id)
+    pieces = reply_speech.reply_parts(message["text"])
+    if part >= len(pieces) or len(pieces) > 121:
+        raise HTTPException(404, "Reply audio part is unavailable")
+    try:
+        audio = await reply_speech.synthesize_reply(pieces[part], uid)
+    except reply_speech.SpeechBusy:
+        raise HTTPException(429, "Reply audio is busy. Try again shortly.") from None
+    except reply_speech.SpeechUnavailable:
+        raise HTTPException(503, "Reply audio is temporarily unavailable") from None
+    return JSONResponse(
+        {"audio_base64": b64encode(audio).decode("ascii"), "mime_type": "audio/wav",
+         "voice": reply_speech.VOICE, "has_more": part + 1 < len(pieces)},
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @api.put("/chat/sessions/{session_id}/messages/{message_id}/feedback")
 async def set_chat_message_feedback(
     session_id: str, message_id: str, body: ChatMessageFeedbackIn,
@@ -6072,6 +6099,13 @@ async def _require_chat_allowance(session_id: str, body: "UserMessageIn", uid: s
     raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "DAILY_QUOTA_REACHED")
 
 
+async def _find_turn_products(body: UserMessageIn):
+    if not (runtime.is_alpha_backend() and body.compare_products and body.text and not body.image_base64):
+        return None
+    locale = body.client_context.locale if body.client_context else "en"
+    return await lookup_product_comparison(body.text, locale or "en")
+
+
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(
     session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
@@ -6097,6 +6131,7 @@ async def post_message(
     sources: list = []
     rc: Optional[_ReplyContext] = None
     script_step: Optional[tuple[int, int]] = None
+    product = None
     claim_completed = False
     sb = _require_chat_storage()
 
@@ -6106,6 +6141,8 @@ async def post_message(
                 turn.msgs, turn.fix_text, turn.owner_uid,
                 operation_id=turn.user_msg["id"],
             )
+        elif product := await _find_turn_products(body):
+            ai_text, transition = product.reply, product.transition
         elif oai:
             rc = await _reply_context(turn, body, metrics)
             system_prompt, history_window = _plan_prompt(rc)
@@ -6147,14 +6184,14 @@ async def post_message(
 
     # Logged after the reply is built, and only for real model turns — a #fix
     # command or the canned script isn't a generation worth measuring.
-    if ai_message_created and oai and not turn.fix_text:
+    if ai_message_created and oai and not turn.fix_text and product is None:
         background_tasks.add_task(
             metrics.flush, session_id=session_id, user_id=turn.owner_uid, reply_text=ai_text,
         )
         if rc is not None:
             background_tasks.add_task(_after_turn, rc, turn, session_id)
 
-    if ai_message_created and oai and turn.owner_uid:
+    if ai_message_created and oai and turn.owner_uid and product is None:
         background_tasks.add_task(
             core_family.extract_and_upsert_memories,
             turn.msgs + [ai_msg], turn.owner_uid, session_id,
@@ -6191,6 +6228,7 @@ async def post_message_stream(
         sources: list = []
         rc: Optional[_ReplyContext] = None
         script_step: Optional[tuple[int, int]] = None
+        product = None
         claim_completed = False
         sb = _require_chat_storage()
         try:
@@ -6209,6 +6247,9 @@ async def post_message_stream(
                     turn.msgs, turn.fix_text, turn.owner_uid,
                     operation_id=turn.user_msg["id"],
                 )
+                yield _sse({"type": "delta", "text": ai_text})
+            elif product := await _find_turn_products(body):
+                ai_text, transition = product.reply, product.transition
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
                 rc = await _reply_context(turn, body, metrics)
@@ -6252,11 +6293,11 @@ async def post_message_stream(
             })
 
             ai_message_created = getattr(ai_msg, "created", True)
-            if ai_message_created and aoai and not turn.fix_text:
+            if ai_message_created and aoai and not turn.fix_text and product is None:
                 finished["metrics_reply"] = ai_text
                 if rc is not None:
                     finished["rc"] = rc
-            if ai_message_created and oai and turn.owner_uid:
+            if ai_message_created and oai and turn.owner_uid and product is None:
                 finished["memory_args"] = (
                     turn.msgs + [ai_msg], turn.owner_uid, session_id,
                 )
@@ -7191,8 +7232,14 @@ async def internal_push_test_accounts(authorization: Optional[str] = Header(defa
 
 
 # ── Mount /api router ─────────────────────────────────────────────────────────
+@api.post("/alpha/nearby-events")
+async def discover_nearby_events(body: alpha_nearby_events.NearbyEventsRequest, uid: str = Depends(_req_uid)):
+    return await alpha_nearby_events.find_nearby_events(body, uid)
+
+
 app.include_router(api)
 app.include_router(community.build_router(_req_uid))
+app.include_router(alpha_realtime.build_router(_req_uid))
 
 # ── Legacy RAG routes: static & health ─────────────────────────────────────────
 @app.get("/")
