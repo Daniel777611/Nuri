@@ -7264,16 +7264,7 @@ async def health(request: Request):
         "pipeline_version": PIPELINE_VERSION if NURI_PIPELINE == "four_model" else "",
     }
     if request.url.hostname == "nuri-git-testing-backend-alpha-ordashtech.vercel.app":
-        report["alpha_readiness"] = {
-            "features_available": runtime.alpha_features_available(),
-            "branch_recognized": runtime.is_alpha_backend(),
-            "preview": os.getenv("VERCEL_ENV") == "preview",
-            "production": os.getenv("VERCEL_ENV") == "production",
-            "branch_feature_flag_set": os.getenv("NURI_ALPHA_FEATURES") == "1",
-            "testing_database": (runtime.SUPABASE_URL or "").rstrip("/")
-            == "https://kyxnnrmyzmdutqylsxpw.supabase.co",
-            "service_role_configured": bool(runtime.SUPABASE_SERVICE_ROLE_KEY),
-        }
+        report["alpha_features_available"] = runtime.alpha_features_available()
     return report
 
 # ── RAG helper functions ───────────────────────────────────────────────────────

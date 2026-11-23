@@ -58,23 +58,26 @@ def is_alpha_backend() -> bool:
 
 
 def alpha_features_available() -> bool:
-    if os.getenv("VERCEL_ENV") == "production":
+    # The Alpha preview's Python runtime can report VERCEL_ENV=production
+    # and omit the Git ref. Require both the branch-scoped deployment setting
+    # and the dedicated testing database before using that fallback.
+    if not _alpha_database_configured():
         return False
-    if is_alpha_backend():
+    if os.getenv("NURI_ALPHA_FEATURES") == "1":
         return True
-    # Vercel's Python preview runtime can omit the Git ref. The explicit
-    # setting is scoped to the Alpha preview branch in the deployment config.
+    return is_alpha_backend() and os.getenv("VERCEL_ENV") != "production"
+
+
+def _alpha_database_configured() -> bool:
     return (
-        os.getenv("NURI_ALPHA_FEATURES") == "1"
-        and (SUPABASE_URL or "").rstrip("/") == "https://kyxnnrmyzmdutqylsxpw.supabase.co"
+        (SUPABASE_URL or "").rstrip("/") == "https://kyxnnrmyzmdutqylsxpw.supabase.co"
         and bool(SUPABASE_SERVICE_ROLE_KEY)
     )
 
 
 # Fail closed if this Vercel deployment is pointed at another database.
 if is_alpha_backend():
-    expected_url = "https://kyxnnrmyzmdutqylsxpw.supabase.co"
-    if (SUPABASE_URL or "").rstrip("/") != expected_url or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _alpha_database_configured():
         raise RuntimeError("Testing-Backend-Alpha requires the Nuri-Testing Supabase configuration")
 
 VECTOR_NAMESPACE = os.getenv("VECTOR_NAMESPACE", "pdf")

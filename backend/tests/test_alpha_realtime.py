@@ -21,7 +21,7 @@ def _install(monkeypatch, upstream_handler, alpha=True):
             raise HTTPException(401)
         return x_fake_account
 
-    monkeypatch.setattr(voice.runtime, "is_alpha_backend", lambda: alpha)
+    monkeypatch.setattr(voice.runtime, "alpha_features_available", lambda: alpha)
     monkeypatch.setattr(voice.runtime, "OPENAI_API_KEY", "protocol-test-only")
     monkeypatch.setattr(voice.runtime, "JWT_SECRET", "isolated-test-secret")
     monkeypatch.setattr(voice.runtime, "get_supabase", lambda: None)

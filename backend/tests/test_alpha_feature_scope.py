@@ -14,8 +14,14 @@ def test_branch_fallback_requires_the_alpha_testing_database(monkeypatch):
     assert not runtime.alpha_features_available()
 
 
-def test_preview_feature_setting_cannot_enable_production(monkeypatch):
+def test_scope_is_explicit_when_preview_runtime_masks_git_environment(monkeypatch):
     monkeypatch.setenv("VERCEL_ENV", "production")
-    monkeypatch.setenv("VERCEL_GIT_COMMIT_REF", "Testing-Backend-Alpha")
+    monkeypatch.delenv("VERCEL_GIT_COMMIT_REF", raising=False)
+    monkeypatch.delenv("NURI_ALPHA_FEATURES", raising=False)
+    monkeypatch.setattr(runtime, "SUPABASE_URL", "https://kyxnnrmyzmdutqylsxpw.supabase.co")
+    monkeypatch.setattr(runtime, "SUPABASE_SERVICE_ROLE_KEY", "testing-fixture")
+    assert not runtime.alpha_features_available()
     monkeypatch.setenv("NURI_ALPHA_FEATURES", "1")
+    assert runtime.alpha_features_available()
+    monkeypatch.setattr(runtime, "SUPABASE_SERVICE_ROLE_KEY", "")
     assert not runtime.alpha_features_available()
