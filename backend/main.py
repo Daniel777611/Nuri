@@ -7250,8 +7250,8 @@ async def root():
     return {"msg": "Family Growth Radar backend", "endpoints": ["/api", "/health", "/index", "/ask", "/docs"]}
 
 @app.get("/health")
-async def health():
-    return {
+async def health(request: Request):
+    report = {
         "ok": True,
         "supabase": bool(_SUPABASE_OK and SUPABASE_URL and SUPABASE_KEY),
         "vector_store": "supabase",
@@ -7263,6 +7263,18 @@ async def health():
         "pipeline": NURI_PIPELINE,
         "pipeline_version": PIPELINE_VERSION if NURI_PIPELINE == "four_model" else "",
     }
+    if request.url.hostname == "nuri-git-testing-backend-alpha-ordashtech.vercel.app":
+        report["alpha_readiness"] = {
+            "features_available": runtime.alpha_features_available(),
+            "branch_recognized": runtime.is_alpha_backend(),
+            "preview": os.getenv("VERCEL_ENV") == "preview",
+            "production": os.getenv("VERCEL_ENV") == "production",
+            "branch_feature_flag_set": os.getenv("NURI_ALPHA_FEATURES") == "1",
+            "testing_database": (runtime.SUPABASE_URL or "").rstrip("/")
+            == "https://kyxnnrmyzmdutqylsxpw.supabase.co",
+            "service_role_configured": bool(runtime.SUPABASE_SERVICE_ROLE_KEY),
+        }
+    return report
 
 # ── RAG helper functions ───────────────────────────────────────────────────────
 # The vector stores and the embedding/chunking behind them now live in
