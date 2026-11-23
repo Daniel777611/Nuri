@@ -59,6 +59,7 @@ from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import apple_auth, google_auth
 from backend import alpha_chat_media, alpha_nearby_events, alpha_realtime, community, reply_speech
+from backend import product_recommendations
 from backend.product_comparison import lookup_product_comparison
 from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit, generated_display_name
 from backend import (
@@ -6105,11 +6106,34 @@ async def _require_chat_allowance(session_id: str, body: "UserMessageIn", uid: s
     raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "DAILY_QUOTA_REACHED")
 
 
+def _turn_shopping_enabled(body: UserMessageIn) -> bool:
+    return bool(runtime.alpha_features_available() and body.compare_products and body.text and not body.image_base64)
+
+
+def _turn_product_recommendations(body: UserMessageIn, turn: _Turn) -> product_recommendations.DiscoveryRequest | None:
+    if _turn_shopping_enabled(body):
+        return product_recommendations.requested_recommendations(body.text, turn.msgs)
+    return None
+
+
 async def _find_turn_products(body: UserMessageIn):
-    if not (runtime.alpha_features_available() and body.compare_products and body.text and not body.image_base64):
+    if not _turn_shopping_enabled(body):
         return None
     locale = body.client_context.locale if body.client_context else "en"
     return await lookup_product_comparison(body.text, locale or "en")
+
+
+async def _find_turn_attachment(body: UserMessageIn, turn: _Turn, rc: _ReplyContext, ai_text: str,
+                                recommendations: product_recommendations.DiscoveryRequest | None):
+    risk = str(getattr(rc.evidence, "risk_tier", ""))
+    if recommendations and risk not in {"urgent", "emergency", "crisis", "caregiver_harm", "medical", "referral"}:
+        try:
+            locale = (body.client_context.locale if body.client_context else None) or "en"
+            if transition := await product_recommendations.recommendation_transition(recommendations, ai_text, locale=locale):
+                return transition
+        except Exception as exc:
+            logger.warning("alpha_product_recommendations_unavailable", extra={"error_type": type(exc).__name__})
+    return await _find_turn_chat_media(body, turn, rc)
 
 
 async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyContext):
@@ -6163,6 +6187,7 @@ async def post_message(
     rc: Optional[_ReplyContext] = None
     script_step: Optional[tuple[int, int]] = None
     product = None
+    recommendations = _turn_product_recommendations(body, turn)
     claim_completed = False
     sb = _require_chat_storage()
 
@@ -6172,7 +6197,7 @@ async def post_message(
                 turn.msgs, turn.fix_text, turn.owner_uid,
                 operation_id=turn.user_msg["id"],
             )
-        elif product := await _find_turn_products(body):
+        elif not recommendations and (product := await _find_turn_products(body)):
             ai_text, transition = product.reply, product.transition
         elif oai:
             rc = await _reply_context(turn, body, metrics)
@@ -6188,7 +6213,7 @@ async def post_message(
             )
             quick_replies = reply.get("quick_replies", [])
             ai_text = _strip_citation_markers(reply["text"])
-            transition = await _find_turn_chat_media(body, turn, rc)
+            transition = await _find_turn_attachment(body, turn, rc, ai_text, recommendations)
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
@@ -6261,6 +6286,7 @@ async def post_message_stream(
         rc: Optional[_ReplyContext] = None
         script_step: Optional[tuple[int, int]] = None
         product = None
+        recommendations = _turn_product_recommendations(body, turn)
         claim_completed = False
         sb = _require_chat_storage()
         try:
@@ -6280,7 +6306,7 @@ async def post_message_stream(
                     operation_id=turn.user_msg["id"],
                 )
                 yield _sse({"type": "delta", "text": ai_text})
-            elif product := await _find_turn_products(body):
+            elif not recommendations and (product := await _find_turn_products(body)):
                 ai_text, transition = product.reply, product.transition
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
@@ -6303,7 +6329,7 @@ async def post_message_stream(
                 # The streamed deltas already carried the raw marker; this
                 # is what gets persisted and what the transcript shows.
                 ai_text = _strip_citation_markers(reply["text"])
-                transition = await _find_turn_chat_media(body, turn, rc)
+                transition = await _find_turn_attachment(body, turn, rc, ai_text, recommendations)
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,
