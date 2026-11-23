@@ -1321,6 +1321,16 @@ async def record_event(user_id: str, row_id: str, event: str, *, now: Optional[d
         return False
 
 
+def marker_media(card: dict) -> dict:
+    from backend.alpha_chat_media import public_article_url
+
+    source = public_article_url(canonical_post_url(card.get("source_url") or ""))
+    if not source:
+        return {}
+    return {"url": source, "thumbnail_url": social_image_url(card.get("thumbnail_url"))
+            or social_image_url(card.get("image_url")) or ""}
+
+
 async def marker_fields(user_id: str, card_id: str) -> Optional[dict]:
     """Title and reply context for a chat opened from this card, or None if the
     card is not this parent's."""
@@ -1337,4 +1347,11 @@ async def marker_fields(user_id: str, card_id: str) -> Optional[dict]:
     card = (row or {}).get("card")
     if not card:
         return None
-    return {"title": card.get("headline") or "", "context": chat_context(card)}
+    result = {"title": card.get("headline") or "", "context": chat_context(card)}
+    if runtime.alpha_features_available():
+        result["post"] = {
+            "id": row_id, "headline": result["title"],
+            "takeaways": list(card.get("takeaways") or [])[:3],
+            "source_label": card.get("source_label") or "", **marker_media(card),
+        }
+    return result

@@ -58,7 +58,7 @@ from backend.nuri_core import family_store as core_family_store
 from backend.nuri_core import audio_input as core_audio_input
 from backend.nuri_core import image_input as core_image_input
 from backend import apple_auth, google_auth
-from backend import alpha_nearby_events, alpha_realtime, community, reply_speech
+from backend import alpha_chat_media, alpha_nearby_events, alpha_realtime, community, reply_speech
 from backend.product_comparison import lookup_product_comparison
 from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit, generated_display_name
 from backend import (
@@ -767,6 +767,7 @@ class UserMessageIn(BaseModel):
     # timeline rather than an inferred timezone based on city or locale.
     client_context: Optional[ClientContext] = None
     compare_products: bool = False
+    include_media: bool = False
 
     @field_validator("image_base64")
     @classmethod
@@ -3946,6 +3947,11 @@ def _card_marker_message(
         transition["title"] = extra.get("title") or title
         if extra.get("context"):
             transition["context"] = extra["context"]
+        if runtime.alpha_features_available():
+            if extra.get("post"):
+                transition["post"] = extra["post"]
+            elif extra.get("video"):
+                transition["video"] = extra["video"]
     return {
         "id": str(uuid.uuid4()), "session_id": session_id,
         "role": "ai", "text": "", "quick_replies": [],
@@ -6106,6 +6112,31 @@ async def _find_turn_products(body: UserMessageIn):
     return await lookup_product_comparison(body.text, locale or "en")
 
 
+async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyContext):
+    if not (body.include_media and runtime.alpha_features_available() and body.text and not body.image_base64):
+        return None
+    kinds = alpha_chat_media.requested_media(body.text)
+    if not kinds:
+        return None
+    evidence = rc.evidence
+    risk = str(getattr(evidence, "risk_tier", ""))
+    if risk in {"urgent", "emergency", "crisis", "caregiver_harm"}:
+        return None
+    try:
+        privacy = await stores.get_privacy(turn.owner_uid, fail_closed=True)
+        locale = (body.client_context.locale if body.client_context else None) or "en"
+        return await alpha_chat_media.find_chat_media(
+            body.text, kinds, locale=locale, route=rc.route,
+            children=list(turn.context_hints.get("children") or []),
+            allow_history=privacy.get("allow_external_content_research") is True,
+            existing=list(rc.search_results),
+            authority_only=risk in {"medical", "referral"},
+        )
+    except Exception as exc:
+        logger.warning("alpha_chat_media_unavailable", extra={"error_type": type(exc).__name__})
+        return None
+
+
 @api.post("/chat/sessions/{session_id}/messages")
 async def post_message(
     session_id: str, body: UserMessageIn, background_tasks: BackgroundTasks,
@@ -6157,6 +6188,7 @@ async def post_message(
             )
             quick_replies = reply.get("quick_replies", [])
             ai_text = _strip_citation_markers(reply["text"])
+            transition = await _find_turn_chat_media(body, turn, rc)
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
@@ -6271,6 +6303,7 @@ async def post_message_stream(
                 # The streamed deltas already carried the raw marker; this
                 # is what gets persisted and what the transcript shows.
                 ai_text = _strip_citation_markers(reply["text"])
+                transition = await _find_turn_chat_media(body, turn, rc)
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,
@@ -6908,6 +6941,7 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
                 "headline": post.get("headline") or "",
                 "takeaways": list(post.get("takeaways") or [])[:3],
                 "source_label": post.get("source_label") or "",
+                **(feed_daily_post.marker_media(post) if runtime.alpha_features_available() else {}),
             },
         }
         await feed_daily_post.record_event(uid, post["id"], "chat")
@@ -6927,6 +6961,8 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
                 "thumbnail_url": video.get("thumbnail_url") or "",
                 "channel": video.get("channel") or "",
                 "key_points": video.get("key_points") or "",
+                **(alpha_chat_media.public_video_fields(video.get("source_url"))
+                   if runtime.alpha_features_available() else {}),
             },
         }
 
@@ -7239,7 +7275,7 @@ async def discover_nearby_events(body: alpha_nearby_events.NearbyEventsRequest, 
 
 app.include_router(api)
 app.include_router(community.build_router(_req_uid))
-app.include_router(alpha_realtime.build_router(_req_uid))
+app.include_router(alpha_realtime.build_router(_req_uid, load_owned_session=_load_owned_session))
 
 # ── Legacy RAG routes: static & health ─────────────────────────────────────────
 @app.get("/")

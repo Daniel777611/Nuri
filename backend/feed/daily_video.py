@@ -865,4 +865,13 @@ async def marker_fields(user_id: str, card_id: str) -> Optional[dict]:
     if not row:
         return None
     card = row["card"]
-    return {"title": card.get("display_title") or card.get("title") or "", "context": chat_context(card)}
+    result = {"title": card.get("display_title") or card.get("title") or "", "context": chat_context(card)}
+    if runtime.alpha_features_available():
+        from backend.alpha_chat_media import public_video_fields
+
+        result["video"] = {
+            "id": row["id"], "title": result["title"],
+            "channel": card.get("channel") or "", "key_points": card.get("key_points") or "",
+            **public_video_fields(card.get("source_url")),
+        }
+    return result

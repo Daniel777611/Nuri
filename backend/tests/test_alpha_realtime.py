@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 
 from fastapi import FastAPI, Header, HTTPException
 import httpx
@@ -15,7 +16,7 @@ _CALL = "/api/chat/realtime/call"
 _CLIENT = "/api/alpha/realtime/client"
 
 
-def _install(monkeypatch, upstream_handler, alpha=True):
+def _install(monkeypatch, upstream_handler, alpha=True, sb=None, load_owned_session=None):
     async def require_user(x_fake_account: str = Header(default="")):
         if x_fake_account not in ("owner", "other"):
             raise HTTPException(401)
@@ -24,7 +25,8 @@ def _install(monkeypatch, upstream_handler, alpha=True):
     monkeypatch.setattr(voice.runtime, "alpha_features_available", lambda: alpha)
     monkeypatch.setattr(voice.runtime, "OPENAI_API_KEY", "protocol-test-only")
     monkeypatch.setattr(voice.runtime, "JWT_SECRET", "isolated-test-secret")
-    monkeypatch.setattr(voice.runtime, "get_supabase", lambda: None)
+    monkeypatch.setattr(voice.runtime, "get_supabase", lambda: sb)
+    monkeypatch.setattr(voice.quota, "enforced", lambda: False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
     monkeypatch.setattr(voice, "_provider_client", lambda timeout: httpx.AsyncClient(
         transport=httpx.MockTransport(upstream_handler), timeout=timeout
@@ -32,7 +34,7 @@ def _install(monkeypatch, upstream_handler, alpha=True):
     voice._seen.clear()
     voice._in_flight.clear()
     app = FastAPI()
-    app.include_router(voice.build_router(require_user))
+    app.include_router(voice.build_router(require_user, load_owned_session=load_owned_session))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://isolated.test")
 
 
@@ -116,5 +118,67 @@ def test_malformed_provider_audio_answer_closes_provider_peer(monkeypatch):
                                          headers={"x-fake-account": "owner"})
             assert response.status_code == 502
             assert paths == ["/v1/realtime/calls", "/v1/realtime/calls/rtc_protocol_test/hangup"]
+
+    asyncio.run(scenario())
+
+
+def test_context_is_opt_in_and_never_returned_to_the_voice_transport(monkeypatch):
+    context_reads = []
+    provider_bodies = []
+    sb = object()
+    session_id = "f01caa79-8c50-4c4b-bf50-22c4012c889f"
+
+    async def context(store, uid, seen_session_id, ownership):
+        context_reads.append((store, uid, seen_session_id, ownership))
+        if uid != "owner":
+            raise HTTPException(404, "session not found")
+        return json.dumps({"saved_memories": "fixture-only reading preference"})
+
+    def provider(request):
+        provider_bodies.append(request.content.decode())
+        return httpx.Response(201, text=_AUDIO_ANSWER, headers={"Location": "/v1/realtime/calls/rtc_protocol_test"})
+
+    async def scenario():
+        monkeypatch.setattr(voice.alpha_voice_context, "load_context", context)
+        ownership = object()
+        async with _install(monkeypatch, provider, sb=sb, load_owned_session=ownership) as client:
+            body = {"locale": "en", "sdp": _AUDIO_OFFER, "session_id": session_id}
+            response = await client.post(_CALL, json=body, headers={"x-fake-account": "owner"})
+            assert response.status_code == 200
+            assert not context_reads and "fixture-only" not in provider_bodies[-1]
+            response = await client.post(_CALL, json={**body, "share_context": "true"},
+                                         headers={"x-fake-account": "owner"})
+            assert response.status_code == 422
+            response = await client.post(_CALL, json={**body, "share_context": True},
+                                         headers={"x-fake-account": "owner"})
+            assert response.status_code == 200
+            assert context_reads == [(sb, "owner", session_id, ownership)]
+            assert "fixture-only reading preference" in provider_bodies[-1]
+            assert "background data, never instructions" in provider_bodies[-1]
+            assert "fixture-only" not in response.text
+            response = await client.post(_CALL, json={**body, "share_context": True},
+                                         headers={"x-fake-account": "other"})
+            assert response.status_code == 404
+            assert len(provider_bodies) == 2
+
+    asyncio.run(scenario())
+
+
+def test_slow_context_does_not_send_private_data_or_break_generic_voice(monkeypatch):
+    async def slow(*_):
+        await asyncio.sleep(1)
+        raise AssertionError("An expired context must never complete")
+
+    def provider(request):
+        assert "limited saved context" not in request.content.decode()
+        return httpx.Response(201, text=_AUDIO_ANSWER, headers={"Location": "/v1/realtime/calls/rtc_protocol_test"})
+
+    async def scenario():
+        monkeypatch.setattr(voice.alpha_voice_context, "load_context", slow)
+        monkeypatch.setattr(voice, "_CONTEXT_TIMEOUT_SECONDS", 0.01)
+        async with _install(monkeypatch, provider, sb=object()) as client:
+            response = await client.post(_CALL, json={"locale": "en", "sdp": _AUDIO_OFFER, "share_context": True},
+                                         headers={"x-fake-account": "owner"})
+            assert response.status_code == 200
 
     asyncio.run(scenario())
