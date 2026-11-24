@@ -59,7 +59,7 @@ function webKit({ deferMicrophone = false, withMeters = false } = {}) {
       : Promise.resolve(stream);
   } } };
   vm.runInNewContext(embeddedScript, {
-    window, document, navigator, RTCPeerConnection: Peer,
+    window, document, navigator, RTCPeerConnection: Peer, TextEncoder,
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout: (id) => { timers.delete(id); },
   });
@@ -102,6 +102,57 @@ test("a consented audio-only call negotiates SDP, receives speech and releases t
   view.listeners.get("pagehide")();
   assert.equal(view.stats().stopped, true);
   assert.equal(view.audio.srcObject, null);
+  assert.equal(peer.closed, true);
+});
+
+test("a consented call bridges final transcripts in turn order and omits cancelled replies", async () => {
+  const view = webKit();
+  await view.window.nuriRealtime.start();
+  await view.window.nuriRealtime.answer("v=0\nm=audio remote", true);
+  const { peer } = view.stats();
+  peer.connectionState = "connected";
+  peer.onconnectionstatechange();
+  const emit = (detail) => peer.channel.onmessage({ data: JSON.stringify(detail) });
+  const transcript = () => view.events.filter(event => event.type === "transcript").at(-1);
+
+  emit({ type: "input_audio_buffer.committed", item_id: "item_user" });
+  const cancelled = { id: "item_cancelled", type: "message", role: "assistant" };
+  emit({ type: "response.output_item.added", item: cancelled });
+  emit({ type: "response.output_audio_transcript.done", item_id: cancelled.id, transcript: "Unspoken text" });
+  emit({ type: "response.done", response: { id: "resp_cancelled", status: "cancelled", output: [cancelled] } });
+  assert.equal(transcript(), undefined);
+
+  const buffered = { id: "item_buffered", type: "message", role: "assistant" };
+  emit({ type: "response.output_item.added", item: buffered });
+  emit({ type: "response.output_audio_transcript.done", item_id: buffered.id, transcript: "Still buffered" });
+  emit({ type: "response.done", response: { id: "resp_buffered", status: "completed", output: [buffered] } });
+  emit({ type: "output_audio_buffer.cleared", response_id: "resp_buffered" });
+  emit({ type: "output_audio_buffer.stopped", response_id: "resp_buffered" });
+  assert.equal(transcript(), undefined);
+
+  const reply = { id: "item_answer", type: "message", role: "assistant" };
+  emit({ type: "response.output_item.added", item: reply });
+  emit({ type: "response.output_audio_transcript.done", item_id: reply.id, transcript: "Try a short routine." });
+  emit({ type: "response.done", response: { id: "resp_answer", status: "completed", output: [reply] } });
+  assert.equal(transcript(), undefined, "wait for audio to finish streaming");
+  emit({ type: "output_audio_buffer.stopped", response_id: "resp_answer" });
+  assert.equal(transcript().entries[0].text, "Try a short routine.");
+  view.window.nuriRealtime.finish();
+  assert.equal(view.stats().stopped, true, "hangup stops microphone before waiting for ASR");
+  const parent = { type: "conversation.item.input_audio_transcription.completed",
+    item_id: "item_user", transcript: " Our child wakes up at night. " };
+  emit(parent);
+  const expected = [
+    { item_id: "item_user", role: "user", order: 0, text: "Our child wakes up at night." },
+    { item_id: "item_answer", role: "ai", order: 3, text: "Try a short routine." },
+  ];
+  assert.deepEqual(transcript().entries, expected);
+  const eventCount = view.events.length;
+  emit(parent);
+  assert.equal(view.events.length, eventCount);
+  const finish = [...view.timers.values()].find(timer => timer.delay === 1800);
+  finish.callback();
+  assert.deepEqual(view.events.find(event => event.type === "transcript_end"), { type: "transcript_end", entries: expected });
   assert.equal(peer.closed, true);
 });
 

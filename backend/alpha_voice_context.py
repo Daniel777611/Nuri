@@ -8,13 +8,15 @@ import anyio
 from fastapi import HTTPException
 
 from backend import stores
-from backend.nuri_core import family_store
+from backend.nuri_core import context_budget, family_store, state_store
 
-_MESSAGE_LIMIT = 6
+_MESSAGE_LIMIT = 16
 _MESSAGE_CHARS = 220
-_RELEVANT_MEMORY_CHARS = 400
-_GENERAL_MEMORY_CHARS = 320
-_STANDING_CHARS = 480
+_RELEVANT_MEMORY_CHARS = 900
+_GENERAL_MEMORY_CHARS = 900
+_STANDING_CHARS = 720
+_SUMMARY_CHARS = 1600
+_PROFILE_CHARS = 960
 _LINK_OR_EMAIL = re.compile(
     r"https?://[^\s]+|www\.[^\s]+|[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.IGNORECASE,
 )
@@ -41,13 +43,40 @@ async def _recent_text(sb, session_id: str) -> list[dict]:
 
 
 async def _recall(uid: str, query: str) -> tuple[str, str]:
-    if not query.strip():
-        return "", await family_store.get_recalled_memory_context(uid)
-    related, general = await asyncio.gather(
-        family_store.get_recalled_memory_context(uid, query[:600]),
-        family_store.get_recalled_memory_context(uid),
-    )
-    return related, general
+    rows = await family_store.load_known_memories(uid)
+    facts = [
+        {"text": str(row.get("value") or ""), "category": row.get("category", "fact")}
+        for row in rows
+        if row.get("category") != family_store.STANDING_CATEGORY and row.get("value")
+    ]
+    ranked = context_budget.select_memories(facts, query[:600], top_k=8)
+
+    def render(items: list[dict]) -> str:
+        return "\n".join(
+            f"{family_store.MEMORY_CATEGORY_LABELS.get(item['category'], '其他信息')}：{item['text']}"
+            for item in items
+        )
+
+    return render([item for item in ranked if item["score"] > 0]), render(facts[:12])
+
+
+def _profile_text(profile: dict, children: list[dict]) -> str:
+    # Apply the same onboarding labels as text chat. Realtime's disclosure
+    # does not need names, addresses, or exact dates to explain a child's stage.
+    safe_profile = {key: value for key, value in profile.items() if key in (
+        "parent_role", "top_concerns", "concern_other", "help_preference", "info_source",
+    )}
+    child_facts = []
+    for child in children:
+        age = family_store.stage_label(str(child.get("birth_date") or ""))
+        facts = family_store.profile_ctx({}, [{
+            "gender": child.get("gender"), "allergies": child.get("allergies"),
+            "notes": child.get("notes"),
+        }])
+        if age or facts:
+            child_facts.append(f"孩子 {len(child_facts) + 1}：{'；'.join(filter(None, (age, facts)))}")
+    return _private_text("；".join(filter(None, (family_store.profile_ctx(safe_profile), *child_facts))),
+                         children, _PROFILE_CHARS)
 
 
 def _memory_text(block: str, children: list[dict], seen: set[str], limit: int) -> str:
@@ -79,10 +108,11 @@ async def load_context(sb, uid: str, session_id: str | None, load_owned_session)
             return ""
         rows = await _recent_text(sb, session_id) if session_id else []
         query = next((row.get("text") or "" for row in reversed(rows) if row.get("role") == "user"), "")
-        standing, (related, general), (_, children) = await asyncio.gather(
+        standing, (related, general), (profile, children), (summary, _) = await asyncio.gather(
             family_store.get_standing_context(uid),
             _recall(uid, query),
             family_store.load_profile(uid),
+            state_store.load(session_id or ""),
         )
         history = []
         for row in rows:
@@ -99,8 +129,11 @@ async def load_context(sb, uid: str, session_id: str | None, load_owned_session)
         requirements = family_store.reconcile_context_with_child_profile(standing, children)
         context = {
             "child_stage": family_store.safe_child_recommendation_context(children)["child_age_context"],
+            "confirmed_profile": _profile_text(profile, children),
             "standing_considerations": _private_text(requirements, children, _STANDING_CHARS),
             "saved_memories": "\n".join(part for part in (ranked, recent) if part),
+            "chat_summary": _private_text(family_store.reconcile_context_with_child_profile(summary, children),
+                                          children, _SUMMARY_CHARS),
             "recent_chat": history,
         }
         return json.dumps(context, ensure_ascii=False, separators=(",", ":")) if any(context.values()) else ""

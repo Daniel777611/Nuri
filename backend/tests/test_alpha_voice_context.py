@@ -33,36 +33,46 @@ def test_personal_context_uses_own_recent_chat_and_saved_memories_with_private_f
         calls.append(("standing", uid))
         return "- Allergic to kiwi"
 
-    async def recalled(uid, query=""):
-        calls.append(("recalled", uid, query))
-        if not query:
-            return "家庭偏好：Poppy likes dinosaur stories.；Weekend swimming is a favorite activity."
-        return "家庭偏好：Poppy likes dinosaur stories."
+    async def recalled(uid):
+        calls.append(("recalled", uid))
+        return [
+            {"category": "preference", "value": "Weekend swimming is a favorite activity."},
+            {"category": "preference", "value": "Poppy likes dinosaur stories."},
+            {"category": "constraint", "value": "Allergic to kiwi"},
+        ]
+
+    async def summary(session_id):
+        calls.append(("summary", session_id))
+        return "Poppy started pointing to pictures before bedtime in the autumn.", 40
 
     async def profile(uid):
         calls.append(("profile", uid))
-        return {"nickname": "Hidden caregiver", "city": "Hidden city"}, [
-            {"nickname": "Poppy", "birth_date": "2023-05-14"},
+        return {"nickname": "Hidden caregiver", "city": "Hidden city", "parent_role": "mom"}, [
+            {"nickname": "Poppy", "birth_date": "2023-05-14", "notes": "Points to the moon."},
         ]
 
     monkeypatch.setattr(voice.stores, "get_privacy", privacy)
     monkeypatch.setattr(voice, "_recent_text", recent)
     monkeypatch.setattr(voice.family_store, "get_standing_context", standing)
-    monkeypatch.setattr(voice.family_store, "get_recalled_memory_context", recalled)
+    monkeypatch.setattr(voice.family_store, "load_known_memories", recalled)
     monkeypatch.setattr(voice.family_store, "load_profile", profile)
+    monkeypatch.setattr(voice.state_store, "load", summary)
     output = asyncio.run(voice.load_context(sb, "owner", "selected-session", ownership))
     payload = json.loads(output)
     assert calls[:3] == [("ownership", "selected-session", "owner", sb), ("privacy", "owner", True),
                          ("recent", sb, "selected-session")]
-    assert ("recalled", "owner", messages[-1]["text"]) in calls
-    assert ("recalled", "owner", "") in calls
+    assert ("recalled", "owner") in calls
+    assert ("summary", "selected-session") in calls
     assert [record["speaker"] for record in payload["recent_chat"]] == ["Caregiver", "Nuri", "Caregiver"]
     assert len(payload["recent_chat"][-1]["text"]) <= 220
     assert "dinosaur stories" in payload["saved_memories"]
     assert payload["saved_memories"].count("dinosaur stories") == 1
     assert "Weekend swimming" in payload["saved_memories"]
     assert "kiwi" in payload["standing_considerations"]
+    assert "kiwi" not in payload["saved_memories"]
     assert payload["child_stage"]
+    assert "Points to the moon" in payload["confirmed_profile"]
+    assert "started pointing to pictures" in payload["chat_summary"]
     for hidden in ["Poppy", "2023-05-14", "aid@example.test", "https://", "Draft", "Summary", "Hidden"]:
         assert hidden not in output
 
@@ -70,7 +80,7 @@ def test_personal_context_uses_own_recent_chat_and_saved_memories_with_private_f
     voice_only = json.loads(asyncio.run(voice.load_context(sb, "owner", None, None)))
     assert voice_only["recent_chat"] == []
     assert "Weekend swimming" in voice_only["saved_memories"]
-    assert [(name, *args) for name, *args in calls if name == "recalled"] == [("recalled", "owner", "")]
+    assert [(name, *args) for name, *args in calls if name == "recalled"] == [("recalled", "owner")]
 
 
 @pytest.mark.parametrize("toggle", [False, None])

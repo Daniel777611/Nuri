@@ -35,6 +35,12 @@ _RECOMMEND = re.compile(
     re.I,
 )
 _ATTACHMENT = re.compile(r"\b(?:photos?|images?|pictures?|links?|thumbnails?)\b|图片|圖片|封面|照片|发图|發圖|图和|圖和|链接|連結|鏈接|网址|網址", re.I)
+_LINK_FOLLOW_UP = re.compile(
+    r"(?:链接|連結|鏈接|网址|網址).{0,8}(?:在(?:哪|哪里|哪裡)|在哪|呢)"
+    r"|^(?:我(?:就)?要的是|都[说說]了).{0,10}(?:链接|連結|鏈接)"
+    r"|\b(?:where(?:'s|\s+(?:is|are))|send|give)\b.{0,40}\b(?:links?|urls?)\b",
+    re.I,
+)
 _PRICE = re.compile(r"\b(?:cheapest|price|prices|how much|cost)\b|比价|比價|价格|價格|多少钱|多少錢|售价|售價", re.I)
 _NON_PRODUCT_MEDIA = re.compile(r"\b(?:videos?|articles?|tutorials?)\b|视频|影片|視訊|文章|教程|教學", re.I)
 _FOLLOW_UP = re.compile(
@@ -115,6 +121,7 @@ class DiscoveryRequest:
     categories: tuple[str, ...]
     text: str
     previous_reply: str
+    exact_only: bool = False
 
 
 def _categories(text: str) -> tuple[str, ...]:
@@ -127,10 +134,11 @@ def requested_recommendations(text: str, history: list) -> DiscoveryRequest | No
             or _RESTRICTED.search(text) or _PUBLIC_ITEM_ID.search(text) or _NON_PRODUCT_MEDIA.search(text)):
         return None
     named = tuple(item for item in _CATALOG if _match_position(item, text) < len(text.casefold()))
-    categories = _categories(text) or tuple(dict.fromkeys(item.category for item in named))
+    categories = tuple(dict.fromkeys((*_categories(text), *(item.category for item in named))))
     wants_recommendations = _RECOMMEND.search(text)
     wants_attachments = _ATTACHMENT.search(text)
     follow_up = _FOLLOW_UP.search(text)
+    link_follow_up = _LINK_FOLLOW_UP.search(text)
     wants_price = _PRICE.search(text)
     # An explicit price or named-item checkout stays on the SKU lookup path.
     if named and not wants_attachments and (wants_price or _BUY.search(text)):
@@ -138,12 +146,31 @@ def requested_recommendations(text: str, history: list) -> DiscoveryRequest | No
     if not (wants_recommendations or wants_attachments or wants_price and follow_up):
         return None
     prior = ""
-    if (wants_attachments or wants_price) and (follow_up or not wants_recommendations):
+    if (wants_attachments or wants_price) and (follow_up or link_follow_up or not wants_recommendations):
         prior = next((row.get("text") or "" for row in reversed(history[-8:]) if row.get("role") == "ai"), "")
-    if not categories and follow_up:
-        prior_matches = (item.category for item in _CATALOG if _match_position(item, prior) < len(prior.casefold()))
-        categories = _categories(prior) or tuple(dict.fromkeys(prior_matches))
+    if not categories and (follow_up or link_follow_up) and not _NON_PRODUCT_MEDIA.search(prior):
+        prior_matches = tuple(item.category for item in _CATALOG if _match_position(item, prior) < len(prior.casefold()))
+        if follow_up or prior_matches or _RECOMMEND.search(prior):
+            categories = tuple(dict.fromkeys((*_categories(prior), *prior_matches)))
     return DiscoveryRequest(categories, text, prior) if categories else None
+
+
+def exact_catalog_request(text: str) -> DiscoveryRequest | None:
+    if (_MEDICAL_USE.search(text) or _MEDICINE_FOR_CONDITION.search(text) or _RESTRICTED.search(text)
+            or _PUBLIC_ITEM_ID.search(text) or _NON_PRODUCT_MEDIA.search(text)):
+        return None
+    categories = tuple(dict.fromkeys(
+        item.category for item in _CATALOG if _match_position(item, text) < len(text.casefold())
+    ))
+    return DiscoveryRequest(categories, text, "", exact_only=True) if categories else None
+
+
+def attachment_only(request: DiscoveryRequest) -> bool:
+    text = request.text
+    return bool(
+        (_ATTACHMENT.search(text) or _PRICE.search(text)) and
+        (not _RECOMMEND.search(text) or _FOLLOW_UP.search(text))
+    )
 
 
 def _match_position(item: Listing, text: str) -> int:
@@ -290,9 +317,13 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
         if not chosen:
             chosen = [item for item in snapshot if _match_position(item, context) < len(context)]
         initial = [(item.retailer_url, item) for item in chosen[:limit]]
+        if request.exact_only and not initial:
+            return []
         if not initial:
             initial = [(url, None) for url in await _search_listings(search, category, age, stores)]
-        fallback = [(item.retailer_url, item) for item in snapshot if item not in chosen[:limit]][:limit]
+        fallback = [] if request.exact_only else [
+            (item.retailer_url, item) for item in snapshot if item not in chosen[:limit]
+        ][:limit]
         for group in (initial, fallback):
             results = await asyncio.gather(*(inspect(http, url, item) for url, item in group))
             if cards := [result for result in results if result]:

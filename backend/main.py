@@ -60,7 +60,7 @@ from backend.nuri_core import image_input as core_image_input
 from backend import apple_auth, google_auth
 from backend import alpha_chat_media, alpha_nearby_events, alpha_realtime, community, reply_speech
 from backend import product_recommendations
-from backend.product_comparison import lookup_product_comparison
+from backend.product_comparison import ProductLookup, lookup_product_comparison, product_lookup_reply
 from backend.display_name import CHINESE_NAME_TOO_LONG, exceeds_chinese_name_limit, generated_display_name
 from backend import (
     account_deletion, billing, email_verification, llm_usage, locales, mailer, memstore, openai_billing, push_apns,
@@ -6119,12 +6119,19 @@ def _turn_product_recommendations(body: UserMessageIn, turn: _Turn) -> product_r
 async def _find_turn_products(body: UserMessageIn):
     if not _turn_shopping_enabled(body):
         return None
-    locale = body.client_context.locale if body.client_context else "en"
-    return await lookup_product_comparison(body.text, locale or "en")
+    locale = (body.client_context.locale if body.client_context else None) or "en"
+    comparison = await lookup_product_comparison(body.text, locale)
+    if comparison and comparison.transition["status"] in {"no_results", "unavailable", "links_only"}:
+        if request := product_recommendations.exact_catalog_request(body.text):
+            cards = await product_recommendations.recommendation_transition(request, "", locale=locale)
+            if cards and (cards["status"] == "ready" or not comparison.transition["offers"]):
+                return ProductLookup(product_lookup_reply(cards["status"], locale), cards)
+    return comparison
 
 
-async def _find_turn_attachment(body: UserMessageIn, turn: _Turn, rc: _ReplyContext, ai_text: str,
-                                recommendations: product_recommendations.DiscoveryRequest | None):
+async def _find_turn_attachment(body: UserMessageIn, rc: _ReplyContext, ai_text: str,
+                                recommendations: product_recommendations.DiscoveryRequest | None,
+                                media: dict | None):
     risk = str(getattr(rc.evidence, "risk_tier", ""))
     if recommendations and risk not in {"urgent", "emergency", "crisis", "caregiver_harm", "medical", "referral"}:
         try:
@@ -6133,13 +6140,18 @@ async def _find_turn_attachment(body: UserMessageIn, turn: _Turn, rc: _ReplyCont
                 return transition
         except Exception as exc:
             logger.warning("alpha_product_recommendations_unavailable", extra={"error_type": type(exc).__name__})
-    return await _find_turn_chat_media(body, turn, rc)
+    return media
 
 
-async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyContext):
+def _turn_media_kinds(body: UserMessageIn, turn: _Turn) -> tuple[str, ...]:
     if not (body.include_media and runtime.alpha_features_available() and body.text and not body.image_base64):
-        return None
-    kinds = alpha_chat_media.requested_media(body.text)
+        return ()
+    return alpha_chat_media.requested_media(body.text, getattr(turn, "msgs", ()))
+
+
+async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyContext,
+                                kinds: tuple[str, ...] | None = None):
+    kinds = _turn_media_kinds(body, turn) if kinds is None else kinds
     if not kinds:
         return None
     evidence = rc.evidence
@@ -6155,10 +6167,38 @@ async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyCont
             allow_history=privacy.get("allow_external_content_research") is True,
             existing=list(rc.search_results),
             authority_only=risk in {"medical", "referral"},
+            history=getattr(turn, "msgs", ()),
         )
     except Exception as exc:
         logger.warning("alpha_chat_media_unavailable", extra={"error_type": type(exc).__name__})
         return None
+
+
+async def _resource_answer(body: UserMessageIn, rc: _ReplyContext, kinds: tuple[str, ...],
+                           media: dict | None, recommendations: product_recommendations.DiscoveryRequest | None):
+    risk = str(getattr(rc.evidence, "risk_tier", ""))
+    if risk in {"urgent", "emergency", "crisis", "caregiver_harm", "medical", "referral"}:
+        return None
+    locale = (body.client_context.locale if body.client_context else None) or "en"
+    if recommendations and product_recommendations.attachment_only(recommendations):
+        cards = await _find_turn_attachment(body, rc, "", recommendations, None)
+        return product_lookup_reply(cards["status"] if cards else "no_results", locale), cards
+    if kinds and alpha_chat_media.resource_only_request(body.text):
+        return alpha_chat_media.resource_reply(media, locale), media
+    return None
+
+
+def _resource_prompt(system_prompt: str | None, media: dict | None, shopping: bool) -> str | None:
+    if not (system_prompt and (media or shopping)):
+        return system_prompt
+    note = (
+        "Nuri 会在回复下方附上可点击的资料卡片。直接回答用户，不复述链接，"
+        "不要声称无法联网或叫用户自己搜索。"
+        if media else
+        "应用会查询与推荐匹配的商家商品卡片。直接给出具体商品名及简明理由，"
+        "不编造链接、图片或售价，也不用讨论联网功能。"
+    )
+    return system_prompt + "\n" + note
 
 
 @api.post("/chat/sessions/{session_id}/messages")
@@ -6201,19 +6241,25 @@ async def post_message(
             ai_text, transition = product.reply, product.transition
         elif oai:
             rc = await _reply_context(turn, body, metrics)
-            system_prompt, history_window = _plan_prompt(rc)
-            reply = await anyio.to_thread.run_sync(
-                lambda: core_dialogue_reply.nuri_reply_sync(
-                    turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                    rc.internal, rc.sources, metrics, system_prompt, history_window,
-                    rc.state,
-                    temporal_context=turn.temporal,
-                    cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
+            kinds = _turn_media_kinds(body, turn) if not recommendations else ()
+            media = await _find_turn_chat_media(body, turn, rc, kinds)
+            if resource_answer := await _resource_answer(body, rc, kinds, media, recommendations):
+                ai_text, transition = resource_answer
+            else:
+                system_prompt, history_window = _plan_prompt(rc)
+                system_prompt = _resource_prompt(system_prompt, media, bool(recommendations))
+                reply = await anyio.to_thread.run_sync(
+                    lambda: core_dialogue_reply.nuri_reply_sync(
+                        turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                        rc.internal, rc.sources, metrics, system_prompt, history_window,
+                        rc.state,
+                        temporal_context=turn.temporal,
+                        cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
+                    )
                 )
-            )
-            quick_replies = reply.get("quick_replies", [])
-            ai_text = _strip_citation_markers(reply["text"])
-            transition = await _find_turn_attachment(body, turn, rc, ai_text, recommendations)
+                quick_replies = reply.get("quick_replies", [])
+                ai_text = _strip_citation_markers(reply["text"])
+                transition = await _find_turn_attachment(body, rc, ai_text, recommendations, media)
         else:
             (
                 ai_text, quick_replies, transition, step_from, step_to,
@@ -6311,25 +6357,31 @@ async def post_message_stream(
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
                 rc = await _reply_context(turn, body, metrics)
-                system_prompt, history_window = _plan_prompt(rc)
-                reply = None
-                async for kind, value in core_dialogue_reply.nuri_reply_stream(
-                    turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
-                    rc.internal, rc.sources, metrics, system_prompt, history_window,
-                    rc.state,
-                    temporal_context=turn.temporal,
-                    cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
-                ):
-                    if kind == "delta":
-                        yield _sse({"type": "delta", "text": value})
-                    else:
-                        reply = value
-                reply = reply or dict(core_dialogue_reply.NURI_FALLBACK)
-                quick_replies = reply.get("quick_replies", [])
-                # The streamed deltas already carried the raw marker; this
-                # is what gets persisted and what the transcript shows.
-                ai_text = _strip_citation_markers(reply["text"])
-                transition = await _find_turn_attachment(body, turn, rc, ai_text, recommendations)
+                kinds = _turn_media_kinds(body, turn) if not recommendations else ()
+                media = await _find_turn_chat_media(body, turn, rc, kinds)
+                if resource_answer := await _resource_answer(body, rc, kinds, media, recommendations):
+                    ai_text, transition = resource_answer
+                    yield _sse({"type": "delta", "text": ai_text})
+                else:
+                    system_prompt, history_window = _plan_prompt(rc)
+                    system_prompt = _resource_prompt(system_prompt, media, bool(recommendations))
+                    reply = None
+                    async for kind, value in core_dialogue_reply.nuri_reply_stream(
+                        turn.msgs, rc.card, rc.memory, rc.profile, rc.style,
+                        rc.internal, rc.sources, metrics, system_prompt, history_window,
+                        rc.state,
+                        temporal_context=turn.temporal,
+                        cache_key=core_dialogue_reply.prompt_cache_key(turn.owner_uid),
+                    ):
+                        if kind == "delta":
+                            yield _sse({"type": "delta", "text": value})
+                        else:
+                            reply = value
+                    reply = reply or dict(core_dialogue_reply.NURI_FALLBACK)
+                    quick_replies = reply.get("quick_replies", [])
+                    # Deltas carry any raw marker. Persist the cleaned text.
+                    ai_text = _strip_citation_markers(reply["text"])
+                    transition = await _find_turn_attachment(body, rc, ai_text, recommendations, media)
             else:
                 (
                     ai_text, quick_replies, transition, step_from, step_to,

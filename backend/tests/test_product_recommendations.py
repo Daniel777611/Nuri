@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from backend.product_recommendations import recommendation_transition, requested_recommendations
+from backend.product_recommendations import exact_catalog_request, recommendation_transition, requested_recommendations
 from backend.websearch import SearchResult
 
 
@@ -170,3 +170,30 @@ def test_searches_a_non_us_store_for_older_children_without_sharing_the_conversa
     assert calls[0].include_domains == ("amazon.co.uk",)
     assert [(row["url"], row["image_url"]) for row in cards["offers"]] == [(product, image)]
     assert [(row["price_amount"], row["currency"]) for row in cards["offers"]] == [("12.99", "GBP")]
+
+
+def test_named_catalog_book_and_explicit_toy_both_survive_one_request():
+    request = requested_recommendations("给我 Dear Zoo 和叠叠杯玩具的图、链接和价格", [])
+    assert set(request.categories) == {"books", "toys"}
+
+
+def test_short_product_link_follow_up_does_not_steal_video_link():
+    assert requested_recommendations("那你给我的链接在哪里呢?", earlier_reply()).categories == ("books", "toys")
+    history = earlier_reply("可以找这些玩具收纳的 YouTube 视频。")
+    assert requested_recommendations("那你给我的链接在哪里呢?", history) is None
+
+
+def test_exact_catalog_price_fallback_never_substitutes_another_book():
+    request = exact_catalog_request("Dear Zoo 绘本多少钱？")
+    calls = []
+
+    def load(page):
+        calls.append(str(page.url))
+        return httpx.Response(410, headers={"Content-Type": "text/html"})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(load)) as client:
+            return await recommendation_transition(request, "", locale="zh-CN", client=client)
+
+    assert asyncio.run(run()) is None
+    assert len(calls) == 2 and all("9781416947370" in url for url in calls)

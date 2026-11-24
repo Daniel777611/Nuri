@@ -1,16 +1,20 @@
 import asyncio
+import json
 from types import SimpleNamespace
+
+import httpx
+import pytest
 
 from backend import alpha_chat_media as media
 from backend.router import TurnRoute
 from backend.websearch import SearchImage, SearchResult
 
 
-def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False):
+def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False, history=()):
     return asyncio.run(media.find_chat_media(
-        text, media.requested_media(text), locale=locale or ("zh-CN" if "视频" in text else "en"),
+        text, media.requested_media(text, history), locale=locale or ("zh-CN" if "视频" in text else "en"),
         route=route, children=[{"nickname": "Juniper"}], allow_history=allow_history,
-        existing=[], authority_only=authority_only,
+        existing=[], authority_only=authority_only, history=history,
     ))
 
 
@@ -30,6 +34,10 @@ def _provider(monkeypatch, videos=None):
                     SearchResult("not a video", "https://youtube.com.evil.org/watch?v=zzzzzzzzzzz"),
                     SearchResult("not a video", "https://www.youtube.com/playlist?list=abcdefghijk"),
                 ]
+            if "fever" in request.query:
+                return [SearchResult("Fever in toddlers", "https://www.healthychildren.org/English/fever", images=(
+                    SearchImage("https://cdn.healthychildren.org/cover.jpg"),
+                ))]
             return [
                 SearchResult("Guide to starting solids", "https://www.healthychildren.org/English/solids", images=(
                     SearchImage("https://cdn.healthychildren.org/cover.jpg"),
@@ -198,3 +206,160 @@ def test_chat_attachment_respects_release_feature_scope_and_emergency(monkeypatc
     assert not calls
     assert asyncio.run(main._find_turn_chat_media(body, turn, context))["kind"] == "chat_media"
     assert [call["allow_history"] for call in calls] == [False]
+
+
+FEEDING_HISTORY = [
+    {"role": "user", "text": "我想找 13 个月孩子吃饭吐食、挑食的 YouTube 视频"},
+    {"role": "ai", "text": "我可以给你一些 13 个月宝宝饮食、吐食、挑食的 YouTube 搜索句。"},
+]
+
+
+@pytest.mark.parametrize("text", [
+    "那你给我的链接在哪里呢?",
+    "我要的是链接啊,你让我去搜,你让我去搜那你来干嘛呢?",
+])
+def test_link_only_follow_up_uses_the_previous_video_subject_without_exporting_history(monkeypatch, text):
+    calls = _provider(monkeypatch)
+    result = _lookup(text, locale="zh-CN", history=FEEDING_HISTORY)
+    assert media.requested_media(text, FEEDING_HISTORY) == ("video",)
+    assert [item["video_id"] for item in result["items"]] == ["W9LxMa7jRoM", "fLH9JRiRha0"]
+    assert all(item["thumbnail_url"].startswith("https://i.ytimg.com/vi/") for item in result["items"])
+    assert "点卡片" in media.resource_reply(result, "zh-CN")
+    assert not calls
+
+
+def test_concrete_video_beyond_reviewed_topics_still_requires_title_evidence(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("How to replace a stroller wheel - YouTube", "https://youtu.be/abcdefghijk"),
+        SearchResult("Wheel of Fortune - YouTube", "https://youtu.be/lmnopqrstuv", snippet="stroller replacement videos"),
+        SearchResult("Trading stocks for parents - YouTube", "https://youtu.be/zzzzzzzzzzz"),
+    ])
+    result = _lookup("Show me a YouTube video about stroller wheel replacement")
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
+    assert "stroller wheel replacement" in calls[0].query
+
+
+def test_explicit_article_and_image_request_has_reviewed_source_picture_if_provider_is_down(monkeypatch):
+    class Offline:
+        name = "null"
+
+    monkeypatch.setattr(media, "get_provider", Offline)
+    result = _lookup("给我几篇幼儿挑食的文章和图片", locale="zh-CN")
+    assert [item["type"] for item in result["items"]] == ["article", "article", "image"]
+    assert result["items"][0]["url"].startswith("https://www.fhs.gov.hk/")
+    assert result["items"][-1]["source_url"] == result["items"][1]["url"]
+    assert result["items"][-1]["thumbnail_url"].endswith("Pickyeater.jpg")
+
+
+def test_publisher_declared_cover_is_source_specific_and_does_not_follow_redirects():
+    seen = []
+
+    def handle(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, headers={"Content-Type": "text/html"}, text=(
+            '<meta property="og:image" content="https://www.cdc.gov/images/logo.png">'
+            '<meta property="og:image" content="/images/family-meal.jpg"></head>'
+        ))
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            assert await media._read_article_cover(client, "https://www.cdc.gov/article") == (
+                "https://www.cdc.gov/images/family-meal.jpg"
+            )
+            assert await media._read_article_cover(client, "https://unknown.example/article") is None
+
+    asyncio.run(run())
+    assert seen == ["https://www.cdc.gov/article"]
+
+
+def test_explicit_link_again_does_not_treat_sign_in_or_a_new_subject_as_previous_topic(monkeypatch):
+    calls = _provider(monkeypatch, [])
+    assert media.requested_media("请给我登录链接？", FEEDING_HISTORY) == ()
+    assert _lookup("Find me a link for toddler sleep routines", history=FEEDING_HISTORY) is None
+    assert not calls or all("picky" not in call.query for call in calls)
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_short_link_follow_up_returns_and_persists_same_cards_and_copy(monkeypatch, streamed):
+    from backend import main
+    from backend.tests.test_single_session import _Supabase, _install_turn_dependencies
+
+    sb = _Supabase([{"id": "resource-chat", "user_id": "fixture-parent", "created_at": "2026-11-01T00:00:00+00:00"}])
+    for index, row in enumerate(FEEDING_HISTORY):
+        sb.message_inserts.append({
+            **row, "id": f"prior-{index}", "session_id": "resource-chat",
+            "created_at": f"2026-11-01T00:00:0{index}+00:00",
+        })
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def context(turn, *_args):
+        assert turn.owner_uid == "fixture-parent"
+        return main._ReplyContext()
+
+    async def privacy(*_args, **_kwargs):
+        return {"allow_external_content_research": False}
+
+    def unexpected_generation(*_args, **_kwargs):
+        raise AssertionError("A link-only response must describe the actual card outcome")
+
+    monkeypatch.setattr(main, "_get_supabase", lambda: sb)
+    monkeypatch.setattr(main.runtime, "alpha_features_available", lambda: True)
+    monkeypatch.setattr(main, "oai", object())
+    monkeypatch.setattr(main, "aoai", object())
+    monkeypatch.setattr(main, "_reply_context", context)
+    monkeypatch.setattr(main, "_require_chat_allowance", noop)
+    monkeypatch.setattr(main, "_after_turn", noop)
+    monkeypatch.setattr(main._TurnMetrics, "flush", noop)
+    monkeypatch.setattr(main.core_family, "extract_and_upsert_memories", noop)
+    monkeypatch.setattr(main.core_dialogue_reply, "style_rules_fingerprint", noop)
+    monkeypatch.setattr(main.core_dialogue_reply, "nuri_reply_sync", unexpected_generation)
+    monkeypatch.setattr(main.core_dialogue_reply, "nuri_reply_stream", unexpected_generation)
+    monkeypatch.setattr(main.stores, "get_privacy", privacy)
+    monkeypatch.setitem(main.app.dependency_overrides, main._req_uid, lambda: "fixture-parent")
+    calls = _provider(monkeypatch, [])
+    _install_turn_dependencies(monkeypatch, [])
+
+    async def run():
+        target = "/api/chat/sessions/resource-chat/messages" + ("/stream" if streamed else "")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://fixture-nuri.test") as client:
+            return await client.post(target, json={
+                "text": "那你给我的链接在哪里呢?",
+                "client_message_id": "verified-link-only-follow-up",
+                "compare_products": True,
+                "include_media": True,
+                "client_context": {"locale": "zh-CN"},
+            })
+
+    response = asyncio.run(run())
+    assert response.status_code == 200, response.text
+    if streamed:
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        assert events[-1]["type"] == "done"
+        reply, = events[-1]["ai_messages"]
+        assert events[0] == {"type": "delta", "text": reply["text"]}
+    else:
+        reply, = response.json()["ai_messages"]
+    assert "点卡片" in reply["text"]
+    assert reply["transition"]["items"][0]["video_id"] == "W9LxMa7jRoM"
+    saved, = [row for row in sb.message_inserts if row.get("id") == reply["id"]]
+    assert saved["transition"]["kind"] == reply["transition"]["kind"]
+    assert saved["transition"]["items"] == reply["transition"]["items"]
+    assert not calls
+
+
+def test_current_thread_explicit_subject_can_be_retried_after_router_failure(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("How to replace a stroller wheel", "https://youtu.be/abcdefghijk"),
+    ])
+    history = [
+        {"role": "user", "text": "Can you show me a YouTube video about stroller wheel replacement?"},
+        {"role": "ai", "text": "I couldn't verify a link."},
+    ]
+    request = "Where’s the link?"
+    assert _lookup(request, history=history, route=TurnRoute(ok=False)) is None
+    assert not calls
+    result = _lookup(request, history=history, route=TurnRoute(ok=False), allow_history=True)
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
+    assert "stroller wheel replacement" in calls[0].query

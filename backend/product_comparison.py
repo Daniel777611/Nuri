@@ -519,10 +519,14 @@ _REPLIES = {
 }
 
 
+def product_lookup_reply(status: str, locale: str) -> str:
+    return _REPLIES.get(locale, _REPLIES["en"])[status]
+
+
 def _lookup(status: str, locale: str, now: datetime, offers: list[dict] | None = None,
             *, is_medication: bool = False) -> ProductLookup:
     rows = offers or []
-    return ProductLookup(_REPLIES.get(locale, _REPLIES["en"])[status], {
+    return ProductLookup(product_lookup_reply(status, locale), {
         "kind": "product_comparison",
         "status": status,
         "checked_at": now.isoformat(),
