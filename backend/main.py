@@ -7253,6 +7253,13 @@ def _require_cron_secret(authorization: Optional[str]) -> None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthorized")
 
 
+@api.post("/internal/alpha-community-bots/tick", include_in_schema=False)
+async def internal_alpha_community_bots_tick(authorization: Optional[str] = Header(default=None)):
+    from backend.alpha_community_bots import tick
+
+    return await tick(authorization)
+
+
 @api.get("/internal/push/dispatch")
 async def internal_push_dispatch(
     authorization: Optional[str] = Header(default=None),

@@ -4,7 +4,8 @@
   "outputDirectory": "native-ios/dist",
   "functions": {
     "api/backend.py": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "scripts/fixtures/alpha-community-parents.json"
     }
   },
   "rewrites": [

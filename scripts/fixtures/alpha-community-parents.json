@@ -1,0 +1,1482 @@
+[
+  {
+    "slug": "ren-yu",
+    "name": "阿佑",
+    "age": 31,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "咖啡店早班领班",
+    "household": "和伴侣轮流照顾第一个宝宝",
+    "children": [
+      {
+        "ageMonths": 9,
+        "context": "刚开始扶着沙发站"
+      }
+    ],
+    "location": "波特兰",
+    "timeZone": "America/Los_Angeles",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "说话很短，习惯先说今天发生了什么",
+    "experience": "早班六点开始，交接时曾用冰箱白板把谁送托谁接托写清楚。",
+    "currentChallenge": "送托时孩子又开始抓着他的衣领不肯松手。",
+    "question": "最近送托，孩子一看我摘外套就知道我要走，抓着衣领哭。我说再见时有老师接手，但自己老想在门外多等。你们送完是直接走，还是等一小会儿？",
+    "category": "托育适应",
+    "concern": "childcare",
+    "about": "做早班咖啡，常比宝宝先醒。家里用一块小白板管接送。"
+  },
+  {
+    "slug": "lu-wen",
+    "name": "文文在西岸",
+    "age": 34,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "远程产品设计师",
+    "household": "双语双职工家庭，外婆每年能来住一阵",
+    "children": [
+      {
+        "ageMonths": 34,
+        "context": "常用英语回答中文"
+      },
+      {
+        "ageMonths": 78,
+        "context": "小学低年级"
+      }
+    ],
+    "location": "贝尔维尤",
+    "timeZone": "America/Los_Angeles",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "喜欢从孩子的一句原话说起，有时夹一两个英文词",
+    "experience": "大孩子小时候喜欢和外婆视频做手工，手上有事情做时开口更多。",
+    "currentChallenge": "小孩子把家长的问题听懂了，却只用很短的英语回答。",
+    "question": "妹妹现在回答外婆基本都是 yes 或 no，姐姐一接话就把整段说完了。你们有什么适合让慢热的小孩和远方家人说几句中文的小活动？",
+    "category": "双语养育",
+    "concern": "parenting",
+    "about": "两个娃在不同语言里长大，外婆隔着屏幕一起做手工。西岸远程上班。"
+  },
+  {
+    "slug": "sui-nan",
+    "name": "南南",
+    "age": 27,
+    "role": "单亲妈妈",
+    "roleCode": "mom",
+    "occupation": "医院检验科夜班",
+    "household": "独自带娃，白天由邻居介绍的托育点照顾",
+    "children": [
+      {
+        "ageMonths": 6,
+        "context": "最近从摇篮换到小床"
+      }
+    ],
+    "location": "西雅图",
+    "timeZone": "America/Los_Angeles",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "通常等休息时才打几行，口吻诚恳",
+    "experience": "搬家时先保留了旧的晚安歌，熟悉的小仪式帮她稳住了作息。",
+    "currentChallenge": "夜班回来脑子很乱，白天作息提示不一致。",
+    "question": "我夜班回来正是孩子最精神的时候，有时交接只来得及说昨天几点睡。你们有没有一张真的愿意天天填、十秒能写完的作息记录？",
+    "category": "睡眠习惯",
+    "concern": "sleep",
+    "about": "夜班检验科，轮到我早上回家时宝宝恰好很精神。记一点日常给自己。"
+  },
+  {
+    "slug": "yi-shan",
+    "name": "伊杉",
+    "age": 39,
+    "role": "领养妈妈",
+    "roleCode": "mom",
+    "occupation": "会计师，按季度有忙季",
+    "household": "和伴侣领养一对姐妹，两人一起安排接送",
+    "children": [
+      {
+        "ageMonths": 62,
+        "context": "喜欢问大人的小时候"
+      },
+      {
+        "ageMonths": 83,
+        "context": "刚开始读短句"
+      }
+    ],
+    "location": "圣克拉拉",
+    "timeZone": "America/Los_Angeles",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "会细说经过，留一点余地让人补充",
+    "experience": "姐妹俩曾一起做时间线，把记不清的部分留了空白，后来又想起来几件小事。",
+    "currentChallenge": "孩子想向同学解释自己的家庭来历，同时想保留隐私。",
+    "question": "大孩子说班里有人问她小时候的照片，小孩子就很积极地想替姐姐回话。你们怎么陪孩子练习选择说多少，同时也让兄弟姐妹知道哪些故事可以帮着讲？",
+    "category": "家庭故事",
+    "concern": "family",
+    "about": "我们家有一对一块搬来的姐妹，我和伴侣慢慢跟她们补写时间线。"
+  },
+  {
+    "slug": "bo-shu",
+    "name": "柏树爸",
+    "age": 43,
+    "role": "领养爸爸",
+    "roleCode": "dad",
+    "occupation": "展览施工协调员",
+    "household": "和丈夫养育一名领养孩子及两名其他孩子，周末常一起做早饭",
+    "children": [
+      {
+        "ageMonths": 30,
+        "context": "爱学哥哥说话"
+      },
+      {
+        "ageMonths": 69,
+        "context": "开始在意谁坐哪里"
+      },
+      {
+        "ageMonths": 108,
+        "context": "喜欢写食谱"
+      }
+    ],
+    "location": "台北",
+    "timeZone": "Asia/Taipei",
+    "activity": "high",
+    "language": "zh-TW",
+    "voice": "台灣口吻，常說自家試過一半就失敗的小事",
+    "experience": "家庭會議太正式，後來變成過早餐時每人挑一首歌，反而比較願意講。",
+    "currentChallenge": "最近不同年齡的孩子都想決定家裡的週末安排。",
+    "question": "我們家週六早上最容易卡在「為什麼都是他選」：小的要去公園，大的想做早餐，另一個剛睡醒。你們家的輪流是怎麼排，才不會變成全家一直在算誰吃虧？",
+    "category": "手足相处",
+    "concern": "family",
+    "about": "兩個爸爸帶三個孩子。週末大多會做一頓早餐，一人挑一首歌。"
+  },
+  {
+    "slug": "ke-you",
+    "name": "可柚",
+    "age": 33,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "在家做翻译接单",
+    "household": "双职工，配偶固定周三出差，孩子各有活动",
+    "children": [
+      {
+        "ageMonths": 23,
+        "context": "开始坚持自己拿勺"
+      },
+      {
+        "ageMonths": 72,
+        "context": "刚学骑车"
+      }
+    ],
+    "location": "芝加哥",
+    "timeZone": "America/Chicago",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "会列出做过的两件事，再问很具体的一点",
+    "experience": "曾把周末备的饭分成能组合的几样，减少下班后的临时选择。",
+    "currentChallenge": "幼儿因为大人扶勺就难过，较大的又想早点吃完上课。",
+    "question": "妹妹要自己用勺，大人伸手她就把碗抱走。哥哥周三要赶去上课，我们已经试过提前摆饭和给妹妹一小份，还是急。你们两种速度的娃同桌时怎么安排？",
+    "category": "饮食习惯",
+    "concern": "food",
+    "about": "翻译空隙也要赶吃饭。两个小孩吃饭的速度完全不一样，家里常在试怎么坐在一起。"
+  },
+  {
+    "slug": "ren-qin",
+    "name": "阿琴",
+    "age": 42,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "经营街区小杂货店",
+    "household": "伴侣常跑货，哥哥放学后有时一起在店里等",
+    "children": [
+      {
+        "ageMonths": 54,
+        "context": "喜欢自己做收银游戏"
+      },
+      {
+        "ageMonths": 136,
+        "context": "课后做球队训练"
+      }
+    ],
+    "location": "纽约",
+    "timeZone": "America/New_York",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "不绕弯子，经常附一小段生活场景",
+    "experience": "店里没空陪坐时，会分一筐旧纸袋给孩子画招牌。",
+    "currentChallenge": "小孩子在店里待得久，爱等到很晚才说想一起玩。",
+    "question": "关店到家快八点了，娃最爱那时候让我坐地上陪她玩商店。我十分钟也能给，但常一坐下就要玩半小时。你们忙完以后，有什么短短的小仪式孩子会觉得够？",
+    "category": "亲子陪伴",
+    "concern": "parenting",
+    "about": "白天顾杂货铺，娃拿纸袋画的招牌比我印的好看。忙里见缝插针一起玩。"
+  },
+  {
+    "slug": "qiao-book",
+    "name": "乔桥爸",
+    "age": 37,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "社区图书馆员",
+    "household": "和太太共同照顾一名孩子，奶奶周末来",
+    "children": [
+      {
+        "ageMonths": 95,
+        "context": "爱画漫画，抗拒坐着朗读"
+      }
+    ],
+    "location": "波士顿",
+    "timeZone": "America/New_York",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "喜欢比喻，愿意自嘲自己想得太用力",
+    "experience": "以前让孩子把书中的地图画在纸上，读句子时更愿意停下来。",
+    "currentChallenge": "孩子怕大人纠正字音，不愿读出声音。",
+    "question": "昨天孩子把一整页漫画的声音画出来，可我开口让他读一个对话框，他就合上了。有没有不太像在检查作业的共读游戏？我们俩都想轻松一点。",
+    "category": "学习习惯",
+    "concern": "development",
+    "about": "图书馆员，家那位小学生最近一直在画漫画。书读错了可以笑完接着读。"
+  },
+  {
+    "slug": "mika-fern",
+    "name": "Mika",
+    "age": 32,
+    "role": "家长",
+    "roleCode": "other",
+    "occupation": "会展字幕编辑",
+    "household": "双亲家庭，与伴侣轮流负责托育交接",
+    "children": [
+      {
+        "ageMonths": 20,
+        "context": "在家表达自在，在班里会先观察"
+      }
+    ],
+    "location": "多伦多",
+    "timeZone": "America/Toronto",
+    "activity": "medium",
+    "language": "en",
+    "voice": "Writes in a reflective, slightly wry tone, and names one thing they actually tried",
+    "experience": "Their family uses a photo of the caregiver at pickup rather than telling the toddler what time pickup will happen.",
+    "currentChallenge": "The toddler freezes during large-group greetings and wants a quieter way in.",
+    "question": "Our daycare circle time starts right at drop-off. My toddler loves singing at home but hangs back when everyone is already singing. Is there a small bridge you and a teacher have tried that didn't put your kid on the spot?",
+    "category": "Daycare adjustment",
+    "concern": "childcare",
+    "about": "I edit captions and parent a toddler who likes to understand a room before joining in."
+  },
+  {
+    "slug": "qin-nai",
+    "name": "秦姨",
+    "age": 58,
+    "role": "外婆监护人",
+    "roleCode": "grandparent",
+    "occupation": "退休裁缝，偶尔替邻居改衣服",
+    "household": "与外孙同住，女儿异地工作，周日家庭视频",
+    "children": [
+      {
+        "ageMonths": 60,
+        "context": "喜欢把当天见到的事演一遍"
+      }
+    ],
+    "location": "萨克拉门托",
+    "timeZone": "America/Los_Angeles",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "把人和场景交代得清楚，语气平和",
+    "experience": "曾做一个轮流录三十秒语音的小盒子，孩子会反复听妈妈留下的那条。",
+    "currentChallenge": "孩子想在视频结束时留住妈妈，挂断就不开心。",
+    "question": "视频挂掉前小孩会忽然跑去找很多玩具，一件一件拿回来，说还没讲完。我能陪着他，但想替妈妈留一个小小告别的方法。隔着屏幕陪孩子的家长，有什么办法自己做着很自然？",
+    "category": "异地陪伴",
+    "concern": "family",
+    "about": "外孙喜欢听妈妈留的语音，我会陪他把今天见到的小事再演一遍。"
+  },
+  {
+    "slug": "leo-ma",
+    "name": "Leo马",
+    "age": 45,
+    "role": "单亲爸爸",
+    "roleCode": "dad",
+    "occupation": "园艺工，自雇",
+    "household": "与初中孩子同住，约定周末有一顿一起做",
+    "children": [
+      {
+        "ageMonths": 157,
+        "context": "喜欢自己去图书馆，也想和同学独处"
+      }
+    ],
+    "location": "奥克兰",
+    "timeZone": "Pacific/Auckland",
+    "activity": "low",
+    "language": "en",
+    "voice": "Blunt, affectionate, keeps a note of what actually made a conversation easier",
+    "experience": "They used to talk while cooking, because neither of them had to make eye contact the whole time.",
+    "currentChallenge": "The teenager wants fewer weekend plans but misses their standing Sunday ritual.",
+    "question": "My teenager says they need some weekend time with no plans. Fair. But we both miss our Sunday noodles when it disappears completely. What kind of low-key invitation worked for your older kids without making it feel like a compulsory family event?",
+    "category": "Family time",
+    "concern": "parenting",
+    "about": "I work outdoors and share a home with my teenager. Sunday noodles tend to lead to the best catchups."
+  },
+  {
+    "slug": "jay-kai",
+    "name": "嘉佳",
+    "age": 38,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "助产机构排班协调员",
+    "household": "三代同住，伴侣擅长早班接送",
+    "children": [
+      {
+        "ageMonths": 11,
+        "context": "开始尝试在家以外的地方吃午饭"
+      },
+      {
+        "ageMonths": 53,
+        "context": "每天想讲完一个发生过的故事"
+      }
+    ],
+    "location": "伦敦",
+    "timeZone": "Europe/London",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "说话实际，总先承认别人也有负担",
+    "experience": "祖孙用两套睡前顺序磨合过一阵，后来保留了一首大家都会的歌。",
+    "currentChallenge": "各照顾者忙的时候，需要尽量少的默契来安排晚餐。",
+    "question": "阿婆、我和伴侣都能陪晚饭，但各有各的习惯。大宝会问为什么昨天可以边吃边讲图画书，今天不行。三代同住的家里，哪些小规矩值得统一，哪些就让它不一样？",
+    "category": "家庭协作",
+    "concern": "family",
+    "about": "家里三个大人有三套晚饭习惯，不过都学会唱同一首晚安歌了。"
+  },
+  {
+    "slug": "yi-pae",
+    "name": "易派",
+    "age": 35,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "做游戏本地化测试",
+    "household": "中韩双语家庭，父母分别来自两地，孩子一起去社区学校",
+    "children": [
+      {
+        "ageMonths": 86,
+        "context": "自己发明过双语桌游"
+      },
+      {
+        "ageMonths": 46,
+        "context": "最近开始追着问汉字"
+      }
+    ],
+    "location": "首尔",
+    "timeZone": "Asia/Seoul",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "喜欢听不同家庭的方法，描述里有对话片段",
+    "experience": "一家人做过图文菜单，每人都能填熟悉的词。",
+    "currentChallenge": "大孩子在同学面前不愿讲家里用的另一种语言。",
+    "question": "上次校门口我用中文喊他，他回家后才小声说不想被同学注意。平时做双语桌游倒玩得很起劲。你们怎么和孩子聊什么时候想用哪种语言？",
+    "category": "双语养育",
+    "concern": "parenting",
+    "about": "做游戏本地化，也在家陪俩孩子玩他们自己画的双语桌游。"
+  },
+  {
+    "slug": "jing-ber",
+    "name": "景和",
+    "age": 44,
+    "role": "继母",
+    "roleCode": "mom",
+    "occupation": "展馆灯光设计",
+    "household": "重组家庭，两个继子女来回两边住，最小的平日一起住",
+    "children": [
+      {
+        "ageMonths": 40,
+        "context": "常问大孩子哪天回来"
+      },
+      {
+        "ageMonths": 117,
+        "context": "重视自己的床头摆设"
+      },
+      {
+        "ageMonths": 168,
+        "context": "常自己安排周末"
+      }
+    ],
+    "location": "柏林",
+    "timeZone": "Europe/Berlin",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "习惯将问题讲得很具体，避免替别人猜动机",
+    "experience": "给每个孩子在家里留了抽屉，不要求每次来都重新整理。",
+    "currentChallenge": "三个年龄的孩子都想在节日前出一份力，又各有时间表。",
+    "question": "节日前三个人都不同时间到家，小的已经想把挂饰全挂上，大的说有一样一定要留给自己。你们重组家庭有什么能拆成几段做的节日准备？",
+    "category": "重组家庭",
+    "concern": "family",
+    "about": "在展馆管灯。家里常要等三个不同的周末安排碰得上再一起做事。"
+  },
+  {
+    "slug": "luc-dum",
+    "name": "Lucas小巷",
+    "age": 41,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "公交地图绘图员",
+    "household": "中法双语家庭，伴侣做餐厅晚班",
+    "children": [
+      {
+        "ageMonths": 118,
+        "context": "喜欢实地找地图上的街名"
+      },
+      {
+        "ageMonths": 162,
+        "context": "爱发视频给外公外婆"
+      }
+    ],
+    "location": "巴黎",
+    "timeZone": "Europe/Paris",
+    "activity": "high",
+    "language": "en",
+    "voice": "Writes short sensory details, sometimes adds a phrase he heard in French or Chinese",
+    "experience": "His kids once made a bilingual neighborhood map for relatives visiting for the first time.",
+    "currentChallenge": "They want to keep a shared activity that an older sibling won't consider babyish.",
+    "question": "My two kids started a tiny neighbourhood map in Chinese and French for their visiting grandparents. Our 13-year-old is done with stickers now, understandably. Has a family carried a project like this forward so the older kid gets something real to own?",
+    "category": "Bilingual parenting",
+    "concern": "parenting",
+    "about": "I draw maps, and at home my two kids make better bilingual maps than I do."
+  },
+  {
+    "slug": "mei-rui",
+    "name": "梅瑞",
+    "age": 36,
+    "role": "共同养育的母亲",
+    "roleCode": "mom",
+    "occupation": "书店兼咖啡馆经理",
+    "household": "分开生活，两位家长各自照顾，固定在周中交接",
+    "children": [
+      {
+        "ageMonths": 82,
+        "context": "开始自己管理运动用品"
+      }
+    ],
+    "location": "里斯本",
+    "timeZone": "Europe/Lisbon",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "愿意分享失败的尝试，语气有点自嘲",
+    "experience": "孩子自己画了一张「在哪边也要做的事」清单，画完坚持要两张都一样。",
+    "currentChallenge": "交接时常漏掉要用的东西，很怕孩子以为得负责提醒大人。",
+    "question": "现在去两个家都要带球鞋，她有时会跑回门里帮我想我们漏了什么。我想让她放心大人负责，也想让她在两个家都有点掌控感。你们怎么安排两边共同用的东西？",
+    "category": "家庭协作",
+    "concern": "family",
+    "about": "书店咖啡馆上班。和另一位家长商量怎么让孩子好好过两边的日常。"
+  },
+  {
+    "slug": "hao-bao",
+    "name": "宝浩",
+    "age": 46,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "社区维修承包人",
+    "household": "伴侣复学，常由父亲管放学后，四个孩子在家",
+    "children": [
+      {
+        "ageMonths": 24,
+        "context": "爱把东西收进篮子"
+      },
+      {
+        "ageMonths": 64,
+        "context": "刚交到一个同好"
+      },
+      {
+        "ageMonths": 111,
+        "context": "比较在意公平"
+      },
+      {
+        "ageMonths": 153,
+        "context": "周末比赛"
+      }
+    ],
+    "location": "休斯顿",
+    "timeZone": "America/Chicago",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "聊天像在门口碰上邻居，喜欢问「你家的做法呢」",
+    "experience": "周六轮着带一个孩子采购，只买三样东西也能聊一段。",
+    "currentChallenge": "家里学期活动撞车时，较安静的孩子不太会争取父母时间。",
+    "question": "这个周末两场球、一次班级活动和一场生日，我要重新学会只答应能做到的事。孩子多的家里，你们怎么让安静那个也觉得自己没一直在排队？",
+    "category": "家庭协作",
+    "concern": "family",
+    "about": "修东西，也负责四个小孩放学后那几小时。跟谁一起去采购就和谁单独聊一段。"
+  },
+  {
+    "slug": "jamie-river",
+    "name": "Jamie",
+    "age": 34,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "市政档案修复员，半职",
+    "household": "和伴侣育一名孩子，跟说法语的亲戚住得近",
+    "children": [
+      {
+        "ageMonths": 38,
+        "context": "喜欢两个人一起搭东西，在大聚会会累"
+      }
+    ],
+    "location": "蒙特利尔",
+    "timeZone": "America/Toronto",
+    "activity": "medium",
+    "language": "en",
+    "voice": "Conversational and observant, describes what her child did instead of giving labels",
+    "experience": "A quiet job helping lay out napkins once made the start of a loud gathering easier.",
+    "currentChallenge": "Family gatherings are long and lively; the preschooler needs occasional quiet breaks.",
+    "question": "At loud family dinners our three-year-old does well for the first half hour, then goes under the table. They're happiest with a small job like bringing napkins. What quiet roles or breaks have worked at big gatherings for you?",
+    "category": "Family time",
+    "concern": "parenting",
+    "about": "I fix paper for work and look for the quiet corners of loud family gatherings with my preschooler."
+  },
+  {
+    "slug": "tao-na",
+    "name": "桃奈",
+    "age": 32,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "面包店排班学徒",
+    "household": "丈夫早上送小孩，母亲下午接两兄妹",
+    "children": [
+      {
+        "ageMonths": 16,
+        "context": "听见同一首歌会拍手"
+      },
+      {
+        "ageMonths": 57,
+        "context": "爱看配方照片"
+      }
+    ],
+    "location": "东京",
+    "timeZone": "Asia/Tokyo",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "在通勤时留言，句子简短，有时加日语词",
+    "experience": "给两个孩子做过一张图版出门顺序表，哥哥愿意帮妹妹找鞋。",
+    "currentChallenge": "周一哥哥送托仪式太长，妹妹也开始哭。",
+    "question": "周一哥哥坚持要在门口挥三次手才进去，妹妹就在等他的这段时间里开始哭。你们同时送两个小孩时，有没有可以一起做、十几秒就收尾的告别？",
+    "category": "托育适应",
+    "concern": "childcare",
+    "about": "做面包早班，接孩子走同一条路。家里的出门清单是大娃画给妹妹的。"
+  },
+  {
+    "slug": "wei-lun",
+    "name": "维伦",
+    "age": 43,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "港口设备采购",
+    "household": "独生女，外公外婆在外地，配偶经常出差",
+    "children": [
+      {
+        "ageMonths": 110,
+        "context": "会发短视频给祖父母，却不爱打电话"
+      }
+    ],
+    "location": "新加坡",
+    "timeZone": "Asia/Singapore",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "先提一个生活物件，再说背后的问题",
+    "experience": "让孩子给外婆拍过家附近一路看到的招牌，外婆也回拍了老家的公交站。",
+    "currentChallenge": "父母发起的问候太重复，孩子通常只回一个表情。",
+    "question": "我爸妈最常问的还是「今天吃了什么」，女儿总发一个饭碗就没下文。以前互拍路上的招牌反而聊了好几天。还有哪些适合两地家人接着做的小题目？",
+    "category": "异地陪伴",
+    "concern": "family",
+    "about": "新加坡爸爸。女儿会跟远方的爷爷奶奶交换照片，有时专拍很普通的街角。"
+  },
+  {
+    "slug": "li-eat",
+    "name": "莉葳",
+    "age": 28,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "帮家人管早餐摊",
+    "household": "与长辈同住，伴侣做周末轮班，家里两名孩子",
+    "children": [
+      {
+        "ageMonths": 12,
+        "context": "开始和大家一起坐早餐桌"
+      },
+      {
+        "ageMonths": 36,
+        "context": "想自己分水果"
+      }
+    ],
+    "location": "槟城",
+    "timeZone": "Asia/Kuala_Lumpur",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "会讲本地吃法，愿意坦白忙时做不到什么",
+    "experience": "大家从同一盘夹水果时，给哥哥留了一个他能摆放的自己的小碟。",
+    "currentChallenge": "家里忙着收早餐摊，大人很容易无意间催孩子吃。",
+    "question": "收摊后我们才坐下来一起吃，三岁的大儿子喜欢给每个人分一块水果，大人饿了就不想等。你们家哪些吃饭小事会让孩子做主，哪些会提前搞定？",
+    "category": "饮食习惯",
+    "concern": "food",
+    "about": "槟城做早餐摊，收摊才坐下来。大儿子常要给大家亲手分水果。"
+  },
+  {
+    "slug": "yuan-foster",
+    "name": "元岗爸",
+    "age": 49,
+    "role": "寄养爸爸",
+    "roleCode": "dad",
+    "occupation": "场馆庶务",
+    "household": "和伴侣照顾一名寄养孩子及一名常住孩子",
+    "children": [
+      {
+        "ageMonths": 53,
+        "context": "搬来后固定在一个座位读书"
+      },
+      {
+        "ageMonths": 131,
+        "context": "喜欢带弟弟转公园"
+      }
+    ],
+    "location": "香港",
+    "timeZone": "Asia/Hong_Kong",
+    "activity": "medium",
+    "language": "zh-TW",
+    "voice": "慣用繁體，語氣平實，很重視讓小孩自己開口",
+    "experience": "曾先在鞋櫃貼兩個無名圖案，等孩子自己認領喜歡的那個。",
+    "currentChallenge": "有客人來時，年長的孩子不知怎麼介紹新來的弟弟。",
+    "question": "家裡常有親戚來坐，小哥想介紹弟弟，可是每次話到一半會回頭看我們。我想先陪他想一兩句都舒服的說法。有人遇過家裡添成員、手足需要適應怎麼介紹嗎？",
+    "category": "家庭故事",
+    "concern": "family",
+    "about": "平日管場館雜務，放假帶兩個孩子轉公園。慢慢學著把說自己故事的權利留給他們。"
+  },
+  {
+    "slug": "hua-me",
+    "name": "小花妹",
+    "age": 25,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "酒店预订客服",
+    "household": "和太太轮流照顾，奶奶每周固定一天来帮",
+    "children": [
+      {
+        "ageMonths": 4,
+        "context": "傍晚醒着时很爱听人说话"
+      }
+    ],
+    "location": "澳门",
+    "timeZone": "Asia/Macau",
+    "activity": "low",
+    "language": "zh-TW",
+    "voice": "寫得短，有時邊等車邊留一句",
+    "experience": "試過把音樂換成哼歌，家裡走動也能接著唱。",
+    "currentChallenge": "剛回去上班，很想留一個交班時真的能做的陪伴習慣。",
+    "question": "我剛回到晚班，每天跟寶寶同時清醒常只有十分鐘。他現在聽我哼歌會停一下。想問那些剛回去上班的家長，你們最後留下的那個小習慣是什麼？",
+    "category": "親子陪伴",
+    "concern": "parenting",
+    "about": "在酒店輪晚班，家裡有個聽見我哼歌會突然安靜一下的小孩。"
+  },
+  {
+    "slug": "qi-wheel",
+    "name": "阿棨",
+    "age": 39,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "机车行技师",
+    "household": "与伴侣和祖父母分工，两个小孩喜欢动手",
+    "children": [
+      {
+        "ageMonths": 51,
+        "context": "喜欢拆装卡扣"
+      },
+      {
+        "ageMonths": 92,
+        "context": "从图书馆借很多交通主题的书"
+      }
+    ],
+    "location": "高雄",
+    "timeZone": "Asia/Taipei",
+    "activity": "high",
+    "language": "zh-TW",
+    "voice": "偏臺灣口語，常把孩子當下說的話寫出來",
+    "experience": "修理舊玩具時會請孩子先猜哪裡卡住，再一起看，後來發現他們也會這樣修自己的積木。",
+    "currentChallenge": "一個想多試幾次，另一個想把大人的小工具全拿去玩。",
+    "question": "小的喊「換我修」，大的就在旁邊幫他把事情都做完，最後兩人都委屈。想找適合兩種年紀一起動手但各有份的小任務，你們家有什麼玩過的？",
+    "category": "親子陪伴",
+    "concern": "parenting",
+    "about": "在機車行上班。兩個娃看我修玩具，最近也開始自己看哪個卡扣鬆了。"
+  },
+  {
+    "slug": "xin-mu",
+    "name": "心沐",
+    "age": 37,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "剧场服装助理",
+    "household": "双亲家庭，和两名孩子试过适应性运动课程",
+    "children": [
+      {
+        "ageMonths": 74,
+        "context": "喜欢轮流当计时员"
+      },
+      {
+        "ageMonths": 103,
+        "context": "用助行器，喜欢球类"
+      }
+    ],
+    "location": "台北",
+    "timeZone": "Asia/Taipei",
+    "activity": "medium",
+    "language": "zh-TW",
+    "voice": "重視細節，會問孩子怎麼看而不替他們說話",
+    "experience": "在公園玩追逐曾把輸贏改成一起完成幾圈，兩個人都比較自在。",
+    "currentChallenge": "手足想玩同一個戶外遊戲，但各自高興的節奏差很多。",
+    "question": "大的想玩丟球，小的只想一直跑。之前有一次把遊戲換成輪流出題兩人都喜歡，但我想不到更多種。家裡孩子活動方式不同時，你們有沒有兩個人都能主導的戶外遊戲？",
+    "category": "手足相處",
+    "concern": "family",
+    "about": "舞台服裝助理，跟兩個孩子試過幾種球場玩法。在意每個人都有份提點子。"
+  },
+  {
+    "slug": "cheng-wei",
+    "name": "呈威",
+    "age": 40,
+    "role": "继父",
+    "roleCode": "dad",
+    "occupation": "小餐馆早班厨师",
+    "household": "重组家庭，一名继子常住，一名继女隔周回来",
+    "children": [
+      {
+        "ageMonths": 90,
+        "context": "喜欢和母亲去菜场"
+      },
+      {
+        "ageMonths": 145,
+        "context": "曾主动提出一起试做意面"
+      }
+    ],
+    "location": "台南",
+    "timeZone": "Asia/Taipei",
+    "activity": "low",
+    "language": "zh-TW",
+    "voice": "不急著給意見，從自己容易做過頭的地方說起",
+    "experience": "剛搬在一起時從孩子挑一道菜開始，讓大家慢慢熟悉在同一桌做事。",
+    "currentChallenge": "不太清楚什么时候主动邀请大孩子，什么时候给空间。",
+    "question": "她有次自己問我要不要一起做義大利麵，後來幾次我一問她又搖頭。剛當繼父，想讓孩子知道隨時可以來，不想一直追問。你們有沒有一句說得自然的邀請？",
+    "category": "重組家庭",
+    "concern": "family",
+    "about": "早上在店裡做菜，偶爾能跟家裡的大孩子一起試煮一鍋義大利麵。"
+  },
+  {
+    "slug": "pei-window",
+    "name": "霈霈",
+    "age": 45,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "电子零件库存管理员",
+    "household": "伴侣在夜间补货，两个孩子作息相差大",
+    "children": [
+      {
+        "ageMonths": 142,
+        "context": "和同學用群組約功課"
+      },
+      {
+        "ageMonths": 176,
+        "context": "喜歡自己錄手作影片"
+      }
+    ],
+    "location": "新竹",
+    "timeZone": "Asia/Taipei",
+    "activity": "medium",
+    "language": "zh-TW",
+    "voice": "先說自己也常忘記放下手機，願意試一個小變化",
+    "experience": "家人一起選過吃飯時的手機停車位，大人也跟著放。",
+    "currentChallenge": "一個孩子需要群組做功課，另一個想晚睡剪影片。",
+    "question": "我們試過晚上手機一起充電，結果小的有次在群組沒看到分工，大的有次想剪完才去睡。想在家訂一個大家都參與得到的做法，你們怎麼讓約定有彈性又說得算？",
+    "category": "數位生活",
+    "concern": "parenting",
+    "about": "做庫存管理。我家的手機停車位大人也得停，兩個孩子正在幫我們修規則。"
+  },
+  {
+    "slug": "xiao-ken",
+    "name": "小肯",
+    "age": 29,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "园艺苗圃季节工",
+    "household": "夫妻共用一辆车，祖父夏天常来帮接送",
+    "children": [
+      {
+        "ageMonths": 19,
+        "context": "喜欢把车轮子翻过来看"
+      },
+      {
+        "ageMonths": 49,
+        "context": "雨天爱收集小石头"
+      }
+    ],
+    "location": "丹佛",
+    "timeZone": "America/Denver",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "很少长篇，喜欢分享不花钱的小点子",
+    "experience": "一家人以一路找三种颜色代替赶着到达公园。",
+    "currentChallenge": "气温变冷后孩子不喜欢穿齐装备出门，容易全家失去耐心。",
+    "question": "冷天要准备好久才到得了楼下，大宝穿完外套又赖着不肯套手套。我只想让他知道短短出门也能好玩。你们住冷地方的人，一家在附近走几分钟会做什么？",
+    "category": "亲子陪伴",
+    "concern": "parenting",
+    "about": "苗圃工作，平常带两个孩子出门找不到三种颜色就找两种。"
+  },
+  {
+    "slug": "linjie-grad",
+    "name": "林结",
+    "age": 26,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "研究生，助教课不固定",
+    "household": "和伴侣及一名孩子同住，周中各有上课时间",
+    "children": [
+      {
+        "ageMonths": 26,
+        "context": "最近对冰箱上挂的照片特别有兴趣"
+      }
+    ],
+    "location": "巴尔的摩",
+    "timeZone": "America/New_York",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "有记录小习惯的习惯，常用「我发现...」",
+    "experience": "曾在待办表删掉一栏大目标，只留下每周轮流陪选一本书，反而坚持下来。",
+    "currentChallenge": "临近期末，大人各有优先事项，孩子最近喜欢在两人忙中一起凑过来。",
+    "question": "我们家晚饭后两个大人经常都在赶事，孩子只想把照片拿过来挨个讲给我们听。助教和带娃碰过头的家长，有没有哪一个短陪伴习惯能忙时也留住？",
+    "category": "家庭协作",
+    "concern": "family",
+    "about": "上课、助教、带娃轮着来。家里最稳的一件事是留空档给孩子从书架上选书。"
+  },
+  {
+    "slug": "ian-pine",
+    "name": "Ian的松树",
+    "age": 48,
+    "role": "领养爸爸",
+    "roleCode": "dad",
+    "occupation": "公园养护主管",
+    "household": "两个爸爸领养兄妹，保留各自在原生活里喜欢的节日",
+    "children": [
+      {
+        "ageMonths": 71,
+        "context": "喜欢挂全家的日历"
+      },
+      {
+        "ageMonths": 104,
+        "context": "很擅长折纸，还不爱带人回家"
+      }
+    ],
+    "location": "明尼阿波利斯",
+    "timeZone": "America/Chicago",
+    "activity": "medium",
+    "language": "en",
+    "voice": "Plainspoken and careful about what he repeats from his children's stories",
+    "experience": "They gave each child time to choose a family tradition and kept the calendar open for things the adults hadn't heard about yet.",
+    "currentChallenge": "They want school family-day projects to leave room for the children's stories without sharing private details.",
+    "question": "The class is making a family tree. Our adopted siblings have some people they'd like to include and some stories they'd rather keep at home. Has anyone built a version with their kids where the kids choose what goes on the display?",
+    "category": "Family stories",
+    "concern": "family",
+    "about": "Park maintenance, two kids, and a family calendar with room for traditions they bring themselves."
+  },
+  {
+    "slug": "sana-sun",
+    "name": "珊娜",
+    "age": 43,
+    "role": "单亲领养妈妈",
+    "roleCode": "mom",
+    "occupation": "客轮客服培训员",
+    "household": "和领养的女儿同住，好友周末偶尔带娃一起上课",
+    "children": [
+      {
+        "ageMonths": 89,
+        "context": "春天和朋友画过一本公园小书"
+      }
+    ],
+    "location": "迈阿密",
+    "timeZone": "America/New_York",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "语气松弛，说到爱好时很具体",
+    "experience": "女儿愿意约朋友一起带画板，比约一个抽象的「见个面」更自然。",
+    "currentChallenge": "女儿和一位朋友闹别扭，想邀约但不想让对方觉得要立刻和好。",
+    "question": "她给画画搭子留了一支铅笔，说怕再一开口就吵。我想跟她商量一个把东西送过去的方式。你们陪同龄娃恢复友谊时，有没有试过简单又不会施压力的小开场？",
+    "category": "同伴交往",
+    "concern": "development",
+    "about": "单亲带女儿，家里有不少公园速写。她说带画板去找朋友比光见个面容易。"
+  },
+  {
+    "slug": "tao-wu",
+    "name": "陶五",
+    "age": 36,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "工厂设备保全，早晚班周轮",
+    "household": "两个孩子与伴侣同住，爷爷只在临时加班才来",
+    "children": [
+      {
+        "ageMonths": 25,
+        "context": "喜欢按开关，睡前坚持自己关灯"
+      },
+      {
+        "ageMonths": 112,
+        "context": "早上喜欢自己安排出门"
+      }
+    ],
+    "location": "底特律",
+    "timeZone": "America/Detroit",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "常一段说完，细节实在",
+    "experience": "试过画手电筒和太阳贴纸，把弟弟睡觉和哥哥起床的时间用图表示。",
+    "currentChallenge": "弟弟晚睡，哥哥很早出门，两人共用卧室。",
+    "question": "兄弟俩睡一间屋，哥哥早起要找衣服，弟弟听到抽屉响就醒。我们试过前一晚把衣服挂门背后，还是偶尔会吵一会儿。没有多余房间的家里还有什么小招？",
+    "category": "睡眠习惯",
+    "concern": "sleep",
+    "about": "工厂轮班，俩兄弟共享一间屋。我在学习怎么让早起的日子也能安静一点。"
+  },
+  {
+    "slug": "fang-camp",
+    "name": "芳营营",
+    "age": 46,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "社区食堂负责采购",
+    "household": "双职工，养双胞胎和一个读初中的孩子",
+    "children": [
+      {
+        "ageMonths": 84,
+        "context": "较容易注意到别人需要帮助"
+      },
+      {
+        "ageMonths": 84,
+        "context": "想做很久才能完成的事"
+      },
+      {
+        "ageMonths": 167,
+        "context": "喜欢做简单的早餐"
+      }
+    ],
+    "location": "亚特兰大",
+    "timeZone": "America/New_York",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "聊天带一点干脆的幽默，会主动补一句孩子不同意的版本",
+    "experience": "试过给双胞胎各留一晚选择晚餐后活动，后来哥哥也要加入。",
+    "currentChallenge": "别人常把双胞胎叫成「两个小的」，孩子想有各自的任务。",
+    "question": "孩子抱怨我开口老是「你俩去...」，有道理。想从小事开始，让双胞胎在家各自有长处和自己的差事。你们试过哪些不互相比的安排？",
+    "category": "手足相处",
+    "concern": "family",
+    "about": "仨娃里有一对双胞胎，全家都喜欢发明短差事给自己做。"
+  },
+  {
+    "slug": "nash-kite",
+    "name": "Nash",
+    "age": 33,
+    "role": "寄养爸爸",
+    "roleCode": "dad",
+    "occupation": "居家电子装配工",
+    "household": "伴侣上全职，两人照顾一名学龄前寄养孩子和年幼的孩子",
+    "children": [
+      {
+        "ageMonths": 13,
+        "context": "开始认浴室图标"
+      },
+      {
+        "ageMonths": 43,
+        "context": "喜欢先看完事件一次再加入"
+      }
+    ],
+    "location": "菲尼克斯",
+    "timeZone": "America/Phoenix",
+    "activity": "medium",
+    "language": "en",
+    "voice": "Quiet sense of humor, asks how other households made a routine predictable",
+    "experience": "A little lamp that the preschooler turns off became a routine they could own and remember.",
+    "currentChallenge": "The children need different levels of quiet as the adults try to keep a steady evening routine.",
+    "question": "We have a little lamp our preschooler likes to turn off at bedtime. It's helped when the evening has been busy. What calm routines worked with a foster child and a younger sibling when neither was ready for the same bedtime?",
+    "category": "Sleep routines",
+    "concern": "sleep",
+    "about": "I work from home and share the evening routine with a preschooler in foster care and their younger playmate."
+  },
+  {
+    "slug": "yu-zhi",
+    "name": "雨栀爸",
+    "age": 52,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "海边旅馆设备管理员",
+    "household": "与伴侣养育最小的幼儿，家里还有两名较大的孩子",
+    "children": [
+      {
+        "ageMonths": 21,
+        "context": "喜欢踩沙不爱踩水"
+      },
+      {
+        "ageMonths": 134,
+        "context": "最近有自己的作业安排"
+      },
+      {
+        "ageMonths": 192,
+        "context": "常自己约社区活动"
+      }
+    ],
+    "location": "檀香山",
+    "timeZone": "Pacific/Honolulu",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "会聊以前带大孩子的做法，也会承认十年后不一样",
+    "experience": "大孩子小时候散步会画几种脚印，最小的还没到想画的阶段。",
+    "currentChallenge": "学龄孩子不愿陪较小的做简单活动，父母还想留住大家都能参与的周末。",
+    "question": "以前全家一起玩找脚印，现在十六岁那个只愿意帮拍几张照。倒也挺好。你们家年龄差很大的孩子，有没有一种出门活动能各玩各的又有交集？",
+    "category": "亲子陪伴",
+    "concern": "parenting",
+    "about": "以前带过两个大娃，现在重新学习怎么跟最小的在沙地耗一个下午。"
+  },
+  {
+    "slug": "le-ship",
+    "name": "乐禾",
+    "age": 31,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "独立平面排版师",
+    "household": "军人家庭，伴侣有时要离家一段时间，带两个孩子",
+    "children": [
+      {
+        "ageMonths": 18,
+        "context": "听声认得家长"
+      },
+      {
+        "ageMonths": 65,
+        "context": "会数完日历却还不懂要等几天"
+      }
+    ],
+    "location": "圣迭戈",
+    "timeZone": "America/Los_Angeles",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "愿意说自己的不确定，也喜欢别人讲过程",
+    "experience": "让孩子晚上选一件当天的小事留语音，伴侣有空时会连着回几条。",
+    "currentChallenge": "约好视频临时换时间，大孩子容易觉得自己被忘记。",
+    "question": "她会兴奋地把画放到电脑旁等视频，临时改时间就说「肯定不想看」。我们平日能发语音。你们家有什么说法，孩子能慢慢理解计划变了、想念没变？",
+    "category": "异地陪伴",
+    "concern": "family",
+    "about": "做排版，带两个小朋友过伴侣不在家的日子。喜欢收集家人会愿意听的短语音。"
+  },
+  {
+    "slug": "momo-line",
+    "name": "茉蓝",
+    "age": 36,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "展览体验设计师，周末也上班",
+    "household": "与伴侣养双语孩子，祖母住同一城",
+    "children": [
+      {
+        "ageMonths": 42,
+        "context": "喜欢拍下自己搭的玩具"
+      },
+      {
+        "ageMonths": 105,
+        "context": "想做自己的周末安排"
+      }
+    ],
+    "location": "墨尔本",
+    "timeZone": "Australia/Melbourne",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "常说试了之后孩子的反应而非给经验打分",
+    "experience": "和大孩子一起画过「我的周末」两格漫画，大人把各自的空档先画出来。",
+    "currentChallenge": "大人周末只有半天同时有空，想和俩人一起做点能保留的事情。",
+    "question": "这周我和伴侣只有周六下午都在家，一个要搭纸箱，一个说想晚点出门。我不想硬排满这半天，想问问你们一家多久有一次很轻松的共同时间，通常在干啥？",
+    "category": "亲子陪伴",
+    "concern": "parenting",
+    "about": "做展览，周末偶尔上班。家里两兄妹很会给大人画周末计划。"
+  },
+  {
+    "slug": "dun-route",
+    "name": "顿顿爸",
+    "age": 28,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "自行车快递员",
+    "household": "和伴侣养一个学步娃，另与前任共同照顾一名孩子",
+    "children": [
+      {
+        "ageMonths": 15,
+        "context": "在家不太坐得住"
+      },
+      {
+        "ageMonths": 70,
+        "context": "自己记得两处住所的钥匙套颜色"
+      }
+    ],
+    "location": "阿姆斯特丹",
+    "timeZone": "Europe/Amsterdam",
+    "activity": "high",
+    "language": "zh-CN",
+    "voice": "常把孩子一句话当开头，喜欢好懂的具体回答",
+    "experience": "大孩子之前从两处家各挑一个杯子摆自己的习惯，不再问能不能用。",
+    "currentChallenge": "两边住家的大孩子最近想自己参与挑选在家的一点常规。",
+    "question": "儿子说在一边家的早饭会想念另一边家的杯子。以前我会赶紧想怎么搬过来，这次想先听他挑一个属于自己的小习惯。轮流住的家长，你们怎样让孩子开口选？",
+    "category": "家庭协作",
+    "concern": "family",
+    "about": "骑车送件，两个小孩常在不同的地方等接。老大对记家里的小习惯很认真。"
+  },
+  {
+    "slug": "eden-page",
+    "name": "Eden",
+    "age": 42,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "杂志文字编辑",
+    "household": "与孩子父亲分开住，两人住同一区，合作安排学校事项",
+    "children": [
+      {
+        "ageMonths": 96,
+        "context": "要在两个家都完成一个阅读计划"
+      },
+      {
+        "ageMonths": 144,
+        "context": "自己的活动越来越多"
+      }
+    ],
+    "location": "布鲁塞尔",
+    "timeZone": "Europe/Brussels",
+    "activity": "low",
+    "language": "en",
+    "voice": "Dry and practical, often asks what worked after the shiny new system stopped being new",
+    "experience": "A single calendar visible from both homes made after-school pickup easier until the older child started her own activities.",
+    "currentChallenge": "The children want ownership and the adults still need one reliable source for schedule changes.",
+    "question": "Our 12-year-old is ready to manage more of her schedule, but different changes sometimes reach her other home first. For parents who co-parent across two homes, what gave a kid some control without making them the messenger?",
+    "category": "School routines",
+    "concern": "development",
+    "about": "Editor and co-parent to two school-age kids. A shared calendar saved us for a while, and the kids keep improving it."
+  },
+  {
+    "slug": "la-ari",
+    "name": "阿梨",
+    "age": 34,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "陶艺教室助教",
+    "household": "家里讲中文和希伯来语，两位家长交替接送",
+    "children": [
+      {
+        "ageMonths": 31,
+        "context": "爱把不同语言的儿歌接着唱"
+      },
+      {
+        "ageMonths": 59,
+        "context": "换了新学校"
+      }
+    ],
+    "location": "特拉维夫",
+    "timeZone": "Asia/Jerusalem",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "说话温和，乐于记下孩子自己发明的词",
+    "experience": "在家用玩偶扮学校情境，孩子会用母语演大人、用另一种语言演同学。",
+    "currentChallenge": "新学校里熟悉的人少，孩子很想带一样家的小物件去。",
+    "question": "小孩换学校以后，每天在门口想带进一件家的东西。老师愿意让他带一张小照片。你们怎么陪双语孩子熟悉新环境，有没有那种他可以自己拿出来说两句的准备？",
+    "category": "双语养育",
+    "concern": "parenting",
+    "about": "在陶艺教室工作，家里用两种语言讲同一只玩偶上学的故事。"
+  },
+  {
+    "slug": "ya-qin",
+    "name": "亚勤爸",
+    "age": 47,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "职业学校木工老师",
+    "household": "和伴侣养育一名青春期孩子及较小的孩子",
+    "children": [
+      {
+        "ageMonths": 93,
+        "context": "热衷用废纸搭房子"
+      },
+      {
+        "ageMonths": 169,
+        "context": "希望自己决定家人能转发哪些照片"
+      }
+    ],
+    "location": "马德里",
+    "timeZone": "Europe/Madrid",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "讨论数字生活时不爱讲大道理，先听别人边界",
+    "experience": "一家改成每周一起挑一张能发给远方家人的照片，谁入镜谁最后说了算。",
+    "currentChallenge": "小的会替大的拍有趣的片段，哥哥有时不知道内容发给了谁。",
+    "question": "小的觉得大家看他拍哥哥就很开心，我才发现有几段早发到了亲友群。想和两个孩子做个都听得懂的相册约定，你们是怎么让「先问一下」变成顺手的？",
+    "category": "数字生活",
+    "concern": "parenting",
+    "about": "教木工。家里爱拍手作，两个娃正在一起给家庭相册订规矩。"
+  },
+  {
+    "slug": "he-oak",
+    "name": "禾冬",
+    "age": 38,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "市政博物馆平面设计员",
+    "household": "聋人妈妈、听人伴侣，家里同时用手语和口语",
+    "children": [
+      {
+        "ageMonths": 40,
+        "context": "喜欢用动作演绘本"
+      },
+      {
+        "ageMonths": 82,
+        "context": "会主动教同学几个家庭常用手势"
+      }
+    ],
+    "location": "苏黎世",
+    "timeZone": "Europe/Zurich",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "句子直截了当，愿意解释手势在自家怎么用",
+    "experience": "把看得见脸的餐桌位置留给要说话的人，后来小孩也会帮忙调整椅子。",
+    "currentChallenge": "吵闹吃饭时，想让两孩子轮到自己说时更容易被全家看到。",
+    "question": "我们家吃饭同时用手语和口语，小的兴奋起来会绕着桌子演给我看，大的想接话又很难让大家一起注意到。你们家有什么轻松的轮流信号，多种沟通方式都能用？",
+    "category": "家庭沟通",
+    "concern": "family",
+    "about": "做平面设计，平时用手语和口语养娃。餐桌上有没有空位看见每个人很重要。"
+  },
+  {
+    "slug": "juan-pasta",
+    "name": "栩隽",
+    "age": 46,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "社区旅馆厨师",
+    "household": "伴侣和孩子都参与周一采购，家住小城公寓",
+    "children": [
+      {
+        "ageMonths": 131,
+        "context": "喜欢自己准备便当"
+      },
+      {
+        "ageMonths": 183,
+        "context": "开始常在外面和朋友吃饭"
+      }
+    ],
+    "location": "罗马",
+    "timeZone": "Europe/Rome",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "问得细，但会先问孩子对事情怎么想",
+    "experience": "两孩子曾轮着猜剩菜怎么第二天变新菜，写下一些能在上学前做的小组合。",
+    "currentChallenge": "家中晚餐时间常碰上青少年的活动，想保留共同吃饭的机会。",
+    "question": "大的现在常和朋友吃晚饭，小的还期待他回来一起尝便当做的配菜。谁家有从每天一桌吃饭变成比较松的安排？家人最愿意保留下来的是早餐、周末，还是别的？",
+    "category": "饮食习惯",
+    "concern": "food",
+    "about": "工作在厨房，家里试着让孩子自己挑一顿要做的饭。最近愿意一起吃早餐比晚餐多。"
+  },
+  {
+    "slug": "sam-drift",
+    "name": "Sam Drift",
+    "age": 29,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "远程 IT 支持",
+    "household": "父亲和经营花店的伴侣带一个刚学走路的孩子",
+    "children": [
+      {
+        "ageMonths": 13,
+        "context": "学捡玩具再站起来，喜欢走斜坡"
+      }
+    ],
+    "location": "埃德蒙顿",
+    "timeZone": "America/Edmonton",
+    "activity": "medium",
+    "language": "en",
+    "voice": "Uses concrete examples and doesn't mind admitting when something was only fun for him",
+    "experience": "They swapped a long stroller route for a short loop with time to explore one thing nearby.",
+    "currentChallenge": "They miss being outside with a starting walker when it gets dark before work is done.",
+    "question": "It's getting dark before I finish work. Our new walker wants to do everything outdoors at their own pace, and my long stroller route isn't much fun for them. What short ways to be outside stuck with your family in early winter?",
+    "category": "Family time",
+    "concern": "parenting",
+    "about": "Home IT support, a new walker, and a shorter walking route now that tiny things take longer to explore."
+  },
+  {
+    "slug": "yao-he",
+    "name": "姚禾",
+    "age": 41,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "校区采购，半职",
+    "household": "两位照顾者带三个孩子，外祖父固定陪读",
+    "children": [
+      {
+        "ageMonths": 34,
+        "context": "热衷把球滚到家具下面"
+      },
+      {
+        "ageMonths": 76,
+        "context": "对突然的大声响不舒服"
+      },
+      {
+        "ageMonths": 117,
+        "context": "喜欢手工并愿意独自做"
+      }
+    ],
+    "location": "奥克兰市",
+    "timeZone": "America/Los_Angeles",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "不假定同样的方法能适应每个人，会讲试错过程",
+    "experience": "曾让家人各选一个聚会期间暂时离开的地方，后来孩子自己会说想在哪儿休息。",
+    "currentChallenge": "年长孩子想庆生热闹一点，弟妹妹在噪音和作息上各有需要。",
+    "question": "姐姐想在家办一场生日，弟弟听到气球响就跑走，最小的那时正要午睡。我想想一个让姐姐能热闹、其他人也能自己选加入时段的办法。你们办过类似的家庭庆祝吗？",
+    "category": "手足相处",
+    "concern": "family",
+    "about": "三个小孩想要的庆祝方式很不一样，家里有过又热闹又能休息的好一天。"
+  },
+  {
+    "slug": "yu-fei",
+    "name": "小飞爸",
+    "age": 35,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "移动端程序员",
+    "household": "跨性别爸爸与伴侣共同养育两名孩子，低调过家庭节日",
+    "children": [
+      {
+        "ageMonths": 16,
+        "context": "开始对着哥哥哼歌"
+      },
+      {
+        "ageMonths": 67,
+        "context": "最喜欢问自己小时候的故事"
+      }
+    ],
+    "location": "圣何塞",
+    "timeZone": "America/Los_Angeles",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "习惯用孩子原话开头，愿意分享一个讲法而不说成模板",
+    "experience": "同孩子把还记得的第一件玩具录成音频，家人随后补充了几段关于迎来孩子的回忆。",
+    "currentChallenge": "孩子问到捐赠者和父母的分工，想循序回答并照顾孩子的隐私选择。",
+    "question": "孩子听到自己和妹妹都有出生小故事，就问能不能也讲给班里小朋友。我想陪他选哪些想分享，下次有问题再慢慢聊。你们是怎样让孩子逐渐自己决定家庭故事讲到哪里？",
+    "category": "家庭故事",
+    "concern": "family",
+    "about": "两娃的爸爸，常把家人讲的旧事录下来收藏。希望孩子以后能自己选讲哪些。"
+  },
+  {
+    "slug": "luo-yan",
+    "name": "洛岩",
+    "age": 24,
+    "role": "父亲",
+    "roleCode": "dad",
+    "occupation": "城市地铁站务实习，轮班",
+    "household": "夫妻和孩子住小套间，奶奶隔周来补一个周日班",
+    "children": [
+      {
+        "ageMonths": 2,
+        "context": "清醒时爱盯着窗外亮处"
+      }
+    ],
+    "location": "台北",
+    "timeZone": "Asia/Taipei",
+    "activity": "medium",
+    "language": "zh-TW",
+    "voice": "話不多，會講自己第一次看到的新變化",
+    "experience": "先試過大人輪流抱去不同房間，發現安安靜靜靠在窗邊時寶寶也滿自在。",
+    "currentChallenge": "剛開始排班，換手照顧時想有一個兩個大人都能做的小習慣。",
+    "question": "我家才兩個月，我最喜歡快下班時聽到另一半傳小朋友的聲音。大人有空時怎麼輪流留一點很平常的紀錄？我想幾個月後能再留著聽。",
+    "category": "親子陪伴",
+    "concern": "parenting",
+    "about": "地鐵輪班，新手爸爸。最近最熟悉的是小朋友靠窗那幾分鐘的聲音。"
+  },
+  {
+    "slug": "shi-shan",
+    "name": "石山公公",
+    "age": 61,
+    "role": "外公监护人",
+    "roleCode": "grandparent",
+    "occupation": "退休汽车维修工，每周在学校做一次志愿者",
+    "household": "与外孙女同住，祖母近年转为线上值班，有时三代人一起视频",
+    "children": [
+      {
+        "ageMonths": 179,
+        "context": "开始自己参加社区乐队"
+      },
+      {
+        "ageMonths": 199,
+        "context": "姐姐已准备选大学志愿"
+      }
+    ],
+    "location": "伯明翰",
+    "timeZone": "Europe/London",
+    "activity": "low",
+    "language": "zh-CN",
+    "voice": "句子慢，愿意承认和孙辈对同一句话的理解可能不同",
+    "experience": "上次约定用短信说一声几点回，孩子主动 提出把公交变化一起算进去。",
+    "currentChallenge": "孩子开始独立通勤，想表达在乎又给她做决定的空间。",
+    "question": "外孙女要自己坐公交去练琴，我老想一路问她到哪了，她会嫌麻烦。请问家有青春期孩子的家长，哪些报平安的约定，是你们后来还愿意一起守的？",
+    "category": "家庭沟通",
+    "concern": "family",
+    "about": "退休修车工，带大两个外孙女，现在小的要自己搭公交去练琴了。"
+  },
+  {
+    "slug": "julie-reed",
+    "name": "June苇",
+    "age": 51,
+    "role": "领养妈妈",
+    "roleCode": "mom",
+    "occupation": "社区成人教育课程管理员",
+    "household": "和配偶照顾一名领养孩子和三名其他孩子，大孩子帮忙接过几次",
+    "children": [
+      {
+        "ageMonths": 45,
+        "context": "喜欢亲手递碗"
+      },
+      {
+        "ageMonths": 97,
+        "context": "期待自己参加课后活动"
+      },
+      {
+        "ageMonths": 154,
+        "context": "喜欢写故事"
+      },
+      {
+        "ageMonths": 204,
+        "context": "正在看大学校园"
+      }
+    ],
+    "location": "堪萨斯城",
+    "timeZone": "America/Chicago",
+    "activity": "high",
+    "language": "en",
+    "voice": "Warm but candid, asks about what the child chose for themself",
+    "experience": "Family members make up their own mini-celebration and can decide whom to invite; the youngest sometimes asks to have just a pancake breakfast.",
+    "currentChallenge": "A big family weekend is coming, and the kids have different wishes about telling their own stories to visiting relatives.",
+    "question": "We have a whole-family weekend coming up, and one of our kids is already asking who will get to hear the adoption story. I'd like the weekend to give each child a way to opt in or tell only a small part. What worked when relatives were curious and the kids had different preferences?",
+    "category": "Family stories",
+    "concern": "family",
+    "about": "Four kids, four opinions on what counts as a family celebration. Pancakes still get a solid vote."
+  },
+  {
+    "slug": "wei-chen",
+    "name": "晨小蔚",
+    "age": 38,
+    "role": "母亲",
+    "roleCode": "mom",
+    "occupation": "刚结束展店合同，做零工和求职",
+    "household": "和伴侣分工两名孩子，父母不在同城，家里预算近期收紧",
+    "children": [
+      {
+        "ageMonths": 27,
+        "context": "想坐在每一张公园椅子上"
+      },
+      {
+        "ageMonths": 76,
+        "context": "和旧同学常约玩"
+      }
+    ],
+    "location": "费城",
+    "timeZone": "America/New_York",
+    "activity": "medium",
+    "language": "zh-CN",
+    "voice": "不把自己的办法说得多漂亮，乐意分享没花钱的发现",
+    "experience": "和孩子从图书馆借过地图，画了两个能一起走到的地方，孩子很喜欢在出门前选一个。",
+    "currentChallenge": "有一段较空的时间，想为孩子安排有趣活动，但不想增加固定花销。",
+    "question": "这阵子我白天多出一小段时间，俩娃都问能不能报名新活动。以前排的课挺满，现在预算想紧一点。你们有哪些本地免费活动是孩子连去几次还愿意去的？",
+    "category": "亲子陪伴",
+    "concern": "parenting",
+    "about": "带两娃的空档正找工作。最近改走图书馆借来的地图，才发现孩子比我熟悉街区。"
+  }
+]
