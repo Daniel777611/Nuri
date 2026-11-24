@@ -26,6 +26,7 @@ through `runtime.get_supabase` on every call (the one test seam).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -502,6 +503,11 @@ async def _relation_view(uid: str, target: str) -> dict:
     rel = await _relationship(uid, target)
     conv = await _conversation_between(uid, target)
     pending = await _pending_between(uid, target)
+    return _relationship_payload(uid, rel, conv, pending, i_blocked)
+
+
+def _relationship_payload(uid: str, rel: Optional[dict], conv: Optional[dict],
+                          pending: list[dict], i_blocked: bool) -> dict:
     sent = next((p for p in pending if p["sender_id"] == uid), None)
     received = next((p for p in pending if p["recipient_id"] == uid), None)
     if i_blocked:
@@ -890,12 +896,64 @@ async def get_parent(uid: str, parent_id: str) -> dict:
 
 # ── P04 Discovery ────────────────────────────────────────────────────────────
 
+_RECOMMENDATION_BATCH = 200
+# Account ids are text. Keep each PostgREST in(...) URL comfortably below
+# proxy limits and each returned set below the PostgREST row cap.
+_RECOMMENDATION_LOOKUP_BATCH = 40
+_RECOMMENDATION_EMPTY_WINDOWS = 3
+_EARTH_RADIUS_MILES = 3958.8
+
+
+def _coordinates(profile: dict) -> Optional[tuple[float, float]]:
+    try:
+        lat, lng = float(profile.get("approx_lat")), float(profile.get("approx_lng"))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return None
+    return lat, lng
+
+
 def _miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    r = 3958.8
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lng2 - lng1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+    return 2 * _EARTH_RADIUS_MILES * math.asin(math.sqrt(min(1.0, max(0.0, a))))
+
+
+async def _recommendation_visibility(uid: str, ids: list[str]) -> tuple[set[str], dict[str, dict]]:
+    prefs, blocked, blocking, low, high = await asyncio.gather(
+        _select("community_preferences", lambda q: q.in_("user_id", ids)),
+        _select("community_blocks", lambda q: q.eq("blocker_id", uid).in_("blocked_id", ids)),
+        _select("community_blocks", lambda q: q.eq("blocked_id", uid).in_("blocker_id", ids)),
+        _select("community_relationships", lambda q: q.eq("user_low", uid).in_("user_high", ids)),
+        _select("community_relationships", lambda q: q.eq("user_high", uid).in_("user_low", ids)),
+    )
+    relationships = {**{r["user_high"]: r for r in low}, **{r["user_low"]: r for r in high}}
+    excluded = (
+        {r["user_id"] for r in prefs if r.get("profile_hidden")}
+        | {r["blocked_id"] for r in blocked}
+        | {r["blocker_id"] for r in blocking}
+        | {other for other, r in relationships.items() if r.get("state") == "active"}
+    )
+    return excluded, relationships
+
+
+async def _recommendation_invitations(uid: str, ids: list[str]) -> dict[str, list[dict]]:
+    pending: dict[str, list[dict]] = {}
+    for offset in range(0, len(ids), _RECOMMENDATION_LOOKUP_BATCH):
+        batch = ids[offset:offset + _RECOMMENDATION_LOOKUP_BATCH]
+        sent, received = await asyncio.gather(
+            _select("community_invitations", lambda q: q.eq("sender_id", uid)
+                    .in_("recipient_id", batch).eq("state", "pending")),
+            _select("community_invitations", lambda q: q.eq("recipient_id", uid)
+                    .in_("sender_id", batch).eq("state", "pending")),
+        )
+        for row in sent:
+            pending.setdefault(row["recipient_id"], []).append(row)
+        for row in received:
+            pending.setdefault(row["sender_id"], []).append(row)
+    return pending
 
 
 async def recommendations(uid: str, role: str = "any", distance_miles: Optional[int] = None,
@@ -906,57 +964,80 @@ async def recommendations(uid: str, role: str = "any", distance_miles: Optional[
         raise _invalid(f"role must be one of {', '.join(ROLE_FILTERS)}")
     if distance_miles is not None and distance_miles not in DISTANCE_FILTERS:
         raise _invalid("distance_miles must be one of 1, 3, 5, 10")
-    wanted = [code for code in (intents or "").split(",") if code]
-    if any(code not in INTENT_CODES for code in wanted):
+    wanted = {code for code in (intents or "").split(",") if code}
+    if wanted.difference(INTENT_CODES):
         raise _invalid("unknown intent filter")
     me = await _require_profile(uid)
-    if distance_miles is not None and me.get("approx_lat") is None:
+    origin = _coordinates(me)
+    if distance_miles is not None and origin is None:
         raise _invalid("Share an approximate location to filter by distance")
 
-    i_blocked, blocked_me = await _block_sets(uid)
-    contacts = {row["other"] for row in await _active_relationships(uid)}
+    my_intents = set(me.get("intent_codes") or [])
     before = _decode_cursor(cursor)
-    batch = 200
-    candidates = await _select("community_profiles", lambda q: (
-        (q.lt("seq", before) if before is not None else q).neq("user_id", uid)
-        .order("seq", desc=True).limit(batch)))
-    ids = [c["user_id"] for c in candidates]
-    hidden_rows = await _select("community_preferences", lambda q: q.in_("user_id", ids)) if ids else []
-    hidden = {row["user_id"] for row in hidden_rows if row.get("profile_hidden")}
-    roles = await _roles(ids)
-    items: list[dict] = []
     last_seq = None
-    for cand in candidates:
-        last_seq = cand["seq"]
-        other = cand["user_id"]
-        if other in i_blocked or other in blocked_me or other in hidden or other in contacts:
-            continue
-        if role != "any" and cand.get("gender_tag") != role:
-            continue
-        shared = [c for c in (cand.get("intent_codes") or []) if c in set(me.get("intent_codes") or [])]
-        if wanted and not set(wanted) & set(cand.get("intent_codes") or []):
-            continue
-        distance = None
-        if me.get("approx_lat") is not None and cand.get("approx_lat") is not None:
-            distance = round(_miles(me["approx_lat"], me["approx_lng"],
-                                    cand["approx_lat"], cand["approx_lng"]) * 2) / 2
-        if distance_miles is not None and (distance is None or distance > distance_miles):
-            continue
-        items.append({
-            "parent": public_parent(cand, roles.get(other, "")),
-            # Rounded to half a mile, and only when both shared a location.
-            "distance_miles": distance,
-            "shared_intents": shared,
-            "relationship": await _relation_view(uid, other),
-        })
-        if len(items) > size:
+    has_more = False
+    selected: list[tuple[dict, Optional[float], Optional[dict]]] = []
+
+    def candidate_query(query):
+        query = query.neq("user_id", uid)
+        if before is not None:
+            query = query.lt("seq", before)
+        if role != "any":
+            query = query.eq("gender_tag", role)
+        if distance_miles is not None and origin is not None:
+            # Include the extra quarter mile that rounds down to the filter.
+            # This latitude bound is a superset; the circular test is below.
+            delta = math.degrees((distance_miles + 0.25) / _EARTH_RADIUS_MILES)
+            query = query.gte("approx_lat", origin[0] - delta).lte("approx_lat", origin[0] + delta)
+        return query.order("seq", desc=True).limit(_RECOMMENDATION_BATCH)
+
+    for _ in range(_RECOMMENDATION_EMPTY_WINDOWS):
+        candidates = await _select("community_profiles", candidate_query)
+        if not candidates:
+            has_more = False
             break
-    has_more = len(items) > size or len(candidates) == batch
-    if len(items) > size:
-        items = items[:size]
-        # Resume after the last item actually returned.
-        last_seq = next(c["seq"] for c in candidates
-                        if str(c["public_id"]) == items[-1]["parent"]["parent_id"])
+        last_seq = candidates[-1]["seq"]
+        eligible: list[tuple[dict, Optional[float]]] = []
+        for cand in candidates:
+            if wanted and wanted.isdisjoint(cand.get("intent_codes") or []):
+                continue
+            location = _coordinates(cand) if origin is not None else None
+            # Rounded to half a mile, and only when both shared a location.
+            distance = round(_miles(*origin, *location) * 2) / 2 if origin and location else None
+            if distance_miles is not None and (distance is None or distance > distance_miles):
+                continue
+            eligible.append((cand, distance))
+        for offset in range(0, len(eligible), _RECOMMENDATION_LOOKUP_BATCH):
+            batch = eligible[offset:offset + _RECOMMENDATION_LOOKUP_BATCH]
+            excluded, relationships = await _recommendation_visibility(uid, [c["user_id"] for c, _ in batch])
+            for cand, distance in batch:
+                other = cand["user_id"]
+                if other not in excluded:
+                    selected.append((cand, distance, relationships.get(other)))
+                if len(selected) > size:
+                    break
+            if len(selected) > size:
+                break
+        has_more = len(selected) > size or len(candidates) == _RECOMMENDATION_BATCH
+        if selected or not has_more:
+            break
+        # A whole window of private or incompatible profiles should not by
+        # itself look like an empty list. Bound the additional scan work.
+        before = last_seq
+
+    if len(selected) > size:
+        selected = selected[:size]
+        last_seq = selected[-1][0]["seq"]
+    pending = await _recommendation_invitations(uid, [c["user_id"] for c, _, _ in selected])
+    items = [
+        {
+            "parent": public_parent(cand),
+            "distance_miles": distance,
+            "shared_intents": [c for c in (cand.get("intent_codes") or []) if c in my_intents],
+            "relationship": _relationship_payload(uid, rel, None, pending.get(cand["user_id"], []), False),
+        }
+        for cand, distance, rel in selected
+    ]
     return {
         "items": items,
         "next_cursor": _encode_cursor(last_seq) if has_more and last_seq is not None else None,

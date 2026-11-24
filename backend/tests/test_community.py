@@ -168,6 +168,111 @@ def test_recommendations_filter_and_exclude(env):
     assert {i["parent"]["display_name"] for i in after["items"]} == {"Cat"}
 
 
+def test_recommendations_full_default_page_has_bounded_storage_reads(env):
+    make_profile(env, "u_ann")
+    for index in range(25):
+        uid = f"u_candidate_{index}"
+        env.db.rows("users").append({"id": uid, "email": f"{uid}@example.test",
+                                     "nickname": uid, "city": "Savannah", "parent_role": "dad"})
+        make_profile(env, uid, name=f"Test Parent {index}", gender_tag="dad")
+
+    env.db.calls.clear()
+    first = ok(env.call("u_ann", "GET", "/recommendations", params={"role": "any"}))
+    assert len(first["items"]) == 20 and first["has_more"] and first["next_cursor"]
+    # Capture reads through the real route, not a timing assertion on a fast fake.
+    # The previous per-parent relation lookup used 6 serial reads for each of 21
+    # parents (including lookahead) before it could return this default page.
+    reads = [table for table, operation in env.db.calls if operation == "select"]
+    assert 0 < len(reads) <= 12, reads
+    assert "community_conversations" not in reads
+
+    second = ok(env.call("u_ann", "GET", "/recommendations",
+                         params={"role": "any", "cursor": first["next_cursor"]}))
+    assert len(second["items"]) == 5 and not second["has_more"] and second["next_cursor"] is None
+    assert [row["parent"]["display_name"] for row in first["items"] + second["items"]] == [
+        f"Test Parent {index}" for index in reversed(range(25))
+    ]
+
+
+def test_recommendations_keep_visibility_and_invitation_direction_after_batching(env):
+    for uid in ("u_hidden", "u_blocked", "u_blocker"):
+        env.db.rows("users").append({"id": uid, "email": f"{uid}@example.test",
+                                     "nickname": uid, "city": "Savannah", "parent_role": "dad"})
+    for uid in ("u_ann", "u_ben", "u_cat", "u_dan", "u_eve", "u_hidden", "u_blocked", "u_blocker"):
+        make_profile(env, uid)
+
+    ok(env.call("u_hidden", "PATCH", "/preferences", json={"profile_hidden": True}))
+    ok(env.call("u_ann", "PUT", f"/me/blocks/{pid(env, 'u_blocked')}", json={"confirmed": True}))
+    ok(env.call("u_blocker", "PUT", f"/me/blocks/{pid(env, 'u_ann')}", json={"confirmed": True}))
+    connect(env, "u_ann", "u_eve")
+    disconnected = env.db.table("community_relationships").insert(
+        {"user_low": "u_ann", "user_high": "u_dan", "state": "disconnected"}
+    ).execute().data[0]["id"]
+    sent = ok(env.call("u_ann", "POST", "/invitations", json={
+        "target_parent_id": pid(env, "u_ben"), "client_request_id": "discovery-test-sent",
+    }))["invitation"]["invitation_id"]
+    received = ok(env.call("u_cat", "POST", "/invitations", json={
+        "target_parent_id": pid(env, "u_ann"), "client_request_id": "discovery-test-received",
+    }))["invitation"]["invitation_id"]
+
+    result = ok(env.call("u_ann", "GET", "/recommendations", params={"role": "any"}))
+    by_name = {item["parent"]["display_name"]: item for item in result["items"]}
+    assert set(by_name) == {"Ben", "Cat", "Dan"}
+    assert by_name["Ben"]["relationship"] == {
+        "state": "invitation_sent", "relationship_id": None, "invitation_id": sent,
+        "conversation_id": None, "allowed_actions": ["block"],
+    }
+    assert by_name["Cat"]["relationship"] == {
+        "state": "invitation_received", "relationship_id": None, "invitation_id": received,
+        "conversation_id": None, "allowed_actions": ["accept_invitation", "decline_invitation", "block"],
+    }
+    assert by_name["Dan"]["relationship"] == {
+        "state": "disconnected", "relationship_id": disconnected, "invitation_id": None,
+        "conversation_id": None, "allowed_actions": ["invite", "block"],
+    }
+    for row in by_name.values():
+        assert set(row["parent"]) == {
+            "parent_id", "display_name", "about", "city", "intents", "role", "gender_tag", "avatar",
+        }
+        assert row["distance_miles"] is None
+
+    env.db.fail_tables.add("community_invitations")
+    outage = err(env.call("u_ann", "GET", "/recommendations"), 503, "STORAGE_OR_SERVICE_UNAVAILABLE")
+    assert outage["error"]["retryable"]
+    env.db.fail_tables.clear()
+    assert ok(env.call("u_ann", "GET", "/recommendations")) == result
+
+
+def test_recommendations_find_older_candidate_after_full_hidden_window(env):
+    make_profile(env, "u_ann")
+    older = make_profile(env, "u_ben")["profile"]["parent_id"]
+    hidden = [f"u_hidden_{index}" for index in range(200)]
+    env.db.table("community_profiles").insert([
+        {"user_id": uid, "display_name": "Hidden Parent"} for uid in hidden
+    ]).execute()
+    env.db.table("community_preferences").insert([
+        {"user_id": uid, "profile_hidden": True} for uid in hidden
+    ]).execute()
+
+    result = ok(env.call("u_ann", "GET", "/recommendations", params={"role": "any"}))
+    assert [row["parent"]["parent_id"] for row in result["items"]] == [older]
+    assert not result["has_more"] and result["next_cursor"] is None
+
+
+def test_recommendations_handle_incomplete_saved_coordinates(env):
+    for uid, latitude in (("u_ann", 32.0809), ("u_ben", 32.09)):
+        make_profile(env, uid, share_location=True, latitude=latitude, longitude=-81.0912)
+    env.db.table("community_profiles").update({"approx_lng": None}).eq("user_id", "u_ben").execute()
+
+    result = ok(env.call("u_ann", "GET", "/recommendations", params={"role": "any"}))
+    assert [row["distance_miles"] for row in result["items"]] == [None]
+    nearby = ok(env.call("u_ann", "GET", "/recommendations", params={"distance_miles": 1}))
+    assert not nearby["items"]
+
+    env.db.table("community_profiles").update({"approx_lng": None}).eq("user_id", "u_ann").execute()
+    err(env.call("u_ann", "GET", "/recommendations", params={"distance_miles": 1}), 422, "VALIDATION_FAILED")
+
+
 # ── P05 / P29 / P30 AI calls ─────────────────────────────────────────────────
 
 def test_polish_needs_consent_keeps_original_and_is_idempotent(env, monkeypatch):
