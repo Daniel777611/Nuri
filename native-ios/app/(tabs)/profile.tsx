@@ -40,8 +40,10 @@ import { isLiveCommunityEnabled } from "@/src/liveCommunityGate";
 import { prepareChatImage } from "@/src/chatImageInput";
 import { personalAvatarAvailable, readPersonalAvatar, savePersonalAvatar } from "@/src/personalAvatar";
 import { CHINESE_NAME_TOO_LONG, chineseDisplayNameLimitMessage, isChineseDisplayNameTooLong } from "@/src/profileDisplayName";
+import LocalActivityAreaSettings from "@/src/components/LocalActivityAreaSettings";
 import { NearbyEventsSettings } from "@/src/components/NearbyEventsSettings";
 import { NearbyLocationSetting } from "@/src/components/NearbyLocationSetting";
+import { localActivitiesEnabled, localActivityTitle } from "@/src/localActivities";
 import { nearbyEventsAvailable } from "@/src/nearbyEvents";
 const FIGMA_FRAME_WIDTH = 402;
 const SETTINGS_TRADITIONAL:Record<string,string>={
@@ -58,6 +60,10 @@ export default function Profile() {
   const params=useLocalSearchParams<{section?:string}>();
   const section=params.section??"main";
   const go=(section:string)=>router.push({pathname:"/(tabs)/profile",params:{section}} as never);
+  const liveAlpha = process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha";
+  const showLocalActivities = liveAlpha && localActivitiesEnabled;
+  const showNativeNearby = liveAlpha && nearbyEventsAvailable();
+  const recommendationAreaPage = showLocalActivities && section === "nearby";
   const theme=useNuriTheme();
   const [me,setMe]=useAccountState<any>(null);
   const [collections,setCollections]=useAccountState<any[]>([]);
@@ -118,6 +124,7 @@ export default function Profile() {
   }, [generation]);
 
   const load = useCallback(async () => {
+    if (recommendationAreaPage) return;
     const ticket = capture();
     if (ticket === null) return;
     const token = await auth.getToken();
@@ -153,7 +160,7 @@ export default function Profile() {
       }));
       setPrivacyUnavailable(true);
     }
-  }, [capture, current, section, setChildren, setFavorites, setPersonalPhoto, setPrivacy, setPrivacyUnavailable]);
+  }, [capture, current, recommendationAreaPage, section, setChildren, setFavorites, setPersonalPhoto, setPrivacy, setPrivacyUnavailable]);
 
   useFocusEffect(
     useCallback(() => {
@@ -283,10 +290,6 @@ export default function Profile() {
   };
   const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch(error){if(current(ticket))setActionError(apiErrorDetail(error)===CHINESE_NAME_TOO_LONG?chineseDisplayNameLimitMessage(locale):copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
-  const titles:Record<string,string>={personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
-  const nearbyTitle = locale === "en" ? "Nearby family activities" : locale === "zh-TW" ? "附近親子活動" : "附近亲子活动";
-  const showNearby = process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && nearbyEventsAvailable();
-  if (showNearby) titles.nearby = nearbyTitle;
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
@@ -296,7 +299,8 @@ export default function Profile() {
   return <View style={{flex:1}}>
     {section==="main"?<CardList testID="profile-card-stack" contentContainerStyle={{gap:0}}>
       {row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("家庭偏好","Family preferences"),"preferences")}
-      {showNearby ? <><NearbyLocationSetting owner={typeof me?.id === "string" ? me.id : ""} />{row(nearbyTitle, "nearby")}</> : null}
+      {showNativeNearby ? <NearbyLocationSetting owner={typeof me?.id === "string" ? me.id : ""} /> : null}
+      {showLocalActivities || showNativeNearby ? row(localActivityTitle(locale), "nearby") : null}
       {process.env.EXPO_PUBLIC_RELEASE_FLAVOR==="live-alpha"?<MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />:null}
       {row(copy("我的收藏","Favorites"),"favorites")}
       <View style={{marginVertical:16}}><SettingsDivider/></View>
@@ -304,8 +308,9 @@ export default function Profile() {
       <View style={{flex:1,minHeight:32}} />
       <SettingsAction label={signingOut?copy("正在退出…","Signing out…"):copy("退出登录","Sign out")} disabled={signingOut} onPress={()=>setConfirmLogout(true)} testID="profile-logout-btn" />
     </CardList>:<CardList>
-      {notice}
-      {showNearby && section === "nearby" ? <NearbyEventsSettings owner={me?.id ?? ""} profileCity={city} /> : null}
+      {recommendationAreaPage ? <LocalActivityAreaSettings /> : notice}
+      {showNativeNearby && !showLocalActivities && section === "nearby"
+        ? <NearbyEventsSettings owner={me?.id ?? ""} profileCity={city} /> : null}
       {section==="personal"?<>
         {canChangeAvatar?<Pressable accessibilityRole="button" accessibilityLabel={copy("更换头像","Change profile photo")} disabled={saving||changingAvatar||loadState==="loading"} accessibilityState={{busy:changingAvatar}} onPress={()=>void changeAvatar()} style={{flexDirection:"row",alignItems:"center",gap:12,alignSelf:"flex-start"}} testID="profile-change-avatar">
           <UserAvatar size={56} displayName={parentName} photoURL={me?.avatar_url??me?.photo_url??me?.picture} personalPhoto={personalPhoto} />

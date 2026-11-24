@@ -8,6 +8,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -18,13 +19,13 @@ from backend.nuri_core import family_store
 TABLE = "local_activity_areas"
 KIND = "local_activity"
 _ALPHA_BUNDLE = "com.ordashtech.nuri.beta"
-_ALPHA_PUSH_BUILD = f"{_ALPHA_BUNDLE}:1097"
+_ALPHA_PUSH_BUILDS = frozenset(f"{_ALPHA_BUNDLE}:{number}" for number in (1097, 1098))
 _MAX_ITEMS = 8
 _MAX_AGE_BANDS = 2
 _SEARCH_LEASE = timedelta(minutes=10)
 _REFRESH_AFTER = timedelta(hours=12)
 _DETAIL_LIFETIME = timedelta(days=3)
-_SNAPSHOT_FORMAT = "organizer-date-v1"
+_SNAPSHOT_FORMAT = "organizer-details-v2"
 
 
 class AreaPatch(BaseModel):
@@ -72,7 +73,7 @@ def supported_builds() -> frozenset[str]:
     if not runtime.alpha_features_available():
         return builds
     if configured is None:
-        return frozenset({_ALPHA_PUSH_BUILD})
+        return _ALPHA_PUSH_BUILDS
     return frozenset(build for build in builds if build.startswith(f"{_ALPHA_BUNDLE}:"))
 
 
@@ -144,16 +145,81 @@ def _date_value(value: Any) -> date | None:
         return None
 
 
-def active_on(item: dict, day: date) -> bool:
-    if item.get("kind") == "ongoing_resource":
-        return not item.get("start_date") and not item.get("end_date")
-    start = _date_value(item.get("start_date"))
-    end = _date_value(item.get("end_date")) or start
-    return item.get("kind") == "dated_event" and bool(start and end and start <= end and day <= end)
+def _moment(value: object) -> datetime | None:
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return result if result.utcoffset() is not None else None
 
 
-def _eligible_items(items: list, day: date) -> list[dict]:
-    return [item for item in items if isinstance(item, dict) and active_on(item, day)]
+def active_on(item: dict, day: date, now: datetime | None = None) -> bool:
+    from backend.feed.local_activities import _organizer_event_url
+
+    if item.get("kind") != "dated_event" or item.get("event_source_verified") is not True:
+        return False
+    required = ("id", "title", "venue_name", "address", "description", "age_label", "source_url", "time_zone")
+    if any(not isinstance(item.get(field), str) or not item[field].strip() for field in required):
+        return False
+    source = item["source_url"]
+    try:
+        if _organizer_event_url(source) != source:
+            return False
+    except ValueError:
+        return False
+    registration_url = item.get("registration_url")
+    if registration_url is not None and not (
+        source.startswith("https://www.fortbendlibraries.gov/event/")
+        and registration_url == f"{source}#lc-registration-ui-registration-form-opener-form"
+    ):
+        return False
+    starts, ends = _moment(item.get("starts_at")), _moment(item.get("ends_at"))
+    if not starts or not ends or starts >= ends:
+        return False
+    try:
+        zone = ZoneInfo(item["time_zone"])
+    except (ValueError, ZoneInfoNotFoundError):
+        return False
+    if any(moment.utcoffset() != moment.astimezone(zone).utcoffset() for moment in (starts, ends)):
+        return False
+    if (_date_value(item.get("start_date")) != starts.date()
+            or _date_value(item.get("end_date")) != ends.date()):
+        return False
+    return now < ends if now is not None else day <= ends.date()
+
+
+def _eligible_items(items: list, day: date, now: datetime) -> list[dict]:
+    return [item for item in items if isinstance(item, dict) and active_on(item, day, now)]
+
+
+def _for_family(item: dict, children: list[dict], locale: str) -> dict | None:
+    from backend.feed.local_activities import _copy
+
+    event_day = _date_value(item.get("start_date"))
+    if not event_day:
+        return None
+    ranges = item.get("_age_ranges")
+    if not isinstance(ranges, (list, tuple)):
+        return None
+    ages = [
+        family_store.age_in_months(str(child.get("birth_date") or ""), on=event_day)
+        for child in children
+    ]
+    applicable = [
+        (pair[0], pair[1]) for pair in ranges
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+        and type(pair[0]) is int and type(pair[1]) is int and 0 <= pair[0] <= pair[1] <= 263
+    ]
+    if not any(start <= age <= end for age in ages if age is not None for start, end in applicable):
+        return None
+    target = item["age_label"]
+    return {**item, "match_reason": _copy(
+        locale, f"主办方标注的适龄范围是{target}，与您家孩子在活动当天的年龄相符。",
+        f"The organizer’s age guidance ({target}) matches your child’s age on the event date.",
+        f"主辦方標註的適齡範圍是{target}，與您家孩子在活動當天的年齡相符。",
+    )}
 
 
 def _snapshot_age(area: dict, now: datetime) -> timedelta | None:
@@ -176,7 +242,8 @@ def _scoped_id(item: dict, rev: str) -> str:
     return hashlib.sha256(f"{rev}:{item['id']}".encode()).hexdigest()[:32]
 
 
-def _merge_results(results: list[list[dict]], rev: str, day: date) -> list[dict]:
+def _merge_results(results: list[list[dict]], rev: str, day: date, now: datetime,
+                   children: list[dict], locale: str) -> list[dict]:
     # Interleave children’s age groups. The strongest result for one child
     # does not displace the whole list for their siblings.
     merged: dict[str, dict] = {}
@@ -185,9 +252,9 @@ def _merge_results(results: list[list[dict]], rev: str, day: date) -> list[dict]
             if index >= len(group):
                 continue
             item = group[index]
-            if active_on(item, day):
+            if active_on(item, day, now) and (scoped := _for_family(item, children, locale)):
                 item_id = _scoped_id(item, rev)
-                merged.setdefault(item_id, {**item, "id": item_id})
+                merged.setdefault(item_id, {**scoped, "id": item_id})
                 if len(merged) == _MAX_ITEMS:
                     return list(merged.values())
     return list(merged.values())
@@ -200,7 +267,7 @@ def _result(items: list[dict]) -> dict:
 
 async def recommendations(sb: Any, uid: str, *, locale: str, now: datetime,
                           day: date, area: dict | None = None) -> dict:
-    from backend.feed.local_activities import LocalActivitiesUnavailable, discover_local_activities
+    from backend.feed.local_activities import LocalActivitiesUnavailable, _VERIFICATION_LIMIT, discover_local_activities
 
     if not enabled():
         return _state("disabled")
@@ -218,7 +285,8 @@ async def recommendations(sb: Any, uid: str, *, locale: str, now: datetime,
     scope = {"bands": selected, "locale": locale}
     snapshot = area.get("snapshot") or {}
     age = _snapshot_age(area, now) if snapshot.get("scope") == scope else None
-    previous = _eligible_items(snapshot.get("items") or [], day) if age is not None else []
+    previous = [scoped for item in _eligible_items(snapshot.get("items") or [], day, now)
+                if (scoped := _for_family(item, children, locale))] if age is not None else []
     if age is not None and age < _REFRESH_AFTER:
         return _result(previous)
 
@@ -239,7 +307,7 @@ async def recommendations(sb: Any, uid: str, *, locale: str, now: datetime,
         groups = await asyncio.gather(*(
             discover_local_activities(
                 city=area["city"], region=area.get("region") or "", country=area["country"],
-                age_band=band, locale=locale, today=day, limit=_MAX_ITEMS,
+                age_band=band, locale=locale, today=day, limit=_VERIFICATION_LIMIT,
             ) for band in selected
         ), return_exceptions=True)
         for result in groups:
@@ -249,13 +317,13 @@ async def recommendations(sb: Any, uid: str, *, locale: str, now: datetime,
         if not good:
             return _result(previous) if previous else _state("unavailable")
 
-        items = _merge_results(good, revision, day)
+        items = _merge_results(good, revision, day, now, children, locale)
         if not items and len(good) != len(groups):
             return _result(previous) if previous else _state("unavailable")
         # Keep active prior in-app detail links while a new snapshot rotates
         # presentation. Any change of area/consent invalidates the whole set.
         old = _eligible_items(
-            [*(snapshot.get("items") or []), *(snapshot.get("recent") or [])], day,
+            [*(snapshot.get("items") or []), *(snapshot.get("recent") or [])], day, now,
         ) if _snapshot_age(area, now) is not None else []
         ids = {item["id"] for item in items}
         retained = {}
@@ -296,9 +364,12 @@ async def find_activity(sb: Any, uid: str, item_id: str, *,
     if revision is not None and revision != str(area.get("revision")):
         return None
     snapshot = area.get("snapshot") or {}
-    for item in _eligible_items([*(snapshot.get("items") or []), *(snapshot.get("recent") or [])], day):
+    for item in _eligible_items([*(snapshot.get("items") or []), *(snapshot.get("recent") or [])], day, now):
         if item.get("id") == item_id:
             through = _date_value(item.get("_valid_through"))
             if through is not None and day <= through:
-                return {k: v for k, v in item.items() if not k.startswith("_")}
+                _, children = await family_store.load_profile(uid)
+                locale = (snapshot.get("scope") or {}).get("locale", "zh-CN")
+                scoped = _for_family(item, children, locale)
+                return {k: v for k, v in scoped.items() if not k.startswith("_")} if scoped else None
     return None

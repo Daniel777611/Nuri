@@ -1,5 +1,7 @@
 from datetime import date
 from html import escape
+import json
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -14,6 +16,8 @@ TODAY = date(2026, 11, 23)
 AREA = {"city": "Savannah", "region": "GA", "country": "US", "locale": "en"}
 MONTEREY = {"city": "Monterey Park", "region": "CA", "country": "US", "locale": "en"}
 MONTEREY_HOST = "www.montereypark.ca.gov"
+FORT_BEND_HOST = "www.fortbendlibraries.gov"
+SUGAR_LAND = {"city": "Sugar Land", "region": "TX", "country": "US", "locale": "zh-CN"}
 
 
 def fixture_source(title, text, path="/events/storytime", host="savannahga.gov"):
@@ -33,13 +37,14 @@ class FakeProvider:
         return list(result)
 
 
-def organizer_page(title, details, description="A library storytime for all ages.",
-                   location="Monterey Park CA 91754", extra=""):
+def organizer_page(title, details, description="A library storytime for all ages. No registration required.",
+                   location="318 S Ramona Ave, Monterey Park CA 91754", extra=""):
     return (
         f'<h1 class="calendar-event-title headline">{escape(title)}</h1>'
         f'<div id="event-description">{escape(description)}</div>'
         f'<div aria-label="Event details"><div>{escape(details)}</div></div>'
-        f'<div aria-label="Event location"><a>{escape(location)}</a></div>'
+        '<div aria-label="Event location"><a>Monterey Park Bruggemeyer Library</a>'
+        f'<a href="https://maps.google.com/maps?q=library">{escape(location)}</a></div>'
         f'{extra}'
     )
 
@@ -69,7 +74,7 @@ def organizer_http(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_real_links_honest_date_and_persistent_calendar(organizer_http):
+async def test_real_event_canonical_and_complete_details(organizer_http):
     routes, visited = organizer_http
     event = fixture_source(
         "Preschool Storytime", "Date: November 24, 2026. Monterey Park CA.",
@@ -88,23 +93,96 @@ async def test_real_links_honest_date_and_persistent_calendar(organizer_http):
         "Find recurring children's programs and visit in Monterey Park, CA. Storytime on November 25, 2026.",
         "/events/calendar", MONTEREY_HOST,
     )
-    provider = FakeProvider([event, duplicates], [resource])
+    provider = FakeProvider([event, duplicates, resource])
     items = await activities.discover_local_activities(**MONTEREY, today=TODAY, provider=provider, age_band="preschool")
-    assert len(items) == 2
-    first, second = items
+    [first] = items
     assert first["kind"] == "dated_event"
     assert first["start_date"] == "2026-11-25"
-    assert first["end_date"] is None
+    assert first["end_date"] == "2026-11-25"
+    assert first["starts_at"] == "2026-11-25T11:30:00-08:00"
+    assert first["ends_at"] == "2026-11-25T12:00:00-08:00"
     assert first["source_url"] == canonical
-    assert first["location_label"] == "Monterey Park, CA, US"
+    assert first["venue_name"] == "Monterey Park Bruggemeyer Library"
+    assert first["address"] == "318 S Ramona Ave, Monterey Park CA 91754"
+    assert first["age_label"] == "3–5 years"
+    assert first["event_source_verified"] is True
     assert "November 24" not in first["summary"]
     assert visited == [canonical]
-    assert second["kind"] == "ongoing_resource"
-    assert second["start_date"] is None
-    assert second["source_url"] == resource.url
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 1
     assert all('"Monterey Park, CA, US"' in request.query and "preschool" in request.query
                for request in provider.requests)
+
+
+def fort_bend_event_page(source, *, registration_status, has_event_form, status="EventScheduled"):
+    detail = {
+        "@type": "Event", "eventStatus": f"https://schema.org/{status}",
+        "eventAttendanceMode": "https://schema.org/OfflineEventAttendanceMode",
+        "name": "Toddler Time", "startDate": "2026-12-01T10:30:00-06:00",
+        "endDate": "2026-12-01T11:15:00-06:00",
+        "description": "<p>Stories and songs for children ages 12–36 months and their caregivers.</p>",
+        "location": {"name": "Sugar Land Branch Library", "address": {
+            "streetAddress": "550 Eldridge Rd", "addressLocality": "Sugar Land",
+            "addressRegion": "TX", "postalCode": "77478",
+        }},
+        "offers": {"price": "0.00", "priceCurrency": "USD", "url": source},
+    }
+    form_path = source.removeprefix(f"https://{FORT_BEND_HOST}") if has_event_form else "/events"
+    return (
+        f'<link rel="canonical" href="{source}">'
+        f'<script type="application/ld+json">{json.dumps(detail)}</script>'
+        '<article class="lc-event--full"><p class="lc-event-room">Meeting Room</p>'
+        '<div class="lc-event__age-groups">Age Group: Preschool</div>'
+        f'<div class="lc-messages__message">{registration_status}</div>'
+        f'<form id="lc-registration-ui-registration-form-opener-form" action="{form_path}"></form>'
+        '</article>'
+    )
+
+
+@pytest.mark.anyio
+async def test_fort_bend_listing_keeps_exact_official_event_and_registration_links(organizer_http):
+    routes, visited = organizer_http
+    source = f"https://{FORT_BEND_HOST}/event/toddler-time-138092"
+    no_direct = f"https://{FORT_BEND_HOST}/event/toddler-time-138093"
+    closed = f"https://{FORT_BEND_HOST}/event/toddler-time-138094"
+    canceled = f"https://{FORT_BEND_HOST}/event/toddler-time-138095"
+    query = urlencode([
+        ("branches[103]", 103), ("branches[108]", 108), ("branches[109]", 109),
+        ("age_groups[500]", 500), ("age_groups[91]", 91),
+    ])
+    listing = f"https://{FORT_BEND_HOST}/events/list?{query}"
+    routes[listing] = ("".join(
+        f'<a href="{url.removeprefix(f"https://{FORT_BEND_HOST}")}">Toddler Time</a>'
+        for url in (source, no_direct, closed, canceled)
+    ) + '<a href="/events/month">The calendar</a>', 200, {})
+    routes[source] = (fort_bend_event_page(
+        source, registration_status="Registration is required for this event.", has_event_form=True,
+    ), 200, {})
+    routes[no_direct] = (fort_bend_event_page(
+        no_direct, registration_status="Registration is required for this event.", has_event_form=False,
+    ), 200, {})
+    routes[closed] = (fort_bend_event_page(
+        closed, registration_status="Registration is closed.", has_event_form=False,
+    ), 200, {})
+    routes[canceled] = (fort_bend_event_page(
+        canceled, registration_status="", has_event_form=False, status="EventCancelled",
+    ), 200, {})
+
+    first, second = await activities.discover_local_activities(
+        **SUGAR_LAND, today=TODAY, age_band="toddler", provider=FakeProvider(SearchUnavailable("test")),
+    )
+    assert first["source_url"] == source
+    assert first["registration_required"] is True
+    assert first["registration_url"] == f"{source}#lc-registration-ui-registration-form-opener-form"
+    assert first["cost"] == "免费"
+    assert first["age_label"] == "12–36个月"
+    assert first["starts_at"] == "2026-12-01T10:30:00-06:00"
+    assert first["ends_at"] == "2026-12-01T11:15:00-06:00"
+    assert first["venue_name"] == "Sugar Land Branch Library"
+    assert first["address"] == "550 Eldridge Rd, Sugar Land, TX 77478"
+    assert first["room"] == "Meeting Room"
+    assert second["source_url"] == no_direct and second["registration_required"] is True
+    assert second["registration_url"] is None
+    assert set(visited) == {listing, source, no_direct, closed, canceled}
 
 
 @pytest.mark.anyio
@@ -130,20 +208,18 @@ async def test_excludes_expired_mismatched_city_mismatched_age_and_non_organizer
 
 
 @pytest.mark.anyio
-async def test_localized_input_keeps_ongoing_sources_and_only_sends_age_band():
+async def test_localized_input_excludes_generic_sources_and_only_sends_age_band():
     program = fixture_source(
         "臺北市圖書館親子故事活動", "臺北市圖書館親子故事活動。每週開放親子共讀服務。",
         "/library/family-storytime",
         host="library.gov.taipei",
     )
-    provider = FakeProvider([], [program])
-    [item] = await activities.discover_local_activities(
+    provider = FakeProvider([program])
+    items = await activities.discover_local_activities(
         city="臺北市", region="臺北市", country="TW", locale="zh-TW", today=TODAY,
         age_band="private input 2022-10-10", provider=provider,
     )
-    assert item["kind"] == "ongoing_resource"
-    assert item["start_date"] is None
-    assert item["title"] == program.title
+    assert items == []
     assert all("臺北市" in request.query and request.lang == "zh" and "private input" not in request.query
                and "2022-10-10" not in request.query for request in provider.requests)
 
@@ -171,12 +247,12 @@ async def test_official_calendar_layout_and_regular_storytime_are_distinct(organ
     copied = fixture_source(program.title, program.snippet, path="/285/Storytime", host="montereyparklibrary.com")
     items = await activities.discover_local_activities(
         city="Monterey Park", region="CA", country="US", age_band="preschool",
-        locale="en", today=TODAY, provider=FakeProvider([event], [program, copied]),
+        locale="en", today=TODAY, provider=FakeProvider([event, program, copied]),
     )
     assert [(item["kind"], item["start_date"], item["source_url"]) for item in items] == [
         ("dated_event", "2026-12-05", event.url),
-        ("ongoing_resource", None, program.url),
     ]
+    assert items[0]["registration_required"] is False
 
 
 @pytest.mark.anyio
@@ -226,11 +302,9 @@ async def test_same_city_name_requires_the_requested_international_region():
         path="/library/children",
         host="cambridgema.gov",
     )
-    [item] = await activities.discover_local_activities(
-        city="Cambridge", region="Cambridgeshire", country="GB", locale="en",
-        today=TODAY, provider=FakeProvider([cambridge_us, cambridge_uk]),
-    )
-    assert item["source_url"] == cambridge_uk.url
+    area = activities.NearbyEventsRequest(city="Cambridge", region="Cambridgeshire", country="GB", locale="en")
+    assert activities._matches_area(area, cambridge_uk.snippet)
+    assert not activities._matches_area(area, cambridge_us.snippet)
 
     london_uk = fixture_source(
         "Public Library Storytime Programs", "Recurring family workshops in London on Saturdays.",
@@ -242,25 +316,29 @@ async def test_same_city_name_requires_the_requested_international_region():
         path="/library/children",
         host="londonpubliclibrary.ca",
     )
-    [item] = await activities.discover_local_activities(
-        city="London", region="Ontario", country="CA", locale="en",
-        today=TODAY, provider=FakeProvider([london_uk, london_ca]),
-    )
-    assert item["source_url"] == london_ca.url
+    area = activities.NearbyEventsRequest(city="London", region="Ontario", country="CA", locale="en")
+    assert activities._matches_area(area, london_ca.snippet)
+    assert not activities._matches_area(area, london_uk.snippet)
 
 
 @pytest.mark.anyio
-async def test_school_age_accepts_a_source_for_ages_starting_at_five():
+async def test_school_age_accepts_a_source_for_ages_starting_at_five(organizer_http):
+    routes, _ = organizer_http
     event = fixture_source(
         "Children's Library Workshop", "Savannah, Georgia weekly family program. Ages 5–6.",
-        path="/library/children",
+        path="/m/calendar/event/detail/12456", host=MONTEREY_HOST,
     )
+    routes[event.url] = (organizer_page(
+        event.title, "11:00 AM - 11:30 AM | Saturday, December 5, 2026",
+        description="Children's library workshop for ages 5–6.",
+    ), 200, {})
     [item] = await activities.discover_local_activities(
-        **AREA, today=TODAY, provider=FakeProvider([event]), age_band="school_age",
+        **MONTEREY, today=TODAY, provider=FakeProvider([event]), age_band="school_age",
     )
     assert item["source_url"] == event.url
+    assert item["age_label"] == "5–6 years"
     assert await activities.discover_local_activities(
-        **AREA, today=TODAY, provider=FakeProvider([event]), age_band="preschool",
+        **MONTEREY, today=TODAY, provider=FakeProvider([event]), age_band="toddler",
     ) == []
 
 
@@ -274,17 +352,8 @@ async def test_blank_or_precise_location_does_not_contact_provider():
 
 
 @pytest.mark.anyio
-async def test_partial_provider_failure_is_distinct_from_empty_results():
-    resource = fixture_source(
-        "Public Library Children's Calendar",
-        "Savannah, GA library programs for the whole family. Check visiting hours.",
-        "/calendar",
-    )
+async def test_provider_failure_is_distinct_from_empty_results():
     failing = SearchUnavailable("private vendor error")
-    rows = await activities.discover_local_activities(
-        **AREA, today=TODAY, provider=FakeProvider(failing, [resource]),
-    )
-    assert len(rows) == 1 and rows[0]["kind"] == "ongoing_resource"
     with pytest.raises(activities.LocalActivitiesUnavailable, match="^Local activity lookup unavailable$"):
         await activities.discover_local_activities(**AREA, today=TODAY, provider=FakeProvider(failing))
     assert await activities.discover_local_activities(
@@ -293,11 +362,15 @@ async def test_partial_provider_failure_is_distinct_from_empty_results():
 
 
 @pytest.mark.anyio
-async def test_cache_is_scoped_to_area_age_band_locale_and_day(monkeypatch):
+async def test_cache_is_scoped_to_area_age_band_locale_and_day(monkeypatch, organizer_http):
+    routes, _ = organizer_http
     event = fixture_source(
         "Library Storytime Programs", "Savannah, Georgia recurring family programs.",
-        path="/library/children",
+        path="/m/calendar/event/detail/12555", host=MONTEREY_HOST,
     )
+    routes[event.url] = (organizer_page(
+        event.title, "11:00 AM - 11:30 AM | Saturday, December 5, 2026",
+    ), 200, {})
     provider = FakeProvider([event])
 
     async def fetch(request):
@@ -307,13 +380,13 @@ async def test_cache_is_scoped_to_area_age_band_locale_and_day(monkeypatch):
     monkeypatch.setattr(provider, "fetch", fetch)
     monkeypatch.setattr(activities, "TavilySearchProvider", lambda: provider)
     monkeypatch.setattr(activities, "_cache", activities.OrderedDict())
-    rows = await activities.discover_local_activities(**AREA, today=TODAY, age_band="toddler")
+    rows = await activities.discover_local_activities(**MONTEREY, today=TODAY, age_band="toddler")
     rows[0]["title"] = "locally modified"
-    again = await activities.discover_local_activities(**AREA, today=TODAY, age_band="toddler")
-    assert len(provider.requests) == 2
+    again = await activities.discover_local_activities(**MONTEREY, today=TODAY, age_band="toddler")
+    assert len(provider.requests) == 1
     assert again[0]["title"] == event.title
-    await activities.discover_local_activities(**AREA, today=TODAY, age_band="preschool")
-    assert len(provider.requests) == 4
-    after = await activities.discover_local_activities(**AREA, today=date(2026, 11, 26), age_band="preschool")
-    assert after and after[0]["kind"] == "ongoing_resource"
-    assert len(provider.requests) == 6
+    await activities.discover_local_activities(**MONTEREY, today=TODAY, age_band="preschool")
+    assert len(provider.requests) == 2
+    after = await activities.discover_local_activities(**MONTEREY, today=date(2026, 11, 26), age_band="preschool")
+    assert after and after[0]["kind"] == "dated_event"
+    assert len(provider.requests) == 3

@@ -33,7 +33,9 @@ export default function NotificationScreen() {
   const open = useCallback(async () => {
     if (!mountedRef.current) return;
     if (process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && id === "nearby-activities") {
-      router.replace({ pathname: "/(tabs)/profile", params: { section: "nearby" } });
+      router.replace(localActivitiesEnabled
+        ? "/nearby-activities"
+        : { pathname: "/(tabs)/profile", params: { section: "nearby" } });
       return;
     }
     const request = ++requestSequenceRef.current;

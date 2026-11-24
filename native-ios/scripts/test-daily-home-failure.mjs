@@ -127,7 +127,8 @@ export function page(f, kind = "daily", params = {}) {
   const appStateListeners = new Set();
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", ImageBackground: "ImageBackground",
     ScrollView: "ScrollView", Image: "Image", Modal: "Modal", Platform: { OS: "ios" },
-    Linking: { openURL: async (url) => { external.push(url); await f.externalOpen?.(url); } }, StyleSheet: { create: (value) => value, absoluteFill: {} },
+    Linking: { openURL: async (url) => { external.push(url); await f.externalOpen?.(url); },
+      openSettings: async () => { await f.openSystemSettings?.(); } }, StyleSheet: { create: (value) => value, absoluteFill: {} },
     AppState: { currentState: "active", addEventListener: (_event, callback) => { appStateListeners.add(callback); return { remove: () => appStateListeners.delete(callback) }; } }, useWindowDimensions: () => ({ width: 390 }),
     Share: { share: async () => ({ action: "shared" }), sharedAction: "shared" },
     Animated: { Value: class {}, View: "AnimatedView", sequence: () => animation, timing: () => animation, delay: () => animation } };
@@ -191,6 +192,7 @@ export function page(f, kind = "daily", params = {}) {
   };
   const path = kind === "home" ? "../app/(tabs)/index.tsx" : kind === "detail" ? "../app/detail/[id].tsx"
     : kind === "video" ? "../app/daily-video.tsx" : kind === "activities" ? "../app/nearby-activities.tsx"
+    : kind === "activitySettings" ? "../src/components/LocalActivityAreaSettings.tsx"
     : kind === "notification" ? "../app/notifications/[id].tsx" : "../app/daily-post.tsx";
   const component = load(path, dependencies).default;
   function expand(node) {

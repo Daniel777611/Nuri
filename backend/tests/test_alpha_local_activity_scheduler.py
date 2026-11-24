@@ -102,17 +102,17 @@ def test_fixed_city_probe_reads_no_family_or_queue(rig, monkeypatch):
     async def discover(**kwargs):
         seen.append(kwargs)
         return [{
-            "kind": "ongoing_resource", "start_date": None,
-            "source_url": "https://www.montereypark.ca.gov/285/Storytime",
+            "kind": "dated_event", "start_date": "2026-12-01",
+            "source_url": "https://www.montereypark.ca.gov/m/calendar/event/detail/12345",
         }]
 
     monkeypatch.setattr(local_activities, "discover_local_activities", discover)
     result = client.post(PATH, headers=AUTH, json={"action": "probe"}).json()
     assert result == {
-        "ok": True, "state": "ready", "dated_events": 0, "ongoing_resources": 1,
+        "ok": True, "state": "ready", "dated_events": 1, "ongoing_resources": 0,
         "sources": [{
-            "kind": "ongoing_resource", "source_url": "https://www.montereypark.ca.gov/285/Storytime",
-            "start_date": None,
+            "kind": "dated_event", "source_url": "https://www.montereypark.ca.gov/m/calendar/event/detail/12345",
+            "start_date": "2026-12-01",
         }],
     }
     assert len(seen) == 1 and seen[0]["city"] == "Monterey Park"

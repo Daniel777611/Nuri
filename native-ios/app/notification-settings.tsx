@@ -78,7 +78,9 @@ export default function NotificationSettings() {
   {loading?<InlineState busy message={copy("正在读取设置…","Loading settings…")} />:null}
   <ToggleRow label={copy("Nuri 关怀","Nuri care")} detail={copy("适时的一句问候","A thoughtful check-in")} value={prefs?.care_enabled===true} disabled={!prefs||busy} onChange={care_enabled=>patch({care_enabled})} testID="notification-care" />
   <ToggleRow label={copy("内容推荐","Content recommendations")} detail={copy("适合你家的育儿内容","Parenting content for your family")} value={daily} disabled={!dailyLoaded||busy} onChange={v=>{dirty.current=true;setDailyDirty(true);setDaily(v);}} testID="remote-daily-push-toggle" />
-  {localActivitiesEnabled ? <MenuRow label={localActivityTitle(locale)} onPress={()=>router.push("/nearby-activities")} testID="notification-local-activities-settings" /> : null}
+  {process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && localActivitiesEnabled
+    ? <MenuRow label={localActivityTitle(locale)} onPress={()=>router.push({pathname:"/(tabs)/profile",params:{section:"nearby"}} as never)} testID="notification-local-activities-settings" />
+    : null}
   <ToggleRow label={copy("聊天通知","Chat notifications")} detail={locale==="zh-TW"?"Nuri 對話更新":copy("Nuri 对话更新","Nuri conversation updates")} value={prefs?.chat_enabled===true} disabled={!prefs||busy} onChange={chat_enabled=>patch({chat_enabled})} testID="notification-chat" />
   <MenuRow label={copy("更多通知设置","More notification settings")} onPress={()=>setAdvanced(v=>!v)} testID="notification-advanced" />
   {advanced?<>

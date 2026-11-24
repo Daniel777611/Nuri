@@ -6,18 +6,24 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const response = (data, status = 200) => ({
   ok: status < 400, status, json: async () => data, text: async () => JSON.stringify(data),
 });
-const prefsPath = "/notifications/local-activities/preferences";
 const feedPath = "/feed/local-activities";
 const event = {
-  id: "story-time", kind: "dated_event", title: "Fixture story time", summary: "Tales at the public library.",
+  id: "story-time", kind: "dated_event", event_source_verified: true, title: "Fixture story time",
+  summary: "Tales at the public library.",
   start_date: "2026-12-02", end_date: null, source_url: "https://library.invalid/events/storytime",
   source_label: "Fixture Library", location_label: "Springfield",
+  venue_name: "Fixture Library", address: "18 Main Street, Springfield, IL 62701",
+  starts_at: "2026-12-02T10:00:00-06:00", ends_at: "2026-12-02T11:15:00-06:00",
+  time_zone: "America/Chicago", age_label: "Ages 1–3",
+  match_reason: "The advertised age range includes toddlers.",
+  description: "Join the librarian for picture books, a music activity and a take-home craft.",
+  registration_required: true, registration_url: "https://library.invalid/events/storytime#registration",
+  registration_notes: "Reserve one place for each child.", cost: "Free",
 };
 const place = {
   ...event, id: "playroom", kind: "ongoing_resource", title: "Fixture family playroom",
   source_url: "https://library.invalid/playroom", start_date: null,
 };
-const emptyPreferences = { enabled: false, city: null, region: null, country: null };
 
 async function withActivities(run) {
   const before = process.env.EXPO_PUBLIC_LOCAL_ACTIVITIES_TEST;
@@ -38,66 +44,39 @@ async function withActivities(run) {
   }
 }
 
-test("current location only fills the form; saving sends coarse fields and disabling removes the activities", async () => {
+test("the directory displays individual verified events and never venue listings or area controls", async () => {
   await withActivities(async (f, open) => {
-    let saved = emptyPreferences;
-    let locationCalls = 0;
-    f.locate = async () => {
-      locationCalls += 1;
-      return {
-        status: "authorized",
-        locality: { city: "Springfield", region: "IL", country: "US", latitude: 1.2, longitude: 3.4 },
-      };
-    };
-    f.responder = (path, init) => {
-      if (path === prefsPath) {
-        if (init.method === "PATCH") {
-          const patch = JSON.parse(init.body);
-          if (patch.enabled) assert.deepEqual(patch, { enabled: true, city: "Springfield", region: "IL", country: "US" });
-          saved = patch.enabled ? patch : emptyPreferences;
-        }
-        return response(saved);
-      }
-      if (path === feedPath) return response({
-        state: saved.enabled ? "ready" : "disabled",
-        items: saved.enabled ? [event, place] : [],
-      });
-    };
-    const view = open("activities"); view.render(); await tick(); view.render();
-    assert.equal(locationCalls, 0);
-    view.find("local-activities-device-location").props.onPress();
-    await tick(); view.render();
-    assert.equal(locationCalls, 1);
-    assert.equal(view.find("local-activities-city").props.value, "Springfield");
-    assert.equal(f.calls.filter(call => call.init.method === "PATCH").length, 0);
-    view.find("local-activities-save").props.onPress();
-    await tick(); view.render();
-    assert.ok(view.find("local-activity-story-time"));
-    assert.ok(view.find("local-activity-playroom"));
-    view.find("local-activity-story-time").props.onPress();
-    assert.deepEqual(view.routes, [{ pathname: "/nearby-activities", params: { id: "story-time" } }]);
-    view.find("local-activities-disable").props.onPress();
-    await tick(); view.render();
-    assert.deepEqual(saved, emptyPreferences);
-    assert.equal(view.find("local-activity-story-time"), undefined);
-    assert.equal(view.find("local-activities-area"), undefined);
+    const incomplete = { ...event, id: "missing-address", title: "Incomplete fixture", address: "" };
+    f.responder = path => path === feedPath ? response({ state: "ready", items: [event, place, incomplete] }) : null;
+    const list = open("activities"); list.render(); await tick(); list.render();
+    for (const label of [event.title, event.venue_name, event.address, event.age_label, event.match_reason, "10:00 AM", "11:15 AM"]) {
+      assert.ok(list.visible().includes(label), label);
+    }
+    assert.equal(list.find("local-activity-playroom"), undefined);
+    assert.equal(list.find("local-activity-missing-address"), undefined);
+    assert.equal(list.find("local-activities-area"), undefined);
+    assert.equal(list.find("local-activities-edit"), undefined);
+    list.find("local-activity-story-time").props.onPress();
+    assert.deepEqual(list.routes, [{ pathname: "/nearby-activities", params: { id: event.id } }]);
+    assert.deepEqual(list.external, []);
   });
 });
 
-test("a pending location response cannot populate another account's settings", async () => {
+test("disabled discovery points to Settings and refreshes the events on return", async () => {
   await withActivities(async (f, open) => {
-    let resolveLocation;
-    f.locate = () => new Promise(resolve => { resolveLocation = resolve; });
-    f.responder = (path) => path === prefsPath ? response(emptyPreferences)
-      : path === feedPath ? response({ state: "disabled", items: [] }) : null;
-    const view = open("activities"); view.render(); await tick(); view.render();
-    view.find("local-activities-device-location").props.onPress();
-    await f.login("B");
-    view.render(); await tick();
-    resolveLocation({ status: "authorized", locality: { city: "Private City", region: "CA", country: "US" } });
-    await tick(); view.render();
-    assert.equal(view.find("local-activities-city").props.value, "");
-    assert.equal(f.calls.some(call => call.init.method === "PATCH"), false);
+    let enabled = false;
+    f.responder = path => path === feedPath
+      ? response(enabled ? { state: "ready", items: [event] } : { state: "disabled", items: [] }) : null;
+    const list = open("activities"); list.render(); await tick(); list.render();
+    assert.equal(list.find("local-activities-device-location"), undefined);
+    assert.equal(list.kind("InlineState").props.action, "Open Settings");
+    list.kind("InlineState").props.onPress();
+    assert.deepEqual(list.routes, [{ pathname: "/(tabs)/profile", params: { section: "nearby" } }]);
+    list.blur();
+    enabled = true;
+    list.focus(); await tick(); list.render();
+    assert.ok(list.find("local-activity-story-time"));
+    assert.equal(f.calls.filter(call => call.path === feedPath).length, 2);
   });
 });
 
@@ -111,27 +90,60 @@ test("a notification opens its owned activity without writing to chat", async ()
     assert.deepEqual(notification.routes, [{ pathname: "/nearby-activities", params: { id: event.id } }]);
     assert.equal(f.calls.some(call => call.path.endsWith("/open")), false);
     const detail = open("activities", { id: event.id }); detail.render(); await tick(); detail.render();
-    assert.match(detail.visible(), /Fixture story time/);
+    assert.ok(detail.visible().includes(event.title));
+    assert.equal(detail.find("local-activity-description").props.children, event.description);
+    assert.ok(detail.visible().includes(event.registration_notes));
+    assert.ok(detail.visible().includes(event.cost));
     assert.deepEqual(detail.external, []);
+    detail.find("local-activity-register").props.onPress();
+    detail.find("local-activity-source").props.onPress();
+    await tick();
+    assert.deepEqual(detail.external, [event.registration_url, event.source_url]);
+  });
+});
+
+test("a generic registration URL is suppressed while the verified organizer details remain available", async () => {
+  await withActivities(async (f, open) => {
+    f.responder = path => path === `${feedPath}/${event.id}`
+      ? response({ ...event, registration_url: "https://library.invalid/events" }) : null;
+    const detail = open("activities", { id: event.id }); detail.render(); await tick(); detail.render();
+    assert.equal(detail.find("local-activity-register"), undefined);
+    assert.ok(detail.visible().includes("Registration is required"));
     detail.find("local-activity-source").props.onPress();
     await tick();
     assert.deepEqual(detail.external, [event.source_url]);
   });
 });
 
-test("unverifiable dates, insecure sources and invalid notification targets are rejected", () => {
-  const { normalizedActivityArea, validLocalActivity, localActivityNotificationId, formatActivityDate } =
+test("unverified or incomplete activities, invalid dates and unsafe event sources are rejected", () => {
+  const { validLocalActivity, localActivityNotificationId, officialActivityUrl } =
     load("../src/localActivities.ts", { "./externalContent": load("../src/externalContent.ts") });
-  assert.equal(normalizedActivityArea({ city: "18 Main Street", region: "NY", country: "US" }), null);
-  assert.equal(normalizedActivityArea({ city: "New York", region: "", country: "" }), null);
+  assert.equal(validLocalActivity(event), true);
+  assert.equal(validLocalActivity(place), false);
+  assert.equal(validLocalActivity({ ...event, event_source_verified: undefined }), false);
+  assert.equal(validLocalActivity({ ...event, address: "" }), false);
+  assert.equal(validLocalActivity({ ...event, age_label: "" }), false);
+  assert.equal(validLocalActivity({ ...event, description: "" }), false);
   assert.equal(validLocalActivity({ ...event, start_date: "2026-02-30" }), false);
   assert.equal(validLocalActivity({ ...event, end_date: "2026-12-01" }), false);
+  assert.equal(validLocalActivity({ ...event, ends_at: "2026-12-02T09:00:00-06:00" }), false);
   assert.equal(validLocalActivity({ ...event, source_url: "javascript:alert(1)" }), false);
-  assert.equal(validLocalActivity({ ...place, start_date: "2026-12-01" }), false);
-  assert.equal(validLocalActivity(place), true);
-  assert.match(formatActivityDate(event, "en"), /Dec 2/);
+  assert.equal(validLocalActivity({ ...event, source_url: "https://library.invalid/" }), false);
+  assert.equal(officialActivityUrl("https://library.invalid/calendar?utm_source=fixture"), null);
+  assert.equal(officialActivityUrl("https://library.invalid/calendar?eventId=955"), "https://library.invalid/calendar?eventId=955");
   assert.equal(localActivityNotificationId({ kind: "local_activity", local_activity_id: "../profile" }), null);
   assert.equal(localActivityNotificationId({ kind: "daily_post", local_activity_id: event.id }), null);
+});
+
+test("the schedule displays the venue time zone and both dates for overnight events", () => {
+  const { formatActivitySchedule } = load("../src/localActivities.ts", { "./externalContent": load("../src/externalContent.ts") });
+  const sameDay = formatActivitySchedule({ ...event, starts_at: "2026-12-02T22:00:00Z", ends_at: "2026-12-03T00:15:00Z" }, "en");
+  assert.match(sameDay, /Dec 2, 2026/);
+  assert.match(sameDay, /4:00 PM – 6:15 PM/);
+  assert.doesNotMatch(sameDay, /Dec 3/);
+  const overnight = formatActivitySchedule({ ...event, starts_at: "2026-12-02T23:30:00-06:00", ends_at: "2026-12-03T01:00:00-06:00" }, "en");
+  assert.match(overnight, /Dec 2, 2026 · 11:30 PM – Thu, Dec 3, 2026 · 1:00 AM/);
+  assert.match(formatActivitySchedule({ ...event, starts_at: "2026-12-02T10:00", ends_at: "2026-12-02T11:15" }, "en"), /10:00 AM – 11:15 AM/);
 });
 
 test("home carousel exposes the nearby activities entry in the test build", async () => {

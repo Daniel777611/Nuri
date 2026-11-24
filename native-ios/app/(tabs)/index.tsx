@@ -477,7 +477,7 @@ export default function Home() {
             {localActivitiesEnabled ? <Pressable onPress={()=>router.push("/nearby-activities")} accessibilityRole="button" testID="home-local-activities-card">
               <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingVertical:24,justifyContent:"space-between"}}>
                 <FinalText size={18} numberOfLines={1} style={{fontWeight:"500",lineHeight:26}}>{localActivityTitle(locale)}</FinalText>
-                <FinalText size={12} secondary>{activityCopy(locale,"活动、场所与本地资源","Events, places and local resources","活動、場所與在地資源")}</FinalText>
+                <FinalText size={12} secondary>{activityCopy(locale,"活动时间、地点和适龄推荐","Dates, venues and age guidance","活動時間、地點和適齡推薦")}</FinalText>
               </FinalSurface>
             </Pressable> : null}
           </ScrollView>

@@ -38,7 +38,10 @@ export default function NativePageControls() {
   const settings=/^\/(profile|child|notification-settings|account-deletion|ai-permission)(\/|$)/.test(pathname);
   const regularCommunity=pathname==="/community"&&communityHeader==="regular";
   const hideCommunityAvatar=communityHideAvatar==="1"||communityHideAvatar===undefined&&["preferences","blocked","blockedEmpty"].includes(String(uiState));
-  const displayTitle=prototypeTitle??(pathname==="/profile"?t(({main:"设置",personal:"个人信息",children:"孩子信息",preferences:"家庭偏好",favorites:"我的收藏",language:"语言",privacy:"隐私与 AI",account:"账号与安全",collections:"收藏分类"} as Record<string,string>)[String(section??"main")]??"设置"):t(title));
+  const displayTitle=prototypeTitle??(pathname==="/profile"
+    ? section === "nearby" ? localActivityTitle(locale)
+      : t(({main:"设置",personal:"个人信息",children:"孩子信息",preferences:"家庭偏好",favorites:"我的收藏",language:"语言",privacy:"隐私与 AI",account:"账号与安全",collections:"收藏分类"} as Record<string,string>)[String(section??"main")]??"设置")
+    : t(title));
   // Parent conversations own the complete Figma header. Keep the shell's safe
   // area, but never stack the generic profile/settings header above it. An
   // explicit default wins over a stale initial deep-link uiState on return.

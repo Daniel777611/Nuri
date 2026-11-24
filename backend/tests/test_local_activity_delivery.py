@@ -135,12 +135,17 @@ def rig(monkeypatch):
     async def discover(**kwargs):
         requests.append(kwargs)
         band = kwargs["age_band"]
+        scheduled = (kwargs["today"] + timedelta(days=2)).isoformat()
         return [{
             "id": band, "kind": "dated_event", "title": f"Library activity for {band}",
-            "summary": "Sign up with the organizer.",
-            "source_url": f"https://library.example.org/events/{band}", "source_label": "Public library",
-            "location_label": kwargs["city"], "start_date": (kwargs["today"] + timedelta(days=2)).isoformat(),
-            "end_date": None,
+            "summary": "Storytime for families.", "description": "Stories, songs and activities for families.",
+            "source_url": f"https://www.fortbendlibraries.gov/event/fixture-{band.replace('_', '-')}-12345",
+            "event_source_verified": True, "source_label": "Public library",
+            "location_label": kwargs["city"], "venue_name": "Library", "address": f"311 Main St, {kwargs['city']}",
+            "start_date": scheduled, "end_date": scheduled, "time_zone": "America/Chicago",
+            "starts_at": f"{scheduled}T10:00:00-06:00", "ends_at": f"{scheduled}T11:00:00-06:00",
+            "age_label": "Infants" if band == "infant" else "School-age children",
+            "_age_ranges": ((0, 11),) if band == "infant" else ((60, 155),),
         }]
 
     async def privacy(_uid, **_kwargs):
@@ -177,7 +182,7 @@ def test_deployed_opt_in_is_scoped_to_alpha_testing_database(monkeypatch):
     monkeypatch.delenv("NURI_LOCAL_ACTIVITIES_ENABLED", raising=False)
     monkeypatch.delenv("NURI_LOCAL_ACTIVITY_PUSH_BUILDS", raising=False)
     assert activities.enabled()
-    assert activities.supported_builds() == {"com.ordashtech.nuri.beta:1097"}
+    assert activities.supported_builds() == {"com.ordashtech.nuri.beta:1097", "com.ordashtech.nuri.beta:1098"}
 
     monkeypatch.setenv("NURI_LOCAL_ACTIVITY_PUSH_BUILDS", "com.ordashtech.nuri.beta:1097,com.example.pro:1097")
     assert activities.supported_builds() == {"com.ordashtech.nuri.beta:1097"}
@@ -201,6 +206,8 @@ def test_two_child_bands_and_account_scoped_revocation(rig):
     assert len(requests) == 2
     item = first["items"][0]
     assert "_valid_through" not in item
+    assert "_age_ranges" not in item
+    assert "matches your child" in item["match_reason"]
     url = f"{FEED}/{item['id']}"
     assert client.get(url, headers=PARENT_A).json() == item
     assert client.get(url, headers=PARENT_B).status_code == 404
@@ -277,9 +284,9 @@ async def test_schedule_consent_and_installation_checked_again_at_delivery(rig, 
 
     # Friday can choose a new result; consent revocation invalidates the queue.
     later = NOW + timedelta(days=3)
+    discover = local_activities.discover_local_activities
     async def friday(**kwargs):
-        return [{"id": "friday", "kind": "ongoing_resource", "title": "Library",
-                 "source_url": "https://library.example.org", "start_date": None, "end_date": None}]
+        return [{**item, "id": f"friday-{item['id']}"} for item in await discover(**kwargs)]
     monkeypatch.setattr(local_activities, "discover_local_activities", friday)
     event = await push_service.generate_local_activity_event(db, "family-a", now=later)
     assert event
