@@ -228,6 +228,96 @@ def _child(months, nickname="Juniper"):
     return {"nickname": nickname, "birth_date": date(year, zero_month + 1, 1).isoformat()}
 
 
+def test_contextual_early_learning_videos_search_with_age_without_exporting_identifiers(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("13个月宝宝的早教游戏", "https://youtu.be/abcdefghijk"),
+        SearchResult("Toddler Early Learning Activities for 13 Month Olds", "https://youtu.be/lmnopqrstuv"),
+        SearchResult("Grok 人工智能早教？大语言模型", "https://youtu.be/zzzzzzzzzzz"),
+    ])
+    child = _child(13, "测试小朋友")
+    result = _lookup("给我几个适合测试小朋友现在的情况的早教的视频。", children=[child])
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk", "lmnopqrstuv"]
+    assert len(calls) == 1
+    assert "13个月" in calls[0].query and "早教" in calls[0].query
+    assert "测试小朋友" not in calls[0].query and child["birth_date"] not in calls[0].query
+    assert all(item["url"].startswith("https://www.youtube.com/watch?v=") for item in result["items"])
+    assert all(item["thumbnail_url"].startswith("https://i.ytimg.com/vi/") for item in result["items"])
+
+
+def test_video_retry_uses_other_search_language_only_if_user_allows_either(monkeypatch, caplog):
+    calls = []
+
+    class Provider:
+        name = "tavily"
+
+        async def search(self, request):
+            calls.append(request)
+            return [SearchResult("早教人工智能模型", "https://youtu.be/zzzzzzzzzzz")] if request.lang == "zh" else [
+                SearchResult("Toddler Early Learning Activities", "https://youtu.be/abcdefghijk"),
+            ]
+
+    monkeypatch.setattr(media, "get_provider", Provider)
+    result = _lookup("给我几个早教视频。", children=[_child(13)])
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
+    assert [(request.lang, request.include_domains) for request in calls] == [
+        ("zh", ("youtube.com",)), ("en", ("youtube.com",)),
+    ]
+    assert "status=filtered candidate_count=1" in caplog.text
+    assert calls[0].query not in caplog.text
+    assert "zzzzzzzzzzz" not in caplog.text
+
+    calls.clear()
+    result = _lookup("给我几个早教视频，只要中文。", children=[_child(13)])
+    assert [request.lang for request in calls] == ["zh"]
+    assert [item["video_id"] for item in result["items"]] == ["TW3J7YhX2CI"]
+
+
+@pytest.mark.parametrize("text", [
+    "我想要的是绘本介绍或者读绘本的视频。",
+    "不是书单，我想看读绘本的视频。",
+])
+def test_reading_video_correction_triggers_media_and_gets_playable_links(monkeypatch, text):
+    calls = _provider(monkeypatch, [
+        SearchResult("幼儿绘本亲子共读 - YouTube", "https://youtu.be/abcdefghijk"),
+        SearchResult("Read Aloud Picture Books for Toddlers", "https://youtu.be/lmnopqrstuv"),
+    ])
+    assert media.requested_media(text) == ("video",)
+    result = _lookup(text)
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk", "lmnopqrstuv"]
+    assert len(calls) == 1 and "书单" not in calls[0].query
+
+
+def test_named_book_only_shows_results_for_the_requested_title(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("Goodnight Moon Read Aloud for Kids", "https://youtu.be/zzzzzzzzzzz"),
+        SearchResult("Brown Bear, Brown Bear, What Do You See? Read Aloud", "https://youtu.be/abcdefghijk"),
+    ])
+    text = "给测试小朋友找《Brown Bear, Brown Bear》的绘本朗读视频。"
+    result = _lookup(text, children=[_child(13, "测试小朋友")])
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
+    assert "Brown Bear, Brown Bear" in calls[0].query and "测试小朋友" not in calls[0].query
+    assert "测试小朋友" not in str(result)
+
+
+def test_reading_followup_without_content_research_uses_reviewed_video_only(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("Brown Bear, Brown Bear, What Do You See? Read Aloud", "https://youtu.be/abcdefghijk"),
+    ])
+    earlier = "我想要《Brown Bear, Brown Bear》的绘本朗读视频。"
+    result = _lookup("视频链接呢？", history=[{"role": "user", "text": earlier}])
+    assert [item["video_id"] for item in result["items"]] == ["77arbp2TjXQ"]
+    assert not calls
+
+
+@pytest.mark.parametrize("text", [
+    "给我推荐婴儿推车，并告诉我怎么用",
+    "Recommend a stroller and explain why",
+    "推荐适合一岁小孩的积木，并说说原因",
+])
+def test_recommendation_plus_explicit_advice_is_mixed(text):
+    assert not media.resource_only_request(text)
+
+
 @pytest.mark.parametrize("text,history", [
     (MILESTONE_REQUEST, ()),
     (MILESTONE_RETRY, MILESTONE_HISTORY),

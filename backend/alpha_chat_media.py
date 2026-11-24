@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, replace
@@ -17,10 +18,14 @@ from .feed.daily_video import thumbnail_url, video_id_of, watch_url
 from .nuri_core.family_store import redact_child_profile_text
 from .websearch import SearchImage, SearchRequest, SearchResult, get_provider
 
+logger = logging.getLogger(__name__)
+
 _REQUEST = re.compile(
     r"\b(?:find|share|send|show|recommend|suggest|give|link|need|want|where|any|looking for)\b"
     r"|有没有|有沒有|可以|能不能|给我|給我|推荐|推薦|发我|發我|分享|链接|連結|鏈接|看看|"
-    r"(?:^|[，。])找|帮我找|幫我找|想看|想找|要看|[?？]",
+    r"(?:^|[，。])(?:查找|[搜蒐]索|[找查搜])|[帮幫]我[找搜查]|[找搜查]一下|"
+    r"(?:^|[，。])(?:[请請])?[给給替为為][^，。]{1,24}(?:找|[推荐推薦]{2})|"
+    r"想看|想找|要看|能否|可否|我(?:就)?(?:想要|要|需要)|[来來][几幾][个個部条條段]|[?？]",
     re.I,
 )
 _MEDIA = {
@@ -46,7 +51,7 @@ _LINK_ONLY = re.compile(
     r"here|any|that|these|those|it|this|real|actual|direct|clickable|what|for|to|of|previous|above|"
     r"earlier|just|my|your|again|instead|thanks|looking|link|links|url|urls|not|search|searching|"
     r"google|keywords?)\b"
-    r"|(?:那你|那|我[要想]|我要的是|要的是|之前|剛才|刚才|上面|这些|這些|"
+    r"|(?:那你|那|我(?:就)?(?:想要|要|需要)(?:的[是就])?|我(?:想|要)[看找]|我[要想]|要的是|之前|剛才|刚才|上面|这些|這些|"
     r"直接|可以|麻烦|麻煩|请|請|一下|给我|給我|发给|發給|发我|發我|发|發|给|給|"
     r"在(?:哪里|哪裡|哪儿)|哪里|哪裡|在哪|在這|在这|哪儿|你|我|的|呢|吗|嗎|呀|啊|把|就|能|了|是|"
     r"能点|能點|可点|可點|可以点开|可以點開|点开|點開|真实|真實|实际|實際|"
@@ -57,6 +62,9 @@ _FOLLOW_UP_CHALLENGE = re.compile(
     r"^(?:我(?:就)?(?:要|想要)的[是就]|不是.+(?:而是|是)|都说了|都說了).{0,24}"
     r"(?:链接|連結|鏈接|网址|網址)"
     r"|^\s*i (?:asked|was asking) for (?:a |the )?(?:link|url)", re.I,
+)
+_RESOURCE_CORRECTION = re.compile(
+    r"^(?:我(?:要|想要)的)?不是[^，,。；;]{1,30}[，,；;]\s*",
 )
 _CREDENTIAL = re.compile(r"(?:token|secret|password|authorization|credential|api[_-]?key|session|signature|^sig$|^jwt$)", re.I)
 _SAFE_PATH = re.compile(r"\.(?:jpe?g|png|webp|avif|gif)$", re.I)
@@ -147,6 +155,28 @@ _MILESTONE_TOPIC = _VideoTopic(
         r"|[发發]育指[标標]|[长長]到什[么麼]阶段", re.I,
     ),
 )
+_READING_VIDEO_TOPIC = _VideoTopic(
+    "picture book read aloud storytime for babies toddlers",
+    "幼儿绘本 亲子共读 绘本朗读",
+    "幼兒繪本 親子共讀 繪本朗讀",
+    re.compile(
+        r"\b(?:picture books?|read[ -]alouds?|shared reading|story[ -]?time|bedtime stor(?:y|ies))\b"
+        r"|[绘繪]本|[亲親]子共[读讀]|[陪跟][孩寶宝].{0,6}[读讀]|[读讀](?:故事|童[书書])",
+        re.I,
+    ),
+)
+_EARLY_LEARNING_VIDEO_TOPIC = _VideoTopic(
+    "early learning activities baby toddler play parent demonstration",
+    "婴幼儿早教 亲子互动游戏 家长示范",
+    "嬰幼兒早教 親子互動遊戲 家長示範",
+    re.compile(
+        r"\b(?:early learning|early childhood (?:development|education)|developmental activities|"
+        r"(?:baby|toddler|infant) (?:play|learning|activities|games)|(?:learning|play) (?:activities|ideas|games)|serve and return)\b"
+        r"|早教|[启啟]蒙|早期(?:教育|[发發][育展])|[亲親]子(?:互[动動]|[游遊][戏戲])|"
+        r"(?:[婴嬰]幼[儿兒]|[宝寶][宝寶]|幼[儿兒]).{0,6}(?:[游遊][戏戲]|[认認]知[练練][习習])",
+        re.I,
+    ),
+)
 _MILESTONE_SEARCH = re.compile(
     r"\b(?:find|search|look up|share|send|show|recommend)\b|(?:^|[，。])(?:查找?|搜索?|找)|"
     r"[帮幫]我[查搜找]|(?:查|搜|找)(?:一下|一[查搜找]|找)|[推荐推薦]{2}|哪[里裡]能[看查]",
@@ -160,6 +190,7 @@ _MILESTONE_CLINICAL = re.compile(
     re.I,
 )
 _VIDEO_TOPICS = (
+    _READING_VIDEO_TOPIC,
     _SPEECH_VIDEO_TOPIC,
     _VideoTopic(
         "baby chicken puree introducing solids preparation for parents",
@@ -256,10 +287,12 @@ _VIDEO_TOPICS = (
         re.compile(r"\b(?:bottle[- ]feeding|paced feeding|formula preparation|prepar(?:e|ing) infant formula)\b|奶瓶(?:喂[养養]|[餵喂]奶)|[冲沖](?:泡|[调調])(?:配方)?奶|[节節]奏[喂餵]奶", re.I),
     ),
     _MILESTONE_TOPIC,
+    _EARLY_LEARNING_VIDEO_TOPIC,
 )
 _CHILD_VIDEO = re.compile(
     r"\b(?:bab(?:y|ies)|toddler(?:s)?|child(?:ren|hood)?|infant(?:s)?|newborn(?:s)?|kids?|preschool(?:ers?)?|parent(?:ing|s)?"
-    r"|(?:one|two|three|1|2|3)[ -]year[ -]olds?)\b|寶寶|宝宝|[嬰婴][兒儿]|幼[兒儿]|孩[子童]|小孩|小朋友|親子|亲子|育[兒儿]|月[龄齡]|早教",
+    r"|(?:one|two|three|1|2|3)[ -]year[ -]olds?|[0-9]{1,2}[ -]months?[ -]olds?)\b"
+    r"|寶寶|宝宝|[嬰婴][兒儿]|幼[兒儿]|孩[子童]|小孩|小朋友|親子|亲子|育[兒儿]|月[龄齡]|[0-9]{1,2}[个個]?月|早教",
     re.I,
 )
 _OFF_TOPIC_VIDEO = re.compile(
@@ -282,6 +315,8 @@ _EXPLICIT_EN_VIDEO = re.compile(
     re.I,
 )
 _HAN_TEXT = re.compile(r"[㐀-鿿]")
+_BOOK_TITLE = re.compile(r'《([^》]{2,80})》|“([^”]{2,80})”|"([^"]{2,80})"')
+_TITLE_BEFORE_READ_ALOUD = re.compile(r"\b((?:[A-Z][a-z'’-]+[ ,]+){1,8}[A-Z][a-z'’-]+),?\s+read[ -]aloud\b")
 # Each ID was checked against YouTube's public metadata and the named
 # institution's public educational video page. No treatment videos are here.
 _SPEECH_VIDEO_RESOURCES = {
@@ -321,10 +356,35 @@ _MEALTIME_VIDEO_RESOURCES = {
     ),
     "en": _PICKY_VIDEO_RESOURCES["en"],
 }
+_READING_VIDEO_RESOURCES = {
+    "zh": (
+        ("親子共讀分齡技巧 · 國民健康署", "djmsFyGswxw", "https://www.hpa.gov.tw/3808/s"),
+        ("棕色的熊、棕色的熊、你在看什麼？ · 新北市立圖書館", "FM_A32hvFQM",
+         "https://www.library.ntpc.gov.tw/singlehtml/232e6ef8fa764006bd87095b83e811cf?cntId=6cb0a48df0844d4e949540395da66bb2"),
+    ),
+    "en": (
+        ("Brown Bear, Brown Bear, What Do You See? · Eric Carle Read Aloud", "77arbp2TjXQ",
+         "https://www.youtube.com/watch?v=77arbp2TjXQ"),
+    ),
+}
+_EARLY_LEARNING_VIDEO_RESOURCES = {
+    "zh": (
+        ("亲子大脑互动示范 · 哈佛大学（中文字幕）", "TW3J7YhX2CI",
+         "https://developingchild.harvard.edu/resources/videos/serve-return-interaction-shapes-brain-circuitry/"),
+    ),
+    "en": (
+        ("5 Steps for Brain-Building Serve and Return · Harvard", "KNrnZag17Ek",
+         "https://developingchild.harvard.edu/resources/videos/how-to-5-steps-for-brain-building-serve-and-return/"),
+        ("Building Babies’ Brains Through Play · UNICEF", "fpiYNkkNmEo",
+         "https://developingchild.harvard.edu/resources/partner-resources/building-babies-brains-through-play-mini-parenting-master-class/"),
+    ),
+}
 _REVIEWED_VIDEOS = {
     _SPEECH_VIDEO_TOPIC: _SPEECH_VIDEO_RESOURCES,
     _PICKY_EATING_TOPIC: _PICKY_VIDEO_RESOURCES,
     _MEALTIME_TOPIC: _MEALTIME_VIDEO_RESOURCES,
+    _READING_VIDEO_TOPIC: _READING_VIDEO_RESOURCES,
+    _EARLY_LEARNING_VIDEO_TOPIC: _EARLY_LEARNING_VIDEO_RESOURCES,
 }
 _PICKY_ARTICLE = SearchResult(
     "Tips to Help Your Picky Eater · CDC",
@@ -345,11 +405,12 @@ _REVIEWED_ARTICLES = {
 }
 
 
-def _reviewed_videos(topic: _VideoTopic | None, locale: str) -> list[dict[str, str]]:
+def _reviewed_videos(topic: _VideoTopic | None, locale: str, *, named_book: str = "") -> list[dict[str, str]]:
     rows = _REVIEWED_VIDEOS.get(topic, {}).get("zh" if locale.startswith("zh") else "en", ())
     return [
         {"type": "video", "title": title, "source_url": source, **public_video_fields(watch_url(video_id))}
         for title, video_id, source in rows
+        if not named_book or _book_title_matches(title, named_book)
     ]
 
 
@@ -391,7 +452,8 @@ def _video_subject(value: str) -> str:
 
 
 def _resource_topic(text: str, query: str, route, children: list, allow_history: bool, history) -> _VideoTopic | None:
-    direct = _video_subject(redact_conversation_text(redact_child_profile_text(text, children), 320))
+    corrected = _RESOURCE_CORRECTION.sub("", text)
+    direct = _video_subject(redact_conversation_text(redact_child_profile_text(corrected, children), 320))
     if _OFF_TOPIC_VIDEO.search(direct):
         return None
     if direct_topic := _topic_in(direct):
@@ -429,6 +491,23 @@ def _english_terms(text: str) -> set[str]:
             for word in re.findall(r"[a-z][a-z0-9'-]{2,}", text)}
 
 
+def _book_subject(text: str, children: list) -> str:
+    safe = redact_conversation_text(redact_child_profile_text(text, children), 320)
+    if _PRIVATE_TEXT.search(safe):
+        return ""
+    if match := _BOOK_TITLE.search(safe):
+        return next(title for title in match.groups() if title).strip()
+    if match := _TITLE_BEFORE_READ_ALOUD.search(safe):
+        return match[1]
+    return ""
+
+
+def _book_title_matches(title: str, book: str) -> bool:
+    normalized_title = re.sub(r"[^\w]", "", _video_subject(title).casefold())
+    normalized_book = re.sub(r"[^\w]", "", _video_subject(book).casefold())
+    return bool(normalized_book and normalized_book in normalized_title)
+
+
 def _subject_matches(title: str, subject: str) -> bool:
     """Use concrete title evidence when no reviewed topic pattern exists."""
     title = _video_subject(title).casefold()
@@ -445,7 +524,8 @@ def _subject_matches(title: str, subject: str) -> bool:
     return bool(significant and sum(token in title for token in significant) >= min(len(significant), 2))
 
 
-def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: str = "", subject: str = "") -> list[dict[str, str]]:
+def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: str = "", subject: str = "",
+                 *, named_book: str = "") -> list[dict[str, str]]:
     scored: list[tuple[int, dict[str, str]]] = []
     for row in rows:
         title = _plain_title(row.title).removesuffix(" - YouTube")
@@ -458,7 +538,10 @@ def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: 
                 or (language == "en" and _HAN_TEXT.search(title_evidence))):
             continue
         child_in_title = bool(_CHILD_VIDEO.search(title_evidence))
-        if topic:
+        if named_book:
+            if not _book_title_matches(title_evidence, named_book) or not topic.terms.search(title_evidence):
+                continue
+        elif topic:
             if not topic.terms.search(title_evidence) or not (child_in_title or _CHILD_VIDEO.search(snippet)):
                 continue
         elif not _subject_matches(title_evidence, subject):
@@ -474,7 +557,7 @@ def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: 
 
 
 def requested_media(text: str | None, history=()) -> tuple[str, ...]:
-    value = (text or "").strip()
+    value = _RESOURCE_CORRECTION.sub("", (text or "").strip())
     if not 3 <= len(value) <= 320 or _NON_RESOURCE_LINK.search(value):
         return ()
     milestone_search = bool(_MILESTONE_TOPIC.terms.search(value) and _MILESTONE_SEARCH.search(value))
@@ -500,7 +583,9 @@ def requested_media(text: str | None, history=()) -> tuple[str, ...]:
 
 _MIXED_REQUEST = re.compile(
     r"\b(?:also|additionally|separately|but first)\b|[附顺順]带|[顺順]便|同[时時]|"
-    r"[并並]且.{0,8}(?:解[释釋]|告[诉訴])|先.{1,32}再.{0,10}(?:找|[给給]|[发發])",
+    r"\band\s+(?:explain|tell me (?:why|how)|compare|describe)\b|"
+    r"[并並](?:且)?\s*(?:解[释釋]|告[诉訴]我|[说說][说說]|[讲講][讲講]|比[较較])|"
+    r"先.{1,32}再.{0,10}(?:找|[给給]|[发發])",
     re.I,
 )
 
@@ -560,7 +645,7 @@ def _plain_title(value: str) -> str:
 
 
 def _subject(value: str, children: list) -> str:
-    safe = redact_conversation_text(redact_child_profile_text(value, children), 180)
+    safe = redact_conversation_text(redact_child_profile_text(_RESOURCE_CORRECTION.sub("", value), children), 180)
     if _PRIVATE_TEXT.search(safe):
         return ""
     for regex in _MEDIA.values():
@@ -585,7 +670,7 @@ def _query(text: str, route, children: list, locale: str, allow_history: bool) -
     return ""
 
 
-def _previous_explicit_subject(text: str, history, children: list) -> str:
+def _previous_resource_request(text: str, history, children: list) -> str:
     for row in reversed(history[-8:]):
         if not isinstance(row, dict) or row.get("role") != "user":
             continue
@@ -594,8 +679,8 @@ def _previous_explicit_subject(text: str, history, children: list) -> str:
             continue
         if _OFF_TOPIC_VIDEO.search(earlier):
             return ""
-        if subject := _subject(earlier, children):
-            return subject
+        if _subject(earlier, children):
+            return earlier
     return ""
 
 
@@ -721,11 +806,14 @@ async def find_chat_media(
         return None
     direct_query = _query(text, None, children, locale, False)
     query = direct_query
+    previous_request = _previous_resource_request(text, history, children) if not query else ""
     if not query and allow_history:
-        query = _previous_explicit_subject(text, history, children) or _query(text, route, children, locale, True)
+        query = _subject(previous_request, children) or _query(text, route, children, locale, True)
     medical = bool(authority_only or getattr(route, "is_medical", False)
                    or _MEDICAL_TEXT.search(text) or _MEDICAL_TEXT.search(query))
     topic = _resource_topic(text, query, route, children, allow_history, history)
+    if topic is _EARLY_LEARNING_VIDEO_TOPIC and _MILESTONE_CLINICAL.search(text):
+        medical = True
     if topic is _MILESTONE_TOPIC:
         # Routine, reviewed age examples are useful even when the routing model
         # calls the general subject medical. Keep diagnostic requests subject to
@@ -749,29 +837,64 @@ async def find_chat_media(
     lang = "zh" if locale.startswith("zh") else "en"
     provider = get_provider()
     live_provider = provider.name not in ("null", "stub")
+    # Tavily exposes a strict fetch API for callers that need to distinguish
+    # API failures from empty responses without logging exception details.
+    fetch = getattr(provider, "fetch", None) or getattr(provider, "search", None)
 
-    async def search(request: SearchRequest) -> list[SearchResult]:
-        if not live_provider:
-            return []
+    async def search(request: SearchRequest, timeout: float = 5.0) -> tuple[list[SearchResult], str]:
+        if not live_provider or fetch is None:
+            return [], "provider_unavailable"
         try:
-            return await asyncio.wait_for(provider.search(request), 5.0)
+            return await asyncio.wait_for(fetch(request), timeout), "completed"
+        except TimeoutError:
+            return [], "timeout"
         except Exception:
-            # The carousel must never fail or cancel a chat reply.
-            return []
+            return [], "provider_error"
 
     async def videos():
         if medical or "video" not in kinds:
             return []
         language = "zh" if _EXPLICIT_ZH_VIDEO.search(text) else "en" if _EXPLICIT_EN_VIDEO.search(text) else ""
         search_locale = "en" if language == "en" else "zh-CN" if language == "zh" and lang != "zh" else locale
-        rows = []
+        context_request = text if direct_query else previous_request
+        named_book = _book_subject(context_request, children) if topic is _READING_VIDEO_TOPIC else ""
+        months = alpha_milestones.child_age(context_request, children, []) if topic in (
+            _READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC,
+        ) and not named_book else None
         if query or topic and allow_history:
-            rows = await search(SearchRequest(
-                query=topic.query(search_locale) if topic else query,
-                lang="zh" if search_locale.startswith("zh") else "en",
-                include_domains=("youtube.com",), max_results=8,
-            ))
-        items = _video_items(topic, rows, language, query) or _reviewed_videos(topic, search_locale)
+            locales = [search_locale]
+            if topic in (_READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC) and not language and lang == "zh":
+                locales.append("en")
+            clock = asyncio.get_running_loop()
+            deadline = clock.time() + 5.0
+            for index, video_locale in enumerate(locales):
+                is_zh = video_locale.startswith("zh")
+                subject = topic.query(video_locale) if topic else query
+                if named_book:
+                    subject = f"{named_book} {'绘本朗读' if is_zh else 'read aloud'}"
+                elif months is not None:
+                    age = (f"{months}{'個' if video_locale == 'zh-TW' else '个'}月" if is_zh
+                           else f"{months}-month-old")
+                    subject = f"{age} {subject}"
+                timeout = min(3.0, deadline - clock.time()) if len(locales) > index + 1 else deadline - clock.time()
+                if timeout <= 0:
+                    break
+                rows, status = await search(SearchRequest(
+                    query=subject, lang="zh" if is_zh else "en",
+                    include_domains=("youtube.com",), max_results=8,
+                ), timeout)
+                items = _video_items(topic, rows, language, query, named_book=named_book)
+                if items:
+                    return items[:_MAX_ITEMS if len(kinds) == 1 else 3]
+                if status == "completed":
+                    status = "filtered" if rows else "no_results"
+                logger.warning("alpha_video_search_empty provider=%s status=%s candidate_count=%s",
+                               provider.name, status, len(rows))
+                if status in {"provider_unavailable", "provider_error"}:
+                    break
+        items = _reviewed_videos(topic, search_locale, named_book=named_book)
+        if not language and lang == "zh" and topic in (_READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC):
+            items.extend(_reviewed_videos(topic, "en", named_book=named_book))
         return items[:_MAX_ITEMS if len(kinds) == 1 else 3]
 
     async def articles_and_images():
@@ -782,7 +905,7 @@ async def find_chat_media(
         rows = _source_rows(existing, medical, topic, query) if query or allow_history else []
         if query and live_provider and (not rows or "image" in requested or not any(_images(row) for row in rows)):
             source_query = topic.query(locale) if topic else query
-            live = await search(SearchRequest(
+            live, _ = await search(SearchRequest(
                 query=source_query, lang=lang, include_domains=_ARTICLE_DOMAINS,
                 max_results=6, include_images=True,
             ))

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import httpx
 
 from backend.product_recommendations import exact_catalog_request, recommendation_transition, requested_recommendations
-from backend.websearch import SearchResult
+from backend.websearch import SearchImage, SearchResult
 
 
 PRIOR_REPLY = ("给 13 个月的宝宝推荐：绘本：Brown Bear, Brown Bear；Dear Zoo；"
@@ -19,7 +19,7 @@ def earlier_reply(text=PRIOR_REPLY):
     return [{"role": "ai", "text": text}, {"role": "user", "text": FOLLOW_UP}]
 
 
-def resolve(text, history=(), reply="", load=None):
+def resolve(text, history=(), reply="", load=None, *, children=None, provider=None):
     requests = []
 
     def handle(request):
@@ -31,10 +31,10 @@ def resolve(text, history=(), reply="", load=None):
         return httpx.Response(result, headers={"Content-Type": body_type})
 
     async def run():
-        request = requested_recommendations(text, list(history))
+        request = requested_recommendations(text, list(history), children=children)
         assert request is not None
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-            return await recommendation_transition(request, reply, client=client)
+            return await recommendation_transition(request, reply, client=client, provider=provider)
 
     return asyncio.run(run()), requests
 
@@ -87,6 +87,15 @@ def product_markup(url, title, price, currency, *, isbn=None, expires=None, imag
         product["image"] = image
     html = '<script type="application/ld+json">' + json.dumps(product) + "</script>"
     return httpx.Response(200, headers={"Content-Type": "text/html"}, text=html)
+
+
+def test_product_followup_recovers_the_subject_when_the_reply_only_describes_cards():
+    history = [
+        {"role": "user", "text": "推荐 Dear Zoo 绘本，想给 13 个月宝宝看。"},
+        {"role": "ai", "text": "我找到了这些商家的商品页面。", "transition": {"kind": "product_comparison"}},
+    ]
+    cards, _ = resolve("这些多少钱？", history)
+    assert [offer["title"] for offer in cards["offers"]] == ["Dear Zoo"]
 
 
 def test_live_recommendation_prices_use_exact_products_and_current_timestamp():
@@ -197,3 +206,66 @@ def test_exact_catalog_price_fallback_never_substitutes_another_book():
 
     assert asyncio.run(run()) is None
     assert len(calls) == 2 and all("9781416947370" in url for url in calls)
+
+
+def test_natural_first_turn_attaches_age_appropriate_products_without_llm_reply(monkeypatch):
+    monkeypatch.setattr("backend.alpha_milestones.age_in_months", lambda _: 7)
+    cards, urls = resolve("给我几款适合小九的玩具", children=[{"nickname": "小九", "birth_date": "2026-05-22"}])
+    assert {row["title"] for row in cards["offers"]} == {"Fisher-Price Chatter Telephone", "IKEA UPPSTÅ Stack & Nest Cups"}
+    assert all(row["image_url"] and row["url"] for row in cards["offers"])
+    assert all("小九" not in url and "2026-05-22" not in url for url in urls)
+    assert requested_recommendations("I need a stroller", []).categories == ("strollers",)
+    assert requested_recommendations("宝宝安全座椅有哪些推荐？", []).categories == ("car_seats",)
+    assert requested_recommendations("给我几个推荐安全座椅安装的影片", []) is None
+
+
+def test_discovery_preserves_exact_search_photo_when_merchant_blocks_page_and_drops_irrelevant_hits():
+    product = "https://www.amazon.com/dp/B000000003"
+    image = "https://m.media-amazon.com/images/I/stroller.jpg"
+    redirected_image = "https://m.media-amazon.com/images/I/redirected.jpg"
+    queries = []
+
+    class Provider:
+        name = "fixture"
+
+        async def search(self, query):
+            queries.append(query)
+            return [
+                SearchResult("New picture book", "https://www.amazon.com/dp/B000000001"),
+                SearchResult("Toy train", "https://www.amazon.com/dp/B000000002"),
+                SearchResult("Compact travel stroller", product, snippet="Sale $49.99",
+                             images=(SearchImage(redirected_image), SearchImage(image))),
+                SearchResult("Wrong storefront stroller", "https://www.amazon.co.uk/dp/B000000003"),
+            ]
+
+    def load(request):
+        if str(request.url) == redirected_image:
+            return httpx.Response(302, headers={"Location": "https://unverified.example/photo"})
+        if str(request.url) == image:
+            return 200
+        return 403
+
+    cards, fetched = resolve("给 13 个月宝宝挑几款 Amazon 婴儿推车", load=load, provider=Provider())
+    assert len(queries) == 1
+    assert queries[0].query == "baby strollers 12-24 months"
+    assert queries[0].include_domains == ("amazon.com",)
+    assert queries[0].include_images
+    assert set(fetched) == {product, image, redirected_image}
+    assert cards["status"] == "links_only"
+    assert [(row["url"], row["image_url"], row["price_amount"]) for row in cards["offers"]] == [(product, image, None)]
+
+
+def test_specific_title_in_another_market_does_not_substitute_an_unrelated_listing():
+    queries = []
+
+    class Provider:
+        name = "fixture"
+
+        async def search(self, query):
+            queries.append(query)
+            return [SearchResult("Other board book", "https://www.amazon.co.uk/dp/B000000001")]
+
+    cards, urls = resolve("发 Dear Zoo 英国 Amazon 的图和链接", provider=Provider())
+    assert [query.query for query in queries] == ["Dear Zoo"]
+    assert queries[0].include_domains == ("amazon.co.uk",)
+    assert cards is None and urls == []

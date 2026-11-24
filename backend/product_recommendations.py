@@ -1,4 +1,4 @@
-"""Illustrated book and toy recommendations for the Alpha chat."""
+"""Illustrated retailer recommendations for the Alpha chat."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
+from .alpha_milestones import child_age
 from .product_comparison import (
     _BUY,
     _MEDICAL_USE,
     _MEDICINE_FOR_CONDITION,
     _PUBLIC_ITEM_ID,
     _RESTRICTED,
+    _clean_text,
     _listing_key,
     _pick_search_hits,
     _product_image,
@@ -23,15 +25,38 @@ from .product_comparison import (
     retailer_listing_data,
     retailer_listing_url,
 )
-from .websearch import SearchProvider, SearchRequest, get_provider
+from .websearch import SearchProvider, SearchRequest, SearchResult, get_provider
 
 _TOPICS = {
-    "books": re.compile(r"\b(?:books?|picturebooks?)\b|绘本|繪本|童书|童書|图画书|圖畫書", re.I),
-    "toys": re.compile(r"\b(?:toys?|stacking cups|stacking rings|building blocks)\b|玩具|积木|積木", re.I),
+    "books": re.compile(r"\b(?:books?|picturebooks?|storybooks?|story collection)\b|绘本|繪本|童书|童書|图画书|圖畫書|[婴嬰]幼[儿兒].{0,8}的书", re.I),
+    "toys": re.compile(r"\b(?:toys?|stacking cups|stacking rings|building blocks|pretend play|playsets?|dolls?)\b|玩具|积木|積木", re.I),
+    "diapers": re.compile(r"\b(?:diapers?|napp(?:y|ies))\b|尿布|尿[裤褲]", re.I),
+    "strollers": re.compile(r"\b(?:strollers?|prams?|pushchairs?)\b|[婴嬰][儿兒]车|[婴嬰][儿兒]車|童[车車]|推[车車]", re.I),
+    "car_seats": re.compile(r"\b(?:car seats?|booster seats?)\b|安全座椅|汽[车車]座椅", re.I),
+    "monitors": re.compile(r"\bbaby monitors?\b|(?:[婴嬰][儿兒]|宝宝|寶寶)[监監][视視][器機]", re.I),
+    "bottles": re.compile(r"\b(?:baby bottles?|feeding bottles?)\b|奶瓶", re.I),
+    "carriers": re.compile(r"\b(?:baby carriers?|infant carriers?|baby wraps?)\b|背[带帶]|背[巾帶]", re.I),
+    "high_chairs": re.compile(r"\bhigh[ -]?chairs?\b|(?:[婴嬰][儿兒]|宝宝|寶寶|[儿兒]童)[餐饭飯]椅", re.I),
+    "cribs": re.compile(r"\b(?:cribs?|cots?|bassinets?)\b|(?:[婴嬰][儿兒]|宝宝|寶寶)床", re.I),
+}
+_SUBJECTS = {
+    "books": "children's picture books",
+    "toys": "children's toys",
+    "diapers": "baby diapers",
+    "strollers": "baby strollers",
+    "car_seats": "child car seats",
+    "monitors": "baby monitors",
+    "bottles": "baby feeding bottles",
+    "carriers": "baby carriers",
+    "high_chairs": "baby high chairs",
+    "cribs": "baby cribs",
 }
 _RECOMMEND = re.compile(
-    r"\b(?:recommend(?:ation|ations)?|suggest(?:ion|ions)?|looking for|find me)\b|"
-    r"推荐|推薦|建议|建議|哪些适合|哪些適合|有什么|有什麼|帮我找|幫我找",
+    r"\b(?:recommend(?:ation|ations)?|suggest(?:ion|ions)?|looking for|find me|"
+    r"give me (?:some|a few|a couple of|your|a)|i(?:'m| am) after|i need|which .{1,45} should i get)\b|"
+    r"推荐|推薦|建议|建議|(?:哪些|什么|什麼|哪款|哪种|哪種).{0,10}(?:适合|適合|好用)|"
+    r"有什么|有什麼|有哪些|帮我找|幫我找|(?:给|給)我(?:找|挑|[选選]|[一几幾]?[个個本款件套])|"
+    r"(?:找|挑|[选選]|想要|需要)[一几幾][个個本款件套种種]|(?:想|需要)(?:找|挑|[选選])",
     re.I,
 )
 _ATTACHMENT = re.compile(r"\b(?:photos?|images?|pictures?|links?|thumbnails?)\b|图片|圖片|封面|照片|发图|發圖|图和|圖和|链接|連結|鏈接|网址|網址", re.I)
@@ -47,11 +72,8 @@ _FOLLOW_UP = re.compile(
     r"\b(?:those|these|them|previous|above|ones|earlier|just)\b|这些|這些|那些|上述|刚才|剛才|上面|只要|要图|要圖|给我图|給我圖|的时候|的時候",
     re.I,
 )
-_CHILD_AGE = re.compile(
-    r"(?<!\d)(?P<count>[0-9]{1,2})\s*(?P<unit>个?月|個月|岁|歲|months?(?:\s+old)?\b|years?(?:\s+old)?\b)",
-    re.I,
-)
-_US_STORES = ("barnesandnoble.com", "bookshop.org", "target.com", "walmart.com", "amazon.com", "ikea.com")
+_US_STORES = ("barnesandnoble.com", "bookshop.org", "target.com", "walmart.com", "amazon.com", "ikea.com", "lego.com",
+              "lakeshorelearning.com")
 _MARKET_STORES = {
     "CA": ("amazon.ca", "walmart.ca"), "GB": ("amazon.co.uk",), "AU": ("amazon.com.au",),
     "DE": ("amazon.de",), "FR": ("amazon.fr",), "JP": ("amazon.co.jp",),
@@ -65,6 +87,15 @@ _MARKET_CODES = {
     **dict.fromkeys(("australia", "澳大利亚", "澳洲"), "AU"), **dict.fromkeys(("germany", "德国", "德國"), "DE"),
     **dict.fromkeys(("france", "法国", "法國"), "FR"), **dict.fromkeys(("japan", "日本"), "JP"),
     **dict.fromkeys(("usa", "united states", "美国", "美國"), "US"),
+}
+_STORES_BY_NAME = {
+    "amazon.": re.compile(r"\bamazon\b|亚马逊|亞馬遜", re.I),
+    "walmart.": re.compile(r"\bwalmart\b|沃尔玛|沃爾瑪", re.I),
+    "target.com": re.compile(r"\btarget\b", re.I),
+    "barnesandnoble.com": re.compile(r"\bbarnes\s*(?:&|and)\s*noble\b", re.I),
+    "bookshop.org": re.compile(r"\bbookshop\.org\b", re.I),
+    "ikea.com": re.compile(r"\bikea\b|宜家", re.I),
+    "lego.com": re.compile(r"\blego\b|乐高|樂高", re.I),
 }
 
 
@@ -122,13 +153,14 @@ class DiscoveryRequest:
     text: str
     previous_reply: str
     exact_only: bool = False
+    age_months: int | None = None
 
 
 def _categories(text: str) -> tuple[str, ...]:
     return tuple(category for category, pattern in _TOPICS.items() if pattern.search(text))
 
 
-def requested_recommendations(text: str, history: list) -> DiscoveryRequest | None:
+def requested_recommendations(text: str, history: list, *, children: list | None = None) -> DiscoveryRequest | None:
     """Use the latest same-session reply locally to resolve a short follow-up."""
     if (not 4 <= len(text) <= 400 or _MEDICAL_USE.search(text) or _MEDICINE_FOR_CONDITION.search(text)
             or _RESTRICTED.search(text) or _PUBLIC_ITEM_ID.search(text) or _NON_PRODUCT_MEDIA.search(text)):
@@ -141,18 +173,34 @@ def requested_recommendations(text: str, history: list) -> DiscoveryRequest | No
     link_follow_up = _LINK_FOLLOW_UP.search(text)
     wants_price = _PRICE.search(text)
     # An explicit price or named-item checkout stays on the SKU lookup path.
-    if named and not wants_attachments and (wants_price or _BUY.search(text)):
+    if not wants_attachments and (wants_price or _BUY.search(text)) and (named or not (wants_recommendations or follow_up)):
         return None
     if not (wants_recommendations or wants_attachments or wants_price and follow_up):
         return None
     prior = ""
     if (wants_attachments or wants_price) and (follow_up or link_follow_up or not wants_recommendations):
-        prior = next((row.get("text") or "" for row in reversed(history[-8:]) if row.get("role") == "ai"), "")
+        recent = history[-8:]
+        for index in range(len(recent) - 1, -1, -1):
+            row = recent[index]
+            if row.get("role") != "ai":
+                continue
+            prior = row.get("text") or ""
+            transition = row.get("transition")
+            if isinstance(transition, dict) and transition.get("kind") == "product_comparison":
+                # Direct card replies need not repeat the category in prose.
+                # Recover it from the user request that produced those cards.
+                subject = next((item.get("text") or "" for item in reversed(recent[:index])
+                                if item.get("role") == "user"), "")
+                prior = f"{subject}\n{prior}"
+            break
     if not categories and (follow_up or link_follow_up) and not _NON_PRODUCT_MEDIA.search(prior):
         prior_matches = tuple(item.category for item in _CATALOG if _match_position(item, prior) < len(prior.casefold()))
         if follow_up or prior_matches or _RECOMMEND.search(prior):
             categories = tuple(dict.fromkeys((*_categories(prior), *prior_matches)))
-    return DiscoveryRequest(categories, text, prior) if categories else None
+    if not categories:
+        return None
+    age = child_age(text, children or [], [prior] if prior else [])
+    return DiscoveryRequest(categories, text, prior, age_months=age)
 
 
 def exact_catalog_request(text: str) -> DiscoveryRequest | None:
@@ -178,14 +226,6 @@ def _match_position(item: Listing, text: str) -> int:
     return min((index for alias in item.aliases if (index := folded.find(alias)) >= 0), default=len(folded))
 
 
-def _age_months(request: DiscoveryRequest, reply: str) -> int | None:
-    age_match = _CHILD_AGE.search(request.text) or _CHILD_AGE.search(request.previous_reply) or _CHILD_AGE.search(reply)
-    age = int(age_match["count"]) if age_match else None
-    if age is not None and age_match["unit"].casefold().startswith(("岁", "歲", "year")):
-        age *= 12
-    return age
-
-
 def _select(request: DiscoveryRequest, reply: str, category: str, age: int | None) -> list[Listing]:
     combined = "\n".join((request.text, request.previous_reply, reply))
     choices = [item for item in _CATALOG if item.category == category and (
@@ -199,13 +239,13 @@ def _select(request: DiscoveryRequest, reply: str, category: str, age: int | Non
 def _market_stores(text: str, locale: str) -> tuple[str, ...]:
     explicit = _MARKET.search(text)
     code = _MARKET_CODES[explicit.group(0).casefold()] if explicit else locale.replace("_", "-").split("-")[-1].upper()
-    return _MARKET_STORES.get(code, _US_STORES)
+    stores = _MARKET_STORES.get(code, _US_STORES)
+    requested = tuple(name for name, pattern in _STORES_BY_NAME.items() if pattern.search(text))
+    return tuple(store for store in stores if store.startswith(requested)) if requested else stores
 
 
 def _public_query(category: str, age: int | None) -> str:
-    subject = "board books" if category == "books" and age is not None and age < 36 else {
-        "books": "children's picture books", "toys": "children's toys",
-    }[category]
+    subject = "board books" if category == "books" and age is not None and age < 36 else _SUBJECTS[category]
     if age is None:
         return subject
     for upper, label in ((6, "newborn"), (12, "6-12 months"), (24, "12-24 months"),
@@ -216,22 +256,37 @@ def _public_query(category: str, age: int | None) -> str:
 
 
 async def _search_listings(search: SearchProvider, category: str,
-                           age: int | None, stores: tuple[str, ...]) -> list[str]:
-    if search.name in {"null", "stub"}:
+                           age: int | None, stores: tuple[str, ...], *,
+                           listing: Listing | None = None) -> list[tuple[str, SearchResult]]:
+    if not stores or search.name in {"null", "stub"}:
         return []
     try:
-        async with asyncio.timeout(2.8):
+        async with asyncio.timeout(4.5):
             rows = await search.search(SearchRequest(
-                query=_public_query(category, age), include_domains=stores, max_results=8,
+                query=listing.title if listing else _public_query(category, age),
+                include_domains=stores, max_results=8, include_images=True,
             ))
     except Exception:
         return []
 
+    relevant = []
+    for hit in rows:
+        checked = retailer_listing_url(hit.url)
+        if not checked or (host := _listing_key(checked[0])[0]) not in stores:
+            continue
+        if listing:
+            if _match_position(listing, hit.title) == len(hit.title.casefold()):
+                continue
+        elif not (
+            _TOPICS[category].search(f"{hit.title} {hit.snippet}")
+            or category == "books" and host in {"barnesandnoble.com", "bookshop.org"}
+        ):
+            continue
+        relevant.append(hit)
     urls = {}
-    for _, url, _ in _pick_search_hits(rows):
+    for hit, url, _ in _pick_search_hits(relevant):
         key = _listing_key(url)
-        if key[0] in stores:
-            urls.setdefault((*key, urlsplit(url).query), url)
+        urls.setdefault((*key, urlsplit(url).query), (url, hit))
     return list(urls.values())[:4]
 
 
@@ -241,7 +296,7 @@ async def _probe_image(client: httpx.AsyncClient, url: str) -> bool | None:
             async with client.stream("GET", url, headers={"Accept": "image/*"}) as response:
                 if response.status_code == 200:
                     return response.headers.get("content-type", "").lower().startswith("image/")
-                if response.status_code in {404, 410}:
+                if response.is_redirect or response.status_code in {404, 410}:
                     return False
                 # Some shops decline automated access. A previously verified
                 # page and photo still make a useful card without a price.
@@ -263,7 +318,8 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
                                     provider: SearchProvider | None = None) -> dict | None:
     now = datetime.now(timezone.utc)
 
-    async def inspect(http: httpx.AsyncClient, source: str, fallback: Listing | None = None):
+    async def inspect(http: httpx.AsyncClient, source: str, fallback: Listing | None = None,
+                      hit: SearchResult | None = None):
         checked = retailer_listing_url(source)
         if not checked:
             return None
@@ -280,11 +336,17 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
         if data and data.get("_restricted"):
             return None
         details = data or {}
-        if not fallback and not data:
+        title = fallback.title if fallback else details.get("title") or _clean_text(hit.title if hit else "", 180)
+        if not title:
             return None
         if not image_url or image_ok is False:
-            image_url = details.get("image_url")
-            if not image_url or await _probe_image(http, image_url) is not True:
+            # A photograph can come from the retailer metadata or from this
+            # exact search result. Query-level photos have no product identity.
+            source_images = [_product_image(image.url, fetched_url) for image in hit.images[:3]] if hit else []
+            candidates = list(dict.fromkeys(url for url in (details.get("image_url"), *source_images) if url))
+            verified = await asyncio.gather(*(_probe_image(http, candidate) for candidate in candidates))
+            image_url = next((candidate for candidate, ok in zip(candidates, verified) if ok is True), None)
+            if not image_url:
                 return None
         edition = dict(parse_qsl(urlsplit(url).query)).get("ean")
         if edition and details.get("_identity") != "gtin:" + edition.zfill(14):
@@ -295,7 +357,7 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
         if (*_listing_key(offer_url), urlsplit(offer_url).query) != (*_listing_key(url), urlsplit(url).query):
             offer_url, details = fetched_url, {}
         return ({
-            "title": fallback.title if fallback else data["title"],
+            "title": title,
             "url": offer_url,
             "retailer": retailer,
             "image_url": image_url,
@@ -304,31 +366,38 @@ async def recommendation_transition(request: DiscoveryRequest, reply: str, *, lo
             "availability": details.get("availability", "unknown"),
         }, bool(markup))
 
-    stores = _market_stores(request.text, locale)
+    stores = _market_stores(f"{request.text}\n{request.previous_reply}", locale)
     search = provider if provider is not None else get_provider()
-    age = _age_months(request, reply)
+    age = request.age_months
+    if age is None:
+        age = child_age(request.text, [], [request.previous_reply, reply])
 
     async def category_cards(http: httpx.AsyncClient, category: str):
         limit = 2 if category == "toys" and len(request.categories) > 1 else 4
-        snapshot = _select(request, reply, category, age) if stores == _US_STORES else []
+        catalog = _select(request, reply, category, age)
+        snapshot = [item for item in catalog if _listing_key(item.retailer_url)[0] in stores]
         context = "\n".join((request.text, request.previous_reply, reply)).casefold()
         requested = request.text.casefold()
-        chosen = [item for item in snapshot if _match_position(item, requested) < len(requested)]
-        if not chosen:
-            chosen = [item for item in snapshot if _match_position(item, context) < len(context)]
-        initial = [(item.retailer_url, item) for item in chosen[:limit]]
-        if request.exact_only and not initial:
-            return []
-        if not initial:
-            initial = [(url, None) for url in await _search_listings(search, category, age, stores)]
-        fallback = [] if request.exact_only else [
-            (item.retailer_url, item) for item in snapshot if item not in chosen[:limit]
-        ][:limit]
-        for group in (initial, fallback):
-            results = await asyncio.gather(*(inspect(http, url, item) for url, item in group))
-            if cards := [result for result in results if result]:
-                return cards[:limit]
-        return []
+        mentioned = [item for item in catalog if _match_position(item, requested) < len(requested)]
+        if not mentioned:
+            if request.exact_only:
+                return []
+            mentioned = [item for item in catalog if _match_position(item, context) < len(context)]
+        selected = [item for item in snapshot if item in mentioned] if mentioned else snapshot
+        results = await asyncio.gather(*(inspect(http, item.retailer_url, item) for item in selected[:limit]))
+        cards = [result for result in results if result]
+        if cards:
+            return cards
+
+        if mentioned:
+            groups = await asyncio.gather(*(
+                _search_listings(search, category, age, stores, listing=item) for item in mentioned[:limit]
+            ))
+            rows = list(dict(url_hit for group in groups for url_hit in group).items())
+        else:
+            rows = await _search_listings(search, category, age, stores)
+        results = await asyncio.gather(*(inspect(http, url, hit=hit) for url, hit in rows[:limit]))
+        return [result for result in results if result]
 
     async def get_cards(http: httpx.AsyncClient):
         groups = await asyncio.gather(*(category_cards(http, category) for category in request.categories))

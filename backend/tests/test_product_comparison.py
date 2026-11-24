@@ -114,6 +114,15 @@ def test_stale_snippet_and_blocked_retailer_do_not_create_a_price():
     assert "核实" in result.reply
 
 
+def test_removed_listing_does_not_get_promoted_by_its_search_result():
+    result, _, visits = lookup(
+        [hit(WALMART, images=(SearchImage(WALMART_IMAGE),)), hit(AMAZON)],
+        lambda url: httpx.Response(410) if url == WALMART else product_page("15.00"),
+    )
+    assert set(visits) == {WALMART, AMAZON}
+    assert [row["url"] for row in result.transition["offers"]] == [AMAZON]
+
+
 def test_search_results_cannot_fetch_untrusted_hosts_or_follow_non_product_redirects():
     rows = [
         hit("https://www.walmart.com.evil.example/ip/1234567"),

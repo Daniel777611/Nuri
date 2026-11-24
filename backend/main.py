@@ -6112,7 +6112,9 @@ def _turn_shopping_enabled(body: UserMessageIn) -> bool:
 
 def _turn_product_recommendations(body: UserMessageIn, turn: _Turn) -> product_recommendations.DiscoveryRequest | None:
     if _turn_shopping_enabled(body):
-        return product_recommendations.requested_recommendations(body.text, turn.msgs)
+        return product_recommendations.requested_recommendations(
+            body.text, turn.msgs, children=list(turn.context_hints.get("children") or []),
+        )
     return None
 
 
@@ -6182,7 +6184,9 @@ async def _resource_answer(body: UserMessageIn, rc: _ReplyContext, kinds: tuple[
     if risk in {"medical", "referral"} and (not media or media.get("catalog") != "cdc_milestones"):
         return None
     locale = (body.client_context.locale if body.client_context else None) or "en"
-    if recommendations and product_recommendations.attachment_only(recommendations):
+    if recommendations and (
+        product_recommendations.attachment_only(recommendations) or alpha_chat_media.resource_only_request(body.text)
+    ):
         cards = await _find_turn_attachment(body, rc, "", recommendations, None)
         return product_lookup_reply(cards["status"] if cards else "no_results", locale), cards
     if kinds and alpha_chat_media.resource_only_request(body.text):
@@ -6230,6 +6234,7 @@ async def post_message(
     script_step: Optional[tuple[int, int]] = None
     product = None
     recommendations = _turn_product_recommendations(body, turn)
+    kinds = _turn_media_kinds(body, turn) if not recommendations else ()
     claim_completed = False
     sb = _require_chat_storage()
 
@@ -6239,11 +6244,10 @@ async def post_message(
                 turn.msgs, turn.fix_text, turn.owner_uid,
                 operation_id=turn.user_msg["id"],
             )
-        elif not recommendations and (product := await _find_turn_products(body)):
+        elif not recommendations and "video" not in kinds and (product := await _find_turn_products(body)):
             ai_text, transition = product.reply, product.transition
         elif oai:
             rc = await _reply_context(turn, body, metrics)
-            kinds = _turn_media_kinds(body, turn) if not recommendations else ()
             media = await _find_turn_chat_media(body, turn, rc, kinds)
             if resource_answer := await _resource_answer(body, rc, kinds, media, recommendations):
                 ai_text, transition = resource_answer
@@ -6335,6 +6339,7 @@ async def post_message_stream(
         script_step: Optional[tuple[int, int]] = None
         product = None
         recommendations = _turn_product_recommendations(body, turn)
+        kinds = _turn_media_kinds(body, turn) if not recommendations else ()
         claim_completed = False
         sb = _require_chat_storage()
         try:
@@ -6354,12 +6359,11 @@ async def post_message_stream(
                     operation_id=turn.user_msg["id"],
                 )
                 yield _sse({"type": "delta", "text": ai_text})
-            elif not recommendations and (product := await _find_turn_products(body)):
+            elif not recommendations and "video" not in kinds and (product := await _find_turn_products(body)):
                 ai_text, transition = product.reply, product.transition
                 yield _sse({"type": "delta", "text": ai_text})
             elif aoai:
                 rc = await _reply_context(turn, body, metrics)
-                kinds = _turn_media_kinds(body, turn) if not recommendations else ()
                 media = await _find_turn_chat_media(body, turn, rc, kinds)
                 if resource_answer := await _resource_answer(body, rc, kinds, media, recommendations):
                     ai_text, transition = resource_answer

@@ -455,11 +455,6 @@ async def _read_listing_page(client: httpx.AsyncClient, page: str, *,
     return None
 
 
-async def _page_markup(client: httpx.AsyncClient, page: str) -> tuple[str, str] | None:
-    result = await _read_listing_page(client, page)
-    return (result[0], result[1]) if result is not None and result[1] is not None else None
-
-
 def _pick_search_hits(results: list[SearchResult]) -> list[tuple[SearchResult, str, str]]:
     first_by_retailer: dict[str, list[tuple[SearchResult, str, str]]] = {}
     seen = set()
@@ -566,9 +561,11 @@ async def lookup_product_comparison(text: str, locale: str, *, provider: SearchP
     async def inspect(http: httpx.AsyncClient):
         async def item_result(item: SearchResult, url: str, retailer: str):
             try:
-                outcome = await asyncio.wait_for(_page_markup(http, url), timeout=4.0)
+                outcome = await asyncio.wait_for(_read_listing_page(http, url, exact=True), timeout=4.0)
             except TimeoutError:
                 outcome = None
+            if outcome and outcome[1] is None:
+                return None
             canonical, markup = outcome or (url, "")
             data = retailer_listing_data(markup, canonical, now=checked_at) if markup else None
             if data and data.get("_restricted"):
