@@ -18,7 +18,7 @@ import { singleLineInputStyle } from "@/src/uiux48/inputLayout";
 import { aiConsent, api, apiErrorDetail, isAuthError } from "@/src/api";
 import { AI_CONSENT_VERSION } from "@/src/aiConsent";
 import { useAIConsent } from "@/src/useAIConsent";
-import { CommunityMessageTranslations, communityNotesConsentCopy, communityTranslationScope } from "@/src/communityMessageTranslation";
+import { CommunityMessageTranslations, communityNotesConsentCopy, communityTranslationActions, communityTranslationScope, currentTranslationRequest } from "@/src/communityMessageTranslation";
 import { bottleNotificationSnapshot, childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
 import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FINAL_COLOR } from "./Primitives";
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
@@ -74,11 +74,15 @@ const DISTANCE_FILTER = [null, 1, 3, 5, 10] as const;
 /** One server read, keyed: a new key (or reload) refetches; a stale answer is dropped. */
 type Remote<T> = { value?: T; error?: unknown; loading: boolean; reload: () => void };
 type ConsentSheet = { mode: "request" | "decision"; conversationId: string; person: string;
-  noticeVersion: string; epoch: number; requestId?: string; ticket: number | null; revision: number };
+  noticeVersion: string; epoch: number; requestId?: string; offerKey?: string; ticket: number | null; revision: number };
 type ChatConsentLease = Pick<ConsentSheet, "conversationId" | "person" | "noticeVersion" | "epoch" | "ticket" | "revision"> & { screen: FinalCommunityScreen };
+type TranslationSettings = { ticket: number; revision: number; conversation?: { conversationId: string; parentName: string } };
+type TranslationPermissionAction = "request" | "approve" | "decline" | "revoke";
 type ChatPhoto = { id: string; prepared: PreparedChatImage };
 type ChatPhotoDraft = { ticket: number; person: string; photos: ChatPhoto[] };
 const friendIntentKey=(accountId:string)=>`community.friend-intent-completed.${accountId}`;
+const privateChatNotesOfferKey=(accountId:string,conversationId:string)=>
+  `community.notes-offer-dismissed.${encodeURIComponent(accountId)}:${encodeURIComponent(conversationId)}`;
 function useRemote<T>(key: string | null, load: (isCurrent: () => boolean) => Promise<T>, { enabled = true, refresh = 0 } = {}): Remote<T> {
   const [state, setState] = useState<{ key: string | null; value?: T; error?: unknown; loading: boolean }>({ key: null, loading: false });
   const [nonce, setNonce] = useState(0);
@@ -250,7 +254,10 @@ export default function CommunityFinal() {
   const [translations]=useState(()=>new CommunityMessageTranslations(communityApi.translateMessage,()=>communityKey("tr")));
   const [,setTranslationRevision]=useState(0);
   const [translationPaused,setTranslationPaused]=useState<string|null>(null);
-  const [translationPreferencePaused,setTranslationPreferencePaused]=useState(false);
+  const [translationPreferencePaused,setTranslationPreferencePaused]=useState<number|null>(null);
+  const [translationSettings,setTranslationSettings]=useState<TranslationSettings|null>(null);
+  const translationSettingsRef=useRef(translationSettings);
+  translationSettingsRef.current=translationSettings;
   const [consentSheet,setConsentSheet]=useState<ConsentSheet|null>(null);
   const consentSheetRef=useRef(consentSheet);consentSheetRef.current=consentSheet;
   const consentAction=useRef(false);
@@ -288,6 +295,7 @@ export default function CommunityFinal() {
   const intentLabel=(index:number,short=false)=>{const l=INTENT_LABELS[index];return l?c(l[0],short?l[2]:l[1]):"";};
   const nameOf=(p:PublicParent|null|undefined)=>!p||p.anonymous||!p.parent_id?c("匿名家长","Anonymous parent"):p.display_name;
   const keyFor=(slot:string,text:string,tag:string)=>{const current=writeKeys.current[slot];if(current&&current.text===text)return current.key;const key=communityKey(tag);writeKeys.current[slot]={text,key};return key;};
+  const conversationKey=(person:string)=>`${accountScope.generation}:${person}`;
   const refresh=()=>setWriteTick(t=>t+1);
 
   const filterControls=useRef<Partial<Record<"gender"|"distance",View|null>>>({}),filterModal=useRef<View|null>(null),filterRequest=useRef(0),filterOpen=useRef<"gender"|"distance"|null>(null),filterMounted=useRef(true),filterFocused=useRef(true),filterBounds=useRef<{left:number;top:number;width:number;height:number}|null>(null);
@@ -335,8 +343,12 @@ export default function CommunityFinal() {
   };
   const setProfileEditingMode=(editing:boolean)=>{router.setParams({...presentation(latest.current),communityBackdrop:editing||latest.current.screen==="profileSettings"?"settings":"final-bottle"});setProfileEditing(editing);};
   const title=presentation(state).flowTitle;
+  const dismissNotesOffer=(sheet:ConsentSheet|null)=>{
+    if(sheet?.offerKey&&accountScope.current(sheet.ticket))void storage.setItem(sheet.offerKey,true).catch(()=>{});
+  };
   const dispatch = (event:FinalCommunityEvent) => {
     const previous=latest.current,next=finalCommunityReducer(previous,event);
+    if(event.type==="back"&&previous.screen==="consent")dismissNotesOffer(consentSheetRef.current);
     if(next.screen!==previous.screen||next.person!==previous.person)navigationRevision.current++;
     if(["compose","original","polished"].includes(previous.screen)&&!["compose","original","polished"].includes(next.screen)){
       questionFocusEpoch.current++;
@@ -354,10 +366,13 @@ export default function CommunityFinal() {
     const current=()=>live&&accountScope.current(ticket)&&filterFocused.current&&revision===navigationRevision.current;
     void loadCommunityNotificationEntry(notificationId,communityApi).then(async entry=>{
       if(!current())return;
-      if(entry.conversation)knownConversations.current[entry.conversation.parentId]=entry.conversation.id;
+      if(entry.conversation)knownConversations.current[conversationKey(entry.conversation.parentId)]=entry.conversation.id;
       // One checked synchronous navigation transaction: its own reducer events
       // increment revision, but must not invalidate later events in this entry.
       for(const event of entry.events)dispatch(event);
+      if(alphaCommunityLayout&&ticket!==null&&entry.translationSettings){
+        setTranslationSettings({ticket,revision:navigationRevision.current,conversation:entry.translationSettings});
+      }
       router.setParams({notificationId:undefined});
       // A read receipt is separate from navigation; a failed write is not
       // reported as read, and never sends this event to the NURI AI chat.
@@ -420,18 +435,18 @@ export default function CommunityFinal() {
     });
   };
   // Each list can render as soon as its own response arrives.
-  const inbox=useRemote(home||s==="contacts"?`inbox:${tick}`:null,()=>communityApi.inbox());
-  const contactsList=useRemote(s==="contacts"||s==="invitations"?`contacts:${tick}`:null,()=>communityApi.contacts());
+  const inbox=useRemote(home||s==="contacts"?`inbox:${accountScope.generation}:${tick}`:null,()=>communityApi.inbox());
+  const contactsList=useRemote(s==="contacts"||s==="invitations"?`contacts:${accountScope.generation}:${tick}`:null,()=>communityApi.contacts());
   const receivedInvitations=useRemote(s==="invitations"?`received-invitations:${tick}`:null,()=>communityApi.invitations("received"));
   const sentInvitations=useRemote(s==="invitations"?`sent-invitations:${tick}`:null,()=>communityApi.invitations("sent"));
   useEffect(()=>{
     for(const item of inbox.value?.items??[]){
-      if(item.parent?.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
+      if(item.parent?.parent_id)knownConversations.current[conversationKey(item.parent.parent_id)]=item.conversation_id;
     }
     for(const item of contactsList.value?.items??[]){
-      if(item.conversation_id&&item.parent.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
+      if(item.conversation_id&&item.parent.parent_id)knownConversations.current[conversationKey(item.parent.parent_id)]=item.conversation_id;
     }
-  },[inbox.value,contactsList.value]);
+  },[inbox.value,contactsList.value,accountScope.generation]);
   const roleFilter=ROLE_FILTER[state.filters.gender]??"any",distanceFilter=DISTANCE_FILTER[state.filters.distance]??null;
   const suggestions=useRemote(s==="suggestions"?`rec:${roleFilter}:${distanceFilter}:${tick}`:null,()=>communityApi.recommendations({role:roleFilter,distance_miles:distanceFilter}));
   const parentView=useRemote(["parent","incomingParent","connected","parentSettings","safetyConfirm"].includes(s)&&state.person?`parent:${state.person}:${tick}`:null,()=>communityApi.parent(state.person));
@@ -523,11 +538,31 @@ export default function CommunityFinal() {
       bottleNotifications.reload();
     });
   },[alphaCommunityLayout,accountScope.capture,accountScope.current,askedQuestion.value,askedQuestion.loading,askedQuestion.error,bottleNotifications.value,bottleNotifications.reload,readIds,replies.value,comments.value,state.questionID,state.deliveryID,state.replyTarget,state.screen]);
-  const prefs=useRemote(s==="preferences"||parentChat?`prefs:${tick}`:null,()=>communityApi.preferences());
+  const prefs=useRemote(s==="preferences"||parentChat?`prefs:${accountScope.generation}:${tick}`:null,()=>communityApi.preferences());
+  const openTranslationSettings=alphaCommunityLayout&&s==="preferences"&&translationSettings?.ticket===accountScope.generation
+    &&translationSettings.revision===navigationRevision.current?translationSettings:null;
+  const translationChat=openTranslationSettings?.conversation;
+  const translationConversations=useRemote(openTranslationSettings&&!translationChat?`translation-chats:${accountScope.generation}:${tick}`:null,async isCurrent=>{
+    const rows=new Map<string,InboxItem>();
+    const visited=new Set<string>();
+    let cursor:string|null=null;
+    do{
+      const page=await communityApi.inbox(cursor);
+      if(!isCurrent())return [];
+      page.items.forEach(item=>{if(item.parent?.parent_id&&item.allowed_actions.includes("send_message"))rows.set(item.conversation_id,item);});
+      cursor=page.next_cursor;
+      if(!cursor||visited.has(cursor))break;
+      visited.add(cursor);
+    }while(isCurrent());
+    return [...rows.values()];
+  });
+  const translationPermission=useRemote(translationChat?`translation-permission:${accountScope.generation}:${translationChat.conversationId}:${tick}`:null,
+    ()=>communityApi.aiParticipation(translationChat!.conversationId));
   const blocks=useRemote(["blocked","blockedEmpty"].includes(s)?`blocks:${tick}`:null,()=>communityApi.blocks());
-  const chat=useRemote(parentChat&&state.person?`chat:${state.person}:${tick}`:null,async()=>{
-    let conversationId=knownConversations.current[state.person];
-    if(!conversationId){conversationId=(await communityApi.openConversation(state.person,communityKey("conv"))).conversation.conversation_id;knownConversations.current[state.person]=conversationId;}
+  const chat=useRemote(parentChat&&state.person?`chat:${conversationKey(state.person)}:${tick}`:null,async()=>{
+    const key=conversationKey(state.person);
+    let conversationId=knownConversations.current[key];
+    if(!conversationId){conversationId=(await communityApi.openConversation(state.person,communityKey("conv"))).conversation.conversation_id;knownConversations.current[key]=conversationId;}
     const [list,ai]=await Promise.all([communityApi.messages(conversationId),communityApi.aiParticipation(conversationId)]);
     return {conversationId,conversation:list.conversation,messages:list.items,ai};
   });
@@ -535,7 +570,8 @@ export default function CommunityFinal() {
   const translationScope=communityTranslationScope(String(accountScope.generation),chat.value?.conversationId,locale,chat.value?.ai);
   const pausedKey=chat.value?`${chat.value.conversationId}:${chat.value.ai.epoch}`:"";
   const translationEnabled=parentChat&&s!=="consent"&&!!prefs.value?.auto_translate_messages&&!prefs.error&&!chat.error
-    &&!!chat.value?.conversation.allowed_actions.includes("send_message")&&deviceAIAllowed&&translationPaused!==pausedKey&&!translationPreferencePaused;
+    &&!!chat.value?.conversation.allowed_actions.includes("send_message")&&deviceAIAllowed&&translationPaused!==pausedKey
+    &&translationPreferencePaused!==accountScope.generation;
   // Synchronous configuration hides old results in the very render that
   // withdraws authority; an effect must not flash a previous account's text.
   translations.configure(translationScope,translationEnabled);
@@ -558,18 +594,33 @@ export default function CommunityFinal() {
   // Reading the chat moves this parent's read cursor, never the other's.
   const lastSeq=chat.value?.messages.at(-1)?.seq;
   useEffect(()=>{if(chat.value&&lastSeq)communityApi.markRead(chat.value.conversationId,lastSeq).catch(()=>{});},[chat.value?.conversationId,lastSeq]);
-  // A consent request from the other parent opens the decision sheet once.
   const incomingNotes=chat.value?.ai.requests.conversation_notes;
+  const notesOfferKey=alphaCommunityLayout&&deviceAIAllowed&&chat.value?.ai.notes_offer_eligible===true
+    &&!chat.value.ai.effective&&!incomingNotes&&chat.value.conversation.allowed_actions.includes("send_message")
+    ?privateChatNotesOfferKey(localAI.userId!,chat.value.conversationId):null;
+  const notesOfferDismissed=useRemote(notesOfferKey,()=>storage.getItem(notesOfferKey!,false));
+  // Opening a chat can present a choice, but only the explicit Agree button
+  // submits consent. The server's history excludes previously decided chats.
   useEffect(()=>{
     const value=chat.value;
-    if(!value||chat.loading||chat.error||busy||consentAction.current||!filterFocused.current||accountScope.capture()===null||!["chat","chatOn"].includes(latest.current.screen))return;
+    const ticket=accountScope.capture();
+    if(!value||chat.loading||chat.error||busy||consentAction.current||!filterFocused.current||ticket===null
+      ||!["chat","chatOn"].includes(latest.current.screen)||value.ai.conversation_id!==value.conversationId
+      ||!value.conversation.allowed_actions.includes("send_message"))return;
     const request=value.ai.requests.conversation_notes;
-    if(!request||request.purpose!=="conversation_notes"||request.epoch!==value.ai.epoch||request.notice_version!==value.ai.notice_version
-      ||request.state!=="pending"||request.initiated_by!=="parent"||request.my_decision!=="pending"||consentPrompted.current.has(request.request_id))return;
-    consentPrompted.current.add(request.request_id);
-    setConsentSheet({mode:"decision",conversationId:value.conversationId,person:state.person,noticeVersion:request.notice_version,epoch:request.epoch,requestId:request.request_id,ticket:accountScope.capture(),revision:navigationRevision.current+1});
+    if(request){
+      if(request.purpose!=="conversation_notes"||request.epoch!==value.ai.epoch||request.notice_version!==value.ai.notice_version
+        ||request.state!=="pending"||request.initiated_by!=="parent"||request.my_decision!=="pending"||consentPrompted.current.has(request.request_id))return;
+      consentPrompted.current.add(request.request_id);
+      setConsentSheet({mode:"decision",conversationId:value.conversationId,person:state.person,noticeVersion:request.notice_version,epoch:request.epoch,requestId:request.request_id,ticket,revision:navigationRevision.current+1});
+    }else{
+      if(!notesOfferKey||notesOfferDismissed.value!==false||consentPrompted.current.has(notesOfferKey))return;
+      consentPrompted.current.add(notesOfferKey);
+      setConsentSheet({mode:"request",conversationId:value.conversationId,person:state.person,noticeVersion:value.ai.notice_version,epoch:value.ai.epoch,offerKey:notesOfferKey,ticket,revision:navigationRevision.current+1});
+    }
     dispatch({type:"requestConsent"});
-  },[s,chat.loading,!!chat.error,busy,chat.value?.ai.epoch,chat.value?.ai.notice_version,incomingNotes?.request_id,incomingNotes?.state,incomingNotes?.my_decision]);
+  },[s,state.person,chat.loading,!!chat.error,busy,chat.value?.conversationId,chat.value?.ai.epoch,chat.value?.ai.notice_version,
+    incomingNotes?.request_id,incomingNotes?.state,incomingNotes?.my_decision,notesOfferKey,notesOfferDismissed.value,accountScope.capture]);
   // The editor starts from the saved profile, once per visit.
   useEffect(()=>{
     if(!["intent","profile","profileSettings"].includes(s)){profileSeeded.current=false;return;}
@@ -761,7 +812,7 @@ export default function CommunityFinal() {
   const parentRow=(p:PublicParent|null,description:string,options:{status?:string;unread?:number;invitation?:boolean;inbox?:boolean;incoming?:boolean;conversationId?:string|null}={})=>{
     if(!p?.parent_id)return null;
     const id=p.parent_id,name=nameOf(p);
-    return <Pressable key={id} testID={"final-parent-"+id} accessibilityRole="button" onPress={()=>{if(options.conversationId)knownConversations.current[id]=options.conversationId;dispatch({type:"person",person:id,name,screen:options.invitation?(options.incoming?"incomingParent":"parent"):"chat"});}} style={{minHeight:options.invitation?68:options.inbox?72:66,paddingVertical:options.invitation?12:8,paddingHorizontal:options.invitation?0:8,flexDirection:"row",alignItems:"center",gap:options.invitation?12:16}}>
+    return <Pressable key={id} testID={"final-parent-"+id} accessibilityRole="button" onPress={()=>{if(options.conversationId)knownConversations.current[conversationKey(id)]=options.conversationId;dispatch({type:"person",person:id,name,screen:options.invitation?(options.incoming?"incomingParent":"parent"):"chat"});}} style={{minHeight:options.invitation?68:options.inbox?72:66,paddingVertical:options.invitation?12:8,paddingHorizontal:options.invitation?0:8,flexDirection:"row",alignItems:"center",gap:options.invitation?12:16}}>
       <View style={{width:40,height:40,flexShrink:0}}><FriendPreviewAvatar/>{options.unread?(options.invitation?<View pointerEvents="none" style={{position:"absolute",right:-2,top:0,width:8,height:8,borderRadius:4,backgroundColor:FINAL_COLOR.coral}}/>:<UnreadBadge count={options.unread} style={{position:"absolute",right:-1,top:-8}}/>):null}</View>
       <View style={{flex:1,minWidth:0,gap:options.invitation?2:4}}><FinalText style={{fontWeight:"500",lineHeight:24}}>{name}</FinalText><FinalText size={options.invitation?12:14} secondary style={{lineHeight:20}} numberOfLines={1}>{description}</FinalText></View>
       {options.status?<FinalText size={12} secondary style={{width:96,maxWidth:"34%",lineHeight:20,textAlign:"right",flexShrink:1}}>{options.status}</FinalText>:<FinalText size={20} style={{width:16,lineHeight:24,textAlign:"center",color:FINAL_COLOR.accent}}>›</FinalText>}
@@ -882,17 +933,78 @@ export default function CommunityFinal() {
       const relation:RelationView|undefined=parentView.value?.relationship??(await communityApi.parent(person)).relationship;
       if(relation?.relationship_id&&relation.state==="connected")await communityApi.disconnect(relation.relationship_id);
     }
-    delete knownConversations.current[person];
+    delete knownConversations.current[conversationKey(person)];
     refresh();dispatch({type:"safetyDone"});
   });
   const togglePreference=(key:keyof Omit<Preferences,"version">)=>write(async()=>{
-    const current=prefs.value;if(!current)return;
+    const current=prefs.value,ticket=accountScope.capture();if(!current||ticket===null)return;
     // A parent's OFF intent stops local translation even if the preference
     // write has an unknown outcome. Only an explicit confirmed ON clears it.
-    if(key==="auto_translate_messages"&&current.auto_translate_messages){setTranslationPreferencePaused(true);translations.clear();}
+    if(key==="auto_translate_messages"&&current.auto_translate_messages){setTranslationPreferencePaused(ticket);translations.clear();}
     const saved=await communityApi.savePreferences({[key]:!current[key],expected_version:current.version});
-    if(key==="auto_translate_messages"&&saved.auto_translate_messages===true)setTranslationPreferencePaused(false);
+    if(!accountScope.current(ticket))return;
+    if(key==="auto_translate_messages"&&saved.auto_translate_messages===true)setTranslationPreferencePaused(null);
     prefs.reload();
+  });
+  const changeTranslationSettings=(conversation?:TranslationSettings["conversation"])=>{
+    const ticket=accountScope.capture();
+    if(ticket===null||!filterFocused.current||latest.current.screen!=="preferences")return;
+    const next={ticket,revision:navigationRevision.current,conversation};
+    translationSettingsRef.current=next;
+    setTranslationSettings(next);
+  };
+  const changeTranslationPermission=(settings:TranslationSettings,action:TranslationPermissionAction)=>write(async()=>{
+    const target=settings.conversation;
+    const owns=()=>mounted.current&&filterFocused.current&&accountScope.current(settings.ticket)
+      &&translationSettingsRef.current===settings&&navigationRevision.current===settings.revision
+      &&latest.current.screen==="preferences";
+    const aiOK=()=>{
+      const live=aiConsent.getState();
+      return live.status==="allowed"&&!!live.userId&&live.version===AI_CONSENT_VERSION
+        &&live.userId===localAI.userId&&live.session===localAI.session;
+    };
+    if(!target||!owns()||((action==="request"||action==="approve")&&!aiOK()))return;
+    const id=target.conversationId;
+    const snapshot=translationPermission.value;
+    const previous=currentTranslationRequest(id,snapshot);
+    if(!snapshot||translationPermission.loading||translationPermission.error||
+      !communityTranslationActions(previous).some(candidate=>candidate===action))return;
+    if(action==="revoke"){setTranslationPaused(`${id}:${snapshot.epoch}`);translations.clear();}
+    try{
+      const fresh=await communityApi.aiParticipation(id);
+      if(!owns()||((action==="request"||action==="approve")&&!aiOK()))return;
+      const request=currentTranslationRequest(id,fresh);
+      if(fresh.epoch!==snapshot.epoch||fresh.notice_version!==snapshot.notice_version||
+        request?.request_id!==previous?.request_id||request?.version!==previous?.version||
+        !communityTranslationActions(request).some(candidate=>candidate===action)){
+        translationPermission.reload();
+        dispatch({type:"notice",message:c("会话许可已变更，请重新核对","Conversation permissions changed. Check again.")});
+        return;
+      }
+      if(action==="revoke"){
+        await communityApi.revokeAI(id,"translation");
+      }else if(action==="request"){
+        const slot=`air:${id}:translation`;
+        const key=keyFor(slot,`${fresh.notice_version}:${fresh.epoch}`,"air");
+        const {request:created}=await communityApi.requestAI(id,fresh.notice_version,key,"translation");
+        if(accountScope.current(settings.ticket)&&writeKeys.current[slot]?.key===key)delete writeKeys.current[slot];
+        if(!owns())return;
+        if(created.purpose!=="translation"||created.epoch!==fresh.epoch||created.notice_version!==fresh.notice_version
+          ||!["pending","effective"].includes(created.state))throw new Error("TRANSLATION_PERMISSION_CHANGED");
+        if(created.initiated_by==="parent"&&created.my_decision==="pending"&&aiOK()){
+          await communityApi.decideAI(created.request_id,"allow",fresh.notice_version,
+            keyFor(`aid:${created.request_id}`,`allow:${created.version}`,"aid"),created.version);
+        }
+      }else if(request){
+        const decision=action==="approve"?"allow":"decline";
+        await communityApi.decideAI(request.request_id,decision,fresh.notice_version,
+          keyFor(`aid:${request.request_id}`,`${decision}:${request.version}`,"aid"),request.version);
+      }
+      if(owns()){
+        translationPermission.reload();
+        dispatch({type:"notice",message:""});
+      }
+    }catch(error){if(owns()){translationPermission.reload();throw error;}}
   });
   const saveProfile=(after:()=>void|Promise<void>)=>write(async()=>{
     const profile=me.value?.profile;
@@ -975,7 +1087,8 @@ export default function CommunityFinal() {
   };
   const openConsent=()=>{
     const lease=consentRenderLease,value=chatAuthority.current;
-    if(busy||consentAction.current||currentConsentLease(revokeAction.current)||!currentConsentLease(lease)||!lease||!value||!["chat","chatOn"].includes(lease.screen))return;
+    if(busy||consentAction.current||currentConsentLease(revokeAction.current)||!currentConsentLease(lease)||!lease||!value
+      ||!["chat","chatOn"].includes(lease.screen)||!value.conversation.allowed_actions.includes("send_message"))return;
     const request=value.ai.requests.conversation_notes;
     setConsentSheet({mode:request?.state==="pending"&&request.my_decision==="pending"?"decision":"request",
       conversationId:lease.conversationId,person:lease.person,noticeVersion:lease.noticeVersion,epoch:lease.epoch,
@@ -986,6 +1099,7 @@ export default function CommunityFinal() {
     // The current sheet may be dismissed after its notice/epoch changes, but
     // an old sheet's Cancel/Close must never dismiss its replacement.
     if(!expectedSheet||expectedSheet!==consentSheetRef.current||!currentConsentLease(consentRenderLease)||consentRenderLease?.screen!=="consent")return;
+    dismissNotesOffer(expectedSheet);
     setConsentSheet(null);dispatch({type:"consentClosed",effective:!!chatAuthority.current?.ai.effective});
   };
   const revokeConsent=async()=>{
@@ -1012,6 +1126,15 @@ export default function CommunityFinal() {
     };
     if(!current())return;
     if(!allowed&&sheet.mode==="request"){closeConsent(sheet);return;}
+    const canAllow=()=>{
+      const live=aiConsent.getState();
+      return live.status==="allowed"&&!!live.userId&&live.userId===localAI.userId&&live.session===localAI.session&&live.version===AI_CONSENT_VERSION;
+    };
+    if(allowed&&!canAllow()){
+      setConsentNeeded(true);
+      dispatch({type:"notice",message:c("需要先允许使用 AI 功能","AI permission is needed first")});
+      return;
+    }
     const existing=chatAuthority.current?.ai.requests.conversation_notes;
     if(sheet.mode==="decision"&&(!existing||existing.request_id!==sheet.requestId||existing.purpose!=="conversation_notes"))return;
     consentAction.current=true;setBusy(true);
@@ -1034,6 +1157,7 @@ export default function CommunityFinal() {
       // returns it without consenting on this parent's behalf; the explicit
       // Allow click still needs its own P26 decision in that case.
       if(allowed&&result.request.my_decision==="pending"){
+        if(!canAllow())return;
         result=await communityApi.decideAI(result.request.request_id,"allow",sheet.noticeVersion,keyFor("aid:"+result.request.request_id,"true:"+sheet.noticeVersion,"aid"));
         if(!current())return;
       }
@@ -1051,6 +1175,15 @@ export default function CommunityFinal() {
   // ── Settings: preferences, blocked parents, a parent's safety menu ────────
   if (settingsScreen) {
     const p=prefs.value,blocked=blocks.value?.items??[];
+    const ct=(cn:string,english:string,tw:string)=>locale==="zh-TW"?tw:c(cn,english);
+    const permission=translationChat?currentTranslationRequest(translationChat.conversationId,translationPermission.value):undefined;
+    const permissionActions=communityTranslationActions(permission);
+    const permissionLabels={
+      request:ct("同意翻译并请求对方","Allow translation and ask them","同意翻譯並請求對方"),
+      approve:ct("同意翻译","Allow translation","同意翻譯"),
+      decline:ct("不同意","Decline","不同意"),
+      revoke:permission?.state==="pending"?ct("取消请求","Cancel request","取消請求"):ct("撤回翻译许可","Withdraw translation permission","撤回翻譯許可"),
+    };
     const prefRow=(key:"parent_message_notifications_enabled"|"profile_hidden",label:string,hint?:string)=><Pressable key={key} testID={"final-community-preference-"+key} accessibilityRole="switch" accessibilityLabel={label} accessibilityState={{checked:!!p?.[key],disabled:!p||busy}} disabled={!p||busy} onPress={()=>togglePreference(key)} style={{paddingVertical:12,minHeight:48,flexDirection:"row",alignItems:"center",gap:16}}>
       <View style={{flex:1,minWidth:0,gap:4}}><FinalText>{label}</FinalText>{hint?<FinalText size={12} secondary style={{fontWeight:"500",lineHeight:16}}>{hint}</FinalText>:null}</View>
       <View pointerEvents="none" style={{width:52,height:20,justifyContent:"center"}}><Image source={p?.[key]?require("@/assets/final-flow-20261101/settings-switch-on.svg"):require("@/assets/final-flow-20261101/settings-switch-off.svg")} style={{width:p?.[key]?32.5:44,height:p?.[key]?20:44,marginLeft:p?.[key]?0:-5.75}} contentFit="contain" accessible={false}/></View>
@@ -1070,8 +1203,40 @@ export default function CommunityFinal() {
           <FinalText style={{flex:1}}>{c("消息自动翻译","Translate messages automatically")}</FinalText><View pointerEvents="none" style={{width:52,height:20,justifyContent:"center"}}><Image source={p?.auto_translate_messages?require("@/assets/final-flow-20261101/settings-switch-on.svg"):require("@/assets/final-flow-20261101/settings-switch-off.svg")} style={{width:p?.auto_translate_messages?32.5:44,height:p?.auto_translate_messages?20:44,marginLeft:p?.auto_translate_messages?0:-5.75}} contentFit="contain" accessible={false}/></View>
         </Pressable>
         <FinalText size={12} secondary style={{fontWeight:"500",lineHeight:16}}>
-          {originalMessageHint}
+          {alphaCommunityLayout?ct("译文跟随 App 当前语言。双方允许后，长按消息可查看原文。","Translations follow your app language. Press and hold a translated message to see the original.","譯文跟隨 App 目前語言。雙方允許後，長按訊息可查看原文。"):originalMessageHint}
         </FinalText>
+        {alphaCommunityLayout?<SettingsRow label={ct("会话翻译许可","Conversation translation permissions","對話翻譯許可")}
+          disabled={busy} onPress={()=>changeTranslationSettings()} testID="final-community-translation-permissions"/>:null}
+        {openTranslationSettings?<View style={{gap:12}} testID="final-community-translation-settings">
+          {translationChat?<><FinalText>{translationChat.parentName}</FinalText>
+            {pending(translationPermission)}
+            {!translationPermission.loading&&!translationPermission.error&&permission!==undefined?<><FinalText size={12} secondary>
+              {ct("双方允许后，Nuri 会将需要翻译的消息送给 OpenAI。许可涵盖本会话的历史消息，原文会保留。","If you both agree, Nuri sends messages that need translation to OpenAI. This permission covers past messages in this conversation. The original text is kept.","雙方允許後，Nuri 會將需要翻譯的訊息送給 OpenAI。許可涵蓋這段對話的歷史訊息，原文會保留。")}
+            </FinalText>
+            {permission?.effective?<FinalText size={12} secondary>{ct("双方已允许翻译","You both allowed translation","雙方已允許翻譯")}</FinalText>:null}
+            {permission?.state==="pending"&&permission.my_decision==="allow"?<FinalText size={12} secondary>{ct("等待对方同意","Waiting for them","等待對方同意")}</FinalText>:null}
+            {permissionActions.some(action=>action==="revoke")?<FinalText size={12} secondary>
+              {ct("撤回后，本会话的其他 Nuri 许可可能需要重新确认。","After withdrawing, you may need to confirm other Nuri permissions in this conversation again.","撤回後，這段對話的其他 Nuri 許可可能需要重新確認。")}
+            </FinalText>:null}
+            {permissionActions.map(action=><SettingsRow key={action} label={permissionLabels[action]} testID={`final-translation-permission-${action}`}
+              disabled={busy||((action==="request"||action==="approve")&&!deviceAIAllowed)}
+              onPress={()=>void changeTranslationPermission(openTranslationSettings,action)}/>)}
+            {!deviceAIAllowed&&permissionActions.some(action=>action==="request"||action==="approve")?
+              <SettingsRow label={ct("去开启 AI 功能","Turn on AI","前往開啟 AI 功能")} testID="final-translation-ai-permission"
+                onPress={()=>router.push(aiPermissionHref("/community"))}/>:null}
+            </>:null}
+            {!translationPermission.loading&&!translationPermission.error&&permission===undefined?<FinalText size={12} secondary>
+              {ct("暂时无法核对这段会话的许可。","We couldn't verify permissions for this conversation.","暫時無法核對這段對話的許可。")}
+            </FinalText>:null}
+          </>:<>{pending(translationConversations)}
+            {translationConversations.value?.map(item=><SettingsRow key={item.conversation_id} label={nameOf(item.parent)}
+              testID={`final-translation-conversation-${item.conversation_id}`}
+              onPress={()=>changeTranslationSettings({conversationId:item.conversation_id,parentName:nameOf(item.parent)})}/>)}
+            {!translationConversations.loading&&translationConversations.value?.length===0?<FinalText size={12} secondary>
+              {ct("建立私聊后，可在这里管理会话翻译。","Conversation permissions appear here once you start chatting.","建立私聊後，可在這裡管理對話翻譯。")}
+            </FinalText>:null}
+          </>}
+        </View>:null}
         {notice}
       </> : state.screen === "blocked" || state.screen === "blockedEmpty" ? <>
         {pending(blocks)}
@@ -1128,7 +1293,7 @@ export default function CommunityFinal() {
       <FinalButton label={mode ? c("寻找育儿好友", "Find friends") : askLabel} onPress={() => mode ? findFriends() : startQuestion()} testID={`final-hub-primary-${mode}`} />
       {mode ? <View testID="final-friends-messages" style={{paddingTop:4,gap:4}}><View style={st.friendDivider}/><View style={{ flexDirection: "row", alignItems: "center", minHeight:32 }}><Pressable accessibilityRole="button" accessibilityLabel={c("展开我的消息","Expand messages")} onPress={() => go("inbox")} style={{ flex: 1, minHeight: 32, flexDirection:"row", alignItems:"center", gap:4 }} testID="final-open-inbox"><FinalText>{c("我的消息", "Messages")}</FinalText><FinalText size={16} style={{color:FINAL_COLOR.accent}}>⌃</FinalText></Pressable><Pressable accessibilityRole="button" accessibilityLabel={c("通讯录", "Address book")} onPress={() => go("contacts")} style={{ width: 44, height: 32, alignItems: "center", justifyContent: "center" }} testID="final-open-contacts"><Image source={require("@/assets/final-flow-20261101/address-book.svg")} style={{ width: 24, height: 24 }} /></Pressable></View>
         {pending(inbox,false)}
-        {inboxItems.slice(0,2).map((item,i) => <View key={item.conversation_id} style={{gap:4}}>{i?<View style={st.friendDivider}/>:null}<Pressable testID={`final-parent-${item.parent?.parent_id}`} accessibilityRole="button" accessibilityLabel={`${nameOf(item.parent)}，${preview(item)}`} style={st.friendPreviewRow} onPress={() => {if(!item.parent?.parent_id)return;knownConversations.current[item.parent.parent_id]=item.conversation_id;dispatch({ type: "person", person: item.parent.parent_id, name: nameOf(item.parent), screen: "chat" });}}><FriendPreviewAvatar/><View style={{flex:1,minWidth:0,gap:4}}><FinalText style={{lineHeight:24}}>{nameOf(item.parent)}</FinalText><FinalText size={14} secondary numberOfLines={1} ellipsizeMode="tail" style={{lineHeight:20}}>{preview(item)}</FinalText></View><FinalText size={20} style={{width:16,lineHeight:24,textAlign:"center",color:FINAL_COLOR.accent}}>›</FinalText><UnreadBadge count={item.unread_count} style={{position:"absolute",left:"9.58%",top:"6.57%"}}/></Pressable></View>)}
+        {inboxItems.slice(0,2).map((item,i) => <View key={item.conversation_id} style={{gap:4}}>{i?<View style={st.friendDivider}/>:null}<Pressable testID={`final-parent-${item.parent?.parent_id}`} accessibilityRole="button" accessibilityLabel={`${nameOf(item.parent)}，${preview(item)}`} style={st.friendPreviewRow} onPress={() => {if(!item.parent?.parent_id)return;knownConversations.current[conversationKey(item.parent.parent_id)]=item.conversation_id;dispatch({ type: "person", person: item.parent.parent_id, name: nameOf(item.parent), screen: "chat" });}}><FriendPreviewAvatar/><View style={{flex:1,minWidth:0,gap:4}}><FinalText style={{lineHeight:24}}>{nameOf(item.parent)}</FinalText><FinalText size={14} secondary numberOfLines={1} ellipsizeMode="tail" style={{lineHeight:20}}>{preview(item)}</FinalText></View><FinalText size={20} style={{width:16,lineHeight:24,textAlign:"center",color:FINAL_COLOR.accent}}>›</FinalText><UnreadBadge count={item.unread_count} style={{position:"absolute",left:"9.58%",top:"6.57%"}}/></Pressable></View>)}
         {inbox.value&&!inboxItems.length?<FinalText size={14} secondary style={{paddingVertical:12,textAlign:"center"}}>{c("建立联系后，消息会出现在这里","Messages appear here once you connect")}</FinalText>:null}
       </View> : <><FinalDivider/>{entries.map(([screen, fresh, label, detail, status, loading, unreadCount], i) =>
                 <Pressable key={screen} testID={i ? "final-open-received" : "final-open-my-questions"} accessibilityRole="button" accessibilityLabel={[label,detail,status,alphaCommunityLayout&&unreadCount?bottleUnreadLabel(unreadCount):null].filter(Boolean).join("，")} accessibilityState={{busy:loading}} onPress={() => go(screen)} style={st.questionEntry}>

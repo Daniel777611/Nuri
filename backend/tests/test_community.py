@@ -299,11 +299,13 @@ def test_polish_needs_consent_keeps_original_and_is_idempotent(env, monkeypatch)
     err(ask(env, "u_ann", key="q-key-0002", version_source="polished"), 422, "VALIDATION_FAILED")
 
 
-def test_translation_of_someone_elses_message_needs_both_parents(env, monkeypatch):
+@pytest.mark.parametrize("alpha_enabled", [False, True])
+def test_translation_of_someone_elses_message_needs_both_parents(env, monkeypatch, alpha_enabled):
     async def fake_complete(site, uid, system, text):
         return f"EN:{text}"
 
     monkeypatch.setattr(community, "_complete", fake_complete)
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: alpha_enabled)
     make_profile(env, "u_ann"); make_profile(env, "u_ben")
     conv = connect(env, "u_ann", "u_ben")
     early = ok(env.call("u_ben", "POST", f"/conversations/{conv}/messages",
@@ -684,7 +686,79 @@ def test_preferences_semantics_versions_and_notification_opt_out(env):
     assert _delivery(env, "u_ben")  # delivered, just not pushed
 
 
+def test_alpha_auto_translation_defaults_for_new_preferences_and_preserves_opt_out(env, monkeypatch):
+    # Existing rows were written under the previous defaults. Preserve them,
+    # even when another preference subsequently changes.
+    saved = ok(env.call("u_cat", "PATCH", "/preferences", json={"profile_hidden": True, "expected_version": 0}))
+    assert saved["auto_translate_messages"] is False
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: True)
+
+    fresh = ok(env.call("u_ben", "GET", "/preferences"))
+    assert fresh["auto_translate_messages"] is True and fresh["version"] == 0
+    assert all(row["user_id"] != "u_ben" for row in env.db.rows("community_preferences"))
+    created = ok(env.call("u_ben", "PATCH", "/preferences", json={"profile_hidden": True, "expected_version": 0}))
+    assert created["auto_translate_messages"] is True and created["version"] == 1
+    disabled = ok(env.call("u_ben", "PATCH", "/preferences",
+                           json={"auto_translate_messages": False, "expected_version": 1}))
+    assert disabled["auto_translate_messages"] is False
+    assert ok(env.call("u_ben", "GET", "/preferences")) == disabled
+    assert ok(env.call("u_cat", "GET", "/preferences")) == saved
+    updated = ok(env.call("u_cat", "PATCH", "/preferences", json={"profile_hidden": False, "expected_version": 1}))
+    assert updated["auto_translate_messages"] is False
+    explicit_off = ok(env.call("u_ann", "PATCH", "/preferences",
+                               json={"auto_translate_messages": False, "expected_version": 0}))
+    assert explicit_off["auto_translate_messages"] is False
+
+
 # ── P25–P28 Two-party AI consent ─────────────────────────────────────────────
+
+def test_alpha_notes_offer_is_member_only_and_excludes_prior_notes_decisions(env, monkeypatch):
+    for uid in ("u_ann", "u_ben", "u_cat", "u_dan"):
+        make_profile(env, uid)
+    conv = connect(env, "u_ann", "u_ben")
+    activity = f"/conversations/{conv}/ai-participation"
+    assert "notes_offer_eligible" not in ok(env.call("u_ann", "GET", activity))
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: True)
+
+    first = ok(env.call("u_ann", "GET", activity))
+    assert first["notes_offer_eligible"] is True and first["effective"] is False
+    assert first["requests"]["conversation_notes"] is None
+    assert not env.db.rows("community_ai_consent_requests")
+    err(env.call("u_cat", "GET", activity), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
+
+    notice_version = community.AI_NOTICE_VERSION
+    requests = f"/conversations/{conv}/ai-consent-requests"
+    ok(env.call("u_ann", "POST", requests, json={"purpose": "translation",
+                                                "notice_version": notice_version,
+                                                "client_request_id": "offer-translation"}))
+    assert ok(env.call("u_ann", "GET", activity))["notes_offer_eligible"] is True
+    notes = ok(env.call("u_ann", "POST", requests,
+                        json={"notice_version": notice_version, "client_request_id": "offer-notes"}))["request"]
+    assert ok(env.call("u_ann", "GET", activity))["notes_offer_eligible"] is False
+    ok(env.call("u_ben", "PUT", f"/ai-consent-requests/{notes['request_id']}/my-decision",
+                json={"decision": "decline", "notice_version": notice_version,
+                      "client_request_id": "offer-notes-decline"}))
+    declined = ok(env.call("u_ann", "GET", activity))
+    assert declined["epoch"] == first["epoch"] and declined["requests"]["conversation_notes"] is None
+    assert declined["notes_offer_eligible"] is False
+
+    ok(env.call("u_ann", "DELETE", activity, params={"purpose": "translation"}))
+    assert ok(env.call("u_ann", "GET", activity))["notes_offer_eligible"] is False
+    new_notes = ok(env.call("u_ann", "POST", requests,
+                            json={"notice_version": notice_version,
+                                  "client_request_id": "offer-new-notes"}))["request"]
+    ok(env.call("u_ben", "PUT", f"/ai-consent-requests/{new_notes['request_id']}/my-decision",
+                json={"decision": "allow", "notice_version": notice_version,
+                      "client_request_id": "offer-accept-new-notes"}))
+    assert ok(env.call("u_ann", "GET", activity))["effective"] is True
+    ok(env.call("u_ann", "DELETE", activity, params={"purpose": "conversation_notes"}))
+    revoked = ok(env.call("u_ben", "GET", activity))
+    assert revoked["notes_offer_eligible"] is False and revoked["effective"] is False
+    blocked_conv = connect(env, "u_cat", "u_dan")
+    ok(env.call("u_cat", "PUT", f"/me/blocks/{pid(env, 'u_dan')}", json={"confirmed": True}))
+    blocked = ok(env.call("u_cat", "GET", f"/conversations/{blocked_conv}/ai-participation"))
+    assert blocked["notes_offer_eligible"] is False and blocked["effective"] is False
+
 
 def test_ai_needs_both_parents_and_any_revoke_wins(env):
     for u in ("u_ann", "u_ben", "u_cat"):

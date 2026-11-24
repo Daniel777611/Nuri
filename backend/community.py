@@ -378,6 +378,12 @@ DEFAULT_PREFERENCES = {
 }
 
 
+def _preference_defaults() -> dict:
+    # This preference controls automatic display. P29 separately requires the
+    # current two-party translation grant before translating another parent's words.
+    return {**DEFAULT_PREFERENCES, "auto_translate_messages": runtime.alpha_features_available()}
+
+
 async def _profile(uid: str) -> Optional[dict]:
     return await _one("community_profiles", lambda q: q.eq("user_id", uid))
 
@@ -408,7 +414,7 @@ async def _roles(uids: list[str]) -> dict[str, str]:
 
 async def _preferences(uid: str) -> dict:
     row = await _one("community_preferences", lambda q: q.eq("user_id", uid))
-    return {**DEFAULT_PREFERENCES, **(row or {})}
+    return {**_preference_defaults(), **(row or {})}
 
 
 async def _block_sets(uid: str) -> tuple[set[str], set[str]]:
@@ -2230,7 +2236,7 @@ async def patch_preferences(uid: str, body: PreferencesPatch) -> dict:
         if body.expected_version not in (None, 0):
             raise CommunityError("VERSION_CONFLICT", "Preferences changed; reload", extra={"current_version": 0})
         try:
-            row = await _insert("community_preferences", {"user_id": uid, **DEFAULT_PREFERENCES,
+            row = await _insert("community_preferences", {"user_id": uid, **_preference_defaults(),
                                                           **patch, "version": 1, "updated_at": _iso()})
         except _UniqueViolation:
             raise CommunityError("VERSION_CONFLICT", "Preferences changed; reload")
@@ -2369,7 +2375,7 @@ async def revoke_ai(uid: str, conversation_id: str, purpose: Optional[str] = Non
 
 
 async def ai_activity(uid: str, conversation_id: str) -> dict:
-    conv, _ = await _member_conversation(uid, conversation_id)
+    conv, other = await _member_conversation(uid, conversation_id)
     state = await _ai_state(conv)
     requests = {}
     for purpose, info in state["purposes"].items():
@@ -2380,9 +2386,27 @@ async def ai_activity(uid: str, conversation_id: str) -> dict:
             requests[purpose] = None
     # No AI job runs on P2P conversations yet: "effective" is consent on
     # record, never "recording" or "summarising".
-    return {"conversation_id": conversation_id, "epoch": state["epoch"], "effective": state["effective"],
-            "purposes": state["purposes"], "requests": requests, "operations": [],
-            "notice_version": AI_NOTICE_VERSION}
+    result = {"conversation_id": conversation_id, "epoch": state["epoch"], "effective": state["effective"],
+              "purposes": state["purposes"], "requests": requests, "operations": [],
+              "notice_version": AI_NOTICE_VERSION}
+    if not runtime.alpha_features_available():
+        return result
+    result["notes_offer_eligible"] = False
+    if requests["conversation_notes"] is not None:
+        return result
+    # Include decisions hidden from the current epoch, including declines.
+    prior_notes = await _one("community_ai_consent_requests", lambda q: q.eq("conversation_id", conversation_id)
+                             .eq("purpose", "conversation_notes"))
+    if prior_notes is not None:
+        return result
+    try:
+        await _may_message(uid, other)
+    except CommunityError as exc:
+        if exc.error_code not in ("BLOCKED_OR_DISCONNECTED", "RELATIONSHIP_NOT_ALLOWED"):
+            raise
+    else:
+        result["notes_offer_eligible"] = True
+    return result
 
 
 # ── P31–P34 Media ────────────────────────────────────────────────────────────

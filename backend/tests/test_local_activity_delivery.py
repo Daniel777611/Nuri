@@ -182,7 +182,10 @@ def test_deployed_opt_in_is_scoped_to_alpha_testing_database(monkeypatch):
     monkeypatch.delenv("NURI_LOCAL_ACTIVITIES_ENABLED", raising=False)
     monkeypatch.delenv("NURI_LOCAL_ACTIVITY_PUSH_BUILDS", raising=False)
     assert activities.enabled()
-    assert activities.supported_builds() == {"com.ordashtech.nuri.beta:1097", "com.ordashtech.nuri.beta:1098"}
+    assert activities.supported_builds() == {
+        "com.ordashtech.nuri.beta:1097", "com.ordashtech.nuri.beta:1098",
+        "com.ordashtech.nuri.beta:1099", "com.ordashtech.nuri.beta:1102",
+    }
 
     monkeypatch.setenv("NURI_LOCAL_ACTIVITY_PUSH_BUILDS", "com.ordashtech.nuri.beta:1097,com.example.pro:1097")
     assert activities.supported_builds() == {"com.ordashtech.nuri.beta:1097"}

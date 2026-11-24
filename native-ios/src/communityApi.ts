@@ -72,6 +72,7 @@ export type InboxItem = Conversation & {
 };
 export type Message = {
   message_id: string; conversation_id: string; seq: number; sender: "me" | "parent"; text: string;
+  language?: string | null;
   media: { media_id: string }[]; created_at: string; state: "saved"; client_message_id: string | null;
 };
 export type Recommendation = { parent: PublicParent; distance_miles: number | null; shared_intents: IntentCode[]; relationship: RelationView };
@@ -84,7 +85,8 @@ export type CommunityNotificationTarget =
   | { kind: "community_question"; question_id: string; delivery_id: string }
   | { kind: "community_reply"; question_id: string; thread_id: string }
   | { kind: "community_invitation"; invitation_id: string; state?: string }
-  | { kind: "community_conversation" | "community_ai_consent"; conversation_id: string };
+  | { kind: "community_conversation"; conversation_id: string }
+  | { kind: "community_ai_consent"; conversation_id: string; consent_request_id?: string };
 export type BottleNotification = {
   notification_id: string;
   target: Extract<CommunityNotificationTarget, { kind: "community_question" | "community_reply" }>;
@@ -108,6 +110,7 @@ export type ConsentRequest = {
 };
 export type AIParticipation = {
   conversation_id: string; epoch: number; effective: boolean; notice_version: string;
+  notes_offer_eligible?: boolean;
   requests: { conversation_notes: ConsentRequest | null; translation: ConsentRequest | null };
 };
 
@@ -306,7 +309,7 @@ export const communityApi = {
   block: (parentId: string) => send<{ blocked: true; relationship: RelationView }>("PUT", `/me/blocks/${encodeURIComponent(parentId)}`, { confirmed: true }),
   unblock: (parentId: string) => send<{ blocked: false }>("DELETE", `/me/blocks/${encodeURIComponent(parentId)}${q({ confirmed: true })}`),
   // P20–P23
-  inbox: () => get<Page<InboxItem> & { summary: { pending_invitations: number; waiting_questions: number; unread_conversations: number } }>(`/me/inbox${q({ page_size: 50 })}`),
+  inbox: (cursor?: string | null) => get<Page<InboxItem> & { summary: { pending_invitations: number; waiting_questions: number; unread_conversations: number } }>(`/me/inbox${q({ cursor, page_size: 50 })}`),
   openConversation: (parentId: string, key: string) =>
     send<{ conversation: Conversation }>("POST", "/conversations", { target_parent_id: parentId, client_request_id: key }),
   messages: (conversationId: string, cursor?: string | null) =>
@@ -339,9 +342,9 @@ export const communityApi = {
   requestAI: (conversationId: string, noticeVersion: string, key: string, purpose: AIPurpose = "conversation_notes") =>
     send<{ request: ConsentRequest; created: boolean }>("POST", `/conversations/${encodeURIComponent(conversationId)}/ai-consent-requests`,
       { purpose, notice_version: noticeVersion, client_request_id: key }),
-  decideAI: (requestId: string, decision: "allow" | "decline", noticeVersion: string, key: string) =>
+  decideAI: (requestId: string, decision: "allow" | "decline", noticeVersion: string, key: string, expectedVersion?: number) =>
     send<{ request: ConsentRequest }>("PUT", `/ai-consent-requests/${encodeURIComponent(requestId)}/my-decision`,
-      { decision, notice_version: noticeVersion, client_request_id: key }),
+      { decision, notice_version: noticeVersion, client_request_id: key, expected_version: expectedVersion }),
   revokeAI: (conversationId: string, purpose?: AIPurpose) =>
     send<{ effective: boolean }>("DELETE", `/conversations/${encodeURIComponent(conversationId)}/ai-participation${q({ purpose })}`),
   // P29 returns a separate translation; it never changes the saved original.

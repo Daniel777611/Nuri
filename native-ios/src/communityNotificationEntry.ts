@@ -6,8 +6,9 @@ export const isCommunityNotificationKind = (value: unknown) => typeof value === 
 export class CommunityTargetUnavailable extends Error {
   constructor() { super("Community target is unavailable"); this.name = "CommunityTargetUnavailable"; }
 }
-type Entry = { events: FinalCommunityEvent[]; conversation?: { parentId: string; id: string } };
-type Client = Pick<typeof communityApi, "notificationTarget" | "question" | "messages">;
+type Entry = { events: FinalCommunityEvent[]; conversation?: { parentId: string; id: string };
+  translationSettings?: { conversationId: string; parentName: string } };
+type Client = Pick<typeof communityApi, "notificationTarget" | "question" | "messages" | "aiParticipation">;
 /** Only a current server authorization can open a typed Community target.
  * Never navigate to a route/URL supplied by a push payload or query string. */
 export async function loadCommunityNotificationEntry(id: string, api: Client): Promise<Entry> {
@@ -37,6 +38,17 @@ export async function loadCommunityNotificationEntry(id: string, api: Client): P
       const { conversation } = await api.messages(target.conversation_id);
       const parent = conversation.parent;
       if (conversation.conversation_id !== target.conversation_id || !parent?.parent_id || !UUID.test(parent.parent_id)) throw new CommunityTargetUnavailable();
+      if (target.kind === "community_ai_consent" && target.consent_request_id && UUID.test(target.consent_request_id) &&
+          conversation.allowed_actions.includes("send_message")) {
+        const participation = await api.aiParticipation(target.conversation_id);
+        const request = participation.requests?.translation;
+        if (participation.conversation_id === target.conversation_id && request?.request_id === target.consent_request_id &&
+            request.purpose === "translation" && request.epoch === participation.epoch && request.notice_version === participation.notice_version &&
+            ["pending", "effective"].includes(request.state)) {
+          return { events: [{ type: "go", screen: "preferences" }],
+            translationSettings: { conversationId: target.conversation_id, parentName: parent.display_name } };
+        }
+      }
       return { events: [{ type: "person", person: parent.parent_id, name: parent.display_name, screen: "chat" }], conversation: { parentId: parent.parent_id, id: target.conversation_id } };
     }
     default: throw new CommunityTargetUnavailable();
