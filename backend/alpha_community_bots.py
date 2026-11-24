@@ -11,7 +11,7 @@ import anyio
 from fastapi import HTTPException
 
 from backend import community, runtime
-from backend.alpha_community_seed import bot_email, bot_user_id, load_personas
+from backend.alpha_community_seed import PASSWORD_DISABLED, bot_email, bot_user_id, load_personas
 
 TABLE = "alpha_community_bot_scheduler"
 LOG = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ async def continue_thread(eligible, personas, now):
     return None
 
 
-async def tick(authorization: str | None):
+async def authorize_scheduler(authorization: str | None):
     if not runtime.alpha_features_available():
         raise HTTPException(404, "Not found")
     if not authorization or not authorization.startswith("Bearer ") or len(authorization) != 71:
@@ -186,6 +186,19 @@ async def tick(authorization: str | None):
     digest = hashlib.sha256(authorization[7:].encode()).hexdigest()
     if not state or not hmac.compare_digest(digest, state["token_sha256"]):
         raise HTTPException(401, "Unauthorized")
+    return state
+
+
+async def verified_personas():
+    personas = {bot_user_id(parent["slug"]): parent for parent in load_personas()}
+    accounts = await community._select("users", lambda q: q.in_("id", list(personas))
+                                       .eq("hashed_password", PASSWORD_DISABLED).eq("is_internal", True))
+    return {row["id"]: personas[row["id"]] for row in accounts
+            if row.get("email") == bot_email(personas[row["id"]]["slug"])}
+
+
+async def tick(authorization: str | None):
+    state = await authorize_scheduler(authorization)
     if not state["enabled"]:
         return {"ok": True, "skipped": "paused"}
 
@@ -203,10 +216,7 @@ async def tick(authorization: str | None):
     activity = state["last_activity"]
     counts = {"questions": 0, "replies": 0, "follow_ups": 0, "errors": 0}
     try:
-        personas = {bot_user_id(parent["slug"]): parent for parent in load_personas()}
-        accounts = await community._select("users", lambda q: q.in_("id", list(personas)))
-        personas = {row["id"]: personas[row["id"]] for row in accounts
-                    if row.get("email") == bot_email(personas[row["id"]]["slug"])}
+        personas = await verified_personas()
         # Warm up with a published bottle. On later rounds service waiting bottles first.
         actions = [("questions", publish_question), ("replies", reply_to_delivery),
                    ("follow_ups", continue_thread)]

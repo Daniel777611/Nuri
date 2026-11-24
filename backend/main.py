@@ -7260,6 +7260,20 @@ async def internal_alpha_community_bots_tick(authorization: Optional[str] = Head
     return await tick(authorization)
 
 
+@api.post("/internal/alpha-community-bots/verify-translation/{language}", include_in_schema=False)
+async def internal_alpha_community_bots_verify_translation(
+    language: Literal["zh-CN", "zh-TW", "en", "es", "fr", "he", "ja", "ko"],
+    authorization: Optional[str] = Header(default=None),
+):
+    from backend.alpha_community_bots import authorize_scheduler, verified_personas
+    from backend.alpha_community_bot_translation import verify_one_language
+
+    state = await authorize_scheduler(authorization)
+    if not state["enabled"]:
+        raise HTTPException(409, "Alpha community simulation is paused")
+    return await verify_one_language(await verified_personas(), language)
+
+
 @api.get("/internal/push/dispatch")
 async def internal_push_dispatch(
     authorization: Optional[str] = Header(default=None),

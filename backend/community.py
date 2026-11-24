@@ -2803,7 +2803,13 @@ def build_router(req_uid: Callable) -> APIRouter:
         return await list_invitations(uid, direction, state, cursor, page_size)
 
     @r.post("/invitations")
-    async def _p15b(body: InvitationIn, uid: str = U): return await send_invitation(uid, body)
+    async def _p15b(body: InvitationIn, uid: str = U):
+        result = await send_invitation(uid, body)
+        if runtime.alpha_features_available():
+            from backend.alpha_community_bot_tester import greet_inviter
+
+            return await greet_inviter(uid, body.target_parent_id, result)
+        return result
 
     @r.post("/invitations/{invitation_id}/decisions")
     async def _p16(invitation_id: str, body: InvitationDecisionIn, uid: str = U):
@@ -2862,7 +2868,12 @@ def build_router(req_uid: Callable) -> APIRouter:
 
     @r.post("/conversations/{conversation_id}/ai-consent-requests")
     async def _p25(conversation_id: str, body: ConsentRequestIn, uid: str = U):
-        return await request_ai_consent(uid, conversation_id, body)
+        result = await request_ai_consent(uid, conversation_id, body)
+        if body.purpose == "translation" and runtime.alpha_features_available():
+            from backend.alpha_community_bot_tester import allow_bot_translation
+
+            return await allow_bot_translation(uid, conversation_id, result)
+        return result
 
     @r.put("/ai-consent-requests/{request_id}/my-decision")
     async def _p26(request_id: str, body: ConsentDecisionIn, uid: str = U):

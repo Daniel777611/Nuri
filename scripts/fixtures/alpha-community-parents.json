@@ -13,7 +13,7 @@
         "context": "刚开始扶着沙发站"
       }
     ],
-    "location": "波特兰",
+    "location": "俄勒冈州波特兰",
     "timeZone": "America/Los_Angeles",
     "activity": "medium",
     "language": "zh-CN",
@@ -23,7 +23,8 @@
     "question": "最近送托，孩子一看我摘外套就知道我要走，抓着衣领哭。我说再见时有老师接手，但自己老想在门外多等。你们送完是直接走，还是等一小会儿？",
     "category": "托育适应",
     "concern": "childcare",
-    "about": "做早班咖啡，常比宝宝先醒。家里用一块小白板管接送。"
+    "about": "做早班咖啡，常比宝宝先醒。家里用一块小白板管接送。",
+    "origin": "在成都长大，几年前搬到俄勒冈州，和伴侣在这里组建家庭。"
   },
   {
     "slug": "lu-wen",
@@ -43,7 +44,7 @@
         "context": "小学低年级"
       }
     ],
-    "location": "贝尔维尤",
+    "location": "华盛顿州贝尔维尤",
     "timeZone": "America/Los_Angeles",
     "activity": "high",
     "language": "zh-CN",
@@ -53,7 +54,8 @@
     "question": "妹妹现在回答外婆基本都是 yes 或 no，姐姐一接话就把整段说完了。你们有什么适合让慢热的小孩和远方家人说几句中文的小活动？",
     "category": "双语养育",
     "concern": "parenting",
-    "about": "两个娃在不同语言里长大，外婆隔着屏幕一起做手工。西岸远程上班。"
+    "about": "两个娃在不同语言里长大，外婆隔着屏幕一起做手工。西岸远程上班。",
+    "origin": "在无锡长大，来美国读书后定居西北地区，外婆平常住在无锡。"
   },
   {
     "slug": "sui-nan",
@@ -69,7 +71,7 @@
         "context": "最近从摇篮换到小床"
       }
     ],
-    "location": "西雅图",
+    "location": "华盛顿州西雅图",
     "timeZone": "America/Los_Angeles",
     "activity": "low",
     "language": "zh-CN",
@@ -79,7 +81,8 @@
     "question": "我夜班回来正是孩子最精神的时候，有时交接只来得及说昨天几点睡。你们有没有一张真的愿意天天填、十秒能写完的作息记录？",
     "category": "睡眠习惯",
     "concern": "sleep",
-    "about": "夜班检验科，轮到我早上回家时宝宝恰好很精神。记一点日常给自己。"
+    "about": "夜班检验科，轮到我早上回家时宝宝恰好很精神。记一点日常给自己。",
+    "origin": "在斯波坎和西雅图两地长大，母亲从济南搬来，自己在本州读完检验课程。"
   },
   {
     "slug": "yi-shan",
@@ -99,7 +102,7 @@
         "context": "刚开始读短句"
       }
     ],
-    "location": "圣克拉拉",
+    "location": "加州圣克拉拉",
     "timeZone": "America/Los_Angeles",
     "activity": "medium",
     "language": "zh-CN",
@@ -109,7 +112,8 @@
     "question": "大孩子说班里有人问她小时候的照片，小孩子就很积极地想替姐姐回话。你们怎么陪孩子练习选择说多少，同时也让兄弟姐妹知道哪些故事可以帮着讲？",
     "category": "家庭故事",
     "concern": "family",
-    "about": "我们家有一对一块搬来的姐妹，我和伴侣慢慢跟她们补写时间线。"
+    "about": "我们家有一对一块搬来的姐妹，我和伴侣慢慢跟她们补写时间线。",
+    "origin": "在北加州出生，父母分别在香港和加州长大，成年后一直住在湾区。"
   },
   {
     "slug": "bo-shu",
@@ -133,8 +137,8 @@
         "context": "喜欢写食谱"
       }
     ],
-    "location": "台北",
-    "timeZone": "Asia/Taipei",
+    "location": "加州佛利蒙",
+    "timeZone": "America/Los_Angeles",
     "activity": "high",
     "language": "zh-TW",
     "voice": "台灣口吻，常說自家試過一半就失敗的小事",
@@ -143,7 +147,8 @@
     "question": "我們家週六早上最容易卡在「為什麼都是他選」：小的要去公園，大的想做早餐，另一個剛睡醒。你們家的輪流是怎麼排，才不會變成全家一直在算誰吃虧？",
     "category": "手足相处",
     "concern": "family",
-    "about": "兩個爸爸帶三個孩子。週末大多會做一頓早餐，一人挑一首歌。"
+    "about": "從台北搬到東灣。兩個爸爸帶三個孩子，週末早餐一人挑一首歌。",
+    "origin": "在台北長大，和丈夫定居東灣多年，家裡主要說中文。"
   },
   {
     "slug": "ke-you",
@@ -163,7 +168,7 @@
         "context": "刚学骑车"
       }
     ],
-    "location": "芝加哥",
+    "location": "伊利诺伊州芝加哥",
     "timeZone": "America/Chicago",
     "activity": "medium",
     "language": "zh-CN",
@@ -173,7 +178,8 @@
     "question": "妹妹要自己用勺，大人伸手她就把碗抱走。哥哥周三要赶去上课，我们已经试过提前摆饭和给妹妹一小份，还是急。你们两种速度的娃同桌时怎么安排？",
     "category": "饮食习惯",
     "concern": "food",
-    "about": "翻译空隙也要赶吃饭。两个小孩吃饭的速度完全不一样，家里常在试怎么坐在一起。"
+    "about": "以前在青岛吃饭也常赶时间。现在芝加哥家里两个娃吃得一快一慢，正试怎么让大家都坐得住。",
+    "origin": "在青岛长大，婚后搬到芝加哥，保持和国内朋友一起做翻译的习惯。"
   },
   {
     "slug": "ren-qin",
@@ -193,7 +199,7 @@
         "context": "课后做球队训练"
       }
     ],
-    "location": "纽约",
+    "location": "纽约州纽约市皇后区",
     "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-CN",
@@ -203,7 +209,8 @@
     "question": "关店到家快八点了，娃最爱那时候让我坐地上陪她玩商店。我十分钟也能给，但常一坐下就要玩半小时。你们忙完以后，有什么短短的小仪式孩子会觉得够？",
     "category": "亲子陪伴",
     "concern": "parenting",
-    "about": "白天顾杂货铺，娃拿纸袋画的招牌比我印的好看。忙里见缝插针一起玩。"
+    "about": "从福州搬来后一路在皇后区长大，现在白天顾杂货铺。娃拿纸袋画的招牌比我印的好看。",
+    "origin": "小时候随家人从福州搬到皇后区，接手的杂货铺就在自己长大的街区。"
   },
   {
     "slug": "qiao-book",
@@ -219,7 +226,7 @@
         "context": "爱画漫画，抗拒坐着朗读"
       }
     ],
-    "location": "波士顿",
+    "location": "马萨诸塞州波士顿",
     "timeZone": "America/New_York",
     "activity": "high",
     "language": "zh-CN",
@@ -229,7 +236,8 @@
     "question": "昨天孩子把一整页漫画的声音画出来，可我开口让他读一个对话框，他就合上了。有没有不太像在检查作业的共读游戏？我们俩都想轻松一点。",
     "category": "学习习惯",
     "concern": "development",
-    "about": "图书馆员，家那位小学生最近一直在画漫画。书读错了可以笑完接着读。"
+    "about": "图书馆员，家那位小学生最近一直在画漫画。书读错了可以笑完接着读。",
+    "origin": "在波士顿出生，父母从南宁搬来，自己先做过社区课后志愿者。"
   },
   {
     "slug": "mika-fern",
@@ -245,8 +253,8 @@
         "context": "在家表达自在，在班里会先观察"
       }
     ],
-    "location": "多伦多",
-    "timeZone": "America/Toronto",
+    "location": "Rochester, New York",
+    "timeZone": "America/New_York",
     "activity": "medium",
     "language": "en",
     "voice": "Writes in a reflective, slightly wry tone, and names one thing they actually tried",
@@ -255,7 +263,8 @@
     "question": "Our daycare circle time starts right at drop-off. My toddler loves singing at home but hangs back when everyone is already singing. Is there a small bridge you and a teacher have tried that didn't put your kid on the spot?",
     "category": "Daycare adjustment",
     "concern": "childcare",
-    "about": "I edit captions and parent a toddler who likes to understand a room before joining in."
+    "about": "I moved from Toronto to Rochester and edit captions. My toddler likes to understand a room before joining in.",
+    "origin": "Grew up in Toronto and moved to western New York with their partner, where several friends from work became their local support network."
   },
   {
     "slug": "qin-nai",
@@ -271,7 +280,7 @@
         "context": "喜欢把当天见到的事演一遍"
       }
     ],
-    "location": "萨克拉门托",
+    "location": "加州萨克拉门托",
     "timeZone": "America/Los_Angeles",
     "activity": "medium",
     "language": "zh-CN",
@@ -281,7 +290,8 @@
     "question": "视频挂掉前小孩会忽然跑去找很多玩具，一件一件拿回来，说还没讲完。我能陪着他，但想替妈妈留一个小小告别的方法。隔着屏幕陪孩子的家长，有什么办法自己做着很自然？",
     "category": "异地陪伴",
     "concern": "family",
-    "about": "外孙喜欢听妈妈留的语音，我会陪他把今天见到的小事再演一遍。"
+    "about": "在昆明做裁缝时也爱讲些手上这件活的故事。现在陪外孙过日子，周日一起等他妈妈的语音。",
+    "origin": "在昆明做了多年裁缝，退休后到加州照顾外孙，还和以前的邻居互寄布料。"
   },
   {
     "slug": "leo-ma",
@@ -297,8 +307,8 @@
         "context": "喜欢自己去图书馆，也想和同学独处"
       }
     ],
-    "location": "奥克兰",
-    "timeZone": "Pacific/Auckland",
+    "location": "Anchorage, Alaska",
+    "timeZone": "America/Anchorage",
     "activity": "low",
     "language": "en",
     "voice": "Blunt, affectionate, keeps a note of what actually made a conversation easier",
@@ -307,7 +317,8 @@
     "question": "My teenager says they need some weekend time with no plans. Fair. But we both miss our Sunday noodles when it disappears completely. What kind of low-key invitation worked for your older kids without making it feel like a compulsory family event?",
     "category": "Family time",
     "concern": "parenting",
-    "about": "I work outdoors and share a home with my teenager. Sunday noodles tend to lead to the best catchups."
+    "about": "I work outdoors in Alaska. My teenager and I brought our lazy Sunday noodle lunches along from New Zealand.",
+    "origin": "Grew up outside Auckland and moved to Alaska before his teenager started school. He kept the habit of making noodles together on quiet weekends."
   },
   {
     "slug": "jay-kai",
@@ -327,8 +338,8 @@
         "context": "每天想讲完一个发生过的故事"
       }
     ],
-    "location": "伦敦",
-    "timeZone": "Europe/London",
+    "location": "马里兰州银泉",
+    "timeZone": "America/New_York",
     "activity": "medium",
     "language": "zh-CN",
     "voice": "说话实际，总先承认别人也有负担",
@@ -337,37 +348,39 @@
     "question": "阿婆、我和伴侣都能陪晚饭，但各有各的习惯。大宝会问为什么昨天可以边吃边讲图画书，今天不行。三代同住的家里，哪些小规矩值得统一，哪些就让它不一样？",
     "category": "家庭协作",
     "concern": "family",
-    "about": "家里三个大人有三套晚饭习惯，不过都学会唱同一首晚安歌了。"
+    "about": "从南京到伦敦再到马里兰，家里带来三套晚饭习惯，倒是都学会唱同一首晚安歌了。",
+    "origin": "小时候随家人从南京移居伦敦，后来和伴侣在马里兰安家，上一代也住在同一个屋檐下。"
   },
   {
     "slug": "yi-pae",
     "name": "易派",
     "age": 35,
-    "role": "父亲",
+    "role": "아버지",
     "roleCode": "dad",
-    "occupation": "做游戏本地化测试",
-    "household": "中韩双语家庭，父母分别来自两地，孩子一起去社区学校",
+    "occupation": "게임 현지화 테스터",
+    "household": "한국어와 중국어를 쓰는 부부가 두 아이를 키운다. 아이들은 동네 학교와 주말 언어 수업에 다닌다.",
     "children": [
       {
         "ageMonths": 86,
-        "context": "自己发明过双语桌游"
+        "context": "직접 두 언어를 섞은 보드게임을 만들었다."
       },
       {
         "ageMonths": 46,
-        "context": "最近开始追着问汉字"
+        "context": "요즘 한자를 보면 무슨 글자인지 묻는다."
       }
     ],
-    "location": "首尔",
-    "timeZone": "Asia/Seoul",
+    "location": "포트리, 뉴저지",
+    "timeZone": "America/New_York",
     "activity": "medium",
-    "language": "zh-CN",
-    "voice": "喜欢听不同家庭的方法，描述里有对话片段",
-    "experience": "一家人做过图文菜单，每人都能填熟悉的词。",
-    "currentChallenge": "大孩子在同学面前不愿讲家里用的另一种语言。",
-    "question": "上次校门口我用中文喊他，他回家后才小声说不想被同学注意。平时做双语桌游倒玩得很起劲。你们怎么和孩子聊什么时候想用哪种语言？",
-    "category": "双语养育",
+    "language": "ko",
+    "voice": "아이가 실제로 한 말을 한두 마디 인용하고, 집마다 다른 방법을 듣고 싶어 한다.",
+    "experience": "온 가족이 그림 메뉴판을 만들고 각자 편하게 쓰는 언어로 음식 이름을 적었다.",
+    "currentChallenge": "큰아이가 친구들 앞에서는 집에서 쓰는 중국어로 이야기하고 싶어 하지 않는다.",
+    "question": "학교 앞에서 제가 큰애를 중국어로 불렀는데, 집에 와서 친구들 앞에서는 그렇게 부르지 말아 달라고 하더라고요. 집에서 중국어랑 한국어를 섞어 보드게임 할 때는 신나게 하는 아이예요. 상황에 따라 무슨 언어를 쓰고 싶은지 아이와 어떻게 얘기해 보셨어요?",
+    "category": "이중언어 양육",
     "concern": "parenting",
-    "about": "做游戏本地化，也在家陪俩孩子玩他们自己画的双语桌游。"
+    "about": "서울에서 자랐고 지금은 뉴저지에서 두 아이를 키워요. 게임 현지화 일을 하고, 집에서는 아이들이 만든 이중언어 보드게임을 같이 합니다.",
+    "origin": "서울에서 자랐고, 중국에서 자란 배우자와 뉴저지에 정착했다. 집에서는 한국어와 중국어를 쓴다."
   },
   {
     "slug": "jing-ber",
@@ -391,8 +404,8 @@
         "context": "常自己安排周末"
       }
     ],
-    "location": "柏林",
-    "timeZone": "Europe/Berlin",
+    "location": "明尼苏达州圣保罗",
+    "timeZone": "America/Chicago",
     "activity": "low",
     "language": "zh-CN",
     "voice": "习惯将问题讲得很具体，避免替别人猜动机",
@@ -401,37 +414,39 @@
     "question": "节日前三个人都不同时间到家，小的已经想把挂饰全挂上，大的说有一样一定要留给自己。你们重组家庭有什么能拆成几段做的节日准备？",
     "category": "重组家庭",
     "concern": "family",
-    "about": "在展馆管灯。家里常要等三个不同的周末安排碰得上再一起做事。"
+    "about": "从前在大连和柏林做过展馆灯光，现在住圣保罗。家里三个小孩常要等空档碰上再一起做事。",
+    "origin": "在大连长大，曾在柏林做展馆项目，重组家庭后定居圣保罗。"
   },
   {
     "slug": "luc-dum",
     "name": "Lucas小巷",
     "age": 41,
-    "role": "父亲",
+    "role": "Père",
     "roleCode": "dad",
-    "occupation": "公交地图绘图员",
-    "household": "中法双语家庭，伴侣做餐厅晚班",
+    "occupation": "Dessinateur de plans de bus",
+    "household": "Famille franco-chinoise à Cambridge. Sa compagne travaille le soir dans un restaurant.",
     "children": [
       {
         "ageMonths": 118,
-        "context": "喜欢实地找地图上的街名"
+        "context": "Aime retrouver dans la rue les noms qu'il a lus sur un plan."
       },
       {
         "ageMonths": 162,
-        "context": "爱发视频给外公外婆"
+        "context": "Préfère tourner de petites vidéos pour ses grands-parents."
       }
     ],
-    "location": "巴黎",
-    "timeZone": "Europe/Paris",
+    "location": "Cambridge, Massachusetts",
+    "timeZone": "America/New_York",
     "activity": "high",
-    "language": "en",
-    "voice": "Writes short sensory details, sometimes adds a phrase he heard in French or Chinese",
-    "experience": "His kids once made a bilingual neighborhood map for relatives visiting for the first time.",
-    "currentChallenge": "They want to keep a shared activity that an older sibling won't consider babyish.",
-    "question": "My two kids started a tiny neighbourhood map in Chinese and French for their visiting grandparents. Our 13-year-old is done with stickers now, understandably. Has a family carried a project like this forward so the older kid gets something real to own?",
-    "category": "Bilingual parenting",
+    "language": "fr",
+    "voice": "Des phrases simples et des petits détails concrets. Selon le moment, il cite ses enfants en français ou en chinois.",
+    "experience": "Les enfants ont dessiné un plan du quartier en chinois et en français lors de la première visite des grands-parents dans le Massachusetts.",
+    "currentChallenge": "Garder un projet à faire ensemble sans que l'aîné ait l'impression qu'il est destiné aux petits.",
+    "question": "Mes deux enfants ont commencé un petit plan de Cambridge pour leurs grands-parents, avec les noms en français et en chinois. À treize ans, l'aîné en a un peu assez des autocollants, je le comprends. Vous avez déjà prolongé un projet comme ça avec un ado, en lui laissant une partie vraiment à lui ?",
+    "category": "Éducation bilingue",
     "concern": "parenting",
-    "about": "I draw maps, and at home my two kids make better bilingual maps than I do."
+    "about": "De Paris à Cambridge, je dessine des plans de bus. À la maison, mes enfants font de meilleurs plans bilingues que moi.",
+    "origin": "A grandi à Paris. Il vit dans le Massachusetts avec sa compagne, qui a grandi dans une famille sinophone."
   },
   {
     "slug": "mei-rui",
@@ -447,8 +462,8 @@
         "context": "开始自己管理运动用品"
       }
     ],
-    "location": "里斯本",
-    "timeZone": "Europe/Lisbon",
+    "location": "罗得岛州普罗维登斯",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-CN",
     "voice": "愿意分享失败的尝试，语气有点自嘲",
@@ -457,7 +472,8 @@
     "question": "现在去两个家都要带球鞋，她有时会跑回门里帮我想我们漏了什么。我想让她放心大人负责，也想让她在两个家都有点掌控感。你们怎么安排两边共同用的东西？",
     "category": "家庭协作",
     "concern": "family",
-    "about": "书店咖啡馆上班。和另一位家长商量怎么让孩子好好过两边的日常。"
+    "about": "书店咖啡馆上班。和另一位家长商量怎么让孩子好好过两边的日常。",
+    "origin": "在杭州长大，曾住在里斯本，后来在普罗维登斯找到工作，两位家长都在本地定居。"
   },
   {
     "slug": "hao-bao",
@@ -485,7 +501,7 @@
         "context": "周末比赛"
       }
     ],
-    "location": "休斯顿",
+    "location": "得州休斯顿",
     "timeZone": "America/Chicago",
     "activity": "high",
     "language": "zh-CN",
@@ -495,63 +511,66 @@
     "question": "这个周末两场球、一次班级活动和一场生日，我要重新学会只答应能做到的事。孩子多的家里，你们怎么让安静那个也觉得自己没一直在排队？",
     "category": "家庭协作",
     "concern": "family",
-    "about": "修东西，也负责四个小孩放学后那几小时。跟谁一起去采购就和谁单独聊一段。"
+    "about": "修东西，也负责四个小孩放学后那几小时。跟谁一起去采购就和谁单独聊一段。",
+    "origin": "一家在武汉和休斯顿都住过，自己做过几份本地维修工作后开始独立接单。"
   },
   {
     "slug": "jamie-river",
     "name": "Jamie",
     "age": 34,
-    "role": "母亲",
+    "role": "Mère",
     "roleCode": "mom",
-    "occupation": "市政档案修复员，半职",
-    "household": "和伴侣育一名孩子，跟说法语的亲戚住得近",
+    "occupation": "Restauratrice d'archives municipales à temps partiel",
+    "household": "Élève un enfant avec son conjoint, près de parents francophones.",
     "children": [
       {
         "ageMonths": 38,
-        "context": "喜欢两个人一起搭东西，在大聚会会累"
+        "context": "Aime construire à deux et se fatigue vite dans les grosses réunions de famille."
       }
     ],
-    "location": "蒙特利尔",
-    "timeZone": "America/Toronto",
+    "location": "Burlington, Vermont",
+    "timeZone": "America/New_York",
     "activity": "medium",
-    "language": "en",
-    "voice": "Conversational and observant, describes what her child did instead of giving labels",
-    "experience": "A quiet job helping lay out napkins once made the start of a loud gathering easier.",
-    "currentChallenge": "Family gatherings are long and lively; the preschooler needs occasional quiet breaks.",
-    "question": "At loud family dinners our three-year-old does well for the first half hour, then goes under the table. They're happiest with a small job like bringing napkins. What quiet roles or breaks have worked at big gatherings for you?",
-    "category": "Family time",
+    "language": "fr",
+    "voice": "Ton québécois léger, chaleureux et direct. Elle raconte ce que son enfant fait, avec une pointe d'humour.",
+    "experience": "Donner à son enfant la petite mission de poser les serviettes a rendu le début d'un gros souper plus facile.",
+    "currentChallenge": "Aux soupers de famille qui s'étirent, son enfant de trois ans a besoin de souffler au calme.",
+    "question": "Quand on soupe en famille, notre petit de trois ans est correct la première demi-heure, puis il se cache sous la table. Il est bien content quand il peut apporter les serviettes ou avoir une petite mission. Chez vous, qu'est-ce qui lui permet de prendre une pause sans que tout le monde s'en mêle ?",
+    "category": "Temps en famille",
     "concern": "parenting",
-    "about": "I fix paper for work and look for the quiet corners of loud family gatherings with my preschooler."
+    "about": "De Montréal au Vermont, j'ai gardé le goût des gros soupers de famille. Avec mon trois ans, on cherche souvent le coin tranquille.",
+    "origin": "A grandi à Montréal avant de s'installer au Vermont. Une partie de sa famille francophone habite à proximité, de chaque côté de la frontière."
   },
   {
     "slug": "tao-na",
     "name": "桃奈",
     "age": 32,
-    "role": "母亲",
+    "role": "母親",
     "roleCode": "mom",
-    "occupation": "面包店排班学徒",
-    "household": "丈夫早上送小孩，母亲下午接两兄妹",
+    "occupation": "パン屋の早朝シフトで働く見習い",
+    "household": "夫が朝に子どもたちを送り、母親が午後にきょうだいを迎えに行く。",
     "children": [
       {
         "ageMonths": 16,
-        "context": "听见同一首歌会拍手"
+        "context": "同じ歌が聞こえると手をたたく。"
       },
       {
         "ageMonths": 57,
-        "context": "爱看配方照片"
+        "context": "パンの作り方の写真をよく見たがる。"
       }
     ],
-    "location": "东京",
-    "timeZone": "Asia/Tokyo",
+    "location": "トーランス（カリフォルニア州）",
+    "timeZone": "America/Los_Angeles",
     "activity": "low",
-    "language": "zh-CN",
-    "voice": "在通勤时留言，句子简短，有时加日语词",
-    "experience": "给两个孩子做过一张图版出门顺序表，哥哥愿意帮妹妹找鞋。",
-    "currentChallenge": "周一哥哥送托仪式太长，妹妹也开始哭。",
-    "question": "周一哥哥坚持要在门口挥三次手才进去，妹妹就在等他的这段时间里开始哭。你们同时送两个小孩时，有没有可以一起做、十几秒就收尾的告别？",
-    "category": "托育适应",
+    "language": "ja",
+    "voice": "通勤の途中で読めるくらい短く書く。気になった一場面をそのまま伝える。",
+    "experience": "家を出るまでの準備を絵にしたら、兄が妹の靴を見つけて持ってきてくれるようになった。",
+    "currentChallenge": "月曜は兄の別れの儀式が長引き、待っている妹も泣き出す。",
+    "question": "月曜の朝だけ、お兄ちゃんが園の入口で「３回バイバイするまで入らない」と言います。その間に妹も泣き始めてしまって。きょうだいを一緒に送るご家庭、二人でできて、さっと終われるお別れの習慣はありますか？",
+    "category": "園生活への慣れ",
     "concern": "childcare",
-    "about": "做面包早班，接孩子走同一条路。家里的出门清单是大娃画给妹妹的。"
+    "about": "東京育ちで今は南カリフォルニアのパン屋で朝番。上の子が描いた支度の絵を見ながら、二人で保育園に行っています。",
+    "origin": "東京で育ち、夫と南カリフォルニアへ引っ越した。家では日本語、園では主に英語を使っている。"
   },
   {
     "slug": "wei-lun",
@@ -567,8 +586,8 @@
         "context": "会发短视频给祖父母，却不爱打电话"
       }
     ],
-    "location": "新加坡",
-    "timeZone": "Asia/Singapore",
+    "location": "新泽西州泽西市",
+    "timeZone": "America/New_York",
     "activity": "medium",
     "language": "zh-CN",
     "voice": "先提一个生活物件，再说背后的问题",
@@ -577,7 +596,8 @@
     "question": "我爸妈最常问的还是「今天吃了什么」，女儿总发一个饭碗就没下文。以前互拍路上的招牌反而聊了好几天。还有哪些适合两地家人接着做的小题目？",
     "category": "异地陪伴",
     "concern": "family",
-    "about": "新加坡爸爸。女儿会跟远方的爷爷奶奶交换照片，有时专拍很普通的街角。"
+    "about": "从新加坡搬到新泽西的爸爸。女儿会和新加坡的外公外婆交换照片，有时专拍很普通的街角。",
+    "origin": "在新加坡长大，现居新泽西州，女儿的外公外婆还在新加坡。"
   },
   {
     "slug": "li-eat",
@@ -597,8 +617,8 @@
         "context": "想自己分水果"
       }
     ],
-    "location": "槟城",
-    "timeZone": "Asia/Kuala_Lumpur",
+    "location": "加州长滩",
+    "timeZone": "America/Los_Angeles",
     "activity": "high",
     "language": "zh-CN",
     "voice": "会讲本地吃法，愿意坦白忙时做不到什么",
@@ -607,7 +627,8 @@
     "question": "收摊后我们才坐下来一起吃，三岁的大儿子喜欢给每个人分一块水果，大人饿了就不想等。你们家哪些吃饭小事会让孩子做主，哪些会提前搞定？",
     "category": "饮食习惯",
     "concern": "food",
-    "about": "槟城做早餐摊，收摊才坐下来。大儿子常要给大家亲手分水果。"
+    "about": "在长滩帮家人做早餐摊，收摊才坐下来。大儿子常要给大家亲手分水果。",
+    "origin": "在槟城和祖父母一起长大，成年后到长滩帮家人经营周末早餐摊。"
   },
   {
     "slug": "yuan-foster",
@@ -627,8 +648,8 @@
         "context": "喜欢带弟弟转公园"
       }
     ],
-    "location": "香港",
-    "timeZone": "Asia/Hong_Kong",
+    "location": "華盛頓州塔科馬",
+    "timeZone": "America/Los_Angeles",
     "activity": "medium",
     "language": "zh-TW",
     "voice": "慣用繁體，語氣平實，很重視讓小孩自己開口",
@@ -637,7 +658,8 @@
     "question": "家裡常有親戚來坐，小哥想介紹弟弟，可是每次話到一半會回頭看我們。我想先陪他想一兩句都舒服的說法。有人遇過家裡添成員、手足需要適應怎麼介紹嗎？",
     "category": "家庭故事",
     "concern": "family",
-    "about": "平日管場館雜務，放假帶兩個孩子轉公園。慢慢學著把說自己故事的權利留給他們。"
+    "about": "在香港長大，現在住塔科馬。平日管場館，放假帶兩個孩子轉公園，慢慢學著把說自己故事的權利留給他們。",
+    "origin": "從香港搬到美國西北部，和伴侶在塔科馬住了快十年。平常用粵語、中文和英文。"
   },
   {
     "slug": "hua-me",
@@ -653,8 +675,8 @@
         "context": "傍晚醒着时很爱听人说话"
       }
     ],
-    "location": "澳门",
-    "timeZone": "Asia/Macau",
+    "location": "內華達州拉斯維加斯",
+    "timeZone": "America/Los_Angeles",
     "activity": "low",
     "language": "zh-TW",
     "voice": "寫得短，有時邊等車邊留一句",
@@ -663,7 +685,8 @@
     "question": "我剛回到晚班，每天跟寶寶同時清醒常只有十分鐘。他現在聽我哼歌會停一下。想問那些剛回去上班的家長，你們最後留下的那個小習慣是什麼？",
     "category": "親子陪伴",
     "concern": "parenting",
-    "about": "在酒店輪晚班，家裡有個聽見我哼歌會突然安靜一下的小孩。"
+    "about": "在酒店輪晚班，家裡有個聽見我哼歌會突然安靜一下的小孩。",
+    "origin": "在澳門長大，後來搬到內華達。奶奶也住在鄰近的社區，可以固定來幫忙。"
   },
   {
     "slug": "qi-wheel",
@@ -683,8 +706,8 @@
         "context": "从图书馆借很多交通主题的书"
       }
     ],
-    "location": "高雄",
-    "timeZone": "Asia/Taipei",
+    "location": "加州戴維斯",
+    "timeZone": "America/Los_Angeles",
     "activity": "high",
     "language": "zh-TW",
     "voice": "偏臺灣口語，常把孩子當下說的話寫出來",
@@ -693,7 +716,8 @@
     "question": "小的喊「換我修」，大的就在旁邊幫他把事情都做完，最後兩人都委屈。想找適合兩種年紀一起動手但各有份的小任務，你們家有什麼玩過的？",
     "category": "親子陪伴",
     "concern": "parenting",
-    "about": "在機車行上班。兩個娃看我修玩具，最近也開始自己看哪個卡扣鬆了。"
+    "about": "在高雄學會修車，現在在加州機車行上班。兩個娃看我修玩具，也開始自己看哪個卡扣鬆了。",
+    "origin": "高雄長大，搬到加州後和伴侶及長輩一起住。孩子會陪他打視訊給臺灣的表哥。"
   },
   {
     "slug": "xin-mu",
@@ -713,8 +737,8 @@
         "context": "用助行器，喜欢球类"
       }
     ],
-    "location": "台北",
-    "timeZone": "Asia/Taipei",
+    "location": "伊利諾州埃文斯頓",
+    "timeZone": "America/Chicago",
     "activity": "medium",
     "language": "zh-TW",
     "voice": "重視細節，會問孩子怎麼看而不替他們說話",
@@ -723,7 +747,8 @@
     "question": "大的想玩丟球，小的只想一直跑。之前有一次把遊戲換成輪流出題兩人都喜歡，但我想不到更多種。家裡孩子活動方式不同時，你們有沒有兩個人都能主導的戶外遊戲？",
     "category": "手足相處",
     "concern": "family",
-    "about": "舞台服裝助理，跟兩個孩子試過幾種球場玩法。在意每個人都有份提點子。"
+    "about": "舞台服裝助理，跟兩個孩子試過幾種球場玩法。在意每個人都有份提點子。",
+    "origin": "在台北開始做服裝，後來搬到芝加哥一帶繼續從事劇場工作。"
   },
   {
     "slug": "cheng-wei",
@@ -743,8 +768,8 @@
         "context": "曾主动提出一起试做意面"
       }
     ],
-    "location": "台南",
-    "timeZone": "Asia/Taipei",
+    "location": "新澤西州愛迪生",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-TW",
     "voice": "不急著給意見，從自己容易做過頭的地方說起",
@@ -753,7 +778,8 @@
     "question": "她有次自己問我要不要一起做義大利麵，後來幾次我一問她又搖頭。剛當繼父，想讓孩子知道隨時可以來，不想一直追問。你們有沒有一句說得自然的邀請？",
     "category": "重組家庭",
     "concern": "family",
-    "about": "早上在店裡做菜，偶爾能跟家裡的大孩子一起試煮一鍋義大利麵。"
+    "about": "早上在店裡做菜，偶爾能跟家裡的大孩子一起試煮一鍋義大利麵。",
+    "origin": "在台南住到成年，搬到新澤西後工作和生活都主要在同一個鎮上。"
   },
   {
     "slug": "pei-window",
@@ -773,8 +799,8 @@
         "context": "喜歡自己錄手作影片"
       }
     ],
-    "location": "新竹",
-    "timeZone": "Asia/Taipei",
+    "location": "德州奧斯汀",
+    "timeZone": "America/Chicago",
     "activity": "medium",
     "language": "zh-TW",
     "voice": "先說自己也常忘記放下手機，願意試一個小變化",
@@ -783,7 +809,8 @@
     "question": "我們試過晚上手機一起充電，結果小的有次在群組沒看到分工，大的有次想剪完才去睡。想在家訂一個大家都參與得到的做法，你們怎麼讓約定有彈性又說得算？",
     "category": "數位生活",
     "concern": "parenting",
-    "about": "做庫存管理。我家的手機停車位大人也得停，兩個孩子正在幫我們修規則。"
+    "about": "做庫存管理。我家的手機停車位大人也得停，兩個孩子正在幫我們修規則。",
+    "origin": "原先住新竹，幾年前因工作搬到德州，孩子在不同學年轉到本地學校。"
   },
   {
     "slug": "xiao-ken",
@@ -803,7 +830,7 @@
         "context": "雨天爱收集小石头"
       }
     ],
-    "location": "丹佛",
+    "location": "科罗拉多州丹佛",
     "timeZone": "America/Denver",
     "activity": "medium",
     "language": "zh-CN",
@@ -813,7 +840,8 @@
     "question": "冷天要准备好久才到得了楼下，大宝穿完外套又赖着不肯套手套。我只想让他知道短短出门也能好玩。你们住冷地方的人，一家在附近走几分钟会做什么？",
     "category": "亲子陪伴",
     "concern": "parenting",
-    "about": "苗圃工作，平常带两个孩子出门找不到三种颜色就找两种。"
+    "about": "苗圃工作，平常带两个孩子出门找不到三种颜色就找两种。",
+    "origin": "从小住在新墨西哥州北部，父亲的家人来自潮州，祖父夏天会从新墨西哥来帮忙。"
   },
   {
     "slug": "linjie-grad",
@@ -829,7 +857,7 @@
         "context": "最近对冰箱上挂的照片特别有兴趣"
       }
     ],
-    "location": "巴尔的摩",
+    "location": "马里兰州巴尔的摩",
     "timeZone": "America/New_York",
     "activity": "high",
     "language": "zh-CN",
@@ -839,7 +867,8 @@
     "question": "我们家晚饭后两个大人经常都在赶事，孩子只想把照片拿过来挨个讲给我们听。助教和带娃碰过头的家长，有没有哪一个短陪伴习惯能忙时也留住？",
     "category": "家庭协作",
     "concern": "family",
-    "about": "上课、助教、带娃轮着来。家里最稳的一件事是留空档给孩子从书架上选书。"
+    "about": "上课、助教、带娃轮着来。家里最稳的一件事是留空档给孩子从书架上选书。",
+    "origin": "在杭州读完本科后来美国读研，和伴侣现在在同一所城市上学。"
   },
   {
     "slug": "ian-pine",
@@ -859,7 +888,7 @@
         "context": "很擅长折纸，还不爱带人回家"
       }
     ],
-    "location": "明尼阿波利斯",
+    "location": "Minneapolis, Minnesota",
     "timeZone": "America/Chicago",
     "activity": "medium",
     "language": "en",
@@ -869,33 +898,35 @@
     "question": "The class is making a family tree. Our adopted siblings have some people they'd like to include and some stories they'd rather keep at home. Has anyone built a version with their kids where the kids choose what goes on the display?",
     "category": "Family stories",
     "concern": "family",
-    "about": "Park maintenance, two kids, and a family calendar with room for traditions they bring themselves."
+    "about": "Park maintenance, two kids, and a family calendar with room for traditions they bring themselves.",
+    "origin": "Grew up in a small Minnesota town and moved to Minneapolis for park work. His sister and several longtime friends live nearby."
   },
   {
     "slug": "sana-sun",
     "name": "珊娜",
     "age": 43,
-    "role": "单亲领养妈妈",
+    "role": "Madre adoptiva soltera",
     "roleCode": "mom",
-    "occupation": "客轮客服培训员",
-    "household": "和领养的女儿同住，好友周末偶尔带娃一起上课",
+    "occupation": "Formadora de personal de atención al cliente en una empresa de ferris",
+    "household": "Vive con su hija adoptiva. A veces coincide con una amiga y sus hijos en clases de fin de semana.",
     "children": [
       {
         "ageMonths": 89,
-        "context": "春天和朋友画过一本公园小书"
+        "context": "En primavera dibujó con una amiga un librito sobre el parque."
       }
     ],
-    "location": "迈阿密",
+    "location": "Miami, Florida",
     "timeZone": "America/New_York",
     "activity": "medium",
-    "language": "zh-CN",
-    "voice": "语气松弛，说到爱好时很具体",
-    "experience": "女儿愿意约朋友一起带画板，比约一个抽象的「见个面」更自然。",
-    "currentChallenge": "女儿和一位朋友闹别扭，想邀约但不想让对方觉得要立刻和好。",
-    "question": "她给画画搭子留了一支铅笔，说怕再一开口就吵。我想跟她商量一个把东西送过去的方式。你们陪同龄娃恢复友谊时，有没有试过简单又不会施压力的小开场？",
-    "category": "同伴交往",
+    "language": "es",
+    "voice": "Habla con soltura y menciona detalles pequeños. En español usa palabras de Puerto Rico cuando le salen naturales.",
+    "experience": "Su hija se animó a invitar a una amiga a dibujar en el parque cuando la propuesta era concreta y podía llevar su cuaderno.",
+    "currentChallenge": "Quiere acercarse a su compañera de dibujo después de una discusión, sin pedirle que hagan las paces enseguida.",
+    "question": "Mi nena le guardó un lápiz a la amiga con la que dibuja, pero dice que si le habla capaz vuelven a discutir. Pensamos en devolvérselo sin hacer un drama. ¿Qué pequeño gesto les ha servido a sus hijos para acercarse de nuevo a una amistad, sin presionar a nadie?",
+    "category": "Amistades",
     "concern": "development",
-    "about": "单亲带女儿，家里有不少公园速写。她说带画板去找朋友比光见个面容易。"
+    "about": "Crecí entre San Juan y el sur de Florida. Con mi nena guardamos dibujos del parque: dice que con cuaderno en mano es más fácil empezar a hablar.",
+    "origin": "Creció entre San Juan y el sur de Florida. Ahora vive en Miami, donde se reúne con amistades de su familia y otras madres del barrio."
   },
   {
     "slug": "tao-wu",
@@ -915,7 +946,7 @@
         "context": "早上喜欢自己安排出门"
       }
     ],
-    "location": "底特律",
+    "location": "密歇根州底特律",
     "timeZone": "America/Detroit",
     "activity": "low",
     "language": "zh-CN",
@@ -925,7 +956,8 @@
     "question": "兄弟俩睡一间屋，哥哥早起要找衣服，弟弟听到抽屉响就醒。我们试过前一晚把衣服挂门背后，还是偶尔会吵一会儿。没有多余房间的家里还有什么小招？",
     "category": "睡眠习惯",
     "concern": "sleep",
-    "about": "工厂轮班，俩兄弟共享一间屋。我在学习怎么让早起的日子也能安静一点。"
+    "about": "工厂轮班，俩兄弟共享一间屋。我在学习怎么让早起的日子也能安静一点。",
+    "origin": "成长于沈阳一带，成年到密歇根做设备维护，父亲也在附近定居。"
   },
   {
     "slug": "fang-camp",
@@ -949,7 +981,7 @@
         "context": "喜欢做简单的早餐"
       }
     ],
-    "location": "亚特兰大",
+    "location": "佐治亚州亚特兰大",
     "timeZone": "America/New_York",
     "activity": "medium",
     "language": "zh-CN",
@@ -959,7 +991,8 @@
     "question": "孩子抱怨我开口老是「你俩去...」，有道理。想从小事开始，让双胞胎在家各自有长处和自己的差事。你们试过哪些不互相比的安排？",
     "category": "手足相处",
     "concern": "family",
-    "about": "仨娃里有一对双胞胎，全家都喜欢发明短差事给自己做。"
+    "about": "仨娃里有一对双胞胎，全家都喜欢发明短差事给自己做。",
+    "origin": "在北卡州长大，家里长辈来自厦门。后来搬到亚特兰大，有时会回北卡看亲友。"
   },
   {
     "slug": "nash-kite",
@@ -979,7 +1012,7 @@
         "context": "喜欢先看完事件一次再加入"
       }
     ],
-    "location": "菲尼克斯",
+    "location": "Phoenix, Arizona",
     "timeZone": "America/Phoenix",
     "activity": "medium",
     "language": "en",
@@ -989,7 +1022,8 @@
     "question": "We have a little lamp our preschooler likes to turn off at bedtime. It's helped when the evening has been busy. What calm routines worked with a foster child and a younger sibling when neither was ready for the same bedtime?",
     "category": "Sleep routines",
     "concern": "sleep",
-    "about": "I work from home and share the evening routine with a preschooler in foster care and their younger playmate."
+    "about": "I work from home and share the evening routine with a preschooler in foster care and their younger playmate.",
+    "origin": "Grew up in northern Arizona and moved to Phoenix for work. Their partner's family lives in the area but works different hours."
   },
   {
     "slug": "yu-zhi",
@@ -1013,7 +1047,7 @@
         "context": "常自己约社区活动"
       }
     ],
-    "location": "檀香山",
+    "location": "夏威夷州檀香山",
     "timeZone": "Pacific/Honolulu",
     "activity": "low",
     "language": "zh-CN",
@@ -1023,7 +1057,8 @@
     "question": "以前全家一起玩找脚印，现在十六岁那个只愿意帮拍几张照。倒也挺好。你们家年龄差很大的孩子，有没有一种出门活动能各玩各的又有交集？",
     "category": "亲子陪伴",
     "concern": "parenting",
-    "about": "以前带过两个大娃，现在重新学习怎么跟最小的在沙地耗一个下午。"
+    "about": "以前带过两个大娃，现在重新学习怎么跟最小的在沙地耗一个下午。",
+    "origin": "在檀香山长大，祖父母来自台湾，伴侣是在本地工作时认识的。"
   },
   {
     "slug": "le-ship",
@@ -1043,7 +1078,7 @@
         "context": "会数完日历却还不懂要等几天"
       }
     ],
-    "location": "圣迭戈",
+    "location": "加州圣迭戈",
     "timeZone": "America/Los_Angeles",
     "activity": "high",
     "language": "zh-CN",
@@ -1053,7 +1088,8 @@
     "question": "她会兴奋地把画放到电脑旁等视频，临时改时间就说「肯定不想看」。我们平日能发语音。你们家有什么说法，孩子能慢慢理解计划变了、想念没变？",
     "category": "异地陪伴",
     "concern": "family",
-    "about": "做排版，带两个小朋友过伴侣不在家的日子。喜欢收集家人会愿意听的短语音。"
+    "about": "做排版，带两个小朋友过伴侣不在家的日子。喜欢收集家人会愿意听的短语音。",
+    "origin": "在福建和华盛顿州两边长大，随伴侣工作调动后在圣迭戈生活。"
   },
   {
     "slug": "momo-line",
@@ -1073,8 +1109,8 @@
         "context": "想做自己的周末安排"
       }
     ],
-    "location": "墨尔本",
-    "timeZone": "Australia/Melbourne",
+    "location": "科罗拉多州柯林斯堡",
+    "timeZone": "America/Denver",
     "activity": "medium",
     "language": "zh-CN",
     "voice": "常说试了之后孩子的反应而非给经验打分",
@@ -1083,7 +1119,8 @@
     "question": "这周我和伴侣只有周六下午都在家，一个要搭纸箱，一个说想晚点出门。我不想硬排满这半天，想问问你们一家多久有一次很轻松的共同时间，通常在干啥？",
     "category": "亲子陪伴",
     "concern": "parenting",
-    "about": "做展览，周末偶尔上班。家里两兄妹很会给大人画周末计划。"
+    "about": "做展览，周末偶尔上班。家里两兄妹很会给大人画周末计划。",
+    "origin": "在墨尔本长大，母亲从广州移居澳大利亚，后来女儿和母亲都搬到科罗拉多州。"
   },
   {
     "slug": "dun-route",
@@ -1103,8 +1140,8 @@
         "context": "自己记得两处住所的钥匙套颜色"
       }
     ],
-    "location": "阿姆斯特丹",
-    "timeZone": "Europe/Amsterdam",
+    "location": "威斯康星州麦迪逊",
+    "timeZone": "America/Chicago",
     "activity": "high",
     "language": "zh-CN",
     "voice": "常把孩子一句话当开头，喜欢好懂的具体回答",
@@ -1113,7 +1150,8 @@
     "question": "儿子说在一边家的早饭会想念另一边家的杯子。以前我会赶紧想怎么搬过来，这次想先听他挑一个属于自己的小习惯。轮流住的家长，你们怎样让孩子开口选？",
     "category": "家庭协作",
     "concern": "family",
-    "about": "骑车送件，两个小孩常在不同的地方等接。老大对记家里的小习惯很认真。"
+    "about": "从阿姆斯特丹搬到麦迪逊，工作还是骑车送件。两个小孩常在不同的地方等接，老大会记住两边家的小习惯。",
+    "origin": "在阿姆斯特丹由会说中文的家人带大，搬到威斯康星后仍然骑车工作。"
   },
   {
     "slug": "eden-page",
@@ -1133,8 +1171,8 @@
         "context": "自己的活动越来越多"
       }
     ],
-    "location": "布鲁塞尔",
-    "timeZone": "Europe/Brussels",
+    "location": "Philadelphia, Pennsylvania",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "en",
     "voice": "Dry and practical, often asks what worked after the shiny new system stopped being new",
@@ -1143,67 +1181,70 @@
     "question": "Our 12-year-old is ready to manage more of her schedule, but different changes sometimes reach her other home first. For parents who co-parent across two homes, what gave a kid some control without making them the messenger?",
     "category": "School routines",
     "concern": "development",
-    "about": "Editor and co-parent to two school-age kids. A shared calendar saved us for a while, and the kids keep improving it."
+    "about": "Editor and co-parent to two school-age kids. A shared calendar saved us for a while, and the kids keep improving it.",
+    "origin": "Grew up in Brussels with a bilingual family and settled in Philadelphia after taking a publishing job. Both parents live in the same school area."
   },
   {
     "slug": "la-ari",
     "name": "阿梨",
     "age": 34,
-    "role": "母亲",
+    "role": "אמא",
     "roleCode": "mom",
-    "occupation": "陶艺教室助教",
-    "household": "家里讲中文和希伯来语，两位家长交替接送",
+    "occupation": "עוזרת הוראה בסטודיו לקרמיקה",
+    "household": "בבית מדברים עברית ומנדרינית, ושני ההורים מתחלפים בהסעות ובאיסוף.",
     "children": [
       {
         "ageMonths": 31,
-        "context": "爱把不同语言的儿歌接着唱"
+        "context": "מחברת יחד שורות משירים בשתי שפות."
       },
       {
         "ageMonths": 59,
-        "context": "换了新学校"
+        "context": "התחיל לא מזמן ללכת לגן חדש."
       }
     ],
-    "location": "特拉维夫",
-    "timeZone": "Asia/Jerusalem",
+    "location": "טינק, ניו ג׳רזי",
+    "timeZone": "America/New_York",
     "activity": "medium",
-    "language": "zh-CN",
-    "voice": "说话温和，乐于记下孩子自己发明的词",
-    "experience": "在家用玩偶扮学校情境，孩子会用母语演大人、用另一种语言演同学。",
-    "currentChallenge": "新学校里熟悉的人少，孩子很想带一样家的小物件去。",
-    "question": "小孩换学校以后，每天在门口想带进一件家的东西。老师愿意让他带一张小照片。你们怎么陪双语孩子熟悉新环境，有没有那种他可以自己拿出来说两句的准备？",
-    "category": "双语养育",
+    "language": "he",
+    "voice": "טון רגוע וסקרן. אוהבת לרשום ביטויים שהילדים ממציאים בעצמם.",
+    "experience": "שיחקו בבית עם בובות שהולכות לגן. הילד דיבר בשפה אחת כשהיה הגננת, ובשפה אחרת כשהיה ילד בגן.",
+    "currentChallenge": "הילד עדיין כמעט לא מכיר איש בגן החדש ומבקש להביא איתו משהו מוכר מהבית.",
+    "question": "מאז שעברנו לגן החדש, הבן שלי רוצה לקחת איתו משהו מהבית בכל בוקר. הגננת אמרה שאפשר להביא תמונה קטנה. אצלכם, מה עזר לילד שגדל עם שתי שפות לפתוח שיחה בגן חדש? מחפשת משהו קטן שהוא יוכל להוציא ולהסביר בעצמו.",
+    "category": "גידול ילדים בשתי שפות",
     "concern": "parenting",
-    "about": "在陶艺教室工作，家里用两种语言讲同一只玩偶上学的故事。"
+    "about": "גדלתי בתל אביב ואני עובדת בסטודיו לקרמיקה בניו ג׳רזי. אצלנו אותה בובה הולכת לגן בכל ערב, וכל אחד מספר את הסיפור בשפה אחרת.",
+    "origin": "גדלה בתל אביב ועברה לניו ג׳רזי עם בן זוג שגדל בבית דובר מנדרינית. הילדים שומעים בבית את שתי השפות ובגן גם אנגלית."
   },
   {
     "slug": "ya-qin",
     "name": "亚勤爸",
     "age": 47,
-    "role": "父亲",
+    "role": "Padre",
     "roleCode": "dad",
-    "occupation": "职业学校木工老师",
-    "household": "和伴侣养育一名青春期孩子及较小的孩子",
+    "occupation": "Profesor de carpintería en formación profesional",
+    "household": "Él y su pareja crían a un adolescente y a un hijo más pequeño.",
     "children": [
       {
         "ageMonths": 93,
-        "context": "热衷用废纸搭房子"
+        "context": "Hace casas con papel sobrante."
       },
       {
         "ageMonths": 169,
-        "context": "希望自己决定家人能转发哪些照片"
+        "context": "Quiere decidir qué fotos suyas se pueden compartir."
       }
     ],
-    "location": "马德里",
-    "timeZone": "Europe/Madrid",
+    "location": "San Antonio, Texas",
+    "timeZone": "America/Chicago",
     "activity": "medium",
-    "language": "zh-CN",
-    "voice": "讨论数字生活时不爱讲大道理，先听别人边界",
-    "experience": "一家改成每周一起挑一张能发给远方家人的照片，谁入镜谁最后说了算。",
-    "currentChallenge": "小的会替大的拍有趣的片段，哥哥有时不知道内容发给了谁。",
-    "question": "小的觉得大家看他拍哥哥就很开心，我才发现有几段早发到了亲友群。想和两个孩子做个都听得懂的相册约定，你们是怎么让「先问一下」变成顺手的？",
-    "category": "数字生活",
+    "language": "es",
+    "voice": "Práctico y tranquilo. Cuenta lo que intentó, escucha dónde pone cada familia el límite y evita dar discursos.",
+    "experience": "Cada semana eligen una foto para sus familiares que viven lejos. La persona que sale en la foto tiene la última palabra.",
+    "currentChallenge": "El pequeño graba escenas divertidas de su hermano, que a veces no sabe a quién se las mandó.",
+    "question": "Al pequeño le hizo gracia grabar a su hermano y yo me enteré tarde de que ya había mandado los vídeos al grupo familiar. Estamos haciendo un acuerdo que los dos entiendan. ¿Cómo consiguieron que eso de «pregunta primero» se volviera costumbre en casa?",
+    "category": "Vida digital",
     "concern": "parenting",
-    "about": "教木工。家里爱拍手作，两个娃正在一起给家庭相册订规矩。"
+    "about": "De Madrid a San Antonio, sigo dando clases de carpintería. En casa mis hijos están poniendo las reglas del álbum familiar.",
+    "origin": "Creció en Madrid, en una familia que hablaba español y mandarín, y se mudó a Texas para trabajar en formación técnica."
   },
   {
     "slug": "he-oak",
@@ -1223,8 +1264,8 @@
         "context": "会主动教同学几个家庭常用手势"
       }
     ],
-    "location": "苏黎世",
-    "timeZone": "Europe/Zurich",
+    "location": "华盛顿特区",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-CN",
     "voice": "句子直截了当，愿意解释手势在自家怎么用",
@@ -1233,7 +1274,8 @@
     "question": "我们家吃饭同时用手语和口语，小的兴奋起来会绕着桌子演给我看，大的想接话又很难让大家一起注意到。你们家有什么轻松的轮流信号，多种沟通方式都能用？",
     "category": "家庭沟通",
     "concern": "family",
-    "about": "做平面设计，平时用手语和口语养娃。餐桌上有没有空位看见每个人很重要。"
+    "about": "做平面设计，平时用美国手语和口语养娃。餐桌上能看见每个人很重要。",
+    "origin": "小时候在苏黎世生活，成年后定居华盛顿特区，家里后来改用美国手语，口语也一起保留。"
   },
   {
     "slug": "juan-pasta",
@@ -1253,8 +1295,8 @@
         "context": "开始常在外面和朋友吃饭"
       }
     ],
-    "location": "罗马",
-    "timeZone": "Europe/Rome",
+    "location": "俄亥俄州辛辛那提",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-CN",
     "voice": "问得细，但会先问孩子对事情怎么想",
@@ -1263,7 +1305,8 @@
     "question": "大的现在常和朋友吃晚饭，小的还期待他回来一起尝便当做的配菜。谁家有从每天一桌吃饭变成比较松的安排？家人最愿意保留下来的是早餐、周末，还是别的？",
     "category": "饮食习惯",
     "concern": "food",
-    "about": "工作在厨房，家里试着让孩子自己挑一顿要做的饭。最近愿意一起吃早餐比晚餐多。"
+    "about": "工作在厨房，家里试着让孩子自己挑一顿要做的饭。最近愿意一起吃早餐比晚餐多。",
+    "origin": "在罗马跟家人学做菜，后来搬到俄亥俄州。和意大利的亲友还是交换做饭照片。"
   },
   {
     "slug": "sam-drift",
@@ -1279,8 +1322,8 @@
         "context": "学捡玩具再站起来，喜欢走斜坡"
       }
     ],
-    "location": "埃德蒙顿",
-    "timeZone": "America/Edmonton",
+    "location": "Buffalo, New York",
+    "timeZone": "America/New_York",
     "activity": "medium",
     "language": "en",
     "voice": "Uses concrete examples and doesn't mind admitting when something was only fun for him",
@@ -1289,7 +1332,8 @@
     "question": "It's getting dark before I finish work. Our new walker wants to do everything outdoors at their own pace, and my long stroller route isn't much fun for them. What short ways to be outside stuck with your family in early winter?",
     "category": "Family time",
     "concern": "parenting",
-    "about": "Home IT support, a new walker, and a shorter walking route now that tiny things take longer to explore."
+    "about": "From Edmonton to Buffalo, we kept our winter walks. The route got shorter when our new walker started stopping to explore.",
+    "origin": "Grew up in Edmonton and moved to Buffalo with his partner. They kept their winter walks, adjusting the route after their child started walking."
   },
   {
     "slug": "yao-he",
@@ -1313,7 +1357,7 @@
         "context": "喜欢手工并愿意独自做"
       }
     ],
-    "location": "奥克兰市",
+    "location": "加州奥克兰市",
     "timeZone": "America/Los_Angeles",
     "activity": "medium",
     "language": "zh-CN",
@@ -1323,7 +1367,8 @@
     "question": "姐姐想在家办一场生日，弟弟听到气球响就跑走，最小的那时正要午睡。我想想一个让姐姐能热闹、其他人也能自己选加入时段的办法。你们办过类似的家庭庆祝吗？",
     "category": "手足相处",
     "concern": "family",
-    "about": "三个小孩想要的庆祝方式很不一样，家里有过又热闹又能休息的好一天。"
+    "about": "三个小孩想要的庆祝方式很不一样，家里有过又热闹又能休息的好一天。",
+    "origin": "在加州中部出生，外祖父母来自广州。搬到东湾后，外祖父仍能固定陪孩子共读。"
   },
   {
     "slug": "yu-fei",
@@ -1343,7 +1388,7 @@
         "context": "最喜欢问自己小时候的故事"
       }
     ],
-    "location": "圣何塞",
+    "location": "加州圣何塞",
     "timeZone": "America/Los_Angeles",
     "activity": "low",
     "language": "zh-CN",
@@ -1353,7 +1398,8 @@
     "question": "孩子听到自己和妹妹都有出生小故事，就问能不能也讲给班里小朋友。我想陪他选哪些想分享，下次有问题再慢慢聊。你们是怎样让孩子逐渐自己决定家庭故事讲到哪里？",
     "category": "家庭故事",
     "concern": "family",
-    "about": "两娃的爸爸，常把家人讲的旧事录下来收藏。希望孩子以后能自己选讲哪些。"
+    "about": "两娃的爸爸，常把家人讲的旧事录下来收藏。希望孩子以后能自己选讲哪些。",
+    "origin": "在西安长大，到加州工作后安家。有些家人住在美国，有些仍住在中国。"
   },
   {
     "slug": "luo-yan",
@@ -1369,8 +1415,8 @@
         "context": "清醒时爱盯着窗外亮处"
       }
     ],
-    "location": "台北",
-    "timeZone": "Asia/Taipei",
+    "location": "紐約州紐約市布魯克林",
+    "timeZone": "America/New_York",
     "activity": "medium",
     "language": "zh-TW",
     "voice": "話不多，會講自己第一次看到的新變化",
@@ -1379,7 +1425,8 @@
     "question": "我家才兩個月，我最喜歡快下班時聽到另一半傳小朋友的聲音。大人有空時怎麼輪流留一點很平常的紀錄？我想幾個月後能再留著聽。",
     "category": "親子陪伴",
     "concern": "parenting",
-    "about": "地鐵輪班，新手爸爸。最近最熟悉的是小朋友靠窗那幾分鐘的聲音。"
+    "about": "在紐約做地鐵輪班，新手爸爸。最近最熟悉的是小朋友靠窗那幾分鐘的聲音。",
+    "origin": "在台北長大，成年後到紐約和伴侶住在一起，奶奶在同一行政區。"
   },
   {
     "slug": "shi-shan",
@@ -1388,7 +1435,7 @@
     "role": "外公监护人",
     "roleCode": "grandparent",
     "occupation": "退休汽车维修工，每周在学校做一次志愿者",
-    "household": "与外孙女同住，祖母近年转为线上值班，有时三代人一起视频",
+    "household": "与两名外孙女同住，外婆有时在线上值班，家人定期视频。",
     "children": [
       {
         "ageMonths": 179,
@@ -1399,17 +1446,18 @@
         "context": "姐姐已准备选大学志愿"
       }
     ],
-    "location": "伯明翰",
-    "timeZone": "Europe/London",
+    "location": "宾夕法尼亚州匹兹堡",
+    "timeZone": "America/New_York",
     "activity": "low",
     "language": "zh-CN",
     "voice": "句子慢，愿意承认和孙辈对同一句话的理解可能不同",
-    "experience": "上次约定用短信说一声几点回，孩子主动 提出把公交变化一起算进去。",
+    "experience": "上次约定用短信说一声几点回，孩子主动提出把公交变化一起算进去。",
     "currentChallenge": "孩子开始独立通勤，想表达在乎又给她做决定的空间。",
     "question": "外孙女要自己坐公交去练琴，我老想一路问她到哪了，她会嫌麻烦。请问家有青春期孩子的家长，哪些报平安的约定，是你们后来还愿意一起守的？",
     "category": "家庭沟通",
     "concern": "family",
-    "about": "退休修车工，带大两个外孙女，现在小的要自己搭公交去练琴了。"
+    "about": "退休修车工，带大两个外孙女，现在小的要自己搭公交去练琴了。",
+    "origin": "早年在黑龙江和英国伯明翰都修过车，孙女小时候搬来匹兹堡一起住。"
   },
   {
     "slug": "julie-reed",
@@ -1437,7 +1485,7 @@
         "context": "正在看大学校园"
       }
     ],
-    "location": "堪萨斯城",
+    "location": "Kansas City, Missouri",
     "timeZone": "America/Chicago",
     "activity": "high",
     "language": "en",
@@ -1447,7 +1495,8 @@
     "question": "We have a whole-family weekend coming up, and one of our kids is already asking who will get to hear the adoption story. I'd like the weekend to give each child a way to opt in or tell only a small part. What worked when relatives were curious and the kids had different preferences?",
     "category": "Family stories",
     "concern": "family",
-    "about": "Four kids, four opinions on what counts as a family celebration. Pancakes still get a solid vote."
+    "about": "Four kids, four opinions on what counts as a family celebration. Pancakes still get a solid vote.",
+    "origin": "Grew up in rural Missouri and moved to Kansas City for adult education work. The family still visits relatives in different parts of the state."
   },
   {
     "slug": "wei-chen",
@@ -1467,7 +1516,7 @@
         "context": "和旧同学常约玩"
       }
     ],
-    "location": "费城",
+    "location": "宾夕法尼亚州费城",
     "timeZone": "America/New_York",
     "activity": "medium",
     "language": "zh-CN",
@@ -1477,6 +1526,7 @@
     "question": "这阵子我白天多出一小段时间，俩娃都问能不能报名新活动。以前排的课挺满，现在预算想紧一点。你们有哪些本地免费活动是孩子连去几次还愿意去的？",
     "category": "亲子陪伴",
     "concern": "parenting",
-    "about": "带两娃的空档正找工作。最近改走图书馆借来的地图，才发现孩子比我熟悉街区。"
+    "about": "带两娃的空档正找工作。最近改走图书馆借来的地图，才发现孩子比我熟悉街区。",
+    "origin": "在天津出生，搬到费城多年。附近图书馆是最近重新找到的一处熟悉地方。"
   }
 ]

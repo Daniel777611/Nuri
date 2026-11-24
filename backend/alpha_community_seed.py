@@ -2,6 +2,8 @@
 
 Prints SQL for the authenticated Nuri-Testing project connection. This program
 does not open a database connection or handle database credentials.
+Re-runs refresh only language, location and bio for accounts bearing the seed
+markers. Existing children, preferences and conversations are preserved.
 """
 
 from __future__ import annotations
@@ -21,13 +23,13 @@ PASSWORD_DISABLED = "!nuri-alpha-bot-no-password"
 ABOUT_PREFIX = "【Alpha AI 测试家长】"
 PERSONAS_PATH = Path(__file__).resolve().parents[1] / "scripts/fixtures/alpha-community-parents.json"
 ACTIVITY_LEVELS = {"high", "medium", "low"}
-LANGUAGES = {"zh-CN", "zh-TW", "en"}
+LANGUAGES = {"zh-CN", "zh-TW", "en", "es", "fr", "he", "ja", "ko"}
 CONCERNS = {
     "sleep", "food", "emotion", "development", "parenting", "health",
     "childcare", "family", "unknown", "other",
 }
 _REQUIRED_TEXT_FIELDS = (
-    "slug", "name", "role", "roleCode", "occupation", "household", "location", "timeZone",
+    "slug", "name", "role", "roleCode", "occupation", "household", "origin", "location", "timeZone",
     "activity", "voice", "experience", "currentChallenge", "question", "category",
     "concern", "language", "about",
 )
@@ -88,7 +90,7 @@ def _birth_date(as_of: date, age_months: int) -> str:
 def _child_rows(persona: dict, as_of: date, user_id: str) -> list[dict]:
     children = []
     for index, child in enumerate(persona["children"], start=1):
-        nickname = f"孩子 {index}" if persona["language"] != "en" else f"Child {index}"
+        nickname = f"孩子 {index}" if persona["language"].startswith("zh-") else f"Child {index}"
         children.append({
             "id": str(uuid.uuid5(uuid.UUID(user_id), f"child:{index}")),
             "nickname": nickname,
@@ -157,7 +159,15 @@ BEGIN
     RAISE EXCEPTION 'Alpha child identity collision; no records written';
   END IF;
 
-  INSERT INTO public.users (
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(parents) AS p(doc)
+    JOIN public.community_profiles profile ON profile.user_id = p.doc->>'id'
+    WHERE left(profile.about, char_length('{ABOUT_PREFIX}')) IS DISTINCT FROM '{ABOUT_PREFIX}'
+  ) THEN
+    RAISE EXCEPTION 'Existing profile is missing the Alpha bot marker; no records written';
+  END IF;
+
+  INSERT INTO public.users AS existing (
     id, email, nickname, city, parent_role, top_concerns, hashed_password, language,
     is_internal, daily_push, allow_history_training, anonymous_community_share, onboarding_completed
   )
@@ -165,7 +175,10 @@ BEGIN
          ARRAY[p.doc->>'concern'], '{PASSWORD_DISABLED}', p.doc->>'language',
          true, false, false, false, true
     FROM jsonb_array_elements(parents) AS p(doc)
-  ON CONFLICT (id) DO NOTHING;
+  ON CONFLICT (id) DO UPDATE SET language = excluded.language, city = excluded.city
+    WHERE existing.email = excluded.email AND existing.hashed_password = '{PASSWORD_DISABLED}'
+      AND existing.is_internal
+      AND (existing.language, existing.city) IS DISTINCT FROM (excluded.language, excluded.city);
 
   INSERT INTO public.children (id, user_id, nickname, birth_date)
   SELECT c.doc->>'id', p.doc->>'id', c.doc->>'nickname', (c.doc->>'birth_date')::date
@@ -173,7 +186,8 @@ BEGIN
     CROSS JOIN LATERAL jsonb_array_elements(p.doc->'children') AS c(doc)
   ON CONFLICT (id) DO NOTHING;
 
-  INSERT INTO public.community_profiles (user_id, display_name, about, city_label, gender_tag, intent_codes)
+  INSERT INTO public.community_profiles AS existing
+    (user_id, display_name, about, city_label, gender_tag, intent_codes)
   SELECT p.doc->>'id', p.doc->>'name', p.doc->>'about', p.doc->>'city', p.doc->>'gender_tag',
          CASE p.doc->>'activity'
            WHEN 'high' THEN ARRAY['share_parenting_ideas', 'talk_parenting', 'casual_chat']
@@ -181,7 +195,9 @@ BEGIN
            ELSE ARRAY['similar_experiences']
          END
     FROM jsonb_array_elements(parents) AS p(doc)
-  ON CONFLICT (user_id) DO NOTHING;
+  ON CONFLICT (user_id) DO UPDATE SET about = excluded.about, city_label = excluded.city_label
+    WHERE left(existing.about, char_length('{ABOUT_PREFIX}')) = '{ABOUT_PREFIX}'
+      AND (existing.about, existing.city_label) IS DISTINCT FROM (excluded.about, excluded.city_label);
 
   INSERT INTO public.community_preferences (user_id, parent_message_notifications_enabled, profile_hidden)
   SELECT p.doc->>'id', false, false
@@ -197,18 +213,22 @@ def verify_sql(personas: list[dict]) -> str:
     expected = _sql_json([
         {
             "id": row["id"], "email": row["email"], "activity": row["activity"],
+            "language": row["language"], "city": row["city"], "about": row["about"],
             "children": [child["id"] for child in row["children"]],
         }
         for row in rows
     ])
     return f"""WITH expected AS (
   SELECT doc->>'id' AS id, doc->>'email' AS email, doc->>'activity' AS activity,
+         doc->>'language' AS language, doc->>'city' AS city, doc->>'about' AS about,
          doc->'children' AS children
     FROM jsonb_array_elements({expected}) AS p(doc)
 ), verified AS (
   SELECT e.*,
          u.id IS NOT NULL AS provisioned,
          p.user_id IS NOT NULL AS has_profile,
+         (u.language, u.city, p.city_label, p.about)
+           IS NOT DISTINCT FROM (e.language, e.city, e.city, e.about) AS current_profile,
          (v.user_id IS NOT NULL AND NOT v.profile_hidden) AS visible,
          (v.user_id IS NOT NULL AND NOT v.parent_message_notifications_enabled) AS push_disabled,
          (SELECT count(*) FROM jsonb_array_elements_text(e.children) c(id)
@@ -223,6 +243,9 @@ def verify_sql(personas: list[dict]) -> str:
 )
 SELECT activity, count(*)::integer AS expected_parents,
        (count(*) FILTER (WHERE provisioned AND has_profile AND visible AND push_disabled))::integer AS ready_parents,
+       (count(*) FILTER (WHERE current_profile))::integer AS current_profiles,
+       array_agg(DISTINCT language ORDER BY language) FILTER (WHERE current_profile) AS current_languages,
+       (count(DISTINCT city) FILTER (WHERE current_profile))::integer AS current_cities,
        sum(jsonb_array_length(children))::integer AS expected_children, sum(kids)::integer AS provisioned_children
   FROM verified
  GROUP BY activity
