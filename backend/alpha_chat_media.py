@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from . import alpha_milestones
 from .content_research import redact_conversation_text
 from .feed.daily_video import thumbnail_url, video_id_of, watch_url
 from .nuri_core.family_store import redact_child_profile_text
@@ -134,6 +135,30 @@ _MEALTIME_TOPIC = _VideoTopic(
         r"|一日三餐|健康[饮飲]食|孩子[学學]吃[饭飯]|用餐常[规規]", re.I,
     ),
 )
+_MILESTONE_TOPIC = _VideoTopic(
+    "child developmental milestones age appropriate examples CDC",
+    "儿童发育里程碑 月龄 实拍示例",
+    "兒童發展里程碑 月齡 實拍示例",
+    re.compile(
+        r"\b(?:developmental (?:milestones?|stages?)|milestones in action|child(?:hood)? development stages?|"
+        r"learn the signs[.,]? act early|age.specific milestones?|milestones? (?:by|at) age|"
+        r"(?:critical|sensitive) periods? (?:of|in) (?:early )?child(?:hood)? development)\b"
+        r"|(?:[发發][育展]|成[长長]|[发發]達)(?:里程碑|[关關][键鍵]期|重要[阶階]段|[阶階]段)"
+        r"|[发發]育指[标標]|[长長]到什[么麼]阶段", re.I,
+    ),
+)
+_MILESTONE_SEARCH = re.compile(
+    r"\b(?:find|search|look up|share|send|show|recommend)\b|(?:^|[，。])(?:查找?|搜索?|找)|"
+    r"[帮幫]我[查搜找]|(?:查|搜|找)(?:一下|一[查搜找]|找)|[推荐推薦]{2}|哪[里裡]能[看查]",
+    re.I,
+)
+_MILESTONE_CLINICAL = re.compile(
+    r"\b(?:delay(?:ed|s)?|regress(?:ion|ing)?|autism|diagnos\w*|screen(?:ing)?|treat(?:ment)?|"
+    r"red flags?|lost skills|is (?:it|this|that) normal)\b"
+    r"|[迟遲][缓緩滞滯]|落[后後]|异常|異常|自[闭閉]|孤[独獨]症|倒退|退步|"
+    r"[筛篩]查|是不是正常|是否正常|不正常|[诊診][断斷]|治疗|治療",
+    re.I,
+)
 _VIDEO_TOPICS = (
     _SPEECH_VIDEO_TOPIC,
     _VideoTopic(
@@ -230,6 +255,7 @@ _VIDEO_TOPICS = (
         "嬰兒奶瓶餵養 節奏餵奶 沖泡配方奶",
         re.compile(r"\b(?:bottle[- ]feeding|paced feeding|formula preparation|prepar(?:e|ing) infant formula)\b|奶瓶(?:喂[养養]|[餵喂]奶)|[冲沖](?:泡|[调調])(?:配方)?奶|[节節]奏[喂餵]奶", re.I),
     ),
+    _MILESTONE_TOPIC,
 )
 _CHILD_VIDEO = re.compile(
     r"\b(?:bab(?:y|ies)|toddler(?:s)?|child(?:ren|hood)?|infant(?:s)?|newborn(?:s)?|kids?|preschool(?:ers?)?|parent(?:ing|s)?"
@@ -335,10 +361,10 @@ def _reviewed_articles(topic: _VideoTopic | None, locale: str) -> list[SearchRes
     return [traditional if locale == "zh-TW" else simplified, english] if locale.startswith("zh") else [english]
 
 
-def _recent_resource_text(history) -> list[str]:
+def _recent_resource_text(history, role: str | None = None) -> list[str]:
     return [
         str(row.get("text") or "")[:1800] for row in reversed(history[-8:])
-        if isinstance(row, dict) and row.get("role") in {"user", "ai"}
+        if isinstance(row, dict) and row.get("role") in ({role} if role else {"user", "ai"})
     ]
 
 
@@ -376,7 +402,10 @@ def _resource_topic(text: str, query: str, route, children: list, allow_history:
     # A short request for a resource may refer to this conversation's previous
     # topic. Recognize only a public category locally. Without the separate
     # content-research permission this only selects reviewed built-in cards.
-    for earlier in _recent_resource_text(history):
+    user_requests = [message for message in _recent_resource_text(history, "user")
+                     if _REQUEST.search(message) and any(token.search(message) for token in _MEDIA.values())]
+    earlier_messages = list(dict.fromkeys(user_requests + _recent_resource_text(history)))
+    for earlier in earlier_messages:
         if earlier.strip() == text.strip() or _MEDICAL_TEXT.search(earlier):
             continue
         if topic := _topic_in(earlier):
@@ -448,9 +477,16 @@ def requested_media(text: str | None, history=()) -> tuple[str, ...]:
     value = (text or "").strip()
     if not 3 <= len(value) <= 320 or _NON_RESOURCE_LINK.search(value):
         return ()
-    if not (_REQUEST.search(value) or _is_link_request(value)):
+    milestone_search = bool(_MILESTONE_TOPIC.terms.search(value) and _MILESTONE_SEARCH.search(value))
+    if not (_REQUEST.search(value) or _is_link_request(value) or milestone_search):
         return ()
     explicit = tuple(kind for kind, token in _MEDIA.items() if token.search(value))
+    if milestone_search and not explicit:
+        for earlier in _recent_resource_text(history, "user"):
+            if _MILESTONE_TOPIC.terms.search(earlier) and not _MILESTONE_CLINICAL.search(earlier):
+                if previous := tuple(kind for kind, token in _MEDIA.items() if token.search(earlier)):
+                    return previous
+        return ("video",) if not _MILESTONE_CLINICAL.search(value) else ()
     if explicit or not _is_link_request(value):
         return explicit
     if _is_reference(value):
@@ -475,6 +511,11 @@ def resource_only_request(text: str) -> bool:
 
 def resource_reply(transition: dict | None, locale: str) -> str:
     """Match visible text to the resources this turn actually returned."""
+    if transition and transition.get("catalog") == "cdc_milestones":
+        return {
+            "zh-CN": "下面是 CDC 按月龄整理的发育里程碑示例，点卡片就能打开。",
+            "zh-TW": "下方是 CDC 按月齡整理的發展里程碑示例，點卡片就能開啟。",
+        }.get(locale, "Here are the CDC's milestone examples by age. Tap a card to open it.")
     messages = {
         "zh-CN": ("相关资料在下面，点卡片就能打开。", "这次没找到可以核实的相关资料。"),
         "zh-TW": ("相關資料在下方，點卡片即可開啟。", "這次沒找到可以核實的相關資料。"),
@@ -685,6 +726,21 @@ async def find_chat_media(
     medical = bool(authority_only or getattr(route, "is_medical", False)
                    or _MEDICAL_TEXT.search(text) or _MEDICAL_TEXT.search(query))
     topic = _resource_topic(text, query, route, children, allow_history, history)
+    if topic is _MILESTONE_TOPIC:
+        # Routine, reviewed age examples are useful even when the routing model
+        # calls the general subject medical. Keep diagnostic requests subject to
+        # the ordinary medical/referral path.
+        recent = _recent_resource_text(history, "user")
+        prior = next((message for message in recent if _MILESTONE_TOPIC.terms.search(message)), "")
+        diagnostic_text = text if _MILESTONE_TOPIC.terms.search(text) else f"{text} {prior}"
+        if _MEDICAL_TEXT.search(diagnostic_text) or _MILESTONE_CLINICAL.search(diagnostic_text):
+            medical = True
+        elif not _EXPLICIT_ZH_VIDEO.search(text):
+            relevant = [message for message in recent if _MILESTONE_TOPIC.terms.search(message)]
+            months = alpha_milestones.child_age(text, children, relevant)
+            cards = alpha_milestones.reviewed_cards(months, locale, kinds)
+            if cards:
+                return {"kind": "chat_media", "catalog": "cdc_milestones", "items": cards[:_MAX_ITEMS]}
     if not topic and not query:
         return None
     if not direct_query and not allow_history:

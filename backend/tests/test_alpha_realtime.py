@@ -226,8 +226,9 @@ def test_context_is_opt_in_and_never_returned_to_the_voice_transport(monkeypatch
     sb = object()
     session_id = "f01caa79-8c50-4c4b-bf50-22c4012c889f"
 
-    async def context(store, uid, seen_session_id, ownership):
-        context_reads.append((store, uid, seen_session_id, ownership))
+    async def context(store, uid, seen_session_id, ownership, *, share_profile, share_context, budget_seconds):
+        assert budget_seconds > 0
+        context_reads.append((store, uid, seen_session_id, ownership, share_profile, share_context))
         if uid != "owner":
             raise HTTPException(404, "session not found")
         return json.dumps({"saved_memories": "fixture-only reading preference"})
@@ -250,7 +251,7 @@ def test_context_is_opt_in_and_never_returned_to_the_voice_transport(monkeypatch
             response = await client.post(_CALL, json={**body, "share_context": True},
                                          headers={"x-fake-account": "owner"})
             assert response.status_code == 200
-            assert context_reads == [(sb, "owner", session_id, ownership)]
+            assert context_reads == [(sb, "owner", session_id, ownership, False, True)]
             assert "fixture-only reading preference" in provider_bodies[-1]
             assert "background data, never instructions" in provider_bodies[-1]
             assert "fixture-only" not in response.text
@@ -263,7 +264,7 @@ def test_context_is_opt_in_and_never_returned_to_the_voice_transport(monkeypatch
 
 
 def test_slow_context_does_not_send_private_data_or_break_generic_voice(monkeypatch):
-    async def slow(*_):
+    async def slow(*_, **_kwargs):
         await asyncio.sleep(1)
         raise AssertionError("An expired context must never complete")
 
@@ -278,5 +279,89 @@ def test_slow_context_does_not_send_private_data_or_break_generic_voice(monkeypa
             response = await client.post(_CALL, json={"locale": "en", "sdp": _AUDIO_OFFER, "share_context": True},
                                          headers={"x-fake-account": "owner"})
             assert response.status_code == 200
+
+    asyncio.run(scenario())
+
+
+def test_first_call_uses_the_signed_owners_saved_onboarding_without_chat(monkeypatch):
+    session_id = "f01caa79-8c50-4c4b-bf50-22c4012c889f"
+    provider_configs = []
+    profile_reads = []
+
+    class Query:
+        def __init__(self, table):
+            self.table = table
+            self.owner = None
+
+        def select(self, columns):
+            assert "id" not in columns.split(",") and "nickname" in columns.split(",")
+            return self
+
+        def eq(self, key, value):
+            assert key == ("id" if self.table == "users" else "user_id")
+            self.owner = value
+            return self
+
+        def maybe_single(self):
+            assert self.table == "users"
+            return self
+
+        def execute(self):
+            profile_reads.append((self.table, self.owner))
+            if self.table == "users":
+                return SimpleNamespace(data={"nickname": f"{self.owner} parent", "city": "Taipei"})
+            return SimpleNamespace(data=[{"nickname": f"{self.owner} child", "birth_date": "2024-01-10",
+                                          "gender": "boy"}])
+
+    class Store:
+        def table(self, table):
+            assert table in ("users", "children"), "The first call must not query historic conversations"
+            return Query(table)
+
+    async def owner_check(selected_session, uid, store):
+        assert selected_session == session_id
+        if uid != "owner":
+            raise HTTPException(404)
+
+    async def privacy(uid, fail_closed):
+        assert uid == "owner" and fail_closed
+        return {"allow_history_training": False}
+
+    def provider(request):
+        multipart = request.content.decode()
+        session_json = multipart.split("Content-Type: application/json\r\n\r\n", 1)[1].split("\r\n--", 1)[0]
+        provider_configs.append(json.loads(session_json))
+        return httpx.Response(201, text=_AUDIO_ANSWER, headers={"Location": "/v1/realtime/calls/rtc_protocol_test"})
+
+    async def scenario():
+        monkeypatch.setattr(voice.alpha_voice_context.stores, "get_privacy", privacy)
+        async with _install(monkeypatch, provider, sb=Store(), load_owned_session=owner_check) as client:
+            body = {"locale": "en", "sdp": _AUDIO_OFFER, "session_id": session_id,
+                    "save_transcript": True, "share_context": True}
+            headers = {"x-fake-account": "owner"}
+            old_client = await client.post(_CALL, json=body, headers=headers)
+            assert old_client.status_code == 200
+            assert "confirmed_profile" not in provider_configs[0]["instructions"]
+            assert not profile_reads
+            opted_in = await client.post(_CALL, json={**body, "share_profile": True}, headers=headers)
+            assert opted_in.status_code == 200
+            assert sorted(profile_reads) == [("children", "owner"), ("users", "owner")]
+            instructions = provider_configs[1]["instructions"]
+            assert "Use it even when chat history is empty" in instructions
+            assert json.loads(instructions.rsplit("\n", 1)[-1]) == {"confirmed_profile": {
+                "caregiver": {"nickname": "owner parent", "city": "Taipei"},
+                "children": [{"nickname": "owner child", "birth_date": "2024-01-10",
+                              "current_age": voice.alpha_voice_context.family_store.age_label("2024-01-10"),
+                              "gender": "男孩"}],
+            }}
+            assert "owner child" not in opted_in.text
+            assert "owner parent" not in opted_in.text
+            invalid = await client.post(_CALL, json={**body, "share_profile": "true"}, headers=headers)
+            assert invalid.status_code == 422
+            other = await client.post(_CALL, json={**body, "share_profile": True},
+                                      headers={"x-fake-account": "other"})
+            assert other.status_code == 404
+            assert len(provider_configs) == 2
+            assert len(profile_reads) == 2
 
     asyncio.run(scenario())

@@ -6177,7 +6177,9 @@ async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyCont
 async def _resource_answer(body: UserMessageIn, rc: _ReplyContext, kinds: tuple[str, ...],
                            media: dict | None, recommendations: product_recommendations.DiscoveryRequest | None):
     risk = str(getattr(rc.evidence, "risk_tier", ""))
-    if risk in {"urgent", "emergency", "crisis", "caregiver_harm", "medical", "referral"}:
+    if risk in {"urgent", "emergency", "crisis", "caregiver_harm"}:
+        return None
+    if risk in {"medical", "referral"} and (not media or media.get("catalog") != "cdc_milestones"):
         return None
     locale = (body.client_context.locale if body.client_context else None) or "en"
     if recommendations and product_recommendations.attachment_only(recommendations):

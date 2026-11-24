@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import date
 from types import SimpleNamespace
 
 import httpx
@@ -10,10 +11,10 @@ from backend.router import TurnRoute
 from backend.websearch import SearchImage, SearchResult
 
 
-def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False, history=()):
+def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False, history=(), children=None):
     return asyncio.run(media.find_chat_media(
         text, media.requested_media(text, history), locale=locale or ("zh-CN" if "视频" in text else "en"),
-        route=route, children=[{"nickname": "Juniper"}], allow_history=allow_history,
+        route=route, children=children if children is not None else [{"nickname": "Juniper"}], allow_history=allow_history,
         existing=[], authority_only=authority_only, history=history,
     ))
 
@@ -213,6 +214,70 @@ FEEDING_HISTORY = [
     {"role": "ai", "text": "我可以给你一些 13 个月宝宝饮食、吐食、挑食的 YouTube 搜索句。"},
 ]
 
+MILESTONE_REQUEST = "你给我查一下关于我家小孩现在的关于现在他的他所处于的发展关键期的相关的视频教程。"
+MILESTONE_RETRY = "你怎么会没找到呢?任何发展关键期的跟我家小孩现在有相关的你都可以用啊，帮我找找。"
+MILESTONE_HISTORY = [
+    {"role": "user", "text": MILESTONE_REQUEST},
+    {"role": "ai", "text": "可以看 CDC 的发育里程碑示例，也可以找幼儿挑食应对视频。"},
+]
+
+
+def _child(months, nickname="Juniper"):
+    today = date.today()
+    year, zero_month = divmod(today.year * 12 + today.month - 1 - months, 12)
+    return {"nickname": nickname, "birth_date": date(year, zero_month + 1, 1).isoformat()}
+
+
+@pytest.mark.parametrize("text,history", [
+    (MILESTONE_REQUEST, ()),
+    (MILESTONE_RETRY, MILESTONE_HISTORY),
+    ("视频链接呢？", MILESTONE_HISTORY),
+])
+def test_current_stage_uses_owned_profile_and_official_clips_without_search(monkeypatch, text, history):
+    calls = _provider(monkeypatch, [])
+    result = _lookup(text, locale="zh-CN", history=history, children=[_child(13)], authority_only=True)
+    assert media.requested_media(text, history) == ("video",)
+    assert [item["video_id"] for item in result["items"]] == [
+        "GqV34gup6TQ", "Bu2W89FzKiw", "IsWTBFfj3Y0", "dWmRzywu97U", "3Qke5GVhqHw",
+    ]
+    assert all(item["url"].startswith("https://www.youtube.com/watch?v=") for item in result["items"])
+    assert all(item["thumbnail_url"].startswith("https://i.ytimg.com/vi/") for item in result["items"])
+    assert [item["source_url"].rsplit("/", 1)[-1] for item in result["items"]] == (
+        ["1-year.html"] * 3 + ["15-months.html"] * 2
+    )
+    assert all("Juniper" not in str(item) for item in result["items"])
+    assert not calls
+
+
+def test_milestone_video_picks_the_named_child_or_a_general_overview(monkeypatch):
+    calls = _provider(monkeypatch, [])
+    siblings = [_child(13, "小叶"), _child(9, "小雨")]
+    named = _lookup("请给我小雨的发展关键期视频", children=siblings)
+    assert [item["video_id"] for item in named["items"]] == ["2zEEh4hM7dw", "blts1HhYk6s"]
+    ambiguous = _lookup(MILESTONE_REQUEST, children=siblings)
+    assert [item["video_id"] for item in ambiguous["items"]] == ["T7bCsIIpC7M"]
+    assert not calls
+
+
+def test_milestone_images_and_article_use_the_same_official_parent_resource(monkeypatch):
+    calls = _provider(monkeypatch, [])
+    result = _lookup("给我找发育里程碑的文章和照片", locale="zh-CN", children=[_child(9)])
+    article, image = result["items"]
+    assert article["url"] == image["source_url"] == "https://www.cdc.gov/act-early/milestones-in-action/9-months.html"
+    assert article["thumbnail_url"] == image["url"] == "https://i.ytimg.com/vi/2zEEh4hM7dw/hqdefault.jpg"
+    assert not calls
+
+
+def test_milestone_examples_do_not_override_explicit_diagnostic_requests(monkeypatch):
+    calls = _provider(monkeypatch, [])
+    clinical = "孩子发育迟缓，这些发育里程碑是不是正常？给我视频。"
+    assert _lookup(clinical, children=[_child(13)], authority_only=True) is None
+    assert _lookup("视频链接呢？", children=[_child(13)], history=[
+        {"role": "user", "text": clinical},
+    ], authority_only=True) is None
+    assert media.requested_media("告诉我什么是发育里程碑") == ()
+    assert not calls
+
 
 @pytest.mark.parametrize("text", [
     "那你给我的链接在哪里呢?",
@@ -280,12 +345,19 @@ def test_explicit_link_again_does_not_treat_sign_in_or_a_new_subject_as_previous
 
 
 @pytest.mark.parametrize("streamed", [False, True])
-def test_short_link_follow_up_returns_and_persists_same_cards_and_copy(monkeypatch, streamed):
+@pytest.mark.parametrize("request_text,history,video_id,risk", [
+    ("那你给我的链接在哪里呢?", FEEDING_HISTORY, "W9LxMa7jRoM", "none"),
+    (MILESTONE_REQUEST, (), "GqV34gup6TQ", "medical"),
+    (MILESTONE_RETRY, MILESTONE_HISTORY, "GqV34gup6TQ", "none"),
+    ("视频链接呢？", MILESTONE_HISTORY, "GqV34gup6TQ", "medical"),
+])
+def test_resource_requests_return_and_persist_cards_and_direct_copy(monkeypatch, streamed, request_text,
+                                                               history, video_id, risk):
     from backend import main
     from backend.tests.test_single_session import _Supabase, _install_turn_dependencies
 
     sb = _Supabase([{"id": "resource-chat", "user_id": "fixture-parent", "created_at": "2026-11-01T00:00:00+00:00"}])
-    for index, row in enumerate(FEEDING_HISTORY):
+    for index, row in enumerate(history):
         sb.message_inserts.append({
             **row, "id": f"prior-{index}", "session_id": "resource-chat",
             "created_at": f"2026-11-01T00:00:0{index}+00:00",
@@ -296,7 +368,11 @@ def test_short_link_follow_up_returns_and_persists_same_cards_and_copy(monkeypat
 
     async def context(turn, *_args):
         assert turn.owner_uid == "fixture-parent"
-        return main._ReplyContext()
+        return main._ReplyContext(evidence=SimpleNamespace(risk_tier=risk))
+
+    async def load_profile(uid):
+        assert uid == "fixture-parent"
+        return {}, [_child(13)]
 
     async def privacy(*_args, **_kwargs):
         return {"allow_external_content_research": False}
@@ -320,12 +396,13 @@ def test_short_link_follow_up_returns_and_persists_same_cards_and_copy(monkeypat
     monkeypatch.setitem(main.app.dependency_overrides, main._req_uid, lambda: "fixture-parent")
     calls = _provider(monkeypatch, [])
     _install_turn_dependencies(monkeypatch, [])
+    monkeypatch.setattr(main.core_family_store, "load_profile", load_profile)
 
     async def run():
         target = "/api/chat/sessions/resource-chat/messages" + ("/stream" if streamed else "")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://fixture-nuri.test") as client:
             return await client.post(target, json={
-                "text": "那你给我的链接在哪里呢?",
+                "text": request_text,
                 "client_message_id": "verified-link-only-follow-up",
                 "compare_products": True,
                 "include_media": True,
@@ -342,7 +419,7 @@ def test_short_link_follow_up_returns_and_persists_same_cards_and_copy(monkeypat
     else:
         reply, = response.json()["ai_messages"]
     assert "点卡片" in reply["text"]
-    assert reply["transition"]["items"][0]["video_id"] == "W9LxMa7jRoM"
+    assert reply["transition"]["items"][0]["video_id"] == video_id
     saved, = [row for row in sb.message_inserts if row.get("id") == reply["id"]]
     assert saved["transition"]["kind"] == reply["transition"]["kind"]
     assert saved["transition"]["items"] == reply["transition"]["items"]

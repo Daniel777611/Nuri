@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, timedelta
 import json
 
 from fastapi import HTTPException
@@ -59,8 +60,8 @@ def test_personal_context_uses_own_recent_chat_and_saved_memories_with_private_f
     monkeypatch.setattr(voice.state_store, "load", summary)
     output = asyncio.run(voice.load_context(sb, "owner", "selected-session", ownership))
     payload = json.loads(output)
-    assert calls[:3] == [("ownership", "selected-session", "owner", sb), ("privacy", "owner", True),
-                         ("recent", sb, "selected-session")]
+    assert calls[:2] == [("ownership", "selected-session", "owner", sb), ("privacy", "owner", True)]
+    assert ("recent", sb, "selected-session") in calls
     assert ("recalled", "owner") in calls
     assert ("summary", "selected-session") in calls
     assert [record["speaker"] for record in payload["recent_chat"]] == ["Caregiver", "Nuri", "Caregiver"]
@@ -109,6 +110,77 @@ def test_denied_session_is_rejected_before_privacy_or_messages(monkeypatch):
         pytest.fail("Do not read any context for an unowned conversation")
 
     monkeypatch.setattr(voice.stores, "get_privacy", unexpected)
+    monkeypatch.setattr(voice.family_store, "load_profile", unexpected)
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(voice.load_context(object(), "owner", "other-session", denied))
+        asyncio.run(voice.load_context(object(), "owner", "other-session", denied, share_profile=True))
     assert caught.value.status_code == 404
+
+
+@pytest.mark.parametrize("history", ["off", "unavailable", "no-call-consent"])
+def test_consented_onboarding_fields_do_not_depend_on_chat_history(monkeypatch, history):
+    due = (date.today() + timedelta(days=42)).isoformat()
+    sb = object()
+    profile_checked = []
+
+    async def ownership(session_id, uid, store):
+        assert (session_id, uid, store) == ("first-chat", "owner", sb)
+
+    async def profile(uid):
+        profile_checked.append(uid)
+        return {"nickname": "Caregiver", "city": "Austin", "gender": "hidden", "id": "private-owner-id"}, [
+            {"nickname": "First", "birth_date": "2024-01-10", "gender": "girl"},
+            {"nickname": "Expecting", "birth_date": due, "gender": "other"},
+            {"nickname": "Incomplete", "birth_date": "unknown", "gender": "other"},
+        ]
+
+    async def privacy(uid, fail_closed):
+        assert history != "no-call-consent"
+        assert uid == "owner" and fail_closed
+        return {"allow_history_training": False} if history == "off" else {
+            voice.stores.PRIVACY_STORAGE_UNAVAILABLE: True, "allow_history_training": True,
+        }
+
+    async def unexpected(*_):
+        pytest.fail("A profile-only call must not read old chats or memories")
+
+    monkeypatch.setattr(voice.stores, "get_privacy", privacy)
+    monkeypatch.setattr(voice.family_store, "load_profile", profile)
+    monkeypatch.setattr(voice, "_recent_text", unexpected)
+    monkeypatch.setattr(voice.family_store, "get_standing_context", unexpected)
+
+    output = asyncio.run(voice.load_context(
+        sb, "owner", "first-chat", ownership, share_profile=True, share_context=history != "no-call-consent",
+    ))
+    assert profile_checked == ["owner"]
+    assert "private-owner-id" not in output
+    assert json.loads(output) == {"confirmed_profile": {
+        "caregiver": {"nickname": "Caregiver", "city": "Austin"},
+        "children": [
+            {"nickname": "First", "birth_date": "2024-01-10",
+             "current_age": voice.family_store.age_label("2024-01-10"), "gender": "女孩"},
+            {"nickname": "Expecting", "due_date": due,
+             "pregnancy_stage": voice.family_store.pregnancy_label(due)},
+            {"nickname": "Incomplete"},
+        ],
+    }}
+
+
+def test_confirmed_profile_survives_an_optional_history_timeout(monkeypatch):
+    async def profile(uid):
+        return {"nickname": "New parent"}, [{"nickname": "First", "birth_date": "2024-01-10"}]
+
+    async def privacy(uid, fail_closed):
+        return {"allow_history_training": True}
+
+    async def stalled(*_):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(voice.family_store, "load_profile", profile)
+    monkeypatch.setattr(voice.stores, "get_privacy", privacy)
+    monkeypatch.setattr(voice, "_history_context", stalled)
+    result = asyncio.run(asyncio.wait_for(voice.load_context(
+        object(), "owner", None, None, share_profile=True, budget_seconds=0.01,
+    ), timeout=0.25))
+    payload = json.loads(result)
+    assert payload["confirmed_profile"]["children"][0]["birth_date"] == "2024-01-10"
+    assert "recent_chat" not in payload
