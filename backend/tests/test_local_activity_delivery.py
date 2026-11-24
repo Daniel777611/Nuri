@@ -212,6 +212,21 @@ def test_two_child_bands_and_account_scoped_revocation(rig):
 
 
 @pytest.mark.anyio
+async def test_snapshot_without_organizer_date_verification_is_replaced(rig):
+    db, requests, client = rig
+    client.patch(PATH, headers=PARENT_A, json=CITY)
+    first = client.get(FEED, headers=PARENT_A).json()
+    assert first["state"] == "ready"
+    cache = db.rows[activities.TABLE][0]
+    cache["snapshot"].pop("format")
+    old_item = first["items"][0]["id"]
+    assert await activities.find_activity(db, "family-a", old_item, now=NOW, day=NOW.date()) is None
+    cache["next_search_at"] = "-infinity"
+    assert client.get(FEED, headers=PARENT_A).json() == first
+    assert len(requests) == 4
+
+
+@pytest.mark.anyio
 async def test_revocation_during_search_does_not_persist_or_return_old_results(rig, monkeypatch):
     db, _, _client = rig
     original = local_activities.discover_local_activities

@@ -458,13 +458,16 @@ def child_mentions(text: str, children: list[dict]) -> list[dict]:
             if child_name_mentioned(text, str(child.get("nickname") or ""))]
 
 
-async def load_children(user_id: str) -> list[dict]:
+async def load_children(user_id: str, *, include_ids: bool = True) -> list[dict]:
     sb = runtime.get_supabase()
     if not sb:
         return []
+    columns = "nickname,birth_date,gender,allergies,notes"
+    if include_ids:
+        columns = f"id,{columns}"
     try:
         r = await anyio.to_thread.run_sync(
-            lambda: sb.table("children").select("id,nickname,birth_date,gender,allergies,notes")
+            lambda: sb.table("children").select(columns)
             .eq("user_id", user_id).execute()
         )
         return (r.data if r else None) or []
@@ -473,12 +476,13 @@ async def load_children(user_id: str) -> list[dict]:
         raise ProfileStorageUnavailable("Child profile query failed") from exc
 
 
-async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
+async def load_profile(user_id: Optional[str], *, include_child_ids: bool = False) -> tuple[dict, list]:
     """Fetch the profile answers and children behind the prompt block.
 
     One loader for every caller: the chat path used to select a narrower column
     set than profile_ctx reads, so answers the parent had given were silently
-    dropped in chat while showing up in the intro message.
+    dropped in chat while showing up in the intro message. Recommendation
+    ranking opts into stable child IDs to associate memory with siblings.
     """
     if not user_id:
         return {}, []
@@ -501,7 +505,7 @@ async def load_profile(user_id: Optional[str]) -> tuple[dict, list]:
             print(f"[warn] load_profile user: {type(exc).__name__}")
             raise ProfileStorageUnavailable("User profile query failed") from exc
 
-    profile, children = await asyncio.gather(_user(), load_children(user_id))
+    profile, children = await asyncio.gather(_user(), load_children(user_id, include_ids=include_child_ids))
     return profile, children
 
 

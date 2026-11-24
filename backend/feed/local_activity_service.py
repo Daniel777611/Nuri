@@ -24,6 +24,7 @@ _MAX_AGE_BANDS = 2
 _SEARCH_LEASE = timedelta(minutes=10)
 _REFRESH_AFTER = timedelta(hours=12)
 _DETAIL_LIFETIME = timedelta(days=3)
+_SNAPSHOT_FORMAT = "organizer-date-v1"
 
 
 class AreaPatch(BaseModel):
@@ -156,6 +157,9 @@ def _eligible_items(items: list, day: date) -> list[dict]:
 
 
 def _snapshot_age(area: dict, now: datetime) -> timedelta | None:
+    snapshot = area.get("snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("format") != _SNAPSHOT_FORMAT:
+        return None
     try:
         raw = area.get("refreshed_at")
         parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
@@ -266,7 +270,10 @@ async def recommendations(sb: Any, uid: str, *, locale: str, now: datetime,
 
         def save():
             return sb.table(TABLE).update({
-                "snapshot": {"scope": scope, "items": persisted, "recent": list(retained.values())[:24]},
+                "snapshot": {
+                    "format": _SNAPSHOT_FORMAT, "scope": scope,
+                    "items": persisted, "recent": list(retained.values())[:24],
+                },
                 "refreshed_at": now.isoformat() if len(good) == len(groups) else (
                     now - _REFRESH_AFTER
                 ).isoformat(),

@@ -804,7 +804,7 @@ def write_summary(card: dict, locale: str) -> str:
 # ── Entry points ─────────────────────────────────────────────────────────────
 
 async def _profile(user_id: str) -> tuple[dict, list[dict], str]:
-    profile, children = await family_store.load_profile(user_id)
+    profile, children = await family_store.load_profile(user_id, include_child_ids=True)
     return profile, children, str(profile.get("nickname") or "").strip()
 
 

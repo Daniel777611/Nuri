@@ -183,7 +183,7 @@ def world(monkeypatch):
     monkeypatch.setattr(runtime, "get_supabase", lambda: db)
     monkeypatch.setattr(dv, "enabled", lambda: True)
 
-    async def fake_profile(_uid):
+    async def fake_profile(_uid, *, include_child_ids=False):
         return {"nickname": "Linda", "parent_role": "mom", "top_concerns": ["emotion"]}, [
             {"nickname": "小满", "birth_date": "2025-01-05"}
         ]

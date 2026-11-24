@@ -2,7 +2,7 @@
 
 The caller authorizes discovery and supplies only a coarse area and age band.
 Neither external queries nor the shared in-process cache carry an account ID
-or child details. There is no generated content or direct source-page fetch.
+or child details. Dated activities require a separate organizer-page check.
 """
 from __future__ import annotations
 
@@ -10,11 +10,14 @@ import asyncio
 from collections import OrderedDict
 from datetime import date, timedelta
 from hashlib import sha256
+from html.parser import HTMLParser
 import re
 from time import monotonic
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, NamedTuple, Protocol, TypedDict
 import unicodedata
 from urllib.parse import parse_qsl, urlencode, urlsplit
+
+import httpx
 
 from backend.alpha_nearby_events import (
     NearbyEventsRequest,
@@ -24,8 +27,8 @@ from backend.alpha_nearby_events import (
     _ISO_DATE,
     _US_STATES,
     _WRITTEN_DATE,
+    _dates,
     activity_near_location,
-    parse_nearby_events,
     public_activity_source,
 )
 from backend.search_tavily import SearchUnavailable, TavilySearchProvider
@@ -55,6 +58,24 @@ class LocalActivity(TypedDict):
 _CACHE_TTL_SECONDS = 30 * 60
 _CACHE_SIZE = 256
 _RESULT_LIMIT = 12
+_VERIFICATION_LIMIT = 6
+_ORGANIZER_BODY_LIMIT = 384 * 1024
+_EVENT_LOOKAHEAD = timedelta(days=30)
+# Each exact origin below serves a manually checked CivicPlus event detail
+# template with dedicated title, primary date and location blocks.
+_CIVICPLUS_HOSTS = {
+    "montereypark.ca.gov": "www.montereypark.ca.gov",
+    "www.montereypark.ca.gov": "www.montereypark.ca.gov",
+    "flagstaff.az.gov": "www.flagstaff.az.gov",
+    "www.flagstaff.az.gov": "www.flagstaff.az.gov",
+    "smithfieldutah.gov": "smithfieldutah.gov",
+    "www.smithfieldutah.gov": "smithfieldutah.gov",
+    "cityoflagunaniguel.org": "www.cityoflagunaniguel.org",
+    "www.cityoflagunaniguel.org": "www.cityoflagunaniguel.org",
+    "dalycity.org": "www.dalycity.org",
+    "www.dalycity.org": "www.dalycity.org",
+}
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 _AGE_BAND_WORDS = {
     "infant": "baby infant",
     "toddler": "toddler",
@@ -104,7 +125,7 @@ _EVENT_INSTANCE = re.compile(
     re.I,
 )
 _LISTING_TITLE = re.compile(
-    r"\b(?:events? calendar|upcoming events|all events|program calendar)\b|活動行事曆|活动日历",
+    r"\b(?:events? calendar|upcoming events|all events|program calendar|library calendar)\b|活動行事曆|活动日历",
     re.I,
 )
 _EVENT_ANCHOR = re.compile(
@@ -171,7 +192,165 @@ def _safe_link(url: str) -> tuple[str, str] | None:
     return host, parsed._replace(query=query).geturl()
 
 
+class OrganizerEvent(NamedTuple):
+    title: str
+    day: date
+    description: str
+    location: str
+
+
+def _organizer_event_url(url: str) -> str | None:
+    """Reconstruct the only URL that may be requested for this event ID."""
+    parsed = urlsplit(url)
+    host = _CIVICPLUS_HOSTS.get(parsed.hostname or "")
+    if parsed.scheme != "https" or not host or parsed.username or parsed.password:
+        return None
+    if parsed.port not in (None, 443):
+        return None
+    matched = re.fullmatch(r"/m/calendar/event/detail/([1-9][0-9]{0,8})/?", parsed.path, re.I)
+    if matched and not parsed.query:
+        event_id = matched[1]
+    elif parsed.path.lower() == "/calendar.aspx":
+        fields = parse_qsl(parsed.query, keep_blank_values=True)
+        ids = [value for key, value in fields if key.lower() == "eid"]
+        if len(ids) != 1 or not re.fullmatch(r"[1-9][0-9]{0,8}", ids[0]):
+            return None
+        if any(key.lower() not in {"eid", "caltype", "day", "month", "year"} or not value.isascii()
+               or not value.isdecimal() for key, value in fields):
+            return None
+        event_id = ids[0]
+    else:
+        return None
+    return f"https://{host}/m/calendar/event/detail/{event_id}"
+
+
+class _OrganizerHTML(HTMLParser):
+    """Capture only the event's dedicated CivicPlus fields before Related Events."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields: dict[str, list[str]] = {}
+        self.text: list[str] = []
+        self.active: tuple[str, str] | None = None
+        self.depth = 0
+        self.completed_primary = False
+        self.hidden: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.completed_primary or self.hidden:
+            return
+        attr = dict(attrs)
+        if attr.get("aria-labelledby") == "calendar-related-events-heading":
+            self.completed_primary = True
+            return
+        if tag in {"script", "style", "svg"}:
+            self.hidden = tag
+            return
+        if self.active:
+            if tag == self.active[1]:
+                self.depth += 1
+            return
+        if tag == "h1" and "calendar-event-title" in (attr.get("class") or "").split():
+            field = "title"
+        elif tag == "div" and attr.get("id") == "event-description":
+            field = "description"
+        elif tag == "div" and attr.get("aria-label") == "Event details":
+            field = "details"
+        elif tag == "div" and attr.get("aria-label") == "Event location":
+            field = "location"
+        else:
+            return
+        self.active = field, tag
+        self.depth = 1
+        self.text = []
+
+    def handle_data(self, text):
+        if not self.completed_primary and not self.hidden and self.active:
+            self.text.append(text)
+
+    def handle_endtag(self, tag):
+        if self.hidden == tag:
+            self.hidden = None
+            return
+        if self.completed_primary or self.hidden or not self.active or tag != self.active[1]:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            self.fields.setdefault(self.active[0], []).append(" ".join(" ".join(self.text).split()))
+            self.active = None
+
+    def event(self) -> OrganizerEvent | None:
+        if any(len(self.fields.get(field) or []) != 1 for field in ("title", "details", "location")):
+            return None
+        title = self.fields["title"][0]
+        location = self.fields["location"][0]
+        details = self.fields["details"][0]
+        dates = list(_WRITTEN_DATE.finditer(details))
+        values = _dates(details)
+        if not title or not location or len(dates) != 1 or len(values) != 1:
+            return None
+        matched = dates[0]
+        if not _ORGANIZER_TIME_DATE.fullmatch(details[:matched.start()]) or matched.end() != len(details):
+            return None
+        day = next(iter(values))
+        weekday = details.split("|", 1)[1].split(",", 1)[0].strip().casefold()
+        if weekday != _WEEKDAYS[day.weekday()]:
+            return None
+        descriptions = self.fields.get("description") or [""]
+        if len(descriptions) != 1 or _CANCELLED.search(f"{title} {descriptions[0]} {details}"):
+            return None
+        return OrganizerEvent(title, day, descriptions[0], location)
+
+
+async def _verify_organizer(client: httpx.AsyncClient, url: str) -> OrganizerEvent | None:
+    if _organizer_event_url(url) != url:
+        return None
+    try:
+        async with asyncio.timeout(4):
+            async with client.stream("GET", url, headers={"Accept": "text/html", "Accept-Encoding": "identity"},
+                                     follow_redirects=False) as response:
+                if response.status_code != 200 or response.headers.get("content-encoding", "identity").lower() != "identity":
+                    return None
+                if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "text/html":
+                    return None
+                body = bytearray()
+                async for chunk in response.aiter_raw(chunk_size=16 * 1024):
+                    if len(body) + len(chunk) > _ORGANIZER_BODY_LIMIT:
+                        return None
+                    body.extend(chunk)
+                    if b'aria-labelledby="calendar-related-events-heading"' in body:
+                        break
+    except (httpx.HTTPError, TimeoutError):
+        return None
+    parser = _OrganizerHTML()
+    parser.feed(body.decode("utf-8", errors="replace"))
+    parser.close()
+    return parser.event()
+
+
+def _organizer_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(trust_env=False, timeout=4, follow_redirects=False)
+
+
+async def _verify_events(results: list[SearchResult]) -> dict[str, OrganizerEvent]:
+    urls = dict.fromkeys(canonical for result in results
+                         if (source := _safe_link(result.url))
+                         and (canonical := _organizer_event_url(source[1])))
+    chosen = list(urls)[:_VERIFICATION_LIMIT]
+    if not chosen:
+        return {}
+    slots = asyncio.Semaphore(3)
+    async with _organizer_client() as client:
+        async def verify(url: str) -> OrganizerEvent | None:
+            async with slots:
+                return await _verify_organizer(client, url)
+        answers = await asyncio.gather(*(verify(url) for url in chosen))
+    return {url: event for url, event in zip(chosen, answers) if event is not None}
+
+
 def _source_priority(host: str, title: str, city: str) -> int:
+    if host in _CIVICPLUS_HOSTS:
+        return 3
     if host.endswith(".gov.taipei") or re.search(r"\.(?:gov|edu)(?:\.[a-z]{2})?$|\.ac\.[a-z]{2}$", host):
         return 3
     if host.endswith((".libcal.com", ".bibliocommons.com")):
@@ -265,7 +444,7 @@ def _brief(snippet: str) -> str:
 
 
 def _collect(results: list[SearchResult], area: NearbyEventsRequest, age_band: str,
-             today: date) -> list[LocalActivity]:
+             today: date, verified: dict[str, OrganizerEvent]) -> list[LocalActivity]:
     where = ", ".join(filter(None, (area.city, area.region, area.country)))
     ranked: dict[str, tuple[tuple[int, int, str, int], LocalActivity]] = {}
     for order, result in enumerate(results):
@@ -275,7 +454,15 @@ def _collect(results: list[SearchResult], area: NearbyEventsRequest, age_band: s
             continue
         host, url = source
         snippet = result.snippet[:3000]
-        visible = f"{title} {snippet}"
+        canonical = _organizer_event_url(url)
+        event = verified.get(canonical or "")
+        if canonical:
+            if not event or not today <= event.day <= today + _EVENT_LOOKAHEAD:
+                continue
+            url = canonical
+            title = _brief(event.title)[:160]
+            snippet = event.description[:3000]
+        visible = f"{title} {snippet} {event.location if event else ''}"
         priority = _source_priority(host, title, area.city)
         age_priority = _age_priority(title, snippet, age_band)
         if not priority or age_priority < 0 or _CANCELLED.search(visible):
@@ -284,17 +471,18 @@ def _collect(results: list[SearchResult], area: NearbyEventsRequest, age_band: s
             continue
 
         official = priority == 3
-        event_evidence = _dated_evidence(title, snippet, official=official)
         is_listing = bool(_LISTING_TITLE.search(title))
-        event = parse_nearby_events([result], area, today) if event_evidence and not is_listing else []
-        day = event[0]["date"] if event else None
+        day = event.day.isoformat() if event else None
         path = urlsplit(url).path
-        event_instance = not is_listing and _EVENT_INSTANCE.search(url.removeprefix(f"https://{host}"))
         # A dated event excluded by freshness, ambiguity or its missing date
         # must never come back via the resource category.
-        if not day and (event_instance or (event_evidence and not _ONGOING.search(title))):
-            continue
         if not day:
+            if _EVENT_INSTANCE.search(url.removeprefix(f"https://{host}")) and (
+                not is_listing or not path.rstrip("/").endswith("/calendar")
+            ):
+                continue
+            if not is_listing and _dated_evidence(title, snippet, official=official):
+                continue
             resource = _RESOURCE.search(f"{host} {title} {path}") and _ONGOING.search(visible)
             official_program = official and _RESOURCE.search(visible) and _WEEKLY_SCHEDULE.search(visible)
             if not resource and not official_program:
@@ -349,7 +537,8 @@ async def discover_local_activities(
             return None
 
     pages = await asyncio.gather(search(False), search(True))
-    candidates = _collect([result for page in pages if page for result in page], area, band, today)
+    results = [result for page in pages if page for result in page]
+    candidates = _collect(results, area, band, today, await _verify_events(results))
     if any(page is None for page in pages) and not candidates:
         raise LocalActivitiesUnavailable("Local activity lookup unavailable") from None
     if default_provider and all(page is not None for page in pages):

@@ -1628,7 +1628,7 @@ async def get_daily_post(user_id: str, tz_name: Optional[str], *, now: Optional[
     store = DailyPostStore(sb)
 
     try:
-        profile, children = await family_store.load_profile(user_id)
+        profile, children = await family_store.load_profile(user_id, include_child_ids=True)
     except Exception:
         return {**base, "state": "unavailable"}
     nickname = str(profile.get("nickname") or "").strip()
