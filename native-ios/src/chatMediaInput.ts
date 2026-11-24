@@ -3,7 +3,7 @@ import { File as NativeFile } from "expo-file-system";
 import { createVideoPlayer, type VideoThumbnail, type VideoTrack } from "expo-video";
 import { Platform } from "react-native";
 import type { ChatDraftAttachment } from "./chatAttachments";
-import { ChatImageInputError, prepareChatImage, webAssetFromFile } from "./chatImageInput";
+import { ChatImageInputError, prepareChatImage, webAssetFromFile, type ChatImagePreparationOptions } from "./chatImageInput";
 
 export const CHAT_MAX_ATTACHMENTS = 6;
 // Local draft/decode resource bounds, not a declaration of a server's upload
@@ -209,7 +209,7 @@ async function webVideo(asset: ImagePickerAsset): Promise<ChatDraftAttachment> {
 /** Serial decoding avoids simultaneous full-resolution photo/video surfaces.
  * The caller owns account/focus checks, then releases stale results with the
  * two explicit release helpers; this function never sends or stores media. */
-export function prepareChatAttachment(asset: ImagePickerAsset): Promise<ChatDraftAttachment> {
+export function prepareChatAttachment(asset: ImagePickerAsset, imageOptions?: ChatImagePreparationOptions): Promise<ChatDraftAttachment> {
   const work = preparationQueue.then(async () => {
     if (discardedPickerAssets.has(asset)) throw mediaError("processing_failed");
     try {
@@ -222,7 +222,7 @@ export function prepareChatAttachment(asset: ImagePickerAsset): Promise<ChatDraf
       if (asset.mimeType && /^(image|video)\//.test(asset.mimeType) && !asset.mimeType.startsWith(`${kind}/`)) throw mediaError("unsupported");
       if (kind === "image") {
         try {
-          const image = await prepareChatImage(asset);
+          const image = await prepareChatImage(asset, imageOptions);
           if (discardedPickerAssets.has(asset)) throw mediaError("processing_failed");
           return { ...attachmentBase(asset, "image"), uri: image.previewUri, previewSource: { uri: image.previewUri }, width: image.width, height: image.height, image };
         } finally {

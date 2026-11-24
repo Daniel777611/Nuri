@@ -10,7 +10,7 @@ function assignRef(ref: ForwardedRef<TextInput>, value: TextInput | null) {
 /** A separate native host, never registered with the custom editing/IME
  * controller. Native marked text, selection, autocorrection, Shift and input
  * language remain entirely owned by UIKit. No inputView override or reload. */
-export const NativeNuriTextInput = forwardRef<TextInput, NuriTextInputProps & { scopeActive: boolean }>(function NativeNuriTextInput({ scopeActive, appKeyboard = true, keyboardActive = true, keyboardId, onAppKeyboardDone, onAppKeyboardSubmit, onAppKeyboardDictation: _dictation, onAppKeyboardSticker: _sticker, ...props }, forwardedRef) {
+export const NativeNuriTextInput = forwardRef<TextInput, NuriTextInputProps & { scopeActive: boolean }>(function NativeNuriTextInput({ scopeActive, appKeyboard = true, keyboardActive = true, keyboardId, hideNativeKeyboardAccessory, onAppKeyboardDone, onAppKeyboardSubmit, onAppKeyboardDictation: _dictation, onAppKeyboardSticker: _sticker, ...props }, forwardedRef) {
   const generatedId = useId(), nativeID = props.nativeID ?? keyboardId ?? `nuri-native-input-${generatedId}`;
   const ref = useRef<TextInput | null>(null), mounted = useRef(false), focused = useRef(false);
   const focusVersion = useRef(0), pendingDone = useRef<number | null>(null);
@@ -33,8 +33,8 @@ export const NativeNuriTextInput = forwardRef<TextInput, NuriTextInputProps & { 
     focused.current = false;
     ref.current?.blur();
   };
-  const ownAccessory = appKeyboard && props.inputAccessoryViewID == null;
-  const accessoryID = ownAccessory ? `${nativeID}-accessory` : props.inputAccessoryViewID;
+  const ownAccessory = appKeyboard && !hideNativeKeyboardAccessory && props.inputAccessoryViewID == null;
+  const accessoryID = hideNativeKeyboardAccessory ? undefined : ownAccessory ? `${nativeID}-accessory` : props.inputAccessoryViewID;
   return <>
     <TextInput {...props} ref={mergedRef} nativeID={nativeID}
       keyboardAppearance={props.keyboardAppearance ?? "light"}

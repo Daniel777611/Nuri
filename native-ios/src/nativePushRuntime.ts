@@ -65,6 +65,7 @@ export function parseNativeToken(detail: unknown): PushDeviceRegistration | null
 
 export function safeNotificationRoute(route: unknown): string | null {
   if (typeof route !== "string" || !route.startsWith("/notifications/")) return null;
+  if (process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && route === "/notifications/nearby-activities") return route;
   const id = route.slice("/notifications/".length);
   return /^[0-9a-f-]{8,64}$/i.test(id) ? route : null;
 }

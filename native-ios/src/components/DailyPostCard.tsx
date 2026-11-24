@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 
-import type { DailyPostCard as Card } from "@/src/api";
+import type { DailyPostCard as Card, DailyPostSource } from "@/src/api";
 import { useT } from "@/src/i18n";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { shortResourceSummary, hasPostSummarySource } from "@/src/resourceSummary";
@@ -11,11 +11,46 @@ import { externalSourceUrl } from "@/src/externalContent";
 
 export type DailyPostStatus = "loading" | "pending" | "ready" | "empty" | "error" | "disabled";
 
-const PLATFORM_NAMES: Record<Card["platform"], string> = {
+const PLATFORM_NAMES = {
+  xiaohongshu: "小红书",
   facebook: "Facebook",
   instagram: "Instagram",
   threads: "Threads",
 };
+
+export function isSummaryCard(card: Card): boolean {
+  return card.format === "summary" && card.summary_source === "summary";
+}
+
+export function dailyPostSummarySources(card: Card): DailyPostSource[] {
+  if (!isSummaryCard(card) || !Array.isArray(card.sources)) return [];
+  const numbers = new Set<number>();
+  const urls = new Set<string>();
+  return card.sources.flatMap(source => {
+    const url = externalSourceUrl(source?.url);
+    if (!url || !Number.isSafeInteger(source.n) || source.n < 1 || numbers.has(source.n) || urls.has(url) ||
+        typeof source.title !== "string" || typeof source.label !== "string") return [];
+    numbers.add(source.n);
+    urls.add(url);
+    return [{ ...source, url }];
+  });
+}
+
+export function summarySourceLine(
+  t: (s: string, v?: Record<string, string | number>) => string,
+  card: Card,
+): string {
+  const sources = dailyPostSummarySources(card);
+  if (!sources.length) return t("参考来源暂时无法查看");
+  const labels = new Set(sources.flatMap(({ platform }) => {
+    const label = PLATFORM_NAMES[platform as keyof typeof PLATFORM_NAMES];
+    return typeof label === "string" ? [t(label)] : [];
+  }));
+  const values = { platforms: Array.from(labels).join("、"), count: sources.length };
+  if (!labels.size) return t("参考全网{count}篇内容", values);
+  return t(sources.some(source => source.platform === "web")
+    ? "参考{platforms}与全网{count}篇内容" : "参考{platforms}的{count}篇内容", values);
+}
 
 /** The greeting on the card and at the top of the detail screen. */
 export function dailyPostGreeting(
@@ -36,7 +71,8 @@ export function dailyPostTag(
   t: (s: string, v?: Record<string, string | number>) => string,
   card: Card,
 ): string {
-  const platform = PLATFORM_NAMES[card.platform] || card.platform;
+  if (isSummaryCard(card)) return summarySourceLine(t, card);
+  const platform = PLATFORM_NAMES[card.platform as keyof typeof PLATFORM_NAMES] || card.platform;
   return card.author_kind === "parent_group_answers"
     ? t("{platform} 家长群讨论", { platform })
     : t("{platform} 家长分享", { platform });
@@ -44,7 +80,7 @@ export function dailyPostTag(
 
 export function dailyPostPreview(card: Card): string | null {
   // These are the backend's AI-written search previews, not a verbatim quote.
-  return hasPostSummarySource(card) && externalSourceUrl(card.source_url)
+  return hasPostSummarySource(card) && (isSummaryCard(card) ? dailyPostSummarySources(card).length > 0 : externalSourceUrl(card.source_url))
     ? shortResourceSummary(card.question, 110) || shortResourceSummary(card.headline, 110)
     : null;
 }

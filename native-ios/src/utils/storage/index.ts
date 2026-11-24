@@ -8,11 +8,17 @@ import * as SecureStore from "expo-secure-store";
 
 import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
 
-// The standalone Native Lab deliberately starts with a fresh session. Never
-// read, migrate, or delete the original app's unprefixed keys/default service.
-export const NATIVE_STORAGE_NAMESPACE = "com.ordashtech.nuri.nativelab.v1.";
+// An Alpha upgrade must never reuse or delete the production-backed 1060
+// session or account state. Keep the local simulator separate from Alpha QA.
+const isLiveAlpha = process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha";
+const alphaEnvironment = process.env.EXPO_PUBLIC_BACKEND_URL === "http://127.0.0.1:8765" ? "local" : "testing";
+export const NATIVE_STORAGE_NAMESPACE = isLiveAlpha
+  ? `com.ordashtech.nuri.alpha.${alphaEnvironment}.v1.`
+  : "com.ordashtech.nuri.nativelab.v1.";
 export const NATIVE_SECURE_STORAGE_OPTIONS: SecureStore.SecureStoreOptions = Object.freeze({
-  keychainService: "com.ordashtech.nuri.nativelab.credentials.v1",
+  keychainService: isLiveAlpha
+    ? `com.ordashtech.nuri.alpha.${alphaEnvironment}.credentials.v1`
+    : "com.ordashtech.nuri.nativelab.credentials.v1",
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   // Do not request a shared accessGroup. Use the lab app's private signed group.
 });
@@ -22,7 +28,7 @@ function nativeStorageKey(key: string) {
 }
 
 export class Storage extends StorageBase {
-  // General KV — backed by AsyncStorage, with native-lab-only keys.
+  // General KV — backed by AsyncStorage, with environment-scoped keys.
   async getItem<Fallback extends StorageItemValue>(
     key: string,
     fallback: Fallback,

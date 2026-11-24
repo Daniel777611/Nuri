@@ -15,6 +15,7 @@ import { IconAction, NuriText } from "@/src/uiux48/Primitives";
 import { NuriAvatar } from "@/src/uiux48/Scene";
 import { CurrentUserAvatarAction } from "@/src/uiuxfinal/UserAvatar";
 import { FinalText } from "@/src/uiuxfinal/Primitives";
+import { localActivityTitle } from "@/src/localActivities";
 
 /** Inline Stack header controls. The native header owns the top safe area. */
 export default function NativePageControls() {
@@ -62,7 +63,7 @@ export default function NativePageControls() {
     <View style={[styles.row,nuriChat?{gap:8}:null]}>
       {pathname==="/community"&&communityHideBack==="1"?<View style={{width:8}} />:nuriChat?<ChatBackAction pathname={pathname} label={t("返回")} navigate={navigate} />:<IconAction name="back" label={t("返回")} onPress={() => navigate("back")} testID="native-header-back" />}
       {pathname.startsWith("/chat/")||pathname==="/chats"?<NuriAvatar />:null}
-      {settings||nuriChat||pathname==="/community"?<FinalText size={nuriChat?18:20} secondary={settings||pathname==="/community"&&communityHeader!=="blocked-list"} style={{flex:1,marginLeft:nuriChat?0:4,lineHeight:pathname==="/community"&&!regularCommunity?28:26,fontWeight:settings||regularCommunity?"400":"500"}}>{displayTitle}</FinalText>:<NuriText role="H2" secondary={!reading} style={{flex:1,marginLeft:4,...(reading?{fontSize:20,lineHeight:28,color:"#4A454D",fontWeight:"500"}:null)}}>{displayTitle}</NuriText>}
+      {settings||nuriChat||pathname==="/community"||pathname==="/nearby-activities"?<FinalText size={nuriChat?18:20} secondary={settings||pathname==="/community"&&communityHeader!=="blocked-list"} style={{flex:1,marginLeft:nuriChat?0:4,lineHeight:pathname==="/community"&&!regularCommunity?28:26,fontWeight:settings||regularCommunity?"400":"500"}}>{pathname==="/nearby-activities"?localActivityTitle(locale):displayTitle}</FinalText>:<NuriText role="H2" secondary={!reading} style={{flex:1,marginLeft:4,...(reading?{fontSize:20,lineHeight:28,color:"#4A454D",fontWeight:"500"}:null)}}>{displayTitle}</NuriText>}
       {authenticated&&pathname==="/community"&&!hideCommunityAvatar?<CurrentUserAvatarAction path={pathname} testID="native-header-settings" />:null}
     </View>
       {(pathname.startsWith("/chat")||pathname==="/daily-post"||pathname==="/daily-video"||pathname==="/knowledge"||pathname.startsWith("/detail/")) && ["not_allowed", "error"].includes(state.status) ? <FrostedPressable onPress={openPermission} style={styles.banner} accessibilityRole="button" testID="native-ai-permission-blocked"><NuriText style={{fontSize:12,lineHeight:18}}>{state.status === "error" ? (state.failure === "session" ? requestFailureCopy(locale, "session").detail : aiCopy.loadError) : aiCopy.banner}</NuriText></FrostedPressable> : null}

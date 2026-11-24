@@ -1,3 +1,6 @@
+import { isCurrentNativeRelease } from "@/src/release/currentNativeRelease";
+import { canUseNativeAppleSignIn } from "@/src/appleSignIn";
+import AppleSignInButton from "@/src/components/AppleSignInButton";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccountScope, useAccountState } from "@/src/useAccountState";
 import { useAIConsent } from "@/src/useAIConsent";
@@ -14,9 +17,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
-import { api, auth } from "@/src/api";
+import { api, apiErrorDetail, auth } from "@/src/api";
 import { completedAgeMonths, pregnancyWeeks } from "@/src/child-age";
 import ConfirmDialog from "@/src/components/ConfirmDialog";
 import { LOCALE_LABELS, LOCALES, useT, translate } from "@/src/i18n";
@@ -33,6 +37,12 @@ import { useNuriTheme } from "@/src/uiux48/Theme";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { validCollectionName } from "@/src/collectionActions";
 import { isLiveCommunityEnabled } from "@/src/liveCommunityGate";
+import { prepareChatImage } from "@/src/chatImageInput";
+import { personalAvatarAvailable, readPersonalAvatar, savePersonalAvatar } from "@/src/personalAvatar";
+import { CHINESE_NAME_TOO_LONG, chineseDisplayNameLimitMessage, isChineseDisplayNameTooLong } from "@/src/profileDisplayName";
+import { NearbyEventsSettings } from "@/src/components/NearbyEventsSettings";
+import { NearbyLocationSetting } from "@/src/components/NearbyLocationSetting";
+import { nearbyEventsAvailable } from "@/src/nearbyEvents";
 const FIGMA_FRAME_WIDTH = 402;
 const SETTINGS_TRADITIONAL:Record<string,string>={
   "照护者":"照護者","最近想关注什么？":"最近想關注什麼？","家庭习惯":"家庭習慣","例如睡前一起读书":"例如睡前一起讀書","你更需要怎样的支持？":"你更需要怎樣的支持？",
@@ -40,6 +50,7 @@ const SETTINGS_TRADITIONAL:Record<string,string>={
   "打开完整许可说明；此处不会直接授权或撤回。":"開啟完整許可說明；此處不會直接授權或撤回。","查看 AI 使用许可":"查看 AI 使用許可","使用过往对话":"使用過往對話","帮助 Nuri 记住你的偏好":"幫助 Nuri 記住你的偏好",
   "联网搜索":"聯網搜尋","需要时搜索公开资料，提供来源":"需要時搜尋公開資料，提供來源","关闭 AI 后将停止生成新的 AI 回应，已有记录不会自动删除。":"關閉 AI 後將停止產生新的 AI 回應，已有紀錄不會自動刪除。",
   "管理账号与数据":"管理帳號與資料","更多隐私说明":"更多隱私說明","重设密码":"重設密碼","发送重设链接至此邮箱":"發送重設連結至此信箱",
+  "更换头像":"更換頭像","头像仅在此设备上使用。":"頭像僅在這部裝置上使用。","头像未能更换，请重试。":"頭像未能更換，請重試。",
 };
 
 export default function Profile() {
@@ -62,6 +73,8 @@ export default function Profile() {
   const [collectionTarget,setCollectionTarget]=useAccountState<string|null>(null);
   const [collectionDelete,setCollectionDelete]=useAccountState<string|null>(null);
   const [parentName,setParentName]=useAccountState("");
+  const [personalPhoto,setPersonalPhoto]=useAccountState<string|null>(null);
+  const [changingAvatar,setChangingAvatar]=useAccountState(false);
   const [city,setCity]=useAccountState("");
   const [role,setRole]=useAccountState("");
   const [concerns,setConcerns]=useAccountState<string[]>([]);
@@ -116,7 +129,15 @@ export default function Profile() {
       api.listFavorites(), api.me(), api.listCollections(),
     ]);
     if (!current(ticket)) return;
-    if(meResult.status==="fulfilled"){const m:any=meResult.value;setMe(m);setParentName(m.nickname||"");setCity(m.city||"");setRole(m.parent_role||"");setConcerns(m.top_concerns||[]);setHobbies(m.hobbies||"");setHelp(m.help_preference||"");}
+    if(meResult.status==="fulfilled"){
+      const m:any=meResult.value;
+      setMe(m);setParentName(m.nickname||"");setCity(m.city||"");setRole(m.parent_role||"");setConcerns(m.top_concerns||[]);setHobbies(m.hobbies||"");setHelp(m.help_preference||"");
+      if(section==="personal"&&personalAvatarAvailable(m.id)){
+        const photo=await readPersonalAvatar(m.id).catch(()=>null);
+        if(!current(ticket))return;
+        setPersonalPhoto(photo);
+      }
+    }
     if(collectionsResult.status==="fulfilled")setCollections(collectionsResult.value);
     setLoadState([childrenResult,privacyResult,favoritesResult,meResult,collectionsResult].some(r=>r.status==="rejected")?"error":"ready");
     if (childrenResult.status === "fulfilled") setChildren(childrenResult.value);
@@ -132,7 +153,7 @@ export default function Profile() {
       }));
       setPrivacyUnavailable(true);
     }
-  }, [capture, current, setChildren, setFavorites, setPrivacy, setPrivacyUnavailable]);
+  }, [capture, current, section, setChildren, setFavorites, setPersonalPhoto, setPrivacy, setPrivacyUnavailable]);
 
   useFocusEffect(
     useCallback(() => {
@@ -238,9 +259,34 @@ export default function Profile() {
 
 
   const en=locale==="en"; const copy=(cn:string,enText:string)=>en?enText:locale==="zh-TW"&&SETTINGS_TRADITIONAL[cn]?SETTINGS_TRADITIONAL[cn]:translate(locale,cn);
-  const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch{if(current(ticket))setActionError(copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
+  const canChangeAvatar=personalAvatarAvailable(me?.id);
+  const limitedName=Platform.OS==="ios"&&isCurrentNativeRelease()&&isChineseDisplayNameTooLong(parentName);
+  const preserveLegacyName=limitedName&&parentName.trim()===(me?.nickname??"").trim();
+  const invalidName=limitedName&&!preserveLegacyName;
+  const changeAvatar=async()=>{
+    const ticket=capture(), userId=me?.id;
+    if(ticket===null||!personalAvatarAvailable(userId)||mutation.current)return;
+    mutation.current=true;setChangingAvatar(true);setActionError("");
+    try{
+      const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:["images"],allowsEditing:true,aspect:[1,1],quality:1});
+      if(!current(ticket)||result.canceled)return;
+      const photo=await prepareChatImage(result.assets[0],{personalAvatar:true});
+      if(!current(ticket))return;
+      await savePersonalAvatar(userId,photo.dataUri);
+      if(current(ticket))setPersonalPhoto(photo.dataUri);
+    }catch{
+      if(current(ticket))setActionError(copy("头像未能更换，请重试。","The photo could not be changed. Try again."));
+    }finally{
+      mutation.current=false;
+      if(current(ticket))setChangingAvatar(false);
+    }
+  };
+  const run=async(fn:()=>Promise<unknown>)=>{const ticket=capture();if(ticket===null||mutation.current)return;mutation.current=true;setSaving(true);setActionError("");try{await fn();if(current(ticket)){await load();if(current(ticket))setResult("saved");}}catch(error){if(current(ticket))setActionError(apiErrorDetail(error)===CHINESE_NAME_TOO_LONG?chineseDisplayNameLimitMessage(locale):copy("操作未确认成功，请重试。","Not confirmed. Please retry."));}finally{mutation.current=false;if(current(ticket))setSaving(false);}};
   const linkPolicy=()=>{setPolicyError(null);void Linking.openURL("https://nurifam.com/privacy").catch(()=>setPolicyError(copy("隐私政策暂时无法打开，请重试。","Could not open the privacy policy. Please retry.")));};
   const titles:Record<string,string>={personal:copy("个人信息","Personal information"),children:copy("孩子信息","Children"),favorites:copy("我的收藏","Favorites"),preferences:copy("家庭偏好","Family preferences"),privacy:copy("隐私与 AI 许可","Privacy & AI permission"),account:copy("账号与安全","Account & security"),language:copy("语言","Language"),collections:copy("收藏分类","Collections")};
+  const nearbyTitle = locale === "en" ? "Nearby family activities" : locale === "zh-TW" ? "附近親子活動" : "附近亲子活动";
+  const showNearby = process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && nearbyEventsAvailable();
+  if (showNearby) titles.nearby = nearbyTitle;
   const row=(label:string,target:string,detail?:string)=><MenuRow key={target} label={label} detail={detail} onPress={()=>go(target)} testID={`profile-section-${target}`} />;
   const notice=<>{loadState==="loading"?<InlineState busy message={copy("正在读取…","Loading…")} />:loadState==="error"?<InlineState message={copy("部分资料读取失败。尚未读取的内容不能视为空。","Some information could not be loaded; missing results are not empty data.")} action={copy("重试","Retry")} onPress={()=>void load()} />:null}{actionError?<NuriText testID="profile-action-result" secondary>{actionError}</NuriText>:null}</>;
   if(result==="saved")return <StateCard testID="profile-saved-card" message={copy("修改已保存。","Changes saved.")} primary={{label:copy("完成","Done"),onPress:()=>setResult(null)}} />;
@@ -250,7 +296,8 @@ export default function Profile() {
   return <View style={{flex:1}}>
     {section==="main"?<CardList testID="profile-card-stack" contentContainerStyle={{gap:0}}>
       {row(copy("个人信息","Personal information"),"personal")}{row(copy("孩子信息","Children"),"children")}{row(copy("家庭偏好","Family preferences"),"preferences")}
-      {isLiveCommunityEnabled()?<MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />:null}
+      {showNearby ? <><NearbyLocationSetting owner={typeof me?.id === "string" ? me.id : ""} />{row(nearbyTitle, "nearby")}</> : null}
+      {process.env.EXPO_PUBLIC_RELEASE_FLAVOR==="live-alpha"?<MenuRow label={copy("社区偏好","Community preferences")} onPress={()=>router.push({pathname:"/community",params:{uiState:"preferences"}})} testID="profile-community-preferences" />:null}
       {row(copy("我的收藏","Favorites"),"favorites")}
       <View style={{marginVertical:16}}><SettingsDivider/></View>
       <MenuRow label={copy("通知设置","Notification settings")} onPress={()=>router.push("/notification-settings")} />{row(copy("语言","Language"),"language")}{row(copy("隐私与 AI","Privacy & AI"),"privacy")}{row(copy("账号与安全","Account & security"),"account")}
@@ -258,12 +305,17 @@ export default function Profile() {
       <SettingsAction label={signingOut?copy("正在退出…","Signing out…"):copy("退出登录","Sign out")} disabled={signingOut} onPress={()=>setConfirmLogout(true)} testID="profile-logout-btn" />
     </CardList>:<CardList>
       {notice}
+      {showNearby && section === "nearby" ? <NearbyEventsSettings owner={me?.id ?? ""} profileCity={city} /> : null}
       {section==="personal"?<>
-        <UserAvatar size={56} displayName={parentName} photoURL={me?.avatar_url??me?.photo_url??me?.picture} />
+        {canChangeAvatar?<Pressable accessibilityRole="button" accessibilityLabel={copy("更换头像","Change profile photo")} disabled={saving||changingAvatar||loadState==="loading"} accessibilityState={{busy:changingAvatar}} onPress={()=>void changeAvatar()} style={{flexDirection:"row",alignItems:"center",gap:12,alignSelf:"flex-start"}} testID="profile-change-avatar">
+          <UserAvatar size={56} displayName={parentName} photoURL={me?.avatar_url??me?.photo_url??me?.picture} personalPhoto={personalPhoto} />
+          <View style={{gap:2,flexShrink:1}}><FinalText>{copy("更换头像","Change profile photo")}</FinalText><FinalText secondary size={12}>{copy("头像仅在此设备上使用。","Your profile photo is used on this device.")}</FinalText></View>
+        </Pressable>:<UserAvatar size={56} displayName={parentName} photoURL={me?.avatar_url??me?.photo_url??me?.picture} />}
         <NuriField label={copy("称呼","Name")} value={parentName} onChangeText={setParentName} testID="profile-name" />
+        {invalidName?<FinalText secondary size={12} testID="profile-name-limit">{chineseDisplayNameLimitMessage(locale)}</FinalText>:null}
         <NuriField label={copy("居住城市","City")} value={city} onChangeText={setCity} placeholder={copy("稍后填写","Add later")} />
         <View style={{gap:12}}><FinalText size={18} style={{lineHeight:26,fontWeight:"500",fontFamily:locale==="zh-CN"?"NotoSansSC_500Medium":undefined}}>{copy("照护角色","Caregiving role")}</FinalText><SettingsChoices>{[["mom",copy("妈妈","Mom")],["dad",copy("爸爸","Dad")],["other",copy("照护者","Caregiver")]].map(([key,label])=><ChoiceChip key={key} label={label} selected={role===key} onPress={()=>setRole(key)} />)}</SettingsChoices></View>
-        <SettingsFormFooter><NuriButton label={copy("保存","Save")} busy={saving} disabled={saving||!me||loadState!=="ready"} onPress={()=>void run(()=>api.updateMe({nickname:parentName.trim(),city:city.trim(),parent_role:role||undefined}))} /></SettingsFormFooter>
+        <SettingsFormFooter><NuriButton label={copy("保存","Save")} busy={saving} disabled={saving||changingAvatar||invalidName||!me||loadState!=="ready"} onPress={()=>{if(!invalidName)void run(()=>api.updateMe({...(preserveLegacyName?{}:{nickname:parentName.trim()}),city:city.trim(),parent_role:role||undefined}));}} /></SettingsFormFooter>
       </>:null}
       {section==="children"?<>{children.map(c=><MenuRow key={c.id} label={c.nickname} detail={(({key,vars})=>t(key,vars))(ageLabel(c.birth_date))} onPress={()=>router.push({pathname:"/child/[id]",params:{id:c.id,uiState:"edit"}})} testID={`profile-child-${c.id}`} />)}{loadState==="ready"&&!children.length?<NuriText secondary>{copy("还没有添加孩子资料。","No child profiles added.")}</NuriText>:null}<NuriButton label={copy("添加孩子","Add a child")} onPress={()=>router.push("/child/new")} testID="profile-add-child" /></>:null}
       {section==="favorites"?<>{favorites.map(f=><MenuRow key={f.id} label={f.title} detail={f.type_label} onPress={()=>router.push(`/saved/${f.id}` as never)} testID={`profile-fav-${f.id}`} />)}{loadState==="ready"&&!favorites.length?<InlineState message={copy("这里还没有收藏。","No saved content yet.")} action={copy("回到首页","Go home")} onPress={()=>router.dismissTo("/(tabs)")} />:null}<MenuRow label={copy("管理收藏分类","Manage collections")} onPress={()=>go("collections")} /></>:null}
@@ -295,6 +347,9 @@ export default function Profile() {
         <FinalText style={{fontWeight:"500",fontFamily:locale==="zh-CN"?"NotoSansSC_500Medium":undefined}}>{me?.email||"—"}</FinalText>
         <MenuRow label={copy("重设密码","Reset password")} detail={copy("发送重设链接至此邮箱","Send a reset link to this email")} onPress={()=>router.push("/forgot-password")} />
         <SettingsDivider/>
+        {canUseNativeAppleSignIn() && me?.id ? me.apple_sign_in_linked === true
+          ? <NuriText testID="profile-apple-linked">{locale === "zh-TW" ? "已連結 Apple 登入" : copy("已关联 Apple 登录", "Sign in with Apple is linked")}</NuriText>
+          : <AppleSignInButton disabled={signingOut} description={locale === "zh-TW" ? "將 Apple 登入連結到目前的 NURI 帳號" : copy("将 Apple 登录关联到当前 NURI 账号", "Link Sign in with Apple to this NURI account")} onLinked={()=>setMe((current:any)=>({...current, apple_sign_in_linked:true}))} /> : null}
         <MenuRow label={copy("清除云端数据","Clear cloud data")} onPress={()=>setConfirmWipe(true)} />
         <SettingsAction label={copy("删除账号","Delete account")} onPress={()=>router.push("/account-deletion")} danger testID="profile-delete-account" />
         <SettingsDivider/>

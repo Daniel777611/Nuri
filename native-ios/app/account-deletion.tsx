@@ -1,9 +1,11 @@
+import { deletePersonalAvatar } from "@/src/personalAvatar";
 import { useCallback, useRef, useState } from "react";
 import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { api, apiErrorDetail, auth } from "@/src/api";
 import { deleteOwnedAccount, validDeletionPassword, type AccountDeletionOwner } from "@/src/accountDeletion";
+import { obtainAppleCredential, useAppleSignInReady } from "@/src/appleSignIn";
 import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useT } from "@/src/i18n";
 import { CardList, NuriButton, NuriText, NuriField } from "@/src/uiux48/Primitives";
@@ -22,11 +24,13 @@ export default function AccountDeletionPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [deleted, setDeleted] = useState(false);
+  const [appleRevocationPending, setAppleRevocationPending] = useState(false);
   const [cleanupOwner, setCleanupOwner] = useState<AccountDeletionOwner | null>(null);
   const active = useRef(false);
   const pending = useRef(false);
   const generation = useRef(0);
   const publishedToken = useRef<string | null | undefined>(undefined);
+  const appleReady = useAppleSignInReady();
 
   useFocusEffect(useCallback(() => {
     active.current = true;
@@ -54,7 +58,7 @@ export default function AccountDeletionPage() {
         if (!token) throw new Error("SESSION_CHANGED");
         const me = await api.me();
         if (!me?.id || !me?.email || await auth.getToken() !== token) throw new Error("SESSION_CHANGED");
-        if (current && generation.current === revision) setOwner({ token, id: me.id, email: me.email });
+        if (current && generation.current === revision) setOwner({ token, id: me.id, email: me.email, appleSignInLinked: me.apple_sign_in_linked === true });
       } catch {
         if (current && generation.current === revision) setMessage(locale === "en" ? "The current account could not be verified. Reopen this page after signing in." : locale === "zh-TW" ? "無法核實目前帳號。請登入後重新開啟此頁。" : "无法核实当前账号。请登录后重新打开此页。");
       } finally {
@@ -92,25 +96,45 @@ export default function AccountDeletionPage() {
     }
   };
 
-  const submit = async () => {
-    if (!active.current || pending.current || cleanupOwner || !owner || confirmation !== "DELETE" || !validDeletionPassword(password)) return;
+  const submit = async (method: "password" | "apple") => {
+    if (!active.current || pending.current || cleanupOwner || !owner || confirmation !== "DELETE"
+      || (method === "apple" ? !appleReady || !owner.appleSignInLinked : !validDeletionPassword(password))) return;
     pending.current = true;
     setBusy(true);
     setMessage("");
     const capturedOwner = owner;
+    const revision = generation.current;
+    const current = () => active.current && generation.current === revision;
+    let appleVerified = false;
     try {
-      const result = await deleteOwnedAccount(capturedOwner, password, confirmation, {
+      const credential = method === "apple" ? await obtainAppleCredential("delete", current, capturedOwner.token) : password;
+      if (credential === null || !current()) return;
+      appleVerified = true;
+      const result = await deleteOwnedAccount(capturedOwner, credential, confirmation, {
         getToken: auth.getToken,
-        deleteAccount: api.deleteAccount,
+        deleteAccount: async (password, token) => {
+          const result = await api.deleteAccount(password, token);
+          if (result.account_deleted === true) await deletePersonalAvatar(capturedOwner.id).catch(() => {});
+          return result;
+        },
+        deleteAccountWithApple: async (credential, token) => {
+          const result = await api.deleteAccountWithApple(credential, token);
+          if (result.account_deleted === true) await deletePersonalAvatar(capturedOwner.id).catch(() => {});
+          return result;
+        },
         clearToken: auth.clearToken,
       });
       if (!active.current) return;
+      setAppleRevocationPending(result.appleRevocationPending === true);
       await finishSignOut(result.signedOut);
     } catch (error) {
       if (!active.current) return;
       const detail = apiErrorDetail(error);
       const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
-      if (detail === "ACCOUNT_REAUTH_FAILED") setMessage(copy("当前密码不正确，账号未删除。", "目前密碼不正確，帳號未刪除。", "The current password is incorrect. The account was not deleted."));
+      if (method === "apple" && (!appleVerified || detail === "ACCOUNT_REAUTH_FAILED" || detail === "APPLE_TOKEN_INVALID")) {
+        if (current()) setMessage(copy("未能验证关联的 Apple 账号。请使用正确的 Apple 账号重试。", "未能驗證連結的 Apple 帳號。請使用正確的 Apple 帳號重試。", "The linked Apple Account could not be verified. Try again with the correct Apple Account."));
+      }
+      else if (detail === "ACCOUNT_REAUTH_FAILED") setMessage(copy("当前密码不正确，账号未删除。", "目前密碼不正確，帳號未刪除。", "The current password is incorrect. The account was not deleted."));
       else if (detail === "SUBSCRIPTION_CANCEL_FAILED") setMessage(copy("网页订阅取消未获确认，账号尚未删除。请稍后重试，或先在原网页订阅渠道管理订阅。", "網頁訂閱取消未獲確認，帳號尚未刪除。請稍後重試，或先在原網頁訂閱管道管理訂閱。", "Web subscription cancellation was not confirmed. The account was not deleted. Retry later or manage the subscription with the original web provider."));
       else if (status === 404 || status === 405 || detail === "ACCOUNT_DELETION_UNAVAILABLE") setMessage(copy("账号删除服务尚不可用，未确认删除。请稍后重试。", "帳號刪除服務尚不可用，未確認刪除。請稍後重試。", "Account deletion is unavailable. Deletion was not confirmed; please try again later."));
       else if (status === 401 || (error && typeof error === "object" && "code" in error && error.code === "SESSION_CHANGED")) setMessage(copy("登录状态已改变或已失效。这次未确认删除，请重新登录核实账号。", "登入狀態已改變或已失效。此次未確認刪除，請重新登入核實帳號。", "Your sign-in changed or expired. Deletion was not confirmed; sign in again to verify your account."));
@@ -130,7 +154,13 @@ export default function AccountDeletionPage() {
   };
 
   const canDelete = !busy && !cleanupOwner && !!owner && confirmation === "DELETE" && validDeletionPassword(password);
-  if(deleted) return <StateCard testID="account-deleted-card" message={copy("你的账号已删除。谢谢你曾让 Nuri 陪你走过这段日常。","你的帳號已刪除。謝謝你曾讓 Nuri 陪你走過這段日常。","Your account has been deleted. Thank you for sharing these days with Nuri.")} primary={{label:copy("返回欢迎页","返回歡迎頁","Back to welcome"),onPress:()=>router.replace("/welcome")}} />;
+  if(deleted) return <StateCard testID="account-deleted-card"
+    message={appleRevocationPending
+      ? copy("你的 NURI 账号已删除。Apple 尚未确认撤销关联。你可以在 Apple 账号设置里移除 NURI。","你的 NURI 帳號已刪除。Apple 尚未確認撤銷連結。你可以在 Apple 帳號設定中移除 NURI。","Your NURI account was deleted. Apple has not confirmed unlinking. You can remove NURI in Apple Account settings.")
+      : copy("你的账号已删除。谢谢你曾让 Nuri 陪你走过这段日常。","你的帳號已刪除。謝謝你曾讓 Nuri 陪你走過這段日常。","Your account has been deleted. Thank you for sharing these days with Nuri.")}
+    primary={{label:copy("返回欢迎页","返回歡迎頁","Back to welcome"),onPress:()=>router.replace("/welcome")}}
+    secondary={appleRevocationPending ? {label:copy("查看 Apple 操作说明","查看 Apple 操作說明","View Apple instructions"),onPress:()=>void Linking.openURL("https://support.apple.com/102571").catch(()=>{})} : undefined}
+  />;
   return <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS==="ios"?"padding":"height"} keyboardVerticalOffset={headerHeight}><CardList>
     <NuriText style={{fontSize:20,fontWeight:"500"}}>{copy("删除账号","刪除帳號","Delete account")}</NuriText>
     <NuriText>{copy("这会永久删除账号及相关云端个人数据，无法恢复。","這會永久刪除帳號及相關雲端個人資料，無法恢復。","This permanently deletes the account and associated cloud personal data. It cannot be undone.")}</NuriText>
@@ -139,10 +169,16 @@ export default function AccountDeletionPage() {
     {loading?<ActivityIndicator />:null}
     <NuriText secondary>{copy("要删除的账号","要刪除的帳號","Account to delete")}</NuriText><NuriText testID="delete-account-owner">{owner?.email||copy("未核实，请重新登录后打开此页","未核實，請重新登入後開啟此頁","Not verified. Reopen after signing in.")}</NuriText>
     <NuriField label={copy("输入 DELETE 确认","輸入 DELETE 確認","Type DELETE to confirm")} value={confirmation} onChangeText={setConfirmation} autoCapitalize="characters" autoCorrect={false} editable={!busy&&!!owner} accessibilityLabel="DELETE" testID="delete-account-confirmation" />
-    <NuriField label={copy("当前 NURI 密码（不是 Apple 密码）","目前 NURI 密碼（不是 Apple 密碼）","Current NURI password (not Apple password)")} value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="password" editable={!busy&&!!owner} testID="delete-account-password" />
+    {appleReady && owner?.appleSignInLinked && !cleanupOwner ? <NuriButton secondary
+      label={copy("用 Apple 验证并删除账号","用 Apple 驗證並刪除帳號","Verify with Apple and delete")}
+      disabled={busy || confirmation!=="DELETE"} onPress={()=>void submit("apple")} testID="delete-account-with-apple" /> : null}
+    <NuriField label={copy("当前 NURI 密码","目前 NURI 密碼","Current NURI password")} value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" autoCorrect={false} textContentType="password" editable={!busy&&!!owner} testID="delete-account-password" />
+    {owner&&!cleanupOwner?<NuriButton secondary label={copy("设置或重设 NURI 密码","設定或重設 NURI 密碼","Set or reset your NURI password")} disabled={busy} onPress={()=>{
+      if (active.current&&!pending.current) router.push({pathname:"/forgot-password",params:{from:"account-deletion"}});
+    }} testID="delete-account-reset-password" />:null}
     {message?<NuriText accessibilityLiveRegion="assertive" testID="delete-account-message">{message}</NuriText>:null}
     {cleanupOwner?<NuriButton label={copy("重试清除本机登录","重試清除本機登入","Retry local sign-out")} onPress={()=>void retryLocalSignOut()} disabled={busy} testID="delete-account-retry-local" />:null}
-    <NuriButton label={busy?copy("正在确认删除…","正在確認刪除…","Confirming deletion…"):copy("永久删除账号","永久刪除帳號","Permanently delete account")} disabled={!canDelete} busy={busy} onPress={()=>void submit()} testID="delete-account-submit" />
+    <NuriButton label={busy?copy("正在确认删除…","正在確認刪除…","Confirming deletion…"):copy("永久删除账号","永久刪除帳號","Permanently delete account")} disabled={!canDelete} busy={busy} onPress={()=>void submit("password")} testID="delete-account-submit" />
     <NuriButton secondary label={copy("保留账号","保留帳號","Keep account")} disabled={busy} onPress={()=>router.canGoBack()?router.back():router.replace("/(tabs)/profile")} />
   </CardList></KeyboardAvoidingView>;
 }

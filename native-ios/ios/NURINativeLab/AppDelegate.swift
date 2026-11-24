@@ -29,6 +29,7 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
 
 #if os(iOS) || os(tvOS)
     window = UIWindow(frame: UIScreen.main.bounds)
+    window?.backgroundColor = UIColor(red: 252.0 / 255.0, green: 247.0 / 255.0, blue: 241.0 / 255.0, alpha: 1)
     factory.startReactNative(
       withModuleName: "main",
       in: window,
@@ -160,6 +161,11 @@ class AppDelegate: ExpoAppDelegate, UNUserNotificationCenterDelegate {
 
 class ReactNativeDelegate: ExpoReactNativeFactoryDelegate {
   // Extension point for config-plugins
+
+  override func customize(_ rootView: UIView) {
+    super.customize(rootView)
+    rootView.backgroundColor = UIColor(red: 252.0 / 255.0, green: 247.0 / 255.0, blue: 241.0 / 255.0, alpha: 1)
+  }
 
   override func sourceURL(for bridge: RCTBridge) -> URL? {
     // needed to return the correct URL for expo-dev-client.

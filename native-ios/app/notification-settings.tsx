@@ -9,6 +9,8 @@ import { CenteredCard, NuriText, InlineState } from "@/src/uiux48/Primitives";
 import { SettingsPage as CardList, SettingsButton as NuriButton, SettingsField as NuriField, SettingsRow as MenuRow, SettingsToggle as ToggleRow, SettingsFormFooter, SettingsDivider } from "@/src/uiuxfinal/Settings";
 import { FinalText } from "@/src/uiuxfinal/Primitives";
 import { StateCard } from "@/src/uiux48/StateCard";
+import { nearbyNotificationSettingsChanged } from "@/src/nearbyEvents";
+import { localActivitiesEnabled, localActivityTitle } from "@/src/localActivities";
 const preferenceKeys: (keyof NotificationPreferences)[]=["enabled","reminders_enabled","chat_enabled","care_enabled","quiet_hours_start","quiet_hours_end","time_zone","max_per_day","show_preview"];
 
 /** Uses the existing GET/PATCH contract rather than conflating device access,
@@ -52,6 +54,7 @@ export default function NotificationSettings() {
    // A 2xx with an empty or conflicting body is not a confirmed save. Keep
    // the form/draft for a deliberate reload instead of showing false success.
    if(!confirmed||preferenceKeys.some(key=>confirmed[key]!==prefs[key]))throw new Error("notification_preferences_unconfirmed");
+   if(process.env.EXPO_PUBLIC_RELEASE_FLAVOR==="live-alpha")void nearbyNotificationSettingsChanged(locale).catch(()=>{});
    if(dailyDirty){const privacy=await api.getPrivacy();if(!current(owner)||!active.current)return;const result=await api.setPrivacy({...privacy,daily_push:daily});if(result?.daily_push!==daily)throw new Error("daily_push_unconfirmed");}
    if(current(owner)&&active.current){dirty.current=false;setDailyDirty(false);setSaved(true);}
   }catch{if(current(owner)&&active.current)setError(copy("保存未完全确认，请重新读取并核对后重试。","Save not fully confirmed. Reload and check before retrying."));}
@@ -75,6 +78,7 @@ export default function NotificationSettings() {
   {loading?<InlineState busy message={copy("正在读取设置…","Loading settings…")} />:null}
   <ToggleRow label={copy("Nuri 关怀","Nuri care")} detail={copy("适时的一句问候","A thoughtful check-in")} value={prefs?.care_enabled===true} disabled={!prefs||busy} onChange={care_enabled=>patch({care_enabled})} testID="notification-care" />
   <ToggleRow label={copy("内容推荐","Content recommendations")} detail={copy("适合你家的育儿内容","Parenting content for your family")} value={daily} disabled={!dailyLoaded||busy} onChange={v=>{dirty.current=true;setDailyDirty(true);setDaily(v);}} testID="remote-daily-push-toggle" />
+  {localActivitiesEnabled ? <MenuRow label={localActivityTitle(locale)} onPress={()=>router.push("/nearby-activities")} testID="notification-local-activities-settings" /> : null}
   <ToggleRow label={copy("聊天通知","Chat notifications")} detail={locale==="zh-TW"?"Nuri 對話更新":copy("Nuri 对话更新","Nuri conversation updates")} value={prefs?.chat_enabled===true} disabled={!prefs||busy} onChange={chat_enabled=>patch({chat_enabled})} testID="notification-chat" />
   <MenuRow label={copy("更多通知设置","More notification settings")} onPress={()=>setAdvanced(v=>!v)} testID="notification-advanced" />
   {advanced?<>

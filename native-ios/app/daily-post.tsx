@@ -4,19 +4,20 @@ import { useAccountState as useState, useAccountScope } from "@/src/useAccountSt
 import {
   ActivityIndicator,
   Linking,
+  Platform,
   View,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 
 import { CardList, CenteredCard, NuriButton, NuriText, MenuRow } from "@/src/uiux48/Primitives";
-import { FinalArticle } from "@/src/uiuxfinal/Article";
+import { FinalArticle, type ArticleSource } from "@/src/uiuxfinal/Article";
 import { StateCard } from "@/src/uiux48/StateCard";
 import { api, type DailyPostCard } from "@/src/api";
-import { dailyPostGreeting, dailyPostTag } from "@/src/components/DailyPostCard";
-import { externalSourceUrl } from "@/src/externalContent";
+import { dailyPostGreeting, dailyPostSummarySources, dailyPostTag, isSummaryCard } from "@/src/components/DailyPostCard";
+import { dailyPostSourceUrl, externalSourceUrl } from "@/src/externalContent";
 import { socialPostThumbnail } from "@/src/recommendationMedia";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
-import { shortResourceSummary, hasPostSummarySource, RESOURCE_SUMMARY_DISCLOSURE } from "@/src/resourceSummary";
+import { shortResourceSummary, hasPostSummarySource, readingSummaryPoints, RESOURCE_SUMMARY_DISCLOSURE } from "@/src/resourceSummary";
 import { useT } from "@/src/i18n";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureCopy, requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
@@ -27,6 +28,7 @@ export default function DailyPostScreen() {
   const { t, locale } = useT();
   const router = useRouter();
   const [card, setCard] = useState<DailyPostCard | null>(null);
+  const [cardLanguage, setCardLanguage] = useState<string | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing">("loading");
   const [openingChat, setOpeningChat] = useState(false);
   const [openingSource, setOpeningSource] = useState(false);
@@ -42,7 +44,7 @@ export default function DailyPostScreen() {
   // Set when a care notification opens a specific card; otherwise today's.
   const { id, uiState, point } = useLocalSearchParams<{ id?: string; uiState?: string; point?: string }>();
   const validId = typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
-  const requestedPoint = typeof point === "string" && /^[01]$/.test(point) ? Number(point) : null;
+  const requestedPoint = typeof point === "string" && /^[0-4]$/.test(point) ? Number(point) : null;
   const permissionReturn = validId ? `/daily-post?id=${id}${uiState === "takeaway" && requestedPoint !== null ? `&uiState=takeaway&point=${requestedPoint}` : ""}` : "/daily-post";
 
   useFocusEffect(useCallback(() => {
@@ -61,12 +63,13 @@ export default function DailyPostScreen() {
     setOpeningSource(false);
     if(id!==undefined&&!validId){setCard(null);setState("missing");return()=>{focused.current=false;setSourceActive(false);};}
     setState((previous) => previous === "ready" && retry === 0 ? previous : "loading");
-    (id ? api.getDailyPostById(String(id)) : api.getDailyPost())
+    (id ? api.getDailyPostById(String(id), locale) : api.getDailyPost(locale))
       .then((res) => {
         if (cancelled || !current(ticket)) return;
         setFailureSource("load");
         if (res.state === "ready" && res.card && (!id||res.card.id===id)) {
           setCard(res.card);
+          setCardLanguage(locale);
           setState("ready");
         } else {
           setState("missing");
@@ -87,22 +90,25 @@ export default function DailyPostScreen() {
       sourceOperation.current++;
       sourceBusy.current = false;
     };
-  }, [id, validId, retry, capture, current, setCard, setState, setFailure, setOpeningChat, setOpeningSource, setFailureSource, setSourceFailure,setSourceActive]));
+  }, [id, validId, locale, retry, capture, current, setCard, setCardLanguage, setState, setFailure, setOpeningChat, setOpeningSource, setFailureSource, setSourceFailure,setSourceActive]));
 
-  const openSource = useCallback(async () => {
+  const sourceUrl = dailyPostSourceUrl(card?.source_url);
+  const openSource = useCallback(async (source?: ArticleSource) => {
     const ticket = capture();
     if (ticket === null || !focused.current || !card || sourceBusy.current) return;
-    const source = externalSourceUrl(card.source_url);
-    if (!source) { setSourceFailure(true); return; }
+    const url = source
+      ? dailyPostSummarySources(card).find((item) => item.n === source.n && item.url === source.url)?.url
+      : sourceUrl;
+    if (!url) return;
     const operation = ++sourceOperation.current;
     const accepts = () => current(ticket) && focused.current && operation === sourceOperation.current;
     sourceBusy.current = true; setOpeningSource(true);
     setSourceFailure(false);
     void api.dailyPostEvent(card.id, "source_click").catch(() => {});
-    try { await Linking.openURL(source); }
+    try { await Linking.openURL(url); }
     catch { if (accepts()) setSourceFailure(true); }
     finally { if (accepts()) { sourceBusy.current = false; setOpeningSource(false); } }
-  }, [card, capture, current, setSourceFailure, setOpeningSource]);
+  }, [card, sourceUrl, capture, current, setSourceFailure, setOpeningSource]);
 
   const talkItThrough = useCallback(async () => {
     const ticket = capture();
@@ -134,21 +140,37 @@ export default function DailyPostScreen() {
     onLogin={() => router.push("/login")} /> : null;
 
 
-  if(state==="loading"||(state==="ready"&&id&&card?.id!==id))return <CenteredCard><ActivityIndicator /></CenteredCard>;
+  if(state==="loading"||(state==="ready"&&(cardLanguage!==locale||(id&&card?.id!==id))))return <CenteredCard><ActivityIndicator /></CenteredCard>;
   if(state==="missing"||!card)return <CenteredCard>{failureNotice||<NuriText>{t("今天的家长经验暂时打不开，回首页再试试。")}</NuriText>}<NuriButton secondary label={t("回到首页")} onPress={()=>router.dismissTo("/(tabs)")} /></CenteredCard>;
   const guide=nuriResourceGuide({concern:card.concern},t,locale);
-  const sourceAvailable=hasPostSummarySource(card)&&Boolean(externalSourceUrl(card.source_url));
+  const summaryCard = isSummaryCard(card);
+  const summarySources = summaryCard ? dailyPostSummarySources(card) : [];
+  const sourceAvailable = hasPostSummarySource(card) && (
+    summaryCard ? summarySources.length > 0 : Boolean(externalSourceUrl(card.source_url))
+  );
   const question=sourceAvailable?shortResourceSummary(card.question,110)||shortResourceSummary(card.headline,110):null;
   const situation=sourceAvailable?shortResourceSummary(card.situation,240):null;
-  const takeaways=sourceAvailable&&Array.isArray(card.takeaways)?card.takeaways.slice(0,2).map(v=>shortResourceSummary(v,120)).filter((v):v is string=>Boolean(v)):[];
-  const reason=sourceAvailable?shortResourceSummary(card.why_this,200):null;
-  const hasSummary=Boolean(question||situation||takeaways.length);
-  const selectedPoint = validId && uiState === "takeaway" && requestedPoint !== null ? takeaways[requestedPoint] : undefined;
+  const summaryNumbers = new Set(summarySources.map((source) => source.n));
+  const citedTakeaways = sourceAvailable && Array.isArray(card.takeaways)
+    ? card.takeaways.slice(0, summaryCard ? 5 : 2).flatMap((value, index) => {
+      const text = shortResourceSummary(value, summaryCard ? 500 : 120);
+      if (!text) return [];
+      const refs = card.takeaway_sources?.[index];
+      const sources = Array.isArray(refs) ? [...new Set(refs.filter((n) => summaryNumbers.has(n)))] : [];
+      return [{ text, sources, index }];
+    }) : [];
+  const takeaways = citedTakeaways.map(({ text }) => text);
+  const reason = summaryCard && sourceAvailable ? shortResourceSummary(card.why_this, 200) : null;
+  const summaryLocale = card.locale || locale;
+  const organizeSummary = !summaryCard && Platform.OS === "ios" && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? "");
+  const summary = situation || question;
+  const selectedPoint = validId && uiState === "takeaway" && requestedPoint !== null
+    ? citedTakeaways.find(({ index }) => index === requestedPoint)?.text : undefined;
   if (selectedPoint) {
     const failureCopy = failure ? requestFailureCopy(locale, failure) : null;
     return <StateCard
       testID="social-takeaway-card"
-      title={selectedPoint}
+      title={organizeSummary ? readingSummaryPoints(null, selectedPoint, summaryLocale).map(({text}) => text).join(" ") : selectedPoint}
       message={guide.intro}
       note={[card.locale && card.locale !== locale ? t("此内容保留原语言，尚未提供当前语言的翻译。") : "", t(RESOURCE_SUMMARY_DISCLOSURE)].filter(Boolean).join("\n")}
       error={failureCopy?.detail}
@@ -170,14 +192,20 @@ export default function DailyPostScreen() {
       }}
     />;
   }
+  const summaryPoints = organizeSummary ? readingSummaryPoints(takeaways.join("\n"), summary, summaryLocale, { detailFirst: true }) : [];
   return <FinalArticle key={card.id}
     title={sourceAvailable?card.headline:guide.headline}
     source={dailyPostTag(t,card)}
-    sourceUrl={externalSourceUrl(card.source_url)}
-    mediaUrls={[card.thumbnail_url,card.image_url].map(value=>socialPostThumbnail(value,card.source_url)).filter((value):value is string=>Boolean(value))}
+    sourceUrl={sourceUrl}
+    mediaUrls={[card.thumbnail_url,card.image_url].map(value=>socialPostThumbnail(value,sourceUrl)).filter((value):value is string=>Boolean(value))}
     sourceActive={sourceActive}
-    summary={situation||question}
-    points={takeaways}
+    summary={organizeSummary ? summaryPoints.filter(({kind}) => kind === "detail").map(({text}) => text).join("\n\n") : summary}
+    points={organizeSummary ? summaryPoints.filter(({kind}) => kind === "preview").map(({text}) => text) : takeaways}
+    hideMedia={summaryCard}
+    reason={reason}
+    pointSources={summaryCard ? citedTakeaways.map(({ sources }) => sources) : undefined}
+    sources={summarySources}
+    onOpenSource={(source) => void openSource(source)}
     onSource={()=>void openSource()}
     onTalk={talkItThrough}
     busy={openingChat}

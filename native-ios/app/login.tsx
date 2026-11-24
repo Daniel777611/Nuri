@@ -1,3 +1,4 @@
+import AppleSignInButton from "@/src/components/AppleSignInButton";
 import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import { useRef, useState as useLocalState } from "react";
@@ -137,6 +138,7 @@ export default function Login() {
     <Pressable onPress={() => router.push("/forgot-password")} style={{alignSelf:"flex-end",minHeight:22,justifyContent:"center"}} testID="login-forgot-password"><NuriText style={{fontSize:13,lineHeight:22}}>{t("忘记密码？")}</NuriText></Pressable>
     {visibleError ? <NuriText testID="login-error" style={{color:colors.error,fontSize:13}}>{visibleError}</NuriText> : null}
     <NuriButton label={submitting?t("登录中..."):t("登录")} busy={submitting} disabled={!draft.ready || submitting} onPress={submit} testID="login-submit-btn" />
+    <AppleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
     <GoogleSignInButton disabled={submitting} returnTo={safeReturnTo ?? undefined} acquire={acquireLogin} release={releaseLogin} onBusyChange={setSubmitting} />
   </AuthFrame>;
 }

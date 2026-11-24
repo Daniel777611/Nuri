@@ -1,6 +1,6 @@
-import { NuriTextInput, useAppKeyboardVisible } from "@/src/keyboard/AppKeyboard";
+import { NuriTextInput } from "@/src/keyboard/AppKeyboard";
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { AccessibilityInfo, ActivityIndicator, Animated, Easing, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewStyle } from "react-native";
+import { AccessibilityInfo, ActivityIndicator, Animated, Easing, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions, type NativeScrollEvent, type NativeSyntheticEvent, type ViewStyle } from "react-native";
 import { Image } from "expo-image";
 import { BlurView } from "expo-blur";
 import { useFocusEffect, useLocalSearchParams, usePathname, useRouter } from "expo-router";
@@ -18,19 +18,21 @@ import { singleLineInputStyle } from "@/src/uiux48/inputLayout";
 import { aiConsent, api, apiErrorDetail, isAuthError } from "@/src/api";
 import { AI_CONSENT_VERSION } from "@/src/aiConsent";
 import { useAIConsent } from "@/src/useAIConsent";
-import { CommunityMessageTranslations, communityTranslationCopy, communityTranslationScope } from "@/src/communityMessageTranslation";
-import { childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type AIPurpose, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
+import { CommunityMessageTranslations, communityNotesConsentCopy, communityTranslationScope } from "@/src/communityMessageTranslation";
+import { bottleNotificationSnapshot, childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
 import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FINAL_COLOR } from "./Primitives";
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
 import { ParentChatAvatar, ParentChatHeader } from "./ParentChatHeader";
 import { SettingsPage, SettingsRow, SettingsButton } from "./Settings";
-import { CommunityProfileEditor, GENDER_TAGS, type GenderTag } from "./CommunityProfileEditor";
+import { CommunityProfileEditor, type GenderTag } from "./CommunityProfileEditor";
 import { CommunityReportSheet } from "./CommunityReportSheet";
 import { createFinalCommunity, finalCommunityReducer, isFinalCommunityScreen, selectedQuestionText, type FinalCommunityEvent, type FinalCommunityScreen, type FinalCommunityState, type ReceivedTab } from "./communityModel";
 import { communityHubTopPadding, HUB_PAGINATION, HUB_CARD_BOTTOM_GUTTER, HUB_PAGER_GAP } from "./communityHubLayout";
 import { useAccountScope } from "@/src/useAccountState";
 import { loadCommunityNotificationEntry } from "@/src/communityNotificationEntry";
-import { selectCommunityImage } from "@/src/communityImageSelection";
+import { COMMUNITY_CHAT_PHOTO_LIMIT, selectCommunityImage, selectCommunityImages, sendCommunityChatPhotos } from "@/src/communityImageSelection";
+import { storage } from "@/src/utils/storage";
+import { CHINESE_NAME_TOO_LONG, chineseDisplayNameLimitMessage, isChineseDisplayNameTooLong } from "@/src/profileDisplayName";
 
 const TITLE: Partial<Record<FinalCommunityScreen, readonly [string, string]>> = {
   hub: ["社区", "Community"],
@@ -46,6 +48,7 @@ const TITLE: Partial<Record<FinalCommunityScreen, readonly [string, string]>> = 
   original: ["发一个漂流瓶", "Send a bottle"],
   polished: ["发一个漂流瓶", "Send a bottle"],
   preview: ["发送前，确认一下", "Review before sending"],
+  sent: ["发送完成", "Bottle sent"],
   myQuestions: ["我的问题", "My questions"],
   selection: ["我的问题", "My questions"],
   replies: ["漂流瓶回复", "Bottle replies"],
@@ -70,21 +73,25 @@ const DISTANCE_FILTER = [null, 1, 3, 5, 10] as const;
 
 /** One server read, keyed: a new key (or reload) refetches; a stale answer is dropped. */
 type Remote<T> = { value?: T; error?: unknown; loading: boolean; reload: () => void };
-type ConsentSheet = { purpose: AIPurpose; mode: "request" | "decision"; conversationId: string; person: string;
+type ConsentSheet = { mode: "request" | "decision"; conversationId: string; person: string;
   noticeVersion: string; epoch: number; requestId?: string; ticket: number | null; revision: number };
 type ChatConsentLease = Pick<ConsentSheet, "conversationId" | "person" | "noticeVersion" | "epoch" | "ticket" | "revision"> & { screen: FinalCommunityScreen };
-function useRemote<T>(key: string | null, load: () => Promise<T>): Remote<T> {
+type ChatPhoto = { id: string; prepared: PreparedChatImage };
+type ChatPhotoDraft = { ticket: number; person: string; photos: ChatPhoto[] };
+const friendIntentKey=(accountId:string)=>`community.friend-intent-completed.${accountId}`;
+function useRemote<T>(key: string | null, load: (isCurrent: () => boolean) => Promise<T>, { enabled = true, refresh = 0 } = {}): Remote<T> {
   const [state, setState] = useState<{ key: string | null; value?: T; error?: unknown; loading: boolean }>({ key: null, loading: false });
   const [nonce, setNonce] = useState(0);
   const loader = useRef(load); loader.current = load;
   useEffect(() => {
+    if (!enabled) return;
     if (!key) { setState({ key: null, loading: false }); return; }
     let live = true;
     setState(previous => ({ key, value: previous.key === key ? previous.value : undefined, loading: true }));
-    loader.current().then(value => { if (live) setState({ key, value, loading: false }); },
+    loader.current(() => live).then(value => { if (live) setState({ key, value, loading: false }); },
       error => { if (live) setState(previous => ({ key, value: previous.key === key ? previous.value : undefined, error, loading: false })); });
     return () => { live = false; };
-  }, [key, nonce]);
+  }, [key, nonce, enabled, refresh]);
   const reload = useCallback(() => setNonce(n => n + 1), []);
   return { value: state.key === key ? state.value : undefined, error: state.key === key ? state.error : undefined, loading: state.loading || state.key !== key, reload };
 }
@@ -143,6 +150,41 @@ function UnreadBadge({count,style}:{count:number;style:ViewStyle}){
   return <View pointerEvents="none" style={[{width:14,height:15.273,alignItems:"center",justifyContent:"center"},style]}><Image source={require("@/assets/final-flow-20261101/parent-unread.svg")} style={{position:"absolute",width:14,height:15.273}} contentFit="contain" accessible={false}/><FinalText size={10} style={{lineHeight:14,color:"white"}}>{count>9?"9+":count}</FinalText></View>;
 }
 
+function BottleStatus({count,testID,hub=false}:{count:number;testID:string;hub?:boolean}) {
+  const badgeWidth=Math.max(14,String(count).length*6+4);
+  return <View pointerEvents="none" style={{width:hub?29:32,height:hub?24:32,flexShrink:0}}>
+    <View style={{position:"absolute",left:hub?2:4.5,top:hub?2:5.5,width:20,height:20,alignItems:"center",justifyContent:"center"}}>
+      <Image testID={testID} source={count>0?require("@/assets/final-flow-20261101/community-question-bottle-coral.svg"):require("./assets/bottle-read-empty.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/>
+    </View>
+    {count>0?<View testID={testID+"-unread"} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{position:"absolute",left:16,top:hub?4:10,width:badgeWidth,height:14,borderRadius:7,alignItems:"center",justifyContent:"center",backgroundColor:badgeWidth>14?FINAL_COLOR.coral:undefined}}>
+      {badgeWidth===14?<Image source={require("./assets/bottle-unread-badge.svg")} style={StyleSheet.absoluteFill} contentFit="contain" accessible={false}/>:null}
+      <FinalText size={10} allowFontScaling={false} style={{lineHeight:14,color:"white"}}>{count}</FinalText>
+    </View>:null}
+  </View>;
+}
+
+function PrivateReplyField({value,onChangeText,editable,placeholder,testID}:{value:string;onChangeText:(text:string)=>void;editable:boolean;placeholder:string;testID:string}) {
+  const {locale}=useT();
+  const {fontScale}=useWindowDimensions();
+  const lineHeight=Math.ceil(20*fontScale);
+  const lineLimit=Math.max(1,Math.min(4,Math.floor(112/lineHeight)));
+  const [lines,setLines]=useState(1);
+  const measuredDraft=useRef({value,fontScale});
+  measuredDraft.current={value,fontScale};
+  const typography={fontSize:14,lineHeight:20,fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined};
+  return <View style={{minWidth:0}}>
+    <NuriTextInput testID={testID} accessibilityLabel={placeholder} editable={editable} multiline scrollEnabled hideNativeKeyboardAccessory
+      maxLength={1000} value={value} onChangeText={next=>{if(!next)setLines(1);onChangeText(next);}} placeholder={placeholder} placeholderTextColor="#918896"
+      style={[typography,{height:Math.max(24,Math.min(value?lines:1,lineLimit)*lineHeight+4),padding:0,color:FINAL_COLOR.ink,textAlignVertical:"top"}]}/>
+    {value?<Text key={fontScale+":"+value} pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
+      numberOfLines={lineLimit} ellipsizeMode="clip" style={[typography,{position:"absolute",left:0,right:0,top:0,opacity:0}]}
+      onTextLayout={event=>{
+        const size=event.nativeEvent.lines.length;
+        if(size&&measuredDraft.current.value===value&&measuredDraft.current.fontScale===fontScale)setLines(size);
+      }}>{value.endsWith("\n")?value+"\u200b":value}</Text>:null}
+  </View>;
+}
+
 /** Signed read URLs are short-lived (300 s); keep each until shortly before it expires. */
 function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
   // Private signed URLs belong to this mounted account/route only. No module
@@ -171,8 +213,10 @@ function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
     return()=>{live=false;currentURL.current=null;if(timer)clearTimeout(timer);};
   },[mediaId,scope.capture,scope.current]);
   const imageLease=currentURL.current;
-  return <View testID={"final-parent-image-"+mediaId} accessible accessibilityLabel={label} style={{width:200,height:200,borderRadius:16,overflow:"hidden",backgroundColor:"rgba(115,92,132,.08)",alignItems:"center",justifyContent:"center"}}>
-    {url?<Image source={{uri:url}} cachePolicy="none" style={{width:200,height:200}} contentFit="cover" accessible={false} onError={()=>{if(imageLease?.live&&currentURL.current===imageLease&&imageLease.url===url){currentURL.current=null;setFailed(true);setUrl(null);}}}/>:failed?<FinalText size={12} secondary>{label}</FinalText>:<ActivityIndicator color={FINAL_COLOR.accent}/>}
+  return <View testID={"final-parent-image-"+mediaId} accessible accessibilityLabel={label} style={{width:200,maxWidth:"100%"}}>
+    <View style={{width:"100%",aspectRatio:1,borderRadius:16,overflow:"hidden",backgroundColor:"rgba(115,92,132,.08)",alignItems:"center",justifyContent:"center"}}>
+      {url?<Image source={{uri:url}} cachePolicy="none" style={StyleSheet.absoluteFill} contentFit="cover" accessible={false} onError={()=>{if(imageLease?.live&&currentURL.current===imageLease&&imageLease.url===url){currentURL.current=null;setFailed(true);setUrl(null);}}}/>:failed?<FinalText size={12} secondary>{label}</FinalText>:<ActivityIndicator color={FINAL_COLOR.accent}/>}
+    </View>
   </View>;
 }
 
@@ -183,6 +227,7 @@ function CommunityImage({mediaId,label}:{mediaId:string;label:string}){
 export default function CommunityFinal() {
   const { uiState, notificationId } = useLocalSearchParams<{ uiState?: string; notificationId?: string }>();
   const accountScope=useAccountScope();
+  const alphaCommunityLayout=Platform.OS==="ios"&&process.env.EXPO_PUBLIC_RELEASE_FLAVOR==="live-alpha";
   const [state, dispatchState] = useReducer(finalCommunityReducer, isFinalCommunityScreen(uiState) ? uiState : "hub", createFinalCommunity);
   const [width, setWidth] = useState(0),
     [pagerHeight, setPagerHeight] = useState(0),
@@ -191,16 +236,17 @@ export default function CommunityFinal() {
     [filterAnchor,setFilterAnchor]=useState<{left:number;top:number;width:number}|null>(null),
     [filterViewport,setFilterViewport]=useState<{left:number;top:number;width:number;height:number}|null>(null),
     [profileEditing,setProfileEditing]=useState(false),
-    [selectionMenu,setSelectionMenu]=useState(false),
-    [replyKeyboardVisible,setReplyKeyboardVisible]=useState(false),
+    [questionSendPending,setQuestionSendPending]=useState(false),
     [questionFocusedInput,setQuestionFocusedInput]=useState<"question"|"polished"|null>(null),
     [busy,setBusy]=useState(false),
     [consentNeeded,setConsentNeeded]=useState(false),
-    [tick,setTick]=useState(0);
+    [focusTick,setFocusTick]=useState(0),
+    [writeTick,setWriteTick]=useState(0);
+  const tick=focusTick+writeTick;
   const { locale } = useT();
   const { state:localAI } = useAIConsent();
   const deviceAIAllowed=localAI.status==="allowed"&&!!localAI.userId&&localAI.version===AI_CONSENT_VERSION;
-  const translationCopy=communityTranslationCopy(locale);
+  const notesConsentCopy=communityNotesConsentCopy(locale);
   const [translations]=useState(()=>new CommunityMessageTranslations(communityApi.translateMessage,()=>communityKey("tr")));
   const [,setTranslationRevision]=useState(0);
   const [translationPaused,setTranslationPaused]=useState<string|null>(null);
@@ -208,19 +254,22 @@ export default function CommunityFinal() {
   const [consentSheet,setConsentSheet]=useState<ConsentSheet|null>(null);
   const consentSheetRef=useRef(consentSheet);consentSheetRef.current=consentSheet;
   const consentAction=useRef(false);
-  const [revokingConsent,setRevokingConsent]=useState<ChatConsentLease|null>(null);
   const revokeAction=useRef<ChatConsentLease|null>(null);
   useEffect(()=>()=>translations.clear(),[translations]);
   const en = locale === "en";
-  const appKeyboardVisible=useAppKeyboardVisible();
   const router = useRouter(), path = usePathname();
   const pager = useRef<ScrollView>(null),
     pagerWidth = useRef(width),
     pagerAligned = useRef<{host:ScrollView;width:number;page:0|1}|null>(null),
     messages = useRef<ScrollView>(null),
+    replyAllInput = useRef<NuriTextInput>(null),
     latest = useRef(state),
     navigationRevision=useRef(0),
     questionFocusEpoch=useRef(0),
+    questionSendInFlight=useRef(false),
+    questionSendRequest=useRef<Parameters<typeof communityApi.ask>[0]|null>(null),
+    questionBatchInFlight=useRef(false),
+    bottleReadsInFlight=useRef(new Set<string>()),
     mounted=useRef(true),
     /** slot → the client key of its current text, so a retry reuses it. */
     writeKeys=useRef<Record<string,{text:string;key:string}>>({}),
@@ -234,10 +283,12 @@ export default function CommunityFinal() {
   latest.current = state;
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
   const c = (cn: string, english: string) => en ? english : translate(locale, cn);
+  const bottleUnreadLabel=(count:number)=>en?count+" unread":count+(locale==="zh-TW"?" 則未讀":" 条未读");
+  const originalMessageHint = locale==="zh-TW"?"長按訊息可查看原文":c("长按消息可查看原文","Press and hold a message to view the original.");
   const intentLabel=(index:number,short=false)=>{const l=INTENT_LABELS[index];return l?c(l[0],short?l[2]:l[1]):"";};
   const nameOf=(p:PublicParent|null|undefined)=>!p||p.anonymous||!p.parent_id?c("匿名家长","Anonymous parent"):p.display_name;
   const keyFor=(slot:string,text:string,tag:string)=>{const current=writeKeys.current[slot];if(current&&current.text===text)return current.key;const key=communityKey(tag);writeKeys.current[slot]={text,key};return key;};
-  const refresh=()=>setTick(t=>t+1);
+  const refresh=()=>setWriteTick(t=>t+1);
 
   const filterControls=useRef<Partial<Record<"gender"|"distance",View|null>>>({}),filterModal=useRef<View|null>(null),filterRequest=useRef(0),filterOpen=useRef<"gender"|"distance"|null>(null),filterMounted=useRef(true),filterFocused=useRef(true),filterBounds=useRef<{left:number;top:number;width:number;height:number}|null>(null);
   const closeFilter=useCallback(()=>{
@@ -264,7 +315,7 @@ export default function CommunityFinal() {
   const home = state.screen === "hub" || state.screen === "friends" || state.screen === "inbox";
   const searchScope = home ? "pager" : state.screen;
   const parentChat = ["chat", "chatOn", "consent"].includes(state.screen);
-  const dockBottom = useComposerDockInset(parentChat);
+  const dockBottom = useComposerDockInset(parentChat||["replyExpanded","replyDetail","replyKeyboard","comments"].includes(state.screen));
   const bottle = !["hub", "friends", "inbox", "contacts", "invitations", "preferences", "blocked", "blockedEmpty", "profileSettings", "parentSettings", "safetyConfirm"].includes(state.screen) && !parentChat;
   const presentation = (next:FinalCommunityState) => {
     const chat=["chat","chatOn","consent"].includes(next.screen);
@@ -272,8 +323,10 @@ export default function CommunityFinal() {
     const settings=["preferences","blocked","blockedEmpty","profileSettings","parentSettings","safetyConfirm"].includes(next.screen);
     const bottle=!hub&&!["inbox","contacts","invitations"].includes(next.screen)&&!settings&&!chat;
     return {
+      communityMotionKey: next.screen,
+      communityMotionDepth: String(next.history.length),
       flowTitle:chat||["connected","noMatches","incomingParent","parentSettings","safetyConfirm"].includes(next.screen)?next.personName:["replyDetail","replyKeyboard","comments"].includes(next.screen)?c("回复","Reply to ")+(next.replyTargetName||c("家长","parent")):TITLE[next.screen]?c(...TITLE[next.screen]!):c("社区","Community"),
-      communityHeader:chat?"parent-chat":["sent","sending"].includes(next.screen)?"feedback":next.screen==="blocked"?"blocked-list":["intent","profile","profileSettings","suggestions","parent","connected","noMatches","invitations","contacts","incomingParent","inviteSent","preferences","blockedEmpty","parentSettings","safetyConfirm"].includes(next.screen)?"regular":"default",
+      communityHeader:chat?"parent-chat":next.screen==="sending"?"feedback":next.screen==="blocked"?"blocked-list":["intent","profile","profileSettings","suggestions","parent","connected","noMatches","invitations","contacts","incomingParent","inviteSent","preferences","blockedEmpty","parentSettings","safetyConfirm"].includes(next.screen)?"regular":"default",
       communityBackdrop:settings||next.screen==="profile"&&profileEditing?"settings":chat?"plain":bottle?"final-bottle":"final-unified",
       communityHideTabs:hub||["inbox","contacts","invitations"].includes(next.screen)?"0":"1",
       communityHideAvatar:["preferences","blocked","blockedEmpty"].includes(next.screen)?"1":"0",
@@ -324,6 +377,7 @@ export default function CommunityFinal() {
     if(code==="DELIVERY_LOCKED")return c("这个问题已经不能回答了","This question can no longer be answered");
     if(code==="BLOCKED_OR_DISCONNECTED")return c("你们已不再联系，无法发送","You're no longer connected");
     if(code==="RELATIONSHIP_NOT_ALLOWED")return c("需要先建立联系","Connect first");
+    if(code===CHINESE_NAME_TOO_LONG)return chineseDisplayNameLimitMessage(locale);
     if(code==="VERSION_CONFLICT")return c("内容已在其他设备更新，请重试","This changed on another device; please try again");
     if(code==="VALIDATION_FAILED"&&/community profile/i.test(detail))return c("请先建立你的社区档案","Create your community profile first");
     if(code==="VALIDATION_FAILED"&&/location/i.test(detail))return c("按距离筛选需要先分享大概位置","Share an approximate location to filter by distance");
@@ -342,28 +396,133 @@ export default function CommunityFinal() {
   // ── Server reads, by screen ───────────────────────────────────────────────
   const s=state.screen;
   const onProfile=["intent","profile","profileSettings","compose","preview","hub"].includes(s);
-  const me=useRemote(onProfile?`profile:${tick}`:null,()=>communityApi.myProfile());
-  const account=useRemote<{nickname?:string;city?:string}>(["profile","profileSettings","intent"].includes(s)?"account":null,()=>api.me());
-  const hub=useRemote(home?`hub:${tick}`:null,async()=>{
-    const [questions,waiting,inbox]=await Promise.all([communityApi.myQuestions({status:"all"}),communityApi.deliveries("waiting"),communityApi.inbox()]);
-    for(const item of inbox.items)if(item.parent?.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
-    return {questions:questions.items,waiting:waiting.items,inbox};
-  });
-  const relations=useRemote(["contacts","invitations"].includes(s)?`relations:${tick}`:null,async()=>{
-    const [contacts,received,sent,inbox]=await Promise.all([communityApi.contacts(),communityApi.invitations("received"),communityApi.invitations("sent"),communityApi.inbox()]);
-    for(const item of contacts.items)if(item.conversation_id&&item.parent.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
-    return {contacts:contacts.items,received:received.items,sent:sent.items,pending:inbox.summary.pending_invitations};
-  });
+  const me=useRemote(onProfile?`profile:${accountScope.generation}:${tick}`:null,()=>communityApi.myProfile());
+  const account=useRemote<{id?:string;nickname?:string;city?:string}>(["profile","profileSettings","intent"].includes(s)?`account:${accountScope.generation}`:null,()=>api.me());
+  const friendIntentInFlight=useRef(false);
+  const findFriends=()=>{
+    if(!alphaCommunityLayout){go("intent");return;}
+    if(busy||friendIntentInFlight.current)return;
+    const ticket=accountScope.capture(),revision=navigationRevision.current;
+    const current=()=>accountScope.current(ticket)&&filterFocused.current&&revision===navigationRevision.current;
+    if(!current())return;
+    friendIntentInFlight.current=true;
+    void write(async()=>{
+      try{
+        const [accountInfo,profile]=await Promise.all([api.me(),communityApi.myProfile()]);
+        if(!current())return;
+        const completed=typeof accountInfo.id==="string"&&await storage.getItem(friendIntentKey(accountInfo.id),false);
+        if(!current())return;
+        const hasChosenIntents=!!profile.profile?.intents.length;
+        go(completed||hasChosenIntents?(profile.exists?"suggestions":"profile"):"intent");
+      }catch(error){
+        if(current())dispatch({type:"notice",message:failure(error)});
+      }finally{friendIntentInFlight.current=false;}
+    });
+  };
+  // Each list can render as soon as its own response arrives.
+  const inbox=useRemote(home||s==="contacts"?`inbox:${tick}`:null,()=>communityApi.inbox());
+  const contactsList=useRemote(s==="contacts"||s==="invitations"?`contacts:${tick}`:null,()=>communityApi.contacts());
+  const receivedInvitations=useRemote(s==="invitations"?`received-invitations:${tick}`:null,()=>communityApi.invitations("received"));
+  const sentInvitations=useRemote(s==="invitations"?`sent-invitations:${tick}`:null,()=>communityApi.invitations("sent"));
+  useEffect(()=>{
+    for(const item of inbox.value?.items??[]){
+      if(item.parent?.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
+    }
+    for(const item of contactsList.value?.items??[]){
+      if(item.conversation_id&&item.parent.parent_id)knownConversations.current[item.parent.parent_id]=item.conversation_id;
+    }
+  },[inbox.value,contactsList.value]);
   const roleFilter=ROLE_FILTER[state.filters.gender]??"any",distanceFilter=DISTANCE_FILTER[state.filters.distance]??null;
   const suggestions=useRemote(s==="suggestions"?`rec:${roleFilter}:${distanceFilter}:${tick}`:null,()=>communityApi.recommendations({role:roleFilter,distance_miles:distanceFilter}));
   const parentView=useRemote(["parent","incomingParent","connected","parentSettings","safetyConfirm"].includes(s)&&state.person?`parent:${state.person}:${tick}`:null,()=>communityApi.parent(state.person));
+  // Keep the previous preview on focus or a return to the hub. Writes invalidate it.
+  const previewReads={enabled:home,refresh:focusTick};
+  const minePreview=useRemote(`mine-preview:${writeTick}`,async()=>{
+    const page=await communityApi.myQuestions({status:"all",pageSize:1});
+    return page.items[0]??null;
+  },previewReads);
+  const legacyReceivedPreview=useRemote(`received-preview:${writeTick}`,async isCurrent=>{
+    const ticket=accountScope.capture();
+    if(ticket===null)return null;
+    const current=()=>isCurrent()&&accountScope.current(ticket);
+    let page=await communityApi.deliveries("waiting",null,1);
+    // Deleted questions are filtered after pagination, so an empty page can still have a next cursor.
+    while(!page.items.length&&page.next_cursor&&current()){
+      page=await communityApi.deliveries("waiting",page.next_cursor,10);
+    }
+    return current()?page.items[0]??null:null;
+  },{enabled:home&&!alphaCommunityLayout,refresh:focusTick});
+  const bottleNotificationsVisible=home||["myQuestions","selection","close","delete","received","receivedReplied","receivedLocked","replies","comments","replyExpanded","replyDetail","replyKeyboard","respond","responsePrompt"].includes(s);
+  const bottleSnapshot=useRemote(`bottle-notifications:${accountScope.generation}:${writeTick}:${focusTick}:${s}`,isCurrent=>{
+    const ticket=accountScope.capture();
+    return bottleNotificationSnapshot(()=>isCurrent()&&ticket!==null&&accountScope.current(ticket));
+  },{enabled:alphaCommunityLayout&&bottleNotificationsVisible,refresh:focusTick});
+  const currentBottleSnapshot=!bottleSnapshot.loading&&!bottleSnapshot.error?bottleSnapshot.value:undefined;
+  const bottleNotifications={...bottleSnapshot,value:currentBottleSnapshot?.notifications};
+  const receivedSnapshot={...bottleSnapshot,error:currentBottleSnapshot?.waitingError??bottleSnapshot.error};
+  const waitingSnapshot=currentBottleSnapshot&&!currentBottleSnapshot.waitingError?currentBottleSnapshot.waiting:undefined;
+  const receivedPreview=alphaCommunityLayout?{...receivedSnapshot,value:waitingSnapshot?waitingSnapshot[0]??null:undefined}:legacyReceivedPreview;
+  const [readBottles,setReadBottles]=useState<{generation:number;ids:ReadonlySet<string>}|null>(null);
+  const readIds=readBottles?.generation===accountScope.generation?readBottles.ids:undefined;
+  const unreadReplies=new Map<string,number>();
+  const unreadDeliveries=new Set<string>();
+  let unreadSent=0;
+  for(const {notification_id,target} of bottleNotifications.value??[]){
+    if(readIds?.has(notification_id))continue;
+    if(target.kind==="community_question")unreadDeliveries.add(target.delivery_id);
+    else{
+      unreadReplies.set(target.question_id,(unreadReplies.get(target.question_id)??0)+1);
+      unreadSent++;
+    }
+  }
+  const unreadReceived=unreadDeliveries.size;
   const mine=useRemote(["myQuestions","selection","close","delete"].includes(s)?`mine:${tick}`:null,()=>communityApi.myQuestions({status:"all"}));
-  const received=useRemote(["received","receivedReplied","receivedLocked"].includes(s)?`received:${state.receivedTab}:${tick}`:null,()=>communityApi.deliveries(state.receivedTab));
+  const receivedTab=state.receivedTab;
+  const receivedRemote=useRemote(["received","receivedReplied","receivedLocked"].includes(s)&&(!alphaCommunityLayout||receivedTab!=="waiting")?`received:${receivedTab}:${tick}`:null,()=>communityApi.deliveries(receivedTab));
+  const received=alphaCommunityLayout&&receivedTab==="waiting"?{...receivedSnapshot,value:waitingSnapshot?{items:waitingSnapshot,has_more:false,next_cursor:null}:undefined}:receivedRemote;
   const threadScreens=["replies","comments","replyExpanded","replyDetail","replyKeyboard"];
-  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${state.questionID}:${tick}`:null,()=>communityApi.replies(state.questionID));
+  const replyNotificationsKey = (bottleNotifications.value ?? [])
+    .filter(event => event.target.kind === "community_reply" && event.target.question_id === state.questionID)
+    .map(event => event.notification_id).sort().join(",");
+  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${state.questionID}:${tick}:${replyNotificationsKey}`:null,()=>communityApi.replies(state.questionID));
   const allThread=replies.value?.all_thread;
-  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}:${tick}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
+  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}:${tick}:${replyNotificationsKey}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
   const askedQuestion=useRemote(["respond","responsePrompt"].includes(s)&&state.questionID?`question:${state.questionID}`:null,()=>communityApi.question(state.questionID));
+  useEffect(()=>{
+    if(!alphaCommunityLayout||!filterFocused.current||!bottleNotifications.value?.length)return;
+    const ticket=accountScope.capture();
+    if(ticket===null)return;
+    const opened=bottleNotifications.value.filter(({notification_id,target})=>{
+      if(readIds?.has(notification_id)||bottleReadsInFlight.current.has(notification_id)||target.question_id!==state.questionID)return false;
+      if(target.kind==="community_question"){
+        const question=askedQuestion.value?.question;
+        return ["respond","responsePrompt"].includes(state.screen)&&!askedQuestion.loading&&!askedQuestion.error&&
+          target.delivery_id===state.deliveryID&&question?.question_id===target.question_id&&question.is_mine===false&&
+          question.delivery?.delivery_id===target.delivery_id&&question.delivery.state==="waiting";
+      }
+      if (replies.value?.question.question_id !== target.question_id) return false;
+      if (target.thread_id === "all") {
+        return state.replyTarget === "all" && !!replies.value.all_thread && !!comments.value &&
+          ["replies", "comments", "replyExpanded", "replyDetail", "replyKeyboard"].includes(state.screen);
+      }
+      return target.thread_id === state.replyTarget && !!comments.value &&
+        replies.value.items.some(reply => reply.reply_id === target.thread_id) &&
+        ["comments", "replyDetail", "replyKeyboard"].includes(state.screen);
+    });
+    if(!opened.length)return;
+    for(const {notification_id} of opened)bottleReadsInFlight.current.add(notification_id);
+    void Promise.allSettled(opened.map(item=>communityApi.markNotificationRead(item.notification_id))).then(results=>{
+      for(const {notification_id} of opened)bottleReadsInFlight.current.delete(notification_id);
+      if(!accountScope.current(ticket)||!results.some(result=>result.status==="fulfilled"))return;
+      setReadBottles(previous=>{
+        if(!accountScope.current(ticket))return previous;
+        const ids=new Set(previous?.generation===ticket?previous.ids:undefined);
+        results.forEach((result,index)=>{if(result.status==="fulfilled")ids.add(opened[index].notification_id);});
+        return {generation:ticket,ids};
+      });
+      bottleNotifications.reload();
+    });
+  },[alphaCommunityLayout,accountScope.capture,accountScope.current,askedQuestion.value,askedQuestion.loading,askedQuestion.error,bottleNotifications.value,bottleNotifications.reload,readIds,replies.value,comments.value,state.questionID,state.deliveryID,state.replyTarget,state.screen]);
   const prefs=useRemote(s==="preferences"||parentChat?`prefs:${tick}`:null,()=>communityApi.preferences());
   const blocks=useRemote(["blocked","blockedEmpty"].includes(s)?`blocks:${tick}`:null,()=>communityApi.blocks());
   const chat=useRemote(parentChat&&state.person?`chat:${state.person}:${tick}`:null,async()=>{
@@ -400,19 +559,17 @@ export default function CommunityFinal() {
   const lastSeq=chat.value?.messages.at(-1)?.seq;
   useEffect(()=>{if(chat.value&&lastSeq)communityApi.markRead(chat.value.conversationId,lastSeq).catch(()=>{});},[chat.value?.conversationId,lastSeq]);
   // A consent request from the other parent opens the decision sheet once.
-  const incomingNotes=chat.value?.ai.requests.conversation_notes,incomingTranslation=chat.value?.ai.requests.translation;
+  const incomingNotes=chat.value?.ai.requests.conversation_notes;
   useEffect(()=>{
     const value=chat.value;
     if(!value||chat.loading||chat.error||busy||consentAction.current||!filterFocused.current||accountScope.capture()===null||!["chat","chatOn"].includes(latest.current.screen))return;
-    for(const purpose of ["conversation_notes","translation"] as const){
-      const request=value.ai.requests[purpose];
-      if(!request||request.purpose!==purpose||request.epoch!==value.ai.epoch||request.notice_version!==value.ai.notice_version
-        ||request.state!=="pending"||request.initiated_by!=="parent"||request.my_decision!=="pending"||consentPrompted.current.has(request.request_id))continue;
-      consentPrompted.current.add(request.request_id);
-      setConsentSheet({purpose,mode:"decision",conversationId:value.conversationId,person:state.person,noticeVersion:request.notice_version,epoch:request.epoch,requestId:request.request_id,ticket:accountScope.capture(),revision:navigationRevision.current+1});
-      dispatch({type:"requestConsent"});break;
-    }
-  },[s,chat.loading,!!chat.error,busy,chat.value?.ai.epoch,chat.value?.ai.notice_version,incomingNotes?.request_id,incomingNotes?.state,incomingNotes?.my_decision,incomingTranslation?.request_id,incomingTranslation?.state,incomingTranslation?.my_decision]);
+    const request=value.ai.requests.conversation_notes;
+    if(!request||request.purpose!=="conversation_notes"||request.epoch!==value.ai.epoch||request.notice_version!==value.ai.notice_version
+      ||request.state!=="pending"||request.initiated_by!=="parent"||request.my_decision!=="pending"||consentPrompted.current.has(request.request_id))return;
+    consentPrompted.current.add(request.request_id);
+    setConsentSheet({mode:"decision",conversationId:value.conversationId,person:state.person,noticeVersion:request.notice_version,epoch:request.epoch,requestId:request.request_id,ticket:accountScope.capture(),revision:navigationRevision.current+1});
+    dispatch({type:"requestConsent"});
+  },[s,chat.loading,!!chat.error,busy,chat.value?.ai.epoch,chat.value?.ai.notice_version,incomingNotes?.request_id,incomingNotes?.state,incomingNotes?.my_decision]);
   // The editor starts from the saved profile, once per visit.
   useEffect(()=>{
     if(!["intent","profile","profileSettings"].includes(s)){profileSeeded.current=false;return;}
@@ -456,16 +613,18 @@ export default function CommunityFinal() {
   }, [router, path, title, parentChat, bottle, home, state.screen,profileEditing,closeFilter]));
   // Coming back to Community (another tab, a notification) re-reads everything.
   const focusedOnce=useRef(false);
-  useFocusEffect(useCallback(()=>{if(focusedOnce.current)refresh();focusedOnce.current=true;},[]));
+  useFocusEffect(useCallback(()=>{if(focusedOnce.current)setFocusTick(t=>t+1);focusedOnce.current=true;},[]));
   useEffect(() => { if(!home){pagerAligned.current=null;return;} alignPager(); }, [home, width, state.page]);
   useEffect(() => { closeFilter(); setProfileEditing(false); setConsentNeeded(false); }, [state.screen, state.person,closeFilter]);
   useEffect(() => { setSearch(""); }, [searchScope, state.person]);
   useEffect(()=>{
     if(state.screen!=="replyExpanded")return;
-    setReplyKeyboardVisible(Keyboard?.isVisible?.()??false);
-    const show=Keyboard?.addListener("keyboardDidShow",()=>setReplyKeyboardVisible(true)),hide=Keyboard?.addListener("keyboardDidHide",()=>setReplyKeyboardVisible(false));
-    return()=>{show?.remove();hide?.remove();};
-  },[state.screen]);
+    // Focus after the expanded field and its native accessory have mounted.
+    const frame=requestAnimationFrame(()=>{
+      if(latest.current.screen==="replyExpanded"&&latest.current.questionID===state.questionID)replyAllInput.current?.focus();
+    });
+    return()=>cancelAnimationFrame(frame);
+  },[state.screen,state.questionID]);
 
   const draft = (slot: string) => state.drafts[slot] ?? "";
   const setDraft = (slot: string, text: string) => dispatch({ type: "draft", slot, text });
@@ -517,13 +676,30 @@ export default function CommunityFinal() {
     }catch(error){if(version===v.version){v.slot=null;setVoice(null);voiceError(error);}}
   };
   const voiceBar=(slot:string)=>voice&&voice.slot===slot?<VoiceInputBar phase={voice.phase} seconds={voice.seconds} metered={voice.metered} level={()=>voiceRef.current.recording?.level()??null} onCancel={cancelVoice} onStop={()=>void stopVoice(false)} onSend={()=>void stopVoice(slot.startsWith("chat:"))}/>:null;
-  // ── One photo per parent message, prepared like the NURI chat's (≤1600 px).
-  const [chatImage,setChatImage]=useState<{person:string;prepared:PreparedChatImage}|null>(null);
-  useEffect(()=>{setChatImage(current=>current&&current.person!==state.person?null:current);},[state.person]);
+  const [chatPhotoDraft,setChatPhotoDraft]=useState<ChatPhotoDraft|null>(null);
+  const chatPhotos=chatPhotoDraft?.person===state.person&&chatPhotoDraft.ticket===accountScope.generation?chatPhotoDraft.photos:[];
+  const [pickingChatPhotos,setPickingChatPhotos]=useState(false);
+  const photoPickerInFlight=useRef(false);
+  const chatSendInFlight=useRef(false);
+  useEffect(()=>{setChatPhotoDraft(current=>current&&(current.person!==state.person||current.ticket!==accountScope.generation)?null:current);},[state.person,accountScope.generation]);
+  const removeChatPhotos=(ticket:number|null,person:string,ids:readonly string[])=>{
+    setChatPhotoDraft(previous=>previous&&previous.ticket===ticket&&previous.person===person
+      ?{...previous,photos:previous.photos.filter(photo=>!ids.includes(photo.id))}:previous);
+  };
   // ── Reports (Play UGC policy): reviewed by a person at /admin, never by AI.
-  const [report,setReport]=useState<{kind:ReportKind;id:string;title:string;allowBlock:boolean}|null>(null);
+  const [report,setReport]=useState<{kind:ReportKind;id:string;title:string;allowBlock:boolean;
+    original?:{conversationId:string;ticket:number;revision:number}}|null>(null);
+  const originalLease=report?.original;
+  const originalMessage=originalLease&&parentChat&&s!=="consent"&&accountScope.current(originalLease.ticket)
+    &&filterFocused.current&&navigationRevision.current===originalLease.revision
+    &&chat.value?.conversationId===originalLease.conversationId
+    ?chat.value.messages.find(message=>message.message_id===report.id&&message.sender==="parent")
+    :undefined;
+  const activeReport=originalLease&&!originalMessage?null:report;
   const submitReport=(reason:ReportReason,note:string,blockToo:boolean)=>{
-    const target=report;if(!target)return;
+    const target=activeReport;if(!target)return;
+    if(target.original&&(!accountScope.current(target.original.ticket)||!filterFocused.current
+      ||navigationRevision.current!==target.original.revision))return;
     void write(async()=>{
       try{
         const result=await communityApi.report({target_kind:target.kind,target_id:target.id,reason,note:note||undefined,block:blockToo});
@@ -533,23 +709,46 @@ export default function CommunityFinal() {
     });
   };
   const reportButton=(kind:ReportKind,id:string,title:string,allowBlock:boolean,testID:string)=><Pressable accessibilityRole="button" accessibilityLabel={title} onPress={()=>setReport({kind,id,title,allowBlock})} testID={testID} hitSlop={8} style={{minWidth:44,minHeight:32,alignItems:"center",justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{c("举报","Report")}</FinalText></Pressable>;
-  const reportSheet=<CommunityReportSheet visible={!!report} busy={busy} title={report?.title??""} allowBlock={!!report?.allowBlock} onClose={()=>setReport(null)} onSubmit={submitReport}/>;
+  const reportSheet=<CommunityReportSheet key={activeReport?.id} visible={!!activeReport} busy={busy}
+    title={activeReport?.title??""} allowBlock={!!activeReport?.allowBlock} originalText={originalMessage?.text}
+    onClose={()=>setReport(null)} onSubmit={submitReport}/>;
   const pickChatImage=async()=>{
-    if(busy||voiceRef.current.slot)return;
+    if(busy||photoPickerInFlight.current||chatSendInFlight.current||voiceRef.current.slot)return;
     const person=latest.current.person,screen=latest.current.screen,ticket=accountScope.capture(),revision=navigationRevision.current;
     const current=()=>accountScope.current(ticket)&&mounted.current&&filterFocused.current&&navigationRevision.current===revision&&latest.current.person===person&&latest.current.screen===screen;
-    if(!person||!["chat","chatOn"].includes(screen)||!current())return;
+    if(ticket===null||!person||!["chat","chatOn"].includes(screen)||!current())return;
+    const limit=alphaCommunityLayout?COMMUNITY_CHAT_PHOTO_LIMIT-chatPhotos.length:1;
+    if(limit<1){dispatch({type:"notice",message:c("最多可选 10 张图片","You can select up to 10 photos")});return;}
+    photoPickerInFlight.current=true;
+    if(alphaCommunityLayout)setPickingChatPhotos(true);
     try{
-      const prepared=await selectCommunityImage(current,async()=>{
-        if(Platform.OS==="web")return pickWebChatImageFile();
-        // The system photo picker grants access to the chosen photo only.
-        const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:["images"],allowsEditing:false,allowsMultipleSelection:false,base64:false,exif:false,quality:.78});
-        return result.canceled?null:result.assets[0]??null;
-      },prepareChatImage);
-      if(prepared&&current())setChatImage({person,prepared});
+      const photoOptions={mediaTypes:["images"] as ImagePicker.MediaType[],allowsEditing:false,base64:false,exif:false,quality:.78};
+      const preparePhotos=async()=>{
+        if(alphaCommunityLayout)return selectCommunityImages(current,async()=>{
+          const result=await ImagePicker.launchImageLibraryAsync({...photoOptions,allowsMultipleSelection:true,orderedSelection:true,selectionLimit:limit});
+          return result.canceled?[]:result.assets;
+        },prepareChatImage,limit);
+        const prepared=await selectCommunityImage(current,async()=>{
+          if(Platform.OS==="web")return pickWebChatImageFile();
+          const result=await ImagePicker.launchImageLibraryAsync({...photoOptions,allowsMultipleSelection:false});
+          return result.canceled?null:result.assets[0]??null;
+        },prepareChatImage);
+        return prepared?[prepared]:[];
+      };
+      const selected=await preparePhotos();
+      if(!selected.length||!current())return;
+      const photos=selected.map(prepared=>({prepared,id:communityKey("img")}));
+      dispatch({type:"notice",message:null});
+      setChatPhotoDraft(previous=>{
+        const existing=alphaCommunityLayout&&previous?.person===person&&previous.ticket===ticket?previous.photos:[];
+        return {person,ticket,photos:[...existing,...photos].slice(0,alphaCommunityLayout?COMMUNITY_CHAT_PHOTO_LIMIT:1)};
+      });
     }catch(error){
       if(!current())return;
       dispatch({type:"notice",message:error instanceof ChatImageInputError&&error.code==="too_large"?c("图片太大了，请换一张","That photo is too large"):c("无法读取这张图片，请换一张","Couldn't read that photo")});
+    }finally{
+      photoPickerInFlight.current=false;
+      if(alphaCommunityLayout&&mounted.current)setPickingChatPhotos(false);
     }
   };
   const filterLabels = {
@@ -569,20 +768,42 @@ export default function CommunityFinal() {
     </Pressable>;
   };
   function page(body: ReactNode, actions?: ReactNode, fill = false, layout:{bodyStyle?:ViewStyle;cardStyle?:ViewStyle;mainStyle?:ViewStyle}={}) {
-    return <NuriKeyboardFrame><View style={[st.main,layout.mainStyle]}><FinalSurface fill={fill} style={layout.cardStyle} testID={`final-community-${state.screen}`}><ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" showsVerticalScrollIndicator={false} style={{ flexShrink: 1, ...(fill ? { flex: 1 } : {}) }} contentContainerStyle={[st.body,layout.bodyStyle]}>{body}</ScrollView></FinalSurface>{actions||state.notice ? <View style={st.actions}>{notice}{actions}</View> : null}</View></NuriKeyboardFrame>;
+    return <NuriKeyboardFrame><View style={[st.main,layout.mainStyle]}><FinalSurface fill={fill} style={layout.cardStyle} testID={`final-community-${state.screen}`}><ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" showsVerticalScrollIndicator={false} style={{ flexShrink: 1, minHeight: 0, ...(fill ? { flex: 1 } : {}) }} contentContainerStyle={[st.body,layout.bodyStyle]}>{body}</ScrollView></FinalSurface>{actions||state.notice ? <View style={st.actions}>{notice}{actions}</View> : null}</View></NuriKeyboardFrame>;
   }
 
   // ── Writes ────────────────────────────────────────────────────────────────
-  const sendQuestion=()=>{
+  const sendQuestion=async()=>{
     const current=latest.current,text=selectedQuestionText(current);
-    if(!text||busy)return;
+    const ticket=accountScope.capture();
+    if(current.screen!=="preview"||!text||busy||questionSendInFlight.current||ticket===null)return;
     const key=current.sendKey??communityKey("q");
+    const previousRequest=questionSendRequest.current;
+    const request=previousRequest?.client_request_id===key?previousRequest:{
+      body:text,original_language:locale,version_source:current.questionVersion,
+      polish_id:current.questionVersion==="polished"?current.polishID:null,
+      anonymous:current.anonymous,show_child_age:current.showAge,client_request_id:key,
+    };
+    const owns=()=>mounted.current&&accountScope.current(ticket);
+    questionSendRequest.current=request;
+    questionSendInFlight.current=true;
+    setQuestionSendPending(true);
     dispatch({type:"sending",key});
-    setBusy(true);
-    communityApi.ask({body:text,original_language:locale,version_source:current.questionVersion,polish_id:current.questionVersion==="polished"?current.polishID:null,anonymous:current.anonymous,show_child_age:current.showAge,client_request_id:key})
-      .then(result=>{if(mounted.current){lastRecipients.current=result.delivery.recipient_count;dispatch({type:"sent",id:result.question.question_id});refresh();}},
-        error=>{if(mounted.current)dispatch({type:"sendFailed",message:failure(error)});})
-      .finally(()=>{if(mounted.current)setBusy(false);});
+    try {
+      const result=await communityApi.ask(request);
+      if(!owns())return;
+      questionSendRequest.current=null;
+      lastRecipients.current=result.delivery.recipient_count;
+      dispatch({type:"sent",key,id:result.question.question_id});
+      refresh();
+    } catch(error) {
+      if(!owns()||latest.current.sendKey!==key)return;
+      const message=communityErrorCode(error)||isAuthError(error)
+        ?failure(error):c("暂时无法确认是否发送成功，请重试。","We couldn't confirm the send. Please try again.");
+      dispatch({type:"sendFailed",key,message});
+    } finally {
+      questionSendInFlight.current=false;
+      if(owns())setQuestionSendPending(false);
+    }
   };
   const polish=()=>write(async()=>{
     const text=draft("question").trim();
@@ -591,17 +812,36 @@ export default function CommunityFinal() {
     dispatch({type:"polished",text:result.polish.text,id:result.polish.id});
   });
   const startQuestion=()=>{
+    if(latest.current.sendKey){dispatch({type:"resumeQuestion"});return;}
     if(me.value&&!me.value.exists){dispatch({type:"go",screen:"profile"});dispatch({type:"notice",message:c("先建立你的社区档案，其他家长才能看到你的问题","Create your community profile first")});return;}
     dispatch({type:"newQuestion"});
   };
-  const confirmQuestions=(action:"close"|"delete")=>write(async()=>{
+  const confirmQuestions=(action:"close"|"delete")=>{
     const ids=latest.current.selected;
-    if(!ids.length)return;
-    const result=await communityApi.transitionQuestions(action,ids.map(question_id=>({question_id})),communityKey(action));
-    refresh();
-    dispatch({type:"questionsChanged"});
-    if(!result.all_succeeded)dispatch({type:"notice",message:c("有部分问题没有处理成功，请刷新后重试","Some questions could not be updated; please try again")});
-  });
+    const ticket=accountScope.capture(), revision=navigationRevision.current;
+    if(busy||!ids.length||latest.current.screen!==action||questionBatchInFlight.current||ticket===null)return;
+    const ownsScreen=()=>accountScope.current(ticket)&&navigationRevision.current===revision&&latest.current.screen===action;
+    questionBatchInFlight.current=true;
+    void write(async()=>{
+      try {
+        const result=await communityApi.transitionQuestions(action,ids.map(question_id=>({question_id})),communityKey(action));
+        if(!accountScope.current(ticket))return;
+        refresh();
+        if(!ownsScreen())return;
+        dispatch({type:"questionsChanged"});
+        if(!result.all_succeeded){
+          const succeeded=result.results.filter(item=>item.ok).length, failed=ids.length-succeeded;
+          const message=en?`${succeeded} updated, ${failed} unsuccessful. Check the list before retrying.`
+            :translate(locale,"已处理 {succeeded} 个漂流瓶，{failed} 个未处理。请核对列表后重试。",{succeeded,failed});
+          dispatch({type:"notice",message});
+        }
+      } catch(error) {
+        if(ownsScreen())dispatch({type:"notice",message:failure(error)});
+      } finally {
+        questionBatchInFlight.current=false;
+      }
+    });
+  };
   const respond=()=>write(async()=>{
     const slot="answer:"+state.questionID,text=draft(slot).trim();
     if(!text||!state.deliveryID)return;
@@ -654,31 +894,75 @@ export default function CommunityFinal() {
     if(key==="auto_translate_messages"&&saved.auto_translate_messages===true)setTranslationPreferencePaused(false);
     prefs.reload();
   });
-  const saveProfile=(after:()=>void)=>write(async()=>{
+  const saveProfile=(after:()=>void|Promise<void>)=>write(async()=>{
     const profile=me.value?.profile;
     const about=state.drafts["profile:about"];
+    const draftName=state.drafts["profile:name"]?.trim();
+    const displayName=draftName||(!profile?account.value?.nickname?.trim()||c("新家长","New parent"):"");
+    if(alphaCommunityLayout&&displayName!==profile?.display_name&&isChineseDisplayNameTooLong(displayName)){
+      dispatch({type:"notice",message:chineseDisplayNameLimitMessage(locale)});
+      return;
+    }
+    const preserveLegacyName=alphaCommunityLayout&&displayName===profile?.display_name&&isChineseDisplayNameTooLong(displayName);
     await communityApi.saveProfile({
-      ...(profile?{}:{display_name:(account.value?.nickname||"").trim().slice(0,30)||c("新家长","New parent"),city:(account.value?.city||"").trim().slice(0,60)}),
+      ...(profile?{}:{city:(account.value?.city||"").trim().slice(0,60)}),
       ...(about!==undefined?{about:about.trim().slice(0,300)}:{}),
-      ...(state.drafts["profile:name"]?.trim()?{display_name:state.drafts["profile:name"].trim().slice(0,30)}:{}),
+      ...(displayName&&!preserveLegacyName?{display_name:displayName.slice(0,30)}:{}),
       ...(state.drafts["profile:gender"]?{gender_tag:state.drafts["profile:gender"] as GenderTag}:{}),
       intents:intentCodes(state.intents),
       ...(profile?{expected_version:profile.version}:{}),
     });
-    me.reload();after();
+    me.reload();await after();
   });
-  function sendChat(){return write(async()=>{
-    // Read the latest drafts: a voice transcript may have landed this tick.
-    const current=latest.current,slot="chat:"+current.person,text=(current.drafts[slot]??"").trim(),conversationId=chat.value?.conversationId;
-    const image=chatImage&&chatImage.person===current.person?chatImage.prepared:null;
-    if((!text&&!image)||!conversationId)return;
-    // The photo is stored and checked first; the message only binds a ready id.
-    const mediaIds=image?[(await communityApi.uploadImage(image.dataUri,"message",keyFor(slot+":image",image.dataUri.length+":"+image.dataUri.slice(-96),"img"))).media.media_id]:[];
-    await communityApi.sendMessage(conversationId,text,keyFor(slot,text+"|"+mediaIds.join(","),"msg"),mediaIds);
-    delete writeKeys.current[slot];delete writeKeys.current[slot+":image"];
-    setChatImage(null);
-    dispatch({type:"messageSent",slot});chat.reload();
-  });}
+  const completeFriendIntent=(skipped:boolean)=>{
+    if(!alphaCommunityLayout){
+      if(!skipped&&me.value?.exists)return saveProfile(()=>go("profile"));
+      go("profile");return;
+    }
+    if(busy||!me.value)return;
+    const ticket=accountScope.capture(),revision=navigationRevision.current;
+    const current=()=>accountScope.current(ticket)&&filterFocused.current&&revision===navigationRevision.current&&latest.current.screen==="intent";
+    if(!current())return;
+    const finish=async()=>{
+      if(!current())return;
+      const accountId=account.value?.id??(await api.me()).id;
+      if(!current())return;
+      if(typeof accountId!=="string"||!accountId||!await storage.setItem(friendIntentKey(accountId),true)){
+        throw new Error("Couldn't save completion of friend-intent onboarding");
+      }
+      if(current())go("profile");
+    };
+    if(!skipped&&me.value.exists)return saveProfile(finish);
+    return write(finish);
+  };
+  function sendChat(){
+    if(busy||chatSendInFlight.current||photoPickerInFlight.current)return;
+    // Read the latest text because a voice transcript may have landed this tick.
+    const {person,screen,drafts}=latest.current,slot="chat:"+person,text=drafts[slot]??"",conversationId=chat.value?.conversationId;
+    const ticket=accountScope.capture(),revision=navigationRevision.current;
+    const owns=()=>accountScope.current(ticket)&&mounted.current;
+    const current=()=>owns()&&filterFocused.current&&navigationRevision.current===revision&&latest.current.person===person
+      &&latest.current.screen===screen&&chatAuthority.current?.conversationId===conversationId;
+    if((!text.trim()&&!chatPhotos.length)||!conversationId||!["chat","chatOn"].includes(screen)||!current())return;
+    chatSendInFlight.current=true;
+    dispatch({type:"notice",message:null});
+    return write(async()=>{
+      try{
+        await sendCommunityChatPhotos(chatPhotos,text.trim(),current,
+          async photo=>(await communityApi.uploadImage(photo.prepared.dataUri,"message",photo.id)).media.media_id,
+          (caption,mediaIds)=>communityApi.sendMessage(conversationId,caption,keyFor(slot,JSON.stringify([conversationId,caption,mediaIds]),"msg"),mediaIds),
+          (photos,caption)=>{
+            if(!owns())return;
+            delete writeKeys.current[slot];
+            removeChatPhotos(ticket,person,photos.map(photo=>photo.id));
+            if((caption||!photos.length)&&latest.current.drafts[slot]===text)dispatch({type:"messageSent",slot});
+            if(current())chat.reload();
+          },chat.value?.conversation.message_media_limit);
+      }catch(error){
+        if(current())dispatch({type:"notice",message:failure(error)});
+      }finally{chatSendInFlight.current=false;}
+    });
+  }
   // Every callback belongs to the chat and notice rendered beside that button.
   // Never rebind an old button to the latest chat/sheet when it finally fires.
   const consentRenderLease:ChatConsentLease|null=chat.value?{conversationId:chat.value.conversationId,person:state.person,screen:state.screen,
@@ -689,12 +973,11 @@ export default function CommunityFinal() {
       &&navigationRevision.current===lease.revision&&latest.current.person===lease.person&&latest.current.screen===lease.screen
       &&value?.conversationId===lease.conversationId&&value.ai.epoch===lease.epoch&&value.ai.notice_version===lease.noticeVersion;
   };
-  const revokeBusy=!!revokingConsent&&currentConsentLease(revokingConsent);
-  const openConsent=(purpose:AIPurpose)=>{
+  const openConsent=()=>{
     const lease=consentRenderLease,value=chatAuthority.current;
     if(busy||consentAction.current||currentConsentLease(revokeAction.current)||!currentConsentLease(lease)||!lease||!value||!["chat","chatOn"].includes(lease.screen))return;
-    const request=value.ai.requests[purpose];
-    setConsentSheet({purpose,mode:request?.state==="pending"&&request.my_decision==="pending"?"decision":"request",
+    const request=value.ai.requests.conversation_notes;
+    setConsentSheet({mode:request?.state==="pending"&&request.my_decision==="pending"?"decision":"request",
       conversationId:lease.conversationId,person:lease.person,noticeVersion:lease.noticeVersion,epoch:lease.epoch,
       requestId:request?.request_id,ticket:lease.ticket,revision:lease.revision+1});
     dispatch({type:"requestConsent"});
@@ -705,20 +988,20 @@ export default function CommunityFinal() {
     if(!expectedSheet||expectedSheet!==consentSheetRef.current||!currentConsentLease(consentRenderLease)||consentRenderLease?.screen!=="consent")return;
     setConsentSheet(null);dispatch({type:"consentClosed",effective:!!chatAuthority.current?.ai.effective});
   };
-  const revokeConsent=async(purpose:AIPurpose)=>{
+  const revokeConsent=async()=>{
     const lease=consentRenderLease;
     if(busy||consentAction.current||!lease||!["chat","chatOn"].includes(lease.screen)||!currentConsentLease(lease)
       ||currentConsentLease(revokeAction.current))return;
-    revokeAction.current=lease;setRevokingConsent(lease);
+    revokeAction.current=lease;
     // The backend bumps the whole conversation epoch, even for a single
     // purpose. Stop local work now; an unconfirmed withdrawal never resumes it.
     setTranslationPaused(`${lease.conversationId}:${lease.epoch}`);translations.clear();
     const current=()=>revokeAction.current===lease&&currentConsentLease(lease);
-    try{await communityApi.revokeAI(lease.conversationId,purpose);if(current())chat.reload();}
+    try{await communityApi.revokeAI(lease.conversationId,"conversation_notes");if(current())chat.reload();}
     catch(error){if(current())dispatch({type:"notice",message:failure(error)});}
-    finally{const owns=current();if(revokeAction.current===lease)revokeAction.current=null;if(owns)setRevokingConsent(previous=>previous===lease?null:previous);}
+    finally{if(revokeAction.current===lease)revokeAction.current=null;}
   };
-  const toggleAI=(on:boolean)=>{if(on)openConsent("conversation_notes");else void revokeConsent("conversation_notes");};
+  const toggleAI=(on:boolean)=>{if(on)openConsent();else void revokeConsent();};
   const decideAI=async(sheet:ConsentSheet|null,allowed:boolean)=>{
     if(!sheet||sheet!==consentSheetRef.current||busy||consentAction.current)return;
     const current=()=>{
@@ -729,23 +1012,23 @@ export default function CommunityFinal() {
     };
     if(!current())return;
     if(!allowed&&sheet.mode==="request"){closeConsent(sheet);return;}
-    const existing=chatAuthority.current?.ai.requests[sheet.purpose];
-    if(sheet.mode==="decision"&&(!existing||existing.request_id!==sheet.requestId||existing.purpose!==sheet.purpose))return;
+    const existing=chatAuthority.current?.ai.requests.conversation_notes;
+    if(sheet.mode==="decision"&&(!existing||existing.request_id!==sheet.requestId||existing.purpose!=="conversation_notes"))return;
     consentAction.current=true;setBusy(true);
     try{
-      const requestSlot="air:"+sheet.conversationId+":"+sheet.purpose;
+      const requestSlot="air:"+sheet.conversationId+":conversation_notes";
       const requestKey=sheet.mode==="request"?keyFor(requestSlot,sheet.noticeVersion+":"+sheet.epoch,"air"):null;
       let result=sheet.mode==="request"
-        ?await communityApi.requestAI(sheet.conversationId,sheet.noticeVersion,requestKey!,sheet.purpose)
+        ?await communityApi.requestAI(sheet.conversationId,sheet.noticeVersion,requestKey!,"conversation_notes")
         :await communityApi.decideAI(sheet.requestId!,allowed?"allow":"decline",sheet.noticeVersion,keyFor("aid:"+sheet.requestId,allowed+":"+sheet.noticeVersion,"aid"));
-      if(result.request.purpose!==sheet.purpose||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
+      if(result.request.purpose!=="conversation_notes"||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
       // A confirmed response ends this logical P25 operation. A later explicit
       // request (e.g. after refusal, without an epoch bump) needs a fresh key;
       // unknown-outcome exceptions keep their original idempotency key.
       if(requestKey&&accountScope.current(sheet.ticket)&&writeKeys.current[requestSlot]?.key===requestKey)delete writeKeys.current[requestSlot];
       if(!current())return;
       if(allowed&&!["pending","effective"].includes(result.request.state)){
-        dispatch({type:"notice",message:translationCopy.changed});chat.reload();return;
+        dispatch({type:"notice",message:notesConsentCopy.changed});chat.reload();return;
       }
       // A simultaneous request from the other parent may already exist. P25
       // returns it without consenting on this parent's behalf; the explicit
@@ -754,15 +1037,14 @@ export default function CommunityFinal() {
         result=await communityApi.decideAI(result.request.request_id,"allow",sheet.noticeVersion,keyFor("aid:"+result.request.request_id,"true:"+sheet.noticeVersion,"aid"));
         if(!current())return;
       }
-      if(result.request.purpose!==sheet.purpose||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
+      if(result.request.purpose!=="conversation_notes"||result.request.epoch!==sheet.epoch||result.request.notice_version!==sheet.noticeVersion)throw new Error("CONSENT_RESULT_CHANGED");
       if(allowed&&!["pending","effective"].includes(result.request.state)){
-        dispatch({type:"notice",message:translationCopy.changed});chat.reload();return;
+        dispatch({type:"notice",message:notesConsentCopy.changed});chat.reload();return;
       }
       setConsentSheet(null);
-      dispatch({type:"consentClosed",effective:sheet.purpose==="conversation_notes"?result.request.effective:!!chatAuthority.current?.ai.effective});
-      if(sheet.purpose==="translation"&&allowed&&result.request.state==="pending"&&!result.request.effective)dispatch({type:"notice",message:translationCopy.sent});
+      dispatch({type:"consentClosed",effective:result.request.effective});
       chat.reload();
-    }catch(error){if(current())dispatch({type:"notice",message:communityErrorCode(error)==="CONSENT_REVOKED_OR_CHANGED"?translationCopy.changed:failure(error)});}
+    }catch(error){if(current())dispatch({type:"notice",message:communityErrorCode(error)==="CONSENT_REVOKED_OR_CHANGED"?notesConsentCopy.changed:failure(error)});}
     finally{consentAction.current=false;if(mounted.current&&accountScope.current(sheet.ticket))setBusy(false);}
   };
 
@@ -787,7 +1069,9 @@ export default function CommunityFinal() {
         <Pressable testID="final-community-preference-auto_translate_messages" accessibilityRole="switch" accessibilityLabel={c("消息自动翻译","Translate messages automatically")} accessibilityState={{checked:!!p?.auto_translate_messages,disabled:!p||busy}} disabled={!p||busy} onPress={()=>togglePreference("auto_translate_messages")} style={{paddingVertical:12,minHeight:48,flexDirection:"row",alignItems:"center",gap:16}}>
           <FinalText style={{flex:1}}>{c("消息自动翻译","Translate messages automatically")}</FinalText><View pointerEvents="none" style={{width:52,height:20,justifyContent:"center"}}><Image source={p?.auto_translate_messages?require("@/assets/final-flow-20261101/settings-switch-on.svg"):require("@/assets/final-flow-20261101/settings-switch-off.svg")} style={{width:p?.auto_translate_messages?32.5:44,height:p?.auto_translate_messages?20:44,marginLeft:p?.auto_translate_messages?0:-5.75}} contentFit="contain" accessible={false}/></View>
         </Pressable>
-        <FinalText size={12} secondary style={{fontWeight:"500",lineHeight:16}}>{c("翻译对方的消息需要双方都同意","Translating the other parent's messages needs both of you to agree")}</FinalText>
+        <FinalText size={12} secondary style={{fontWeight:"500",lineHeight:16}}>
+          {originalMessageHint}
+        </FinalText>
         {notice}
       </> : state.screen === "blocked" || state.screen === "blockedEmpty" ? <>
         {pending(blocks)}
@@ -810,12 +1094,19 @@ export default function CommunityFinal() {
 
   // ── Hub pager: questions (left) and friends / inbox (right) ──────────────
   if (home) {
-    const data=hub.value,inboxItems=data?.inbox.items??[];
-    const latestQuestion=data?.questions[0],latestWaiting=data?.waiting[0];
+    const askLabel=state.sendKey
+      ?questionSendPending?c("查看发送进度","View send progress"):c("继续发送漂流瓶","Resume sending")
+      :c("向家长提问", "Ask parents");
+    const inboxItems=inbox.value?.items??[];
+    const latestQuestion=minePreview.value,latestWaiting=receivedPreview.value;
+    const previewDetail=(remote:Remote<unknown>,body:string|undefined,empty:string)=>{
+      if(remote.value!==undefined)return body??empty;
+      return remote.error?c("加载失败，请稍后再试","Couldn’t load preview"):c("正在加载…","Loading…");
+    };
     const preview=(item:InboxItem)=>item.last_message?.preview||c("开始聊天吧","Say hello");
     const entries=[
-      ["myQuestions",!!latestQuestion?.reply_count,c("我的问题","My questions"),latestQuestion?.body??c("还没有发出漂流瓶","No bottles sent yet"),latestQuestion?(latestQuestion.reply_count?c(latestQuestion.reply_count+" 位家长分享了经验",latestQuestion.reply_count+" parents shared experiences"):c("等待回复","Waiting for replies")):""],
-      ["received",!!data?.waiting.length,c("收到问题","Received questions"),latestWaiting?.question.body??c("暂时没有新的问题","No new questions"),latestWaiting?c(nameOf(latestWaiting.question.author)+"想听听你的意见",nameOf(latestWaiting.question.author)+" would like your thoughts"):""],
+      ["myQuestions",!!latestQuestion?.reply_count,c("我的问题","My questions"),previewDetail(minePreview,latestQuestion?.body,c("还没有发出漂流瓶","No bottles sent yet")),latestQuestion?(latestQuestion.reply_count?c(latestQuestion.reply_count+" 位家长分享了经验",latestQuestion.reply_count+" parents shared experiences"):c("等待回复","Waiting for replies")):"",minePreview.loading&&latestQuestion===undefined,unreadSent],
+      ["received",!!latestWaiting,c("收到问题","Received questions"),previewDetail(receivedPreview,latestWaiting?.question.body,c("暂时没有新的问题","No new questions")),latestWaiting?c(nameOf(latestWaiting.question.author)+"想听听你的意见",nameOf(latestWaiting.question.author)+" would like your thoughts"):"",receivedPreview.loading&&latestWaiting===undefined,unreadReceived],
     ] as const;
     return <NuriKeyboardFrame><View style={{ flex: 1, minHeight: 0 }}><View style={{ flex: 1, minHeight: 0, paddingTop: 16, paddingBottom:4, gap:HUB_PAGER_GAP }} testID="final-community-pager-viewport" onLayout={e => {
       const nextWidth=e.nativeEvent.layout.width;
@@ -827,20 +1118,21 @@ export default function CommunityFinal() {
     {([0, 1] as const).map(mode => <View key={mode} style={{ width: width || 1, height: pagerHeight || undefined, paddingHorizontal: 12, paddingBottom: HUB_CARD_BOTTOM_GUTTER }}><FinalSurface fill testID={`final-community-page-${mode}`} style={mode===1&&state.inboxExpanded?{maxHeight:619}:undefined}>{mode===1&&state.inboxExpanded?<View testID="final-community-inbox" style={{flex:1,minHeight:0}}><ScrollView key="inbox" testID="final-inbox-scroll" directionalLockEnabled nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:24,paddingTop:24,paddingBottom:24,gap:12}}>
             <Search value={search} onChange={setSearch} placeholder={c("搜索","Search")}/>
             <View style={{paddingTop:4,gap:4}}>
-              <View style={{height:32,flexDirection:"row",alignItems:"center",gap:4}}><Pressable testID="final-collapse-inbox" accessibilityRole="button" accessibilityLabel={c("收起我的消息","Collapse messages")} onPress={()=>go("friends")} style={{flex:1,minHeight:32,justifyContent:"center"}}><FinalText style={{fontWeight:"500"}}>{c("我的消息","My messages")} <FinalText size={16} style={{color:FINAL_COLOR.accent}}>⌄</FinalText></FinalText></Pressable><Pressable testID="final-open-contacts" accessibilityRole="button" accessibilityLabel={c("通讯录","Address book")} onPress={()=>go("contacts")} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/address-book.svg")} style={{width:24,height:24}} contentFit="contain" accessible={false}/></Pressable></View>
-              {pending(hub)}
+              <View style={{height:32,flexDirection:"row",alignItems:"center",gap:4}}><Pressable testID="final-collapse-inbox" accessibilityRole="button" accessibilityLabel={c("收起我的消息","Collapse messages")} onPress={()=>go("friends")} style={{flex:1,minHeight:32,flexDirection:"row",alignItems:"center",gap:4}}><FinalText style={{fontWeight:"500"}}>{c("我的消息","Messages")}</FinalText><FinalText size={16} style={{color:FINAL_COLOR.accent}}>⌄</FinalText></Pressable><Pressable testID="final-open-contacts" accessibilityRole="button" accessibilityLabel={c("通讯录","Address book")} onPress={()=>go("contacts")} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/address-book.svg")} style={{width:24,height:24}} contentFit="contain" accessible={false}/></Pressable></View>
+              {pending(inbox)}
               {inboxItems.filter(item=>nameOf(item.parent).toLocaleLowerCase().includes(search.toLocaleLowerCase())).map((item,i)=><View key={item.conversation_id} style={{gap:4}}>{i?<View style={st.friendDivider}/>:null}{parentRow(item.parent,preview(item),{unread:item.unread_count,inbox:true,conversationId:item.conversation_id})}</View>)}
-              {data&&!inboxItems.length?<FinalText secondary style={{paddingVertical:16,textAlign:"center"}}>{c("还没有消息","No messages yet")}</FinalText>:null}
+              {inbox.value&&!inboxItems.length?<FinalText secondary style={{paddingVertical:16,textAlign:"center"}}>{c("还没有消息","No messages yet")}</FinalText>:null}
             </View>
         </ScrollView></View>:<ScrollView key={`preview-${mode}`} directionalLockEnabled nestedScrollEnabled showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{flex:1,minHeight:0}} contentContainerStyle={{ paddingHorizontal: 24, paddingTop: communityHubTopPadding(pagerHeight,mode), paddingBottom: 16, gap: 12 }}>
-      <View style={{ height: mode ? 240 : 260, gap: mode ? 8 : 28, alignItems: "center" }}><View style={{ height: 180, width: "100%", alignItems: "center", justifyContent: "center" }}>{mode ? <View style={{ position:"absolute", left:"22.03%", top:-5, width:"61.02%", aspectRatio:200.13558959960938/169.00338745117188, overflow: "hidden" }}><Image source={require("@/assets/final-flow-20261101/parent-friends.png")} contentFit="fill" style={{ position: "absolute", left: 0, top: "-0.07%", width: "100%", height: "110.66%" }} /></View> : <Image source={require("@/assets/final-flow-20261101/question-mascot.svg")} style={{ width: 146, height: 181 }} contentFit="contain" />}</View><FinalText size={18} style={{ textAlign: "center" }}>{mode ? c("认识聊得来的家长", "Meet parents you connect with") : c("把问题交给有经历的人", "Ask parents who've been there")}</FinalText></View>
-      <FinalButton label={mode ? c("寻找育儿好友", "Find parent friends") : c("向家长提问", "Ask parents")} onPress={() => mode ? go("intent") : startQuestion()} testID={`final-hub-primary-${mode}`} />
-      {mode ? <View testID="final-friends-messages" style={{paddingTop:4,gap:4}}><View style={st.friendDivider}/><View style={{ flexDirection: "row", alignItems: "center", minHeight:32 }}><Pressable accessibilityRole="button" onPress={() => go("inbox")} style={{ flex: 1, minHeight: 32, justifyContent: "center" }} testID="final-open-inbox"><FinalText>{c("我的消息", "My messages")}⌃</FinalText></Pressable><Pressable accessibilityRole="button" accessibilityLabel={c("通讯录", "Address book")} onPress={() => go("contacts")} style={{ width: 44, height: 32, alignItems: "center", justifyContent: "center" }} testID="final-open-contacts"><Image source={require("@/assets/final-flow-20261101/address-book.svg")} style={{ width: 24, height: 24 }} /></Pressable></View>
-        {pending(hub,false)}
+      <View style={{ height: mode ? 240 : 260, gap: mode ? 8 : 28, alignItems: "center" }}><View style={{ height: 180, width: "100%", alignItems: "center", justifyContent: "center" }}>{mode ? <View style={{ position:"absolute", left:"22.03%", top:-5, width:"61.02%", aspectRatio:200.13558959960938/169.00338745117188, overflow: "hidden" }}><Image source={require("@/assets/final-flow-20261101/parent-friends.png")} contentFit="fill" style={{ position: "absolute", left: 0, top: "-0.07%", width: "100%", height: "110.66%" }} /></View> : <Image source={require("@/assets/final-flow-20261101/question-mascot.svg")} style={{ width: 146, height: 181 }} contentFit="contain" />}</View><FinalText size={18} style={{ textAlign: "center" }}>{mode ? c("认识聊得来的家长", "Meet other parents") : c("把问题交给有经历的人", "Get advice from other parents")}</FinalText></View>
+      <FinalButton label={mode ? c("寻找育儿好友", "Find friends") : askLabel} onPress={() => mode ? findFriends() : startQuestion()} testID={`final-hub-primary-${mode}`} />
+      {mode ? <View testID="final-friends-messages" style={{paddingTop:4,gap:4}}><View style={st.friendDivider}/><View style={{ flexDirection: "row", alignItems: "center", minHeight:32 }}><Pressable accessibilityRole="button" accessibilityLabel={c("展开我的消息","Expand messages")} onPress={() => go("inbox")} style={{ flex: 1, minHeight: 32, flexDirection:"row", alignItems:"center", gap:4 }} testID="final-open-inbox"><FinalText>{c("我的消息", "Messages")}</FinalText><FinalText size={16} style={{color:FINAL_COLOR.accent}}>⌃</FinalText></Pressable><Pressable accessibilityRole="button" accessibilityLabel={c("通讯录", "Address book")} onPress={() => go("contacts")} style={{ width: 44, height: 32, alignItems: "center", justifyContent: "center" }} testID="final-open-contacts"><Image source={require("@/assets/final-flow-20261101/address-book.svg")} style={{ width: 24, height: 24 }} /></Pressable></View>
+        {pending(inbox,false)}
         {inboxItems.slice(0,2).map((item,i) => <View key={item.conversation_id} style={{gap:4}}>{i?<View style={st.friendDivider}/>:null}<Pressable testID={`final-parent-${item.parent?.parent_id}`} accessibilityRole="button" accessibilityLabel={`${nameOf(item.parent)}，${preview(item)}`} style={st.friendPreviewRow} onPress={() => {if(!item.parent?.parent_id)return;knownConversations.current[item.parent.parent_id]=item.conversation_id;dispatch({ type: "person", person: item.parent.parent_id, name: nameOf(item.parent), screen: "chat" });}}><FriendPreviewAvatar/><View style={{flex:1,minWidth:0,gap:4}}><FinalText style={{lineHeight:24}}>{nameOf(item.parent)}</FinalText><FinalText size={14} secondary numberOfLines={1} ellipsizeMode="tail" style={{lineHeight:20}}>{preview(item)}</FinalText></View><FinalText size={20} style={{width:16,lineHeight:24,textAlign:"center",color:FINAL_COLOR.accent}}>›</FinalText><UnreadBadge count={item.unread_count} style={{position:"absolute",left:"9.58%",top:"6.57%"}}/></Pressable></View>)}
-        {data&&!inboxItems.length?<FinalText size={14} secondary style={{paddingVertical:12,textAlign:"center"}}>{c("建立联系后，消息会出现在这里","Messages appear here once you connect")}</FinalText>:null}
-      </View> : <><FinalDivider/>{pending(hub,false)}{entries.map(([screen, fresh, label, detail, status], i) => <Pressable key={screen} testID={i ? "final-open-received" : "final-open-my-questions"} accessibilityRole="button" accessibilityLabel={`${label}，${detail}，${status}`} onPress={() => go(screen)} style={st.questionEntry}>
-                  <View style={st.questionTitle}><View style={{width:29,height:24,justifyContent:"center",flexShrink:0}}>{fresh?<Image testID={`final-bottle-icon-${screen}`} source={require("@/assets/final-flow-20261101/bottle-unread.svg")} style={{width:31,height:29}} contentFit="contain" accessible={false} accessibilityElementsHidden />:<View style={{width:24,height:24,alignItems:"center",justifyContent:"center"}}><Image testID={`final-bottle-icon-${screen}`} source={require("@/assets/final-flow-20261101/community-question-bottle-coral.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false} accessibilityElementsHidden /></View>}</View><FinalText size={16} style={{lineHeight:24,flex:1,minWidth:0}}>{label}</FinalText></View>
+        {inbox.value&&!inboxItems.length?<FinalText size={14} secondary style={{paddingVertical:12,textAlign:"center"}}>{c("建立联系后，消息会出现在这里","Messages appear here once you connect")}</FinalText>:null}
+      </View> : <><FinalDivider/>{entries.map(([screen, fresh, label, detail, status, loading, unreadCount], i) =>
+                <Pressable key={screen} testID={i ? "final-open-received" : "final-open-my-questions"} accessibilityRole="button" accessibilityLabel={[label,detail,status,alphaCommunityLayout&&unreadCount?bottleUnreadLabel(unreadCount):null].filter(Boolean).join("，")} accessibilityState={{busy:loading}} onPress={() => go(screen)} style={st.questionEntry}>
+                  <View style={st.questionTitle}>{alphaCommunityLayout?<BottleStatus count={unreadCount} testID={`final-bottle-icon-${screen}`} hub/>:<View style={{width:29,height:24,justifyContent:"center",flexShrink:0}}>{fresh?<Image testID={`final-bottle-icon-${screen}`} source={require("@/assets/final-flow-20261101/bottle-unread.svg")} style={{width:31,height:29}} contentFit="contain" accessible={false} accessibilityElementsHidden />:<View style={{width:24,height:24,alignItems:"center",justifyContent:"center"}}><Image testID={`final-bottle-icon-${screen}`} source={require("@/assets/final-flow-20261101/community-question-bottle-coral.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false} accessibilityElementsHidden /></View>}</View>}<FinalText size={16} style={{lineHeight:24,flex:1,minWidth:0}}>{label}</FinalText></View>
                   <FinalText size={14} secondary numberOfLines={1} ellipsizeMode="tail" style={{lineHeight:20,minHeight:22}}>{detail}</FinalText>
                   {status?<FinalText size={12} secondary numberOfLines={1} ellipsizeMode="tail" style={{lineHeight:18}}>{status}</FinalText>:null}
                   <View pointerEvents="none" style={st.questionChevron}><FinalText size={20} style={{lineHeight:24,color:FINAL_COLOR.accent}}>›</FinalText></View>
@@ -859,12 +1151,20 @@ export default function CommunityFinal() {
         {choosing?<View style={{height:40,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar/><FinalText style={{fontWeight:"500"}}>{state.questionVersion==="original"?c("选择原版","Use original"):c("选择Nuri润色版","Use Nuri version")}</FinalText></View>:null}
         {(choosing?["question","polished"] as const:["question"] as const).map(slot=>{
           const original=slot==="question",selected=original===(state.questionVersion==="original"),focusEpoch=questionFocusEpoch.current;
-          return <View key={slot} style={{height:original?176:80,borderWidth:1,borderRadius:18,borderColor:choosing&&selected?FINAL_COLOR.selected:"#E0D8DC",backgroundColor:"rgba(255,250,245,.9)",overflow:"hidden"}}>
-            <NuriTextInput testID={original?"final-question-input":"final-polished-input"} accessibilityLabel={original?c("我的原始问题","My original question"):c("Nuri版本草稿","Nuri version draft")} multiline maxLength={1000} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} onFocus={()=>{
-              if(filterMounted.current&&filterFocused.current&&questionFocusEpoch.current===focusEpoch&&["compose","original","polished"].includes(latest.current.screen))setQuestionFocusedInput(slot);
-            }} onBlur={()=>{
-              if(filterMounted.current&&questionFocusEpoch.current===focusEpoch)setQuestionFocusedInput(current=>current===slot?null:current);
-            }} placeholder={c("写下你的问题…","Write your question…")} placeholderTextColor="#918896" style={{height:original?122:78,padding:16,paddingRight:choosing?38:16,fontSize:16,lineHeight:24,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined}}/>
+          const draftText=draft(slot);
+          const fontFamily=locale==="zh-CN"?"NotoSansSC_400Regular":undefined;
+          const fieldStyle={minHeight:original?122:78,padding:16,paddingRight:choosing?38:16};
+          return <View key={slot} style={{minHeight:original?176:80,borderWidth:1,borderRadius:18,borderColor:choosing&&selected?FINAL_COLOR.selected:"#E0D8DC",backgroundColor:"rgba(255,250,245,.9)"}}>
+            <View>
+              {Platform.OS==="web"?<View aria-hidden pointerEvents="none" style={fieldStyle}>
+                <FinalText style={{opacity:0,lineHeight:24,fontFamily}}>{draftText+"\u200b"}</FinalText>
+              </View>:null}
+              <NuriTextInput testID={original?"final-question-input":"final-polished-input"} accessibilityLabel={original?c("我的原始问题","My original question"):c("Nuri版本草稿","Nuri version draft")} multiline scrollEnabled={false} maxLength={1000} value={draftText} onChangeText={text=>setDraft(slot,text)} onFocus={()=>{
+                if(filterMounted.current&&filterFocused.current&&questionFocusEpoch.current===focusEpoch&&["compose","original","polished"].includes(latest.current.screen))setQuestionFocusedInput(slot);
+              }} onBlur={()=>{
+                if(filterMounted.current&&questionFocusEpoch.current===focusEpoch)setQuestionFocusedInput(current=>current===slot?null:current);
+              }} placeholder={c("写下你的问题…","Write your question…")} placeholderTextColor="#918896" style={[fieldStyle,{fontSize:16,lineHeight:24,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily},Platform.OS==="web"&&{...StyleSheet.absoluteFillObject,width:"100%",height:"100%"}]}/>
+            </View>
             {original?<View style={{height:44,paddingHorizontal:8,flexDirection:"row",alignItems:"center"}}><Pressable testID="final-question-mic" accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} onPress={()=>void startVoice(selectedDraft)} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable></View>:null}
             {choosing?<Pressable accessibilityRole="radio" accessibilityState={{selected,checked:selected}} aria-checked={selected} accessibilityLabel={original?c("选择原版","Use original"):c("选择Nuri润色版","Use Nuri version")} onPress={()=>dispatch({type:"version",version:original?"original":"polished"})} testID={original?"final-question-original":"final-question-version"} style={{position:"absolute",right:-3,top:-3,width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={selected?require("@/assets/final-flow-20261101/community-radio-selected.svg"):require("@/assets/final-flow-20261101/community-radio-empty.svg")} style={{width:16,height:16}} contentFit="contain" accessible={false}/></Pressable>:null}
           </View>;
@@ -876,19 +1176,24 @@ export default function CommunityFinal() {
       <View style={{minHeight:44,flexDirection:"row",gap:12,alignItems:"center",flexWrap:"wrap"}}>
         {(["showAge","anonymous"] as const).map(key=><View key={key} style={{flexDirection:"row",alignItems:"center",gap:12}}><FinalText size={12} secondary style={{lineHeight:18}}>{key==="showAge"?c("显示孩子年龄","Show child's age"):c("匿名","Anonymous")}</FinalText><CommunitySwitch value={state[key]} label={key==="showAge"?c("显示孩子年龄","Show child's age"):c("匿名","Anonymous")} onChange={()=>dispatch({type:"toggle",key})} testID={"final-question-"+key}/></View>)}
       </View>
-    </>,questionFocusedInput?undefined:<FinalButton label={c("预览问题","Preview question")} disabled={!selectedQuestionText(state)} onPress={()=>dispatch({type:"previewQuestion"})} testID="final-preview-question"/>);
+    </>,questionFocusedInput?undefined:<FinalButton label={c("预览问题","Preview question")} disabled={!selectedQuestionText(state)} onPress={()=>dispatch({type:"previewQuestion"})} testID="final-preview-question"/>,true);
   }
   if(state.screen==="preview"){
     const text=selectedQuestionText(state);
+    const sendError=state.sendKey?state.sendError:null;
     return page(<>
       <FinalSurface radius={20} style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)",minHeight:136}} contentStyle={{padding:16,gap:12}}>
         <FinalText size={12} secondary style={{lineHeight:18}}>{state.questionVersion==="polished"?c("Nuri 润色版","Nuri version"):c("我的原话","My words")}</FinalText>
         <FinalText size={20} style={{fontWeight:"500",lineHeight:28}}>{text}</FinalText>
       </FinalSurface>
       <View style={{minHeight:42,flexDirection:"row",alignItems:"flex-start",gap:12}}><SampleAvatar/><View style={{flex:1,minWidth:0}}><FinalText style={{fontWeight:"500",lineHeight:24}}>{state.anonymous?c("匿名家长","Anonymous parent"):me.value?.profile?.display_name??c("你的社区名字","Your community name")}</FinalText>{state.showAge?<FinalText size={12} secondary style={{lineHeight:18}}>{c("会显示你最小孩子的年龄","Your youngest child's age will be shown")}</FinalText>:null}</View></View>
-    </>,<View style={st.actionRow}><FinalButton small secondary label={c("返回编辑","Edit")} onPress={()=>dispatch({type:"back"})}/><FinalButton small disabled={busy} label={c("发送漂流瓶","Send bottle")} onPress={sendQuestion} testID="final-send-question"/></View>,false,{bodyStyle:{padding:12,paddingBottom:16,gap:16},cardStyle:{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"},mainStyle:{paddingTop:12}});
+      {sendError?<FinalText testID="final-bottle-send-error" size={14} style={{color:FINAL_COLOR.coral}}>{sendError}</FinalText>:null}
+    </>,<View style={st.actionRow}>
+      <FinalButton small secondary label={questionSendPending?c("返回社区","Back to community"):c("返回编辑","Edit")} onPress={()=>questionSendPending?go("hub"):dispatch({type:"back"})}/>
+      <FinalButton small disabled={busy||questionSendPending||!text} label={questionSendPending?c("正在发送","Sending"):c("发送漂流瓶","Send bottle")} onPress={()=>void sendQuestion()} testID="final-send-question"/>
+    </View>,false,{bodyStyle:{padding:12,paddingBottom:16,gap:16},cardStyle:{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"},mainStyle:{paddingTop:12}});
   }
-  if(state.screen==="inviteSent")return page(<View style={{height:463,gap:8}}><View style={{height:322,alignItems:"center"}}><Image source={require("@/assets/final-flow-20261101/community-invite-sent.svg")} style={{width:179,height:223,marginTop:42}} contentFit="contain" accessible={false}/></View><View style={{gap:6}}><FinalText size={24} style={{fontWeight:"500",lineHeight:24,textAlign:"center"}}>{c("你的邀请已发送","Your invitation has been sent")}</FinalText><FinalText size={14} secondary style={{lineHeight:20,textAlign:"center"}}>{c("对方通过后，你们就可以开始聊天","You can chat once they accept")}</FinalText></View></View>,<View style={{alignItems:"center",gap:12}}><FinalButton label={c("返回社区","Back to community")} onPress={()=>go("hub")}/></View>,true,{bodyStyle:{paddingVertical:32},cardStyle:{maxHeight:567},mainStyle:{paddingBottom:29}});
+  if(state.screen==="inviteSent")return page(<View style={{minHeight:463,gap:8}}><View style={{height:322,alignItems:"center"}}><Image source={require("@/assets/final-flow-20261101/community-invite-sent.svg")} style={{width:179,height:223,marginTop:42}} contentFit="contain" accessible={false}/></View><View style={{gap:6}}><FinalText testID="final-invite-sent-title" size={24} style={{fontWeight:"500",lineHeight:32,paddingVertical:2,textAlign:"center",flexShrink:0}}>{c("你的邀请已发送","Your invitation has been sent")}</FinalText><FinalText testID="final-invite-sent-description" size={14} secondary style={{lineHeight:22,textAlign:"center",flexShrink:0}}>{c("对方通过后，你们就可以开始聊天","You can chat once they accept")}</FinalText></View></View>,<View style={{alignItems:"center",gap:12}}><FinalButton label={c("返回社区","Back to community")} onPress={()=>go("hub")} testID="final-invite-sent-return"/></View>,true,{bodyStyle:{paddingVertical:32},cardStyle:{maxHeight:567},mainStyle:{paddingBottom:29}});
   if(state.screen==="connected"||state.screen==="noMatches"){
     const connected=state.screen==="connected";
     const shared=(parentView.value?.parent.intents??[]).filter(code=>me.value?.profile?.intents.includes(code)).map(code=>intentLabel(intentIndexes([code])[0],true));
@@ -899,56 +1204,79 @@ export default function CommunityFinal() {
       <View style={{gap:connected?8:12,width:"100%"}}><FinalText size={24} style={{lineHeight:32,fontWeight:"500",textAlign:"center"}}>{connected?c("你和 "+state.personName+" 已建立联系","You and "+state.personName+" are connected"):c("暂时没有合适的家长","No matching parents yet")}</FinalText><FinalText size={12} secondary style={{lineHeight:18,textAlign:"center"}}>{connected?(shared.length?shared.join("\n"):c("打个招呼，开始聊聊吧","Say hello and start chatting")):c("换个筛选条件，或完善你的档案\n让更多家长认识你","Try other filters, or complete your profile")}</FinalText></View>
     </>,<FinalButton label={connected?c("开始聊天","Start chatting"):c("修改我的档案","Edit my profile")} onPress={()=>connected?dispatch({type:"person",person:state.person,name:state.personName,screen:"chat"}):go("profile")} testID={connected?"final-connected-chat":"final-no-matches-profile"}/>,true,{bodyStyle:{paddingVertical:32},cardStyle:{maxHeight:connected?571:570},mainStyle:{paddingBottom:26}});
   }
-  if(state.screen==="sent")return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,paddingHorizontal:12,paddingTop:0,paddingBottom:34,alignItems:"center",justifyContent:"center"}}>
-    <FinalSurface testID="final-community-sent" style={{width:354,maxWidth:"100%",height:340}} contentStyle={{height:340,paddingHorizontal:32,alignItems:"center",justifyContent:"center"}}>
-      <FinalText size={20} secondary style={{fontWeight:"500",lineHeight:28,textAlign:"center"}}>{c("发送成功","Sent successfully")}</FinalText>
-      <View style={{width:128,height:128,alignItems:"center",justifyContent:"center"}}><View style={{width:64,height:64,borderRadius:32,backgroundColor:"rgba(217,217,217,.3)",alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-bottle-gray.svg")} style={{width:10.9688,height:23.2031,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/></View></View>
-      <FinalText size={14} secondary style={{lineHeight:20,textAlign:"center"}}>{lastRecipients.current===0?c("社区里暂时没有能收到这个问题的家长","No parents can receive this question yet"):c("请静静等待回复","Please wait for replies")}</FinalText>
-    </FinalSurface>
-    <View style={{position:"absolute",bottom:40,alignSelf:"center"}}><FinalButton label={c("继续","Continue")} onPress={()=>go("myQuestions")}/></View>
-  </View></NuriKeyboardFrame>;
+  if(state.screen==="sent"||state.screen==="sending"){
+    const sent=state.screen==="sent";
+    const description=sent
+      ?lastRecipients.current===0?c("社区里暂时没有能收到这个问题的家长","No parents can receive this question yet"):c("请静静等待回复","Please wait for replies")
+      :c("你可以先返回社区，发送会继续。","You can return to Community while your bottle sends.");
+    return <NuriKeyboardFrame><ScrollView style={{flex:1,minHeight:0}} contentContainerStyle={{flexGrow:1,justifyContent:"center",alignItems:"center",paddingHorizontal:12,paddingBottom:34,gap:24}}>
+      <FinalSurface testID={`final-community-${state.screen}`} style={{width:354,maxWidth:"100%"}} contentStyle={{paddingHorizontal:24,paddingVertical:24,alignItems:"center",justifyContent:"center"}}>
+        <FinalText size={20} secondary style={{fontWeight:"500",lineHeight:28,textAlign:"center"}}>{sent?c("发送成功","Sent successfully"):c("正在发送","Sending")}</FinalText>
+        {sent?<View style={{width:128,height:128,alignItems:"center",justifyContent:"center"}}><View style={{width:64,height:64,borderRadius:32,backgroundColor:"rgba(217,217,217,.3)",alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-bottle-gray.svg")} style={{width:10.9688,height:23.2031,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/></View></View>:<BottleSendVisual/>}
+        <FinalText size={14} secondary style={{lineHeight:20,textAlign:"center"}}>{description}</FinalText>
+      </FinalSurface>
+      {sent?<View style={[st.actionRow,{alignItems:"stretch"}]}>
+        <FinalButton small secondary style={st.stretchButton} label={c("我的问题","My questions")} onPress={()=>go("myQuestions")} testID="final-bottle-sent-my-questions"/>
+        <FinalButton small style={st.stretchButton} label={c("完成","Done")} onPress={()=>go("hub")} testID="final-bottle-sent-done"/>
+      </View>:<FinalButton secondary label={c("返回社区","Back to community")} onPress={()=>go("hub")} testID="final-bottle-sending-back"/>}
+    </ScrollView></NuriKeyboardFrame>;
+  }
   if(state.screen==="responseSent")return page(<View style={{gap:8,alignItems:"center"}}>
     <Image source={require("@/assets/final-flow-20261101/community-experience-sent.svg")} style={{width:179,height:223}} contentFit="contain" accessible={false}/>
     <View style={{gap:4,width:"100%"}}><FinalText style={{fontWeight:"500",lineHeight:24,textAlign:"center"}}>{c("你的经验已经送到了","Your experience has been shared")}</FinalText><FinalText size={14} secondary style={{lineHeight:20,textAlign:"center"}}>{c("谢谢你，把自己走过的路分享给另一位家长。","Thank you for sharing your experience with another parent.")}</FinalText></View>
   </View>,<View style={{alignItems:"center",gap:12}}><FinalButton label={c("返回社区","Back to community")} onPress={()=>go("hub")}/></View>,false,{bodyStyle:{paddingHorizontal:24,paddingVertical:32},mainStyle:{paddingTop:12}});
-  // The animation stays only while the real request is in flight.
-  if(state.screen==="sending")return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,paddingHorizontal:12,paddingTop:0,paddingBottom:34,alignItems:"center",justifyContent:"center"}}>
-    <FinalSurface testID="final-community-sending" style={{width:354,maxWidth:"100%",height:340}} contentStyle={{height:340,paddingHorizontal:32,alignItems:"center",justifyContent:"center"}}>
-      <FinalText size={20} secondary style={{fontWeight:"500",lineHeight:28,textAlign:"center"}}>{c("正在发送","Sending")}</FinalText><BottleSendVisual/><FinalText size={14} secondary style={{lineHeight:20,textAlign:"center"}}>{c("让漂流瓶轻轻出发…","Let the bottle set off gently…")}</FinalText>
-    </FinalSurface>
-  </View></NuriKeyboardFrame>;
-
   // ── My questions and their selection ─────────────────────────────────────
   if(["myQuestions","selection","close","delete"].includes(state.screen)){
     const all=mine.value?.items??[];
-    const selecting=state.screen!=="myQuestions",visible=all.filter(q=>q.body.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-    const listQuestion=(q:Question)=><FinalSurface style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{padding:12,gap:12}}>
-      <View style={{gap:8,paddingRight:selecting?24:0}}>
-        <FinalText size={12} secondary style={{lineHeight:18}}>{q.anonymous?c("匿名提问","Asked anonymously"):c("我的问题","My question")}</FinalText>
-        <FinalText size={20} style={{fontWeight:"500",lineHeight:28}}>{q.body}</FinalText>
-      </View>
-      <View style={{height:32,flexDirection:"row",alignItems:"center",gap:12}}>
-        <View style={{width:32,height:32,alignItems:"center",justifyContent:"center"}}><Image source={q.status==="closed"?require("@/assets/final-flow-20261101/community-question-bottle-gray.svg"):require("@/assets/final-flow-20261101/community-question-bottle-coral.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/>{q.status!=="closed"?<UnreadBadge count={q.reply_count} style={{position:"absolute",left:16,top:10}}/>:null}</View>
-        <FinalText size={12} secondary style={{flex:1,lineHeight:20}} numberOfLines={1}>{q.status==="closed"?c("已关闭","Closed"):q.reply_count+" "+c("条回复","replies")+" · "+shortTime(q.created_at,en)}</FinalText>
-      </View>
-      {selecting?<View pointerEvents="none" style={{position:"absolute",right:12,top:12,width:20,height:20}}><Image source={state.selected.includes(q.question_id)?require("@/assets/final-flow-20261101/community-checkbox-selected.svg"):require("@/assets/final-flow-20261101/community-checkbox-empty.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></View>:null}
-    </FinalSurface>;
-    return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,paddingTop:12,paddingBottom:selecting?108:34}}>
+    const selecting=state.screen!=="myQuestions";
+    const needle=search.toLocaleLowerCase();
+    const visible=all.filter(q=>q.body.toLocaleLowerCase().includes(needle)).sort((a,b)=>{
+      if(a.status!==b.status)return a.status==="open"?-1:1;
+      const aTime=Date.parse(a.created_at),bTime=Date.parse(b.created_at);
+      return (Number.isNaN(bTime)?-Infinity:bTime)-(Number.isNaN(aTime)?-Infinity:aTime)||0;
+    });
+    const listQuestion=(q:Question)=>{
+      const closed=q.status==="closed";
+      return <FinalSurface surfaceColor={closed?"#E7E5E7":undefined} style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{padding:12,gap:12}}>
+        <View style={{gap:8,paddingRight:selecting?24:0}}>
+          <FinalText size={12} secondary style={{lineHeight:18}}>{q.anonymous?c("匿名提问","Asked anonymously"):c("我的问题","My question")}</FinalText>
+          <FinalText size={20} secondary={closed} style={{fontWeight:"500",lineHeight:28}}>{q.body}</FinalText>
+        </View>
+        <View style={{height:32,flexDirection:"row",alignItems:"center",gap:12}}>
+          {alphaCommunityLayout?<BottleStatus count={unreadReplies.get(q.question_id)??0} testID={"final-my-bottle-"+q.question_id}/>:<View style={{width:32,height:32,alignItems:"center",justifyContent:"center"}}><Image source={closed?require("@/assets/final-flow-20261101/community-question-bottle-gray.svg"):require("@/assets/final-flow-20261101/community-question-bottle-coral.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/>{!closed?<UnreadBadge count={q.reply_count} style={{position:"absolute",left:16,top:10}}/>:null}</View>}
+          <FinalText size={12} secondary style={{flex:1,lineHeight:20}} numberOfLines={1}>{closed?c("已关闭","Closed"):q.reply_count+" "+c("条回复","replies")+" · "+shortTime(q.created_at,en)}</FinalText>
+        </View>
+        {selecting?<View pointerEvents="none" style={{position:"absolute",right:12,top:12,width:20,height:20}}><Image source={state.selected.includes(q.question_id)?require("@/assets/final-flow-20261101/community-checkbox-selected.svg"):require("@/assets/final-flow-20261101/community-checkbox-empty.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></View>:null}
+      </FinalSurface>;
+    };
+    return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,paddingTop:12,paddingBottom:34}}>
       <View style={{height:44,flexDirection:"row",alignItems:"center",gap:12,paddingHorizontal:12,zIndex:3}}>
         <View style={{flex:1,minWidth:0}}><Search compact iconSize={20} value={search} onChange={setSearch} placeholder={c("搜索","Search")}/></View>
-        {selecting?<FinalSurface radius={22} surfaceColor={FINAL_COLOR.base} style={{width:104,height:44,boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}} contentStyle={{flexDirection:"row"}}>
-          <Pressable accessibilityRole="button" accessibilityLabel={c("更多操作","More actions")} testID="final-question-more" onPress={()=>setSelectionMenu(v=>!v)} style={{width:52,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-more.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel={c("退出选择","Exit selection")} onPress={()=>{setSelectionMenu(false);dispatch({type:"back"});}} testID="final-exit-selection" style={{width:52,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-selection-exit.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
-        </FinalSurface>:<Pressable accessibilityRole="button" onPress={()=>{setSelectionMenu(false);go("selection");}} testID="final-select-questions" style={{width:58,height:44,justifyContent:"center"}}><View style={{height:28,borderRadius:22,backgroundColor:FINAL_COLOR.base,alignItems:"center",justifyContent:"center",boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("选择","Select")}</FinalText></View></Pressable>}
+        {selecting?<FinalSurface radius={22} surfaceColor={FINAL_COLOR.base} style={{width:44,height:44,boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}}>
+          <Pressable accessibilityRole="button" accessibilityLabel={c("退出选择","Exit selection")} onPress={()=>dispatch({type:"back"})} testID="final-exit-selection" style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-selection-exit.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
+        </FinalSurface>:<Pressable accessibilityRole="button" onPress={()=>go("selection")} testID="final-select-questions" style={{width:58,height:44,justifyContent:"center"}}><View style={{height:28,borderRadius:22,backgroundColor:FINAL_COLOR.base,alignItems:"center",justifyContent:"center",boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("选择","Select")}</FinalText></View></Pressable>}
       </View>
       {!selecting?<View style={{height:48,paddingTop:12,paddingHorizontal:12,justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{all.length} {c("个漂流瓶","bottles")}</FinalText></View>:null}
       <ScrollView testID="final-my-questions-scroll" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0,marginTop:-12}} contentContainerStyle={{paddingHorizontal:12,paddingTop:24,paddingBottom:24,gap:16}}>
         {pending(mine)}{notice}
-        {visible.map(q=><Pressable key={q.question_id} accessibilityRole={selecting?"checkbox":"button"} accessibilityState={selecting?{checked:state.selected.includes(q.question_id)}:undefined} onPress={()=>selecting?dispatch({type:"select",id:q.question_id}):dispatch({type:"openQuestion",id:q.question_id})} testID={selecting?"final-select-"+q.question_id:"final-question-"+q.question_id}>{listQuestion(q)}</Pressable>)}
+        {visible.map(q=>{
+          const unreadCount=unreadReplies.get(q.question_id)??0;
+          return <Pressable key={q.question_id} accessibilityRole={selecting?"checkbox":"button"} accessibilityState={selecting?{checked:state.selected.includes(q.question_id)}:undefined} accessibilityHint={alphaCommunityLayout&&unreadCount?bottleUnreadLabel(unreadCount):undefined} onPress={()=>selecting?dispatch({type:"select",id:q.question_id}):dispatch({type:"openQuestion",id:q.question_id})} testID={selecting?"final-select-"+q.question_id:"final-question-"+q.question_id}>{listQuestion(q)}</Pressable>;
+        })}
         {mine.value&&!visible.length?<FinalText secondary style={{padding:24,textAlign:"center"}}>{all.length?c("没有匹配的问题","No matching questions"):c("还没有发出漂流瓶","No bottles sent yet")}</FinalText>:null}
       </ScrollView>
-      {selecting?<View style={{position:"absolute",left:0,right:0,bottom:46,alignItems:"center"}}><FinalSurface radius={25} surfaceColor={FINAL_COLOR.base} style={{width:228,height:50,boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}} contentStyle={{height:50,alignItems:"center",justifyContent:"center"}}><FinalText size={14} secondary style={{fontWeight:"500",lineHeight:21}}>{c("已选择 "+state.selected.length+" 个漂流瓶",state.selected.length+" bottles selected")}</FinalText></FinalSurface></View>:null}
-      {selecting&&selectionMenu?<View style={{position:"absolute",top:56,right:12,zIndex:10}}><FinalSurface radius={24} surfaceColor={FINAL_COLOR.base} style={{width:212,height:120,boxShadow:"0px 2px 12px rgba(89,71,92,.12)"}} contentStyle={{paddingVertical:8}}>{(["close","delete"] as const).map(action=><Pressable key={action} testID={"final-question-menu-"+action} accessibilityRole="button" disabled={!state.selected.length} onPress={()=>{setSelectionMenu(false);go(action);}} style={{height:52,paddingHorizontal:20,justifyContent:"center",opacity:state.selected.length?1:.5}}><FinalText style={{color:action==="delete"?FINAL_COLOR.coral:FINAL_COLOR.secondary}}>{action==="close"?c("关闭漂流瓶","Close bottles"):c("删除漂流瓶","Delete bottles")}</FinalText></Pressable>)}</FinalSurface></View>:null}
+      {!selecting&&!alphaCommunityLayout?<View testID="final-my-questions-footer" style={{flexShrink:0,paddingTop:16,paddingHorizontal:24}}>
+        <FinalButton label={c("完成","Done")} onPress={()=>{Keyboard.dismiss();go("hub");}} testID="final-my-questions-done"/>
+      </View>:null}
+      {selecting?<View testID="final-question-selection-footer" style={{flexShrink:0,paddingTop:8,paddingHorizontal:24,gap:8}}>
+        <FinalText size={12} secondary style={{lineHeight:18,textAlign:"center"}}>
+          {en?`${state.selected.length} ${state.selected.length===1?"bottle":"bottles"} selected`:translate(locale,"已选择 {count} 个漂流瓶",{count:state.selected.length})}
+        </FinalText>
+        <View style={[st.actionRow,{alignItems:"stretch"}]}>
+          <FinalButton small secondary style={st.stretchButton} disabled={!state.selected.length||busy} label={c("关闭漂流瓶","Close bottles")} onPress={()=>{Keyboard.dismiss();go("close");}} testID="final-question-close"/>
+          <FinalButton small style={st.stretchButton} disabled={!state.selected.length||busy} label={c("删除漂流瓶","Delete bottles")} onPress={()=>{Keyboard.dismiss();go("delete");}} testID="final-question-delete"/>
+        </View>
+      </View>:null}
     </View>{state.screen==="close"||state.screen==="delete"?<Modal transparent animationType="fade" onRequestClose={()=>dispatch({type:"back"})}><BlurView tint="light" intensity={40} style={[st.modal,{backgroundColor:"rgba(254,250,247,.5)"}]}><FinalSurface surfaceColor="rgba(255,255,255,.94)" style={{width:354,maxWidth:"100%",boxShadow:"0px 4px 8px rgba(89,71,92,.14)"}} contentStyle={{padding:24,gap:16}}><FinalText size={20} secondary style={{lineHeight:28,fontWeight:"500"}}>{state.screen==="close"?c("确定关闭这 "+state.selected.length+" 个漂流瓶？","Close these "+state.selected.length+" bottles?"):c("确定删除这 "+state.selected.length+" 个漂流瓶？","Delete these "+state.selected.length+" bottles?")}</FinalText><FinalText size={14} secondary>{state.screen==="close"?c("关闭后不能再收到新的回复。","Closed bottles receive no new replies."):c("删除后，你和收到问题的家长都看不到它。","Deleted bottles disappear for you and the parents who received them.")}</FinalText>{notice}<View style={st.actionRow}><FinalButton small secondary label={c("取消","Cancel")} onPress={()=>dispatch({type:"back"})}/><FinalButton small disabled={busy} label={state.screen==="close"?c("确定关闭","Close"):c("确定删除","Delete")} onPress={()=>confirmQuestions(state.screen==="close"?"close":"delete")} testID="final-confirm-questions"/></View></FinalSurface></BlurView></Modal>:null}</NuriKeyboardFrame>;
   }
 
@@ -974,6 +1302,7 @@ export default function CommunityFinal() {
   // ── Replies, comment threads, answering ──────────────────────────────────
   if(["replies","comments","replyExpanded","replyDetail","replyKeyboard","respond","responsePrompt"].includes(state.screen)){
     const responding=state.screen==="respond",expanded=state.screen==="replyExpanded",prompting=state.screen==="responsePrompt",thread=state.screen==="comments",detail=thread||state.screen==="replyDetail"||state.screen==="replyKeyboard";
+    const adaptiveReply=alphaCommunityLayout&&detail;
     const slot=responding?"answer:"+state.questionID:"comment:"+state.questionID+":"+state.replyTarget;
     const question:Question|undefined=replies.value?.question??askedQuestion.value?.question;
     const closed=question?.status==="closed";
@@ -982,19 +1311,24 @@ export default function CommunityFinal() {
     const target=items.find(r=>r.reply_id===state.replyTarget);
     const threadComments:Comment[]=comments.value?.items?[...comments.value.items].reverse():[];
     const canPost=!closed&&(detail?comments.value?.can_post!==false:!!allThread?.can_post);
+    const canEdit=!closed&&(!expanded||!replies.value||canPost);
+    const sendDisabled=!canEdit||busy||!draft(slot).trim();
+    const openReplyAll=()=>{
+      if(canPost&&latest.current.screen==="replies")dispatch({type:"replyTarget",target:"all",expanded:true});
+    };
     const questionContext=<FinalSurface testID="final-question-context" style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{padding:12,gap:8}}>
       <View style={{height:responding?40:32,flexDirection:"row",alignItems:"center",gap:12}}><View style={{width:28,height:28,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/community-reply-question-bottle.svg")} style={{width:7.875,height:16.3125,transform:[{rotate:"45deg"}]}} contentFit="contain" accessible={false}/></View><FinalText size={12} secondary style={{flex:1,lineHeight:18}}>{question?(question.is_mine?c("我的问题","My question"):nameOf(question.author)):""}</FinalText><FinalText size={12} secondary style={{lineHeight:18}}>{shortTime(question?.created_at,en)}</FinalText>{question&&!question.is_mine?reportButton("question",question.question_id,c("举报这个问题","Report this question"),!question.anonymous,"final-report-question"):null}</View>
-      <FinalSurface radius={20} style={{height:responding?112:84,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{height:responding?112:84}}><ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{padding:16}}><FinalText size={20} style={{fontWeight:"500",lineHeight:28}}>{question?.body??""}</FinalText></ScrollView></FinalSurface>
+      <FinalSurface radius={20} style={{boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{minHeight:responding?112:84,padding:16}}><FinalText size={20} style={{fontWeight:"500",lineHeight:28}}>{question?.body??""}</FinalText></FinalSurface>
     </FinalSurface>;
     const editor=(placeholder:string,onSend:()=>void)=><View style={{gap:8}}>
       {closed?<FinalText size={12} secondary>{c("此问题已关闭，不能继续回复。","This question is closed; replies are disabled.")}</FinalText>:null}
-      <View testID="final-experience-editor" style={{height:145,borderRadius:18,borderWidth:1,borderColor:"rgba(115,92,132,.25)",backgroundColor:"rgba(255,250,245,.9)",padding:12,justifyContent:"space-between"}}>
-        <NuriTextInput testID={"final-input-"+slot} accessibilityLabel={placeholder} editable={!closed} multiline maxLength={responding?2000:1000} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} placeholder={placeholder} placeholderTextColor="#918896" style={{flex:1,minHeight:48,padding:0,fontSize:14,lineHeight:20,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined}}/>
+      <View testID="final-experience-editor" style={{height:adaptiveReply?undefined:145,gap:adaptiveReply?8:undefined,borderRadius:18,borderWidth:1,borderColor:"rgba(115,92,132,.25)",backgroundColor:"rgba(255,250,245,.9)",padding:12,justifyContent:"space-between"}}>
+        {adaptiveReply?<PrivateReplyField key={slot} testID={"final-input-"+slot} editable={canEdit} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} placeholder={placeholder}/>:<NuriTextInput ref={expanded?replyAllInput:undefined} testID={"final-input-"+slot} accessibilityLabel={placeholder} editable={canEdit} multiline maxLength={responding?2000:1000} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} placeholder={placeholder} placeholderTextColor="#918896" style={{flex:1,minHeight:48,padding:0,fontSize:14,lineHeight:20,color:FINAL_COLOR.ink,textAlignVertical:"top",fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined}}/>}
         <View style={{height:24,flexDirection:"row",alignItems:"center",gap:8}}>
-          <Pressable accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} disabled={closed||!!voice} onPress={()=>void startVoice(slot)} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel={c("添加表情","Add emoji")} disabled={closed} onPress={()=>setDraft(slot,draft(slot)+" 🙂")} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/community-emoji.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={c("语音输入","Voice input")} disabled={!canEdit||!!voice} onPress={()=>void startVoice(slot)} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={c("添加表情","Add emoji")} disabled={!canEdit} onPress={()=>setDraft(slot,draft(slot)+" 🙂")} style={{width:24,height:24,alignItems:"center",justifyContent:"center"}} hitSlop={8}><Image source={require("@/assets/final-flow-20261101/community-emoji.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
           <View style={{flex:1}}/>
-          <FrostedPressable accessibilityRole="button" testID="final-send-experience" disabled={closed||busy||!draft(slot).trim()} onPress={onSend} style={{width:50,height:24,borderRadius:18,backgroundColor:FINAL_COLOR.coral,alignItems:"center",justifyContent:"center",opacity:closed||busy||!draft(slot).trim()?.6:1}} hitSlop={8}><FinalText size={14} style={{lineHeight:20,color:"white"}}>{c("发送","Send")}</FinalText></FrostedPressable>
+          <FrostedPressable accessibilityRole="button" testID="final-send-experience" disabled={sendDisabled} onPress={onSend} style={{width:50,height:24,borderRadius:18,backgroundColor:FINAL_COLOR.coral,alignItems:"center",justifyContent:"center",opacity:sendDisabled ? .6 : 1}} hitSlop={8}><FinalText size={14} style={{lineHeight:20,color:"white"}}>{c("发送","Send")}</FinalText></FrostedPressable>
         </View>
       </View>
       {!closed?voiceBar(slot):null}
@@ -1006,65 +1340,74 @@ export default function CommunityFinal() {
       <View style={st.quietDivider}/>
     </View>;
     const commentRow=(entry:Comment)=><View key={entry.comment_id} style={{gap:8}}><View style={{flexDirection:"row",alignItems:"center",gap:8}}><FinalText size={12} secondary style={{flex:1}}>{entry.is_mine?c("你的回复","Your reply"):nameOf(entry.author)}</FinalText>{!entry.is_mine?reportButton("comment",entry.comment_id,c("举报这条回复","Report this comment"),!!entry.author.parent_id&&!entry.author.anonymous,"final-report-comment-"+entry.comment_id):null}</View><FinalText size={14} style={{lineHeight:20}}>{entry.body}</FinalText><View style={st.quietDivider}/></View>;
-    if(prompting)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:12}}>{pending(askedQuestion)}{questionContext}<View style={{height:44,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar prompt/><Pressable accessibilityRole="button" testID="final-share-experience" onPress={()=>go("respond")} style={{height:44,paddingHorizontal:24,borderRadius:999,backgroundColor:FINAL_COLOR.selected,alignItems:"center",justifyContent:"center",boxShadow:"0px 1px 15px rgba(92,86,98,.18)"}}><FinalText style={{fontWeight:"500",color:"white"}}>{c("你有想法吗？","Would you like to share?")}</FinalText></Pressable></View></View>{reportSheet}</NuriKeyboardFrame>;
-    if(responding||expanded&&(replyKeyboardVisible||appKeyboardVisible))return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:12}}>
-      <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}}>{questionContext}</ScrollView>
-      <FinalSurface testID={"final-community-"+state.screen} style={{boxShadow:"0px 0px 8px rgba(92,86,98,.12)"}} contentStyle={{padding:16,gap:8}}><FinalText size={12} secondary style={{lineHeight:18}}>{responding?c("我的经验","My experience"):c("回复所有人","Reply to everyone")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),responding?respond:()=>comment(slot))}</FinalSurface>
+    const replyListContent=()=> <>
+      <FinalText size={12} secondary style={{lineHeight:18}}>{answerer?c("我的经验","My experience"):c("收到 "+items.length+" 位家长的经验",items.length===1?"1 parent replied":`${items.length} parents replied`)}</FinalText>
+      {pending(replies)}
+      {items.map(r=>answer(r))}
+      {replies.value&&!items.length?<FinalText secondary style={{textAlign:"center"}}>{c("还没有家长回复，再等等","No replies yet")}</FinalText>:null}
+      {state.replyTarget==="all"?threadComments.map(commentRow):null}
+    </>;
+    if(prompting)return <NuriKeyboardFrame><ScrollView style={{flex:1,minHeight:0}} contentContainerStyle={{padding:12,paddingBottom:34,gap:12}}>{pending(askedQuestion)}{questionContext}<View style={{height:44,flexDirection:"row",alignItems:"center",gap:12}}><RefineAvatar prompt/><Pressable accessibilityRole="button" testID="final-share-experience" onPress={()=>go("respond")} style={{height:44,paddingHorizontal:24,borderRadius:999,backgroundColor:FINAL_COLOR.selected,alignItems:"center",justifyContent:"center",boxShadow:"0px 1px 15px rgba(92,86,98,.18)"}}><FinalText style={{fontWeight:"500",color:"white"}}>{c("你有想法吗？","Would you like to share?")}</FinalText></Pressable></View></ScrollView>{reportSheet}</NuriKeyboardFrame>;
+    // Keep the same focused field and accessory mounted throughout keyboard transitions.
+    if(responding||expanded)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:expanded?dockBottom:34,gap:12}}>
+      <ScrollView testID={expanded?"final-reply-all-context-scroll":undefined} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{gap:12}}>{questionContext}{expanded?<FinalSurface contentStyle={{padding:16,gap:16}}>{replyListContent()}</FinalSurface>:null}</ScrollView>
+      <FinalSurface testID={"final-community-"+state.screen} style={{flexShrink:0,boxShadow:"0px 0px 8px rgba(92,86,98,.12)"}} contentStyle={{padding:16,gap:8}}><FinalText size={12} secondary style={{lineHeight:18}}>{responding?c("我的经验","My experience"):c("回复所有人","Reply to everyone")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),responding?respond:()=>comment(slot))}</FinalSurface>
     </View>{reportSheet}</NuriKeyboardFrame>;
-    if(detail)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34}}>
-      <FinalSurface testID={"final-community-"+state.screen} style={{maxHeight:thread?553:undefined,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}}>
-        <ScrollView testID="final-reply-thread-scroll" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flexShrink:1}} contentContainerStyle={{padding:20,gap:16,minHeight:thread?undefined:385}}>
+    if(detail)return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:dockBottom}}>
+      <FinalSurface fill testID={"final-community-"+state.screen} style={{maxHeight:thread?553:undefined,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}}>
+        <ScrollView testID="final-reply-thread-scroll" keyboardShouldPersistTaps="handled" keyboardDismissMode={adaptiveReply?"interactive":undefined} showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{padding:20,gap:16}}>
           <FinalText size={12} secondary style={{lineHeight:18}}>{question?.body??""}</FinalText>
           {pending(comments)}
           {target?answer(target,thread):null}
           {threadComments.map(commentRow)}
-          {canPost?<View style={{gap:12}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("你的回复","Your reply")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),()=>comment(slot))}</View>:null}
         </ScrollView>
+        {canPost?<View testID="final-private-reply-dock" style={{flexShrink:0,gap:12,paddingHorizontal:20,paddingTop:8,paddingBottom:20}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("你的回复","Your reply")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),()=>comment(slot))}</View>:null}
       </FinalSurface>
     </View>{reportSheet}</NuriKeyboardFrame>;
-    return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,padding:12,paddingBottom:34,gap:16}}>
+    return <NuriKeyboardFrame><ScrollView testID="final-reply-list-scroll" keyboardShouldPersistTaps="handled" style={{flex:1,minHeight:0}} contentContainerStyle={{flexGrow:1,padding:12,paddingBottom:34,gap:16}}>
       {questionContext}
-      <FinalSurface fill testID={"final-community-"+state.screen} style={{maxHeight:546,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{flex:1,minHeight:0,padding:16,gap:16}}>
-        <FinalText size={12} secondary style={{lineHeight:18}}>{answerer?c("我的经验","My experience"):c("收到 "+items.length+" 位家长的经验","Experiences from "+items.length+" parents")}</FinalText>
-        <ScrollView testID="final-reply-list-scroll" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{gap:16,paddingBottom:16}}>
-          {pending(replies)}
-          {items.map(r=>answer(r))}
-          {replies.value&&!items.length?<FinalText secondary style={{textAlign:"center"}}>{c("还没有家长回复，再等等","No replies yet")}</FinalText>:null}
-          {state.replyTarget==="all"?threadComments.map(commentRow):null}
-        </ScrollView>
-        {allThread?.can_post?<View style={{gap:8}}>
-          <Pressable accessibilityRole="button" testID="final-expand-reply" disabled={closed} onPress={()=>dispatch({type:"replyTarget",target:"all",expanded:true})} style={{minHeight:18,justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{closed?c("此问题已关闭","This question is closed"):c("回复所有人","Reply to everyone")}</FinalText></Pressable>
-          {expanded?editor(c("写下你的回复…","Write your reply…"),()=>comment(slot)):<View style={{height:46,borderWidth:1,borderColor:"rgba(93,80,96,.16)",borderRadius:18,backgroundColor:"rgba(255,250,245,.9)",flexDirection:"row",alignItems:"center",paddingLeft:8,paddingRight:12}}>
+      <FinalSurface testID={"final-community-"+state.screen} style={{flexGrow:1,flexShrink:0,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{flexGrow:1,padding:16,gap:16}}>
+        {replyListContent()}
+        {allThread?.can_post?<View style={{gap:8,marginTop:"auto"}}>
+          <Pressable accessibilityRole="button" testID="final-expand-reply" disabled={closed} onPress={openReplyAll} style={{minHeight:18,justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{closed?c("此问题已关闭","This question is closed"):c("回复所有人","Reply to everyone")}</FinalText></Pressable>
+          <View style={{height:46,borderWidth:1,borderColor:"rgba(93,80,96,.16)",borderRadius:18,backgroundColor:"rgba(255,250,245,.9)",flexDirection:"row",alignItems:"center",paddingLeft:8,paddingRight:12}}>
             <Pressable accessibilityRole="button" disabled={closed||!!voice} accessibilityLabel={c("语音输入","Voice input")} onPress={()=>void startVoice(slot)} style={{width:44,height:44,alignItems:"center",justifyContent:"center"}}><Image source={require("@/assets/final-flow-20261101/microphone.svg")} style={{width:20,height:20}} contentFit="contain" accessible={false}/></Pressable>
-            <NuriTextInput testID="final-comment-input" accessibilityLabel={c("写下回复","Write a reply")} editable={!closed} value={draft(slot)} onChangeText={text=>setDraft(slot,text)} onFocus={()=>dispatch({type:"replyTarget",target:"all",expanded:true})} placeholder={c("写下回复…","Write a reply…")} placeholderTextColor="#918896" style={{...singleLineInputStyle,flex:1,height:44,padding:0,fontSize:14,lineHeight:20,color:FINAL_COLOR.ink}}/>
-          </View>}
-          {!expanded&&!closed?voiceBar(slot):null}
+            <Pressable testID="final-comment-input" accessibilityRole="button" accessibilityLabel={c("写下回复","Write a reply")} disabled={closed} onPress={openReplyAll} style={{flex:1,height:44,justifyContent:"center"}}><FinalText size={14} numberOfLines={1} style={{lineHeight:20,color:draft(slot)?FINAL_COLOR.ink:"#918896"}}>{draft(slot)||c("写下回复…","Write a reply…")}</FinalText></Pressable>
+          </View>
+          {!closed?voiceBar(slot):null}
         </View>:null}
       </FinalSurface>
-    </View>{reportSheet}</NuriKeyboardFrame>;
+    </ScrollView>{reportSheet}</NuriKeyboardFrame>;
   }
 
   // ── Contacts and invitations ─────────────────────────────────────────────
   if (state.screen==="contacts"||state.screen==="invitations"){
-    const invitations=state.screen==="invitations",data=relations.value;
+    const invitations=state.screen==="invitations";
     const match=(p:PublicParent|null)=>!!p&&nameOf(p).toLocaleLowerCase().includes(search.toLocaleLowerCase());
     const divider=<View style={st.friendDivider}/>;
-    const contacts:Contact[]=(data?.contacts??[]).filter(entry=>match(entry.parent)).sort((a,b)=>nameOf(a.parent).localeCompare(nameOf(b.parent)));
-    const groups:{title:string;rows:{parent:PublicParent|null;description:string;status:string;incoming?:boolean;unread?:boolean}[]}[]=[
-      {title:c("收到的邀请","Received invitations"),rows:(data?.received??[]).filter((i:Invitation)=>match(i.parent)).map(i=>({parent:i.parent,description:c("邀请你建立联系","Invited you to connect"),status:c("待你通过","Awaiting you"),incoming:true,unread:true}))},
-      {title:c("发出的邀请","Sent invitations"),rows:(data?.sent??[]).filter((i:Invitation)=>match(i.parent)).map(i=>({parent:i.parent,description:c("邀请已发出","Invitation sent"),status:c("等待通过","Pending")}))},
-      {title:c("已建立联系","Connected"),rows:contacts.map(entry=>({parent:entry.parent,description:c("已建立联系","Connected"),status:c("已建立联系","Connected")}))},
+    const contacts:Contact[]=(contactsList.value?.items??[]).filter(entry=>match(entry.parent)).sort((a,b)=>nameOf(a.parent).localeCompare(nameOf(b.parent)));
+    const groups:{title:string;remote:Remote<unknown>;rows:{parent:PublicParent|null;description:string;status:string;incoming?:boolean;unread?:boolean}[]}[]=[
+      {title:c("收到的邀请","Received invitations"),remote:receivedInvitations,rows:(receivedInvitations.value?.items??[]).filter((i:Invitation)=>match(i.parent)).map(i=>({parent:i.parent,description:c("邀请你建立联系","Invited you to connect"),status:c("待你通过","Awaiting you"),incoming:true,unread:true}))},
+      {title:c("发出的邀请","Sent invitations"),remote:sentInvitations,rows:(sentInvitations.value?.items??[]).filter((i:Invitation)=>match(i.parent)).map(i=>({parent:i.parent,description:c("邀请已发出","Invitation sent"),status:c("等待通过","Pending")}))},
+      {title:c("已建立联系","Connected"),remote:contactsList,rows:contacts.map(entry=>({parent:entry.parent,description:c("已建立联系","Connected"),status:c("已建立联系","Connected")}))},
     ];
     return <NuriKeyboardFrame><View style={{flex:1,minHeight:0,paddingHorizontal:12,paddingTop:16,paddingBottom:22,gap:8}}>
       <FinalSurface fill style={{maxHeight:619}} testID={"final-community-"+state.screen}>
         <View style={{marginLeft:8,marginRight:28,marginTop:13,height:44,flexDirection:"row",alignItems:"center"}}><IconAction name="back" label={c("返回","Back")} onPress={()=>dispatch({type:"back"})}/><View style={{flex:1,minWidth:0}}><Search compact value={search} onChange={setSearch} placeholder={c("搜索","Search")}/></View></View>
         <ScrollView testID={"final-"+state.screen+"-scroll"} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:24,paddingTop:invitations?11:14,paddingBottom:24,gap:invitations?16:8}}>
-          {pending(relations)}
-          {invitations?groups.map(group=><View key={group.title} style={{gap:4}}><View style={{height:24,flexDirection:"row",alignItems:"center",gap:8}}><FinalText size={14} style={{fontWeight:"500",lineHeight:20}}>{group.title}</FinalText><FinalText size={12} secondary style={{lineHeight:20}}>{group.rows.length}</FinalText></View>{group.rows.map((row,i)=><View key={row.parent?.parent_id??i}>{i?divider:null}{parentRow(row.parent,row.description,{invitation:true,incoming:row.incoming,unread:row.unread?1:0,status:row.status})}</View>)}</View>):<>
-            <Pressable accessibilityRole="button" style={{minHeight:72,padding:4,flexDirection:"row",alignItems:"center",gap:12}} onPress={()=>go("invitations")} testID="final-new-connections"><View style={{flex:1,gap:4}}><View style={{flexDirection:"row",alignItems:"center"}}><FinalText style={{fontWeight:"500"}}>{c("新的联系","New connections")}</FinalText><UnreadBadge count={data?.pending??0} style={{alignSelf:"flex-start",marginTop:-4}}/></View><FinalText size={12} secondary style={{lineHeight:18}}>{c("查看请求与回应","View requests and responses")}</FinalText></View><FinalText size={20} style={{width:16,lineHeight:24,color:FINAL_COLOR.accent}}>›</FinalText></Pressable>
+          {invitations?groups.map(group=><View key={group.title} style={{gap:4}}>
+            <View style={{height:24,flexDirection:"row",alignItems:"center",gap:8}}>
+              <FinalText size={14} style={{fontWeight:"500",lineHeight:20}}>{group.title}</FinalText>
+              {group.remote.value!==undefined?<FinalText size={12} secondary style={{lineHeight:20}}>{group.rows.length}</FinalText>:null}
+            </View>
+            {pending(group.remote)}
+            {group.rows.map((row,i)=><View key={row.parent?.parent_id??i}>{i?divider:null}{parentRow(row.parent,row.description,{invitation:true,incoming:row.incoming,unread:row.unread?1:0,status:row.status})}</View>)}
+          </View>):<>
+            <Pressable accessibilityRole="button" style={{minHeight:72,padding:4,flexDirection:"row",alignItems:"center",gap:12}} onPress={()=>go("invitations")} testID="final-new-connections"><View style={{flex:1,gap:4}}><View style={{flexDirection:"row",alignItems:"center"}}><FinalText style={{fontWeight:"500"}}>{c("新的联系","New connections")}</FinalText><UnreadBadge count={inbox.value?.summary.pending_invitations??0} style={{alignSelf:"flex-start",marginTop:-4}}/></View><FinalText size={12} secondary style={{lineHeight:18}}>{c("查看请求与回应","View requests and responses")}</FinalText></View><FinalText size={20} style={{width:16,lineHeight:24,color:FINAL_COLOR.accent}}>›</FinalText></Pressable>
             {divider}
+            {pending(contactsList)}
             {contacts.map((entry,i)=>{const name=nameOf(entry.parent),previous=i?nameOf(contacts[i-1].parent):"";return <View key={entry.relationship_id} style={{gap:8}}>{i===0||name[0]!==previous[0]?<FinalText size={10} style={{height:24,lineHeight:14}}>{name[0]?.toLocaleUpperCase()}</FinalText>:null}{parentRow(entry.parent,entry.parent.about||c("开始聊天","Start chatting"),{conversationId:entry.conversation_id})}{divider}</View>;})}
-            {data&&!contacts.length?<FinalText secondary style={{paddingVertical:16,textAlign:"center"}}>{c("还没有联系人","No contacts yet")}</FinalText>:null}
+            {contactsList.value&&!contacts.length?<FinalText secondary style={{paddingVertical:16,textAlign:"center"}}>{c("还没有联系人","No contacts yet")}</FinalText>:null}
           </>}
         </ScrollView>
       </FinalSurface>
@@ -1073,23 +1416,23 @@ export default function CommunityFinal() {
 
   // ── Finding parents: intent, my profile, suggestions, a parent ───────────
   if(state.screen==="intent")return page(<>
-    <View style={{height:24,alignSelf:"stretch",alignItems:"flex-end"}}><Pressable accessibilityRole="button" accessibilityLabel={c("跳过","Skip")} hitSlop={10} style={{height:24,minWidth:44,alignItems:"center",justifyContent:"center"}} onPress={()=>go("profile")}><FinalText size={14} secondary style={{lineHeight:24,fontWeight:"500"}}>{c("跳过","Skip")}</FinalText></Pressable></View>
-    <View testID="final-intent-gender" style={{gap:8,alignItems:"center"}}><FinalText style={{fontWeight:"500",textAlign:"center",lineHeight:24}}>{c("我是","I am")}</FinalText><View style={{flexDirection:"row",gap:8}}>{GENDER_TAGS.map(option=>{const selected=(state.drafts["profile:gender"]||me.value?.profile?.gender_tag)===option.tag;return <Pressable key={option.tag} testID={"final-intent-gender-"+option.tag} accessibilityRole="radio" accessibilityState={{selected,checked:selected}} onPress={()=>setDraft("profile:gender",option.tag)} style={{minWidth:72,height:36,paddingHorizontal:12,borderRadius:18,alignItems:"center",justifyContent:"center",backgroundColor:selected?FINAL_COLOR.selected:"rgba(255,248,242,.75)"}}><FinalText size={14} style={{color:selected?"white":FINAL_COLOR.ink}}>{c(option.cn,option.en)}</FinalText></Pressable>;})}</View></View>
-    <View style={{height:60}}><FinalText style={{fontWeight:"500",textAlign:"center",lineHeight:24}}>{c("你希望和新朋友一起","With new friends, you'd like to…")}</FinalText></View>
-    <View style={{height:407,gap:16,alignItems:"center"}}>
-      {INTENT_LABELS.map(([cn,english],i)=><Pressable key={i} onPress={()=>dispatch({type:"intent",index:i})} accessibilityRole="checkbox" accessibilityState={{checked:state.intents.includes(i)}} testID={"final-intent-"+i} style={{height:44,width:248,maxWidth:"100%",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-        <View pointerEvents="none" style={{position:"absolute",left:0,right:0,top:-2,height:48,borderRadius:22,boxShadow:"0px 1px 4px rgba(0,0,0,.25)"}}><ButtonBackdrop color={state.intents.includes(i)?FINAL_COLOR.selected:"rgba(255,248,242,.75)"} radius={22} testID={`final-intent-${i}-material`}/></View>
+    <View style={{height:24,alignSelf:"stretch",alignItems:"flex-end"}}><Pressable accessibilityRole="button" accessibilityLabel={c("跳过","Skip")} hitSlop={10} style={{height:24,minWidth:44,alignItems:"center",justifyContent:"center"}} onPress={()=>completeFriendIntent(true)}><FinalText size={14} secondary style={{lineHeight:24,fontWeight:"500"}}>{c("跳过","Skip")}</FinalText></Pressable></View>
+    <View style={{minHeight:60,flexShrink:0}}><FinalText style={{fontWeight:"500",textAlign:"center",lineHeight:24}}>{c("你希望和新朋友一起","With new friends, you'd like to…")}</FinalText></View>
+    <View style={{minHeight:407,gap:16,alignItems:"center"}}>
+      {INTENT_LABELS.map(([cn,english],i)=><Pressable key={i} onPress={()=>dispatch({type:"intent",index:i})} accessibilityRole="checkbox" accessibilityState={{checked:state.intents.includes(i)}} testID={"final-intent-"+i} style={{minHeight:44,paddingVertical:12,width:248,maxWidth:"100%",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+        <View pointerEvents="none" style={{position:"absolute",left:0,right:0,top:-2,bottom:-2,borderRadius:22,boxShadow:"0px 1px 4px rgba(0,0,0,.25)"}}><ButtonBackdrop color={state.intents.includes(i)?FINAL_COLOR.selected:"rgba(255,248,242,.75)"} radius={22} testID={`final-intent-${i}-material`}/></View>
         <FinalText size={14} style={{lineHeight:20,color:state.intents.includes(i)?"white":FINAL_COLOR.ink,textAlign:"center",paddingHorizontal:12}}>{c(cn,english)}</FinalText>
       </Pressable>)}
       <FinalText size={12} style={{lineHeight:24,textAlign:"center",opacity:.65,fontWeight:"500"}}>{c("多选","Choose any that fit")}</FinalText>
     </View>
-  </>,<FinalButton label={c("下一步","Next")} disabled={busy} onPress={()=>me.value?.exists?saveProfile(()=>go("profile")):go("profile")} testID="final-intent-next"/>,true,{bodyStyle:{paddingTop:32,paddingBottom:0},cardStyle:{maxHeight:555}});
+  </>,<FinalButton label={c("下一步","Next")} disabled={busy} onPress={()=>completeFriendIntent(false)} testID="final-intent-next"/>,true,{bodyStyle:{paddingTop:32,paddingBottom:0},cardStyle:{maxHeight:555}});
   const myProfile:MyProfile["profile"]=me.value?.profile??null;
   const myName=state.drafts["profile:name"]??(myProfile?.display_name||account.value?.nickname||"");
+  const invalidProfileName=alphaCommunityLayout&&myName.trim()!==myProfile?.display_name&&isChineseDisplayNameTooLong(myName);
   const myGender=(state.drafts["profile:gender"]||myProfile?.gender_tag||null) as GenderTag|null;
   const myCity=myProfile?.city??account.value?.city??"";
   const myAbout=state.drafts["profile:about"]??myProfile?.about??"";
-  if((state.screen==="profile"||state.screen==="profileSettings")&&(profileEditing||(me.value&&!me.value.exists)))return page(<>{pending(me)}<CommunityProfileEditor displayName={myName} city={myCity} about={myAbout} onAboutChange={text=>setDraft("profile:about",text)} selectedIntents={state.intents} onToggleIntent={index=>dispatch({type:"intent",index})} avatar={<SampleAvatar size={104}/>} onDisplayNameChange={text=>setDraft("profile:name",text)} genderTag={myGender} onGenderTag={tag=>setDraft("profile:gender",tag)}/>{!myProfile?<FinalText size={12} secondary style={{paddingHorizontal:24,paddingBottom:16,lineHeight:18}}>{c("保存后，其他家长会看到你的名字、城市和以上内容。","After saving, other parents will see your name, city and the details above.")}</FinalText>:null}</>,<FinalButton label={c("保存","Save")} disabled={busy||!me.value} onPress={()=>saveProfile(()=>setProfileEditingMode(false))} testID="final-profile-save"/>,false,{bodyStyle:{padding:0,gap:0}});
+  if((state.screen==="profile"||state.screen==="profileSettings")&&(profileEditing||(me.value&&!me.value.exists)))return page(<>{pending(me)}<CommunityProfileEditor displayName={myName} city={myCity} about={myAbout} onAboutChange={text=>setDraft("profile:about",text)} selectedIntents={state.intents} onToggleIntent={index=>dispatch({type:"intent",index})} avatar={<SampleAvatar size={104}/>} onDisplayNameChange={text=>setDraft("profile:name",text)} genderTag={myGender} onGenderTag={tag=>setDraft("profile:gender",tag)}/>{invalidProfileName?<FinalText size={12} secondary style={{paddingHorizontal:24,paddingBottom:16,lineHeight:18}} testID="community-profile-name-limit">{chineseDisplayNameLimitMessage(locale)}</FinalText>:null}{!myProfile?<FinalText size={12} secondary style={{paddingHorizontal:24,paddingBottom:16,lineHeight:18}}>{c("保存后，其他家长会看到你的名字、城市和以上内容。","After saving, other parents will see your name, city and the details above.")}</FinalText>:null}</>,<FinalButton label={c("保存","Save")} disabled={busy||!me.value||invalidProfileName} onPress={()=>saveProfile(()=>setProfileEditingMode(false))} testID="final-profile-save"/>,true,{bodyStyle:{padding:0,gap:0}});
   if (state.screen === "profile" || state.screen === "profileSettings" || state.screen === "parent" || state.screen === "incomingParent") {
     const own=state.screen==="profile"||state.screen==="profileSettings";
     const view=parentView.value,relation=view?.relationship;
@@ -1168,41 +1511,68 @@ export default function CommunityFinal() {
   const value=chat.value,ai:AIParticipation|undefined=value?.ai,mineAI=ai?.requests.conversation_notes;
   const canSend=!!value?.conversation.allowed_actions.includes("send_message");
   const waitingForParent=mineAI?.state==="pending"&&mineAI.initiated_by==="me";
-  const translationRequest=ai?.requests.translation,translationPending=translationRequest?.state==="pending";
   const sheetCurrent=!!consentSheet&&accountScope.current(consentSheet.ticket)&&filterFocused.current&&consentSheet.revision===navigationRevision.current&&consentSheet.person===state.person
     &&consentSheet.conversationId===value?.conversationId&&consentSheet.epoch===ai?.epoch&&consentSheet.noticeVersion===ai?.notice_version;
-  const translationStatus=prefs.error||chat.error||value&&!canSend?translationCopy.unavailable:!prefs.value?translationCopy.loading
-    :!prefs.value.auto_translate_messages?translationCopy.preferenceOff:translationPaused===pausedKey||translationPreferencePaused?translationCopy.paused
-    :!deviceAIAllowed?translationCopy.deviceOff:translationScope?translationCopy.active
-    :translationPending?translationCopy.waiting:translationCopy.required;
   const list:Message[]=value?.messages??[];
+  const messageTicket=accountScope.capture(),messageRevision=navigationRevision.current;
   return <NuriKeyboardFrame><ParentChatHeader person={state.personName} participating={!!ai?.effective} status={ai?.effective ? c("Nuri 参与中", "Nuri is on") : waitingForParent ? c("等待对方同意","Waiting for them") : c("Nuri 未参与", "Nuri is off")} backLabel={c("返回", "Back")} toggleHint={c("开启前需要双方同意；任何一方都可以随时关闭。", "Both parents must agree first; either can turn it off at any time.")} onBack={()=>{
       if(state.history.length)dispatch({type:"back"});else router.dismissTo("/(tabs)");
-    }} onToggle={toggleAI}/><View testID="final-parent-translation-controls" style={{paddingHorizontal:24,paddingVertical:8,gap:6}}>
-      <FinalText size={12} secondary>{translationStatus}</FinalText>
-      {!prefs.value?.auto_translate_messages?<FinalButton small secondary label={translationCopy.preferences} onPress={()=>go("preferences")} testID="final-parent-translation-preferences"/>
-        :!deviceAIAllowed?<FinalButton small secondary label={translationCopy.devicePermission} onPress={()=>router.push(aiPermissionHref("/community"))} testID="final-parent-translation-device-permission"/>
-        :!translationScope&&canSend&&!prefs.error&&!chat.error?<FinalButton small secondary disabled={busy||revokeBusy} label={translationRequest?.my_decision==="pending"?translationCopy.review:translationCopy.request} onPress={()=>openConsent("translation")} testID="final-parent-translation-request"/>:null}
-      {translationScope||translationPending?<><FinalButton small secondary disabled={busy||revokeBusy} label={translationCopy.stop} onPress={()=>void revokeConsent("translation")} testID="final-parent-translation-revoke"/><FinalText size={11} secondary>{translationCopy.closeWarning}</FinalText></>:null}
-    </View><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
+    }} onToggle={toggleAI}/><ScrollView ref={messages} onContentSizeChange={() => messages.current?.scrollToEnd({ animated: false })} onLayout={() => messages.current?.scrollToEnd({ animated: false })} keyboardShouldPersistTaps="handled" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 24, gap: 20 }} testID="final-parent-chat-scroll">
       {pending(chat)}
       {value&&!list.length?<FinalText secondary style={{textAlign:"center"}}>{c("打个招呼吧","Say hello")}</FinalText>:null}
-      {list.map(m => {const incoming=m.sender==="parent",translated=translations.text(m);return <View key={m.message_id} testID={`final-parent-message-${m.seq}`} style={{ flexDirection: incoming ? "row" : "row-reverse", gap: 8, alignItems: incoming ? "flex-start" : "flex-end" }}><ParentChatAvatar/><Pressable disabled={!incoming} delayLongPress={400} onLongPress={()=>setReport({kind:"message",id:m.message_id,title:c("举报这条消息","Report this message"),allowBlock:true})} accessibilityHint={incoming?c("长按可以举报","Long press to report"):undefined} testID={"final-parent-message-press-"+m.seq} style={{flex:1,maxWidth:incoming?306:258}}><FinalChatBubble incoming={incoming} style={{flex:1,maxWidth:incoming?306:258,boxShadow:incoming?"0px 0px 4px rgba(0,0,0,.1)":"0px 0px 8px rgba(0,0,0,.1)"}}>{m.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}{m.text?<FinalText testID={"final-parent-original-"+m.seq}>{m.text}</FinalText>:null}{translated?<View testID={"final-parent-translation-"+m.seq} style={{gap:4,paddingTop:8}}><FinalText size={11} secondary>{translationCopy.translated}</FinalText><FinalText>{translated}</FinalText></View>:null}</FinalChatBubble></Pressable></View>;})}
+      {list.map(message => {
+        const incoming=message.sender==="parent";
+        const translated=translations.text(message);
+        return <View key={message.message_id} testID={`final-parent-message-${message.seq}`} style={[st.chatRow,incoming?st.chatIncoming:st.chatOutgoing]}>
+          <ParentChatAvatar/>
+          <Pressable
+            disabled={!incoming}
+            delayLongPress={400}
+            onLongPress={()=>{
+              if(!incoming||messageTicket===null||!accountScope.current(messageTicket)
+                ||!filterFocused.current||navigationRevision.current!==messageRevision
+                ||chatAuthority.current?.conversationId!==message.conversation_id)return;
+              setReport({kind:"message",id:message.message_id,title:c("举报这条消息","Report this message"),allowBlock:true,
+                original:translated?{conversationId:message.conversation_id,ticket:messageTicket,revision:messageRevision}:undefined});
+            }}
+            accessibilityHint={incoming?(translated?originalMessageHint:c("长按可以举报","Long press to report")):undefined}
+            testID={`final-parent-message-press-${message.seq}`}
+            style={[st.chatMessage,incoming?st.chatIncomingWidth:st.chatOutgoingWidth]}
+          >
+            <FinalChatBubble incoming={incoming} style={incoming?st.chatIncomingBubble:undefined}>
+              {message.media.map(item=><CommunityImage key={item.media_id} mediaId={item.media_id} label={c("图片","Photo")}/>)}
+              {translated
+                ? <FinalText testID={`final-parent-translation-${message.seq}`}>{translated}</FinalText>
+                : message.text?<FinalText testID={`final-parent-original-${message.seq}`}>{message.text}</FinalText>:null}
+            </FinalChatBubble>
+          </Pressable>
+        </View>;
+      })}
     </ScrollView><View testID="final-parent-composer-dock" style={{ padding: 24, paddingTop: 8, paddingBottom: dockBottom, gap: 8 }}>
       {notice}
       {value&&!canSend?<FinalText size={12} secondary style={{textAlign:"center"}}>{c("你们已不再联系，不能再发送消息","You're no longer connected and can't send messages")}</FinalText>:null}
-      {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy} busy={busy} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} hasAttachment={!!chatImage} attachments={chatImage?[{id:"community-photo",kind:"image",uri:chatImage.prepared.previewUri,width:chatImage.prepared.width,height:chatImage.prepared.height,image:chatImage.prepared}]:undefined} onRemoveAttachment={()=>setChatImage(null)} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
-    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => {if(!busy)closeConsent(consentSheet);}}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{consentSheet?.purpose==="translation"?translationCopy.titleTranslation:translationCopy.titleNotes}</FinalText><FinalText testID="final-parent-consent-purpose" size={14} secondary>{consentSheet?.purpose==="translation"?translationCopy.bodyTranslation:translationCopy.bodyNotes}</FinalText><FinalText size={12} secondary>{translationCopy.closeWarning}</FinalText>{!sheetCurrent?<FinalText>{translationCopy.changed}</FinalText>:null}{notice}<View style={st.actionRow}><FinalButton small secondary disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?translationCopy.cancel:translationCopy.decline} onPress={() => void decideAI(consentSheet,false)} testID="final-parent-consent-decline"/><FinalButton small disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?translationCopy.allowRequest:consentSheet?.purpose==="translation"?translationCopy.allowTranslation:translationCopy.allowNotes} onPress={() => void decideAI(consentSheet,true)} testID="final-parent-consent-agree" /></View><FinalButton small secondary disabled={busy} label={translationCopy.close} onPress={()=>closeConsent(consentSheet)} testID="final-parent-consent-close"/></FinalSurface></BlurView></Modal> : null}{reportSheet}</NuriKeyboardFrame>;
+      {voiceBar(chatSlot)??<NuriComposer disabled={!canSend||busy||pickingChatPhotos} busy={busy||pickingChatPhotos} value={draft(chatSlot)} onChangeText={text => setDraft(chatSlot, text)} onSend={()=>void sendChat()} onAttach={()=>void pickChatImage()} onMic={()=>void startVoice(chatSlot)} attachments={chatPhotos.map(({id,prepared})=>({id,kind:"image",uri:prepared.previewUri,width:prepared.width,height:prepared.height,image:prepared}))} onRemoveAttachment={id=>removeChatPhotos(accountScope.capture(),state.person,[id])} placeholder={c("聊聊最近的活动吧…", "Talk about recent activities…")} testID="final-parent" />}
+    </View>{state.screen === "consent" ? <Modal transparent animationType="fade" onRequestClose={() => {if(!busy)closeConsent(consentSheet);}}><BlurView intensity={35} tint="light" style={st.modal}><FinalSurface contentStyle={{ padding: 24, gap: 16 }}><FinalText size={20}>{notesConsentCopy.title}</FinalText><FinalText testID="final-parent-consent-purpose" size={14} secondary>{notesConsentCopy.body}</FinalText><FinalText size={12} secondary>{notesConsentCopy.closeWarning}</FinalText>{!sheetCurrent?<FinalText>{notesConsentCopy.changed}</FinalText>:null}{notice}<View style={[st.actionRow,st.consentActions]}><FinalButton small secondary style={st.consentButton} disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?notesConsentCopy.cancel:notesConsentCopy.decline} onPress={() => void decideAI(consentSheet,false)} testID="final-parent-consent-decline"/><FinalButton small style={st.consentButton} disabled={busy||!sheetCurrent} label={consentSheet?.mode==="request"?notesConsentCopy.allowRequest:notesConsentCopy.allow} onPress={() => void decideAI(consentSheet,true)} testID="final-parent-consent-agree" /></View><FinalButton small secondary disabled={busy} label={notesConsentCopy.close} onPress={()=>closeConsent(consentSheet)} testID="final-parent-consent-close"/></FinalSurface></BlurView></Modal> : null}{reportSheet}</NuriKeyboardFrame>;
 }
 const st = StyleSheet.create({
   main: { flex: 1, minHeight: 0, paddingHorizontal: 12, paddingTop: 16, paddingBottom: 32, gap: 16 },
   body: { padding: 24, gap: 16 },
   actions: { marginTop: "auto", paddingTop: 16, paddingBottom: 8, gap: 12 },
   actionRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12 },
+  stretchButton: { alignSelf: "stretch" },
+  consentActions: { alignItems: "stretch" },
+  consentButton: { alignSelf: "stretch" },
+  chatRow: { gap: 8 },
+  chatIncoming: { flexDirection: "row", alignItems: "flex-start" },
+  chatOutgoing: { flexDirection: "row-reverse", alignItems: "flex-end" },
+  chatMessage: { flexShrink: 1, minWidth: 0 },
+  chatIncomingWidth: { maxWidth: 306 },
+  chatOutgoingWidth: { maxWidth: 258 },
+  chatIncomingBubble: { boxShadow: "0px 0px 4px rgba(0,0,0,.1)" },
   friendPreviewRow: {minHeight:72,flexDirection:"row",alignItems:"center",gap:16,padding:8},
   friendDivider: {height:1,backgroundColor:"rgba(255,255,255,.65)",alignSelf:"stretch"},
   quietDivider: {height:1,backgroundColor:"rgba(77,64,92,.22)",alignSelf:"stretch"},
-  questionEntry: {minHeight:80,paddingRight:24,paddingBottom:8,gap:4,justifyContent:"center"},
+  questionEntry: {minHeight:80,paddingRight:24,paddingBottom:8,gap:4},
   questionTitle: {minHeight:24,flexDirection:"row",alignItems:"center",gap:12},
   questionChevron: {position:"absolute",right:0,top:0,bottom:0,width:16,alignItems:"center",justifyContent:"center"},
   dots: { height: HUB_PAGINATION.targetHeight, marginTop:HUB_PAGINATION.height-HUB_PAGINATION.targetHeight, width:HUB_PAGINATION.targetSize*2, alignSelf:"center", justifyContent: "flex-end", alignItems: "center" },

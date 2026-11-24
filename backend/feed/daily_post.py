@@ -4,9 +4,11 @@ Replaces the topic-driven 每日精选 carousel, which rebuilt three researched
 cards after every chat turn. This card is decided once per parent per local
 day and then stays put:
 
-1. **What to look for.** The parent's recent messages, when they have allowed
-   conversation topics to leave NURI (the 外部内容检索 privacy switch); else
-   only the child's age band and an onboarding concern, which says far less.
+1. **What to look for.** The family's needs, ranked by feed/family_queries.py:
+   long-term memory, the onboarding concerns and the child's stage by age,
+   with the recent chat only adding weight. Memory and chat count only when
+   the parent allowed them to (the 外部内容检索 privacy switch). Only curated
+   parenting words reach a search, never the parent's own.
 2. **Where.** Facebook, Instagram and Threads only, through Tavily. Tavily's
    `advanced` depth ignores the domain list, so every result is re-checked
    here against the platform and against a *post* URL shape — a profile, a
@@ -37,11 +39,23 @@ from zoneinfo import ZoneInfo
 
 import anyio
 
-from backend import llm_usage, locales, runtime
-from backend.feed import search_budget
+from backend import llm_usage, locales, runtime, topic_keywords
+from backend.feed import family_queries, search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.feed.post_media import social_image_url, source_image_urls
-from backend.nuri_core import family_store
+from backend.nuri_core import critical_periods, family_store
+
+
+class _LazySummary:
+    """feed/daily_summary.py imports this module; reach it on first use."""
+
+    def __getattr__(self, name):
+        from backend.feed import daily_summary as module
+
+        return getattr(module, name)
+
+
+daily_summary = _LazySummary()
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -352,6 +366,11 @@ class Plan:
     concern: str                # shown on the card: what today's search was about
     query_zh: str = ""
     query_en: str = ""
+    why: str = ""               # which signals chose it (family_queries.explain), for the admin row
+    child_id: str = ""           # internal only; never part of the query or card
+    age_months: Optional[int] = None
+    shared_search: bool = False  # only curated queries may enter the shared pool
+    reason: str = ""             # categorical, used only in this account's card
 
 
 def _age_words(months: Optional[int]) -> tuple[str, str]:
@@ -361,6 +380,42 @@ def _age_words(months: Optional[int]) -> tuple[str, str]:
         # A newborn is "0 months" by the calendar, which no parent writes.
         return f"{max(months, 1)}个月", f"{max(months, 1)} month old"
     return f"{months // 12}岁", f"{months // 12} year old"
+
+
+#: Months under two rounded to an age parents write in posts, for the search
+#: words only. Exact months gave nearly every baby their own search words, so
+#: the shared pool (search_pool.py) could seldom answer one parent with
+#: another's search; the card still names the child's real age.
+_QUERY_AGE_BANDS = ((2, 1), (4, 3), (7, 6), (10, 9), (15, 12), (21, 18), (24, 24))
+
+
+def _query_age_words(months: Optional[int]) -> tuple[str, str]:
+    if months is not None and months < 24:
+        months = next(shown for upper, shown in _QUERY_AGE_BANDS if months <= upper)
+    return _age_words(months)
+
+
+def youngest_child(children: list[dict]) -> Optional[dict]:
+    """The born child with the latest birth date."""
+    born = [
+        (b, c) for c in children
+        for b in [critical_periods.parse_birth(c.get("birth_date"))]
+        if b is not None and b <= date.today()
+    ]
+    return max(born, key=lambda bc: bc[0])[1] if born else None
+
+
+def period_signals(children: list[dict], memories: Sequence[dict], day: date, *,
+                   child: Optional[dict] = None) -> tuple[list[str], list[str]]:
+    """Growth signals for the intended child, or the legacy youngest default."""
+    child = child if child is not None else youngest_child(children)
+    if child is None:
+        return [], []
+    return critical_periods.push_signals(
+        critical_periods.parse_birth(child.get("birth_date")), day, memories,
+        child_id=str(child.get("id") or ""), nickname=str(child.get("nickname") or ""),
+        other_nicknames=[str(c.get("nickname") or "") for c in children if c is not child],
+    )
 
 
 def youngest_age_months(children: list[dict]) -> Optional[int]:
@@ -408,6 +463,16 @@ def _stage_topics(months: Optional[int]) -> list[tuple[str, str, str, str]]:
 _BABY_TOPICS = {"sleep", "starting solids", "teething"}
 
 
+def _search_words(topic_zh: str, topic_en: str, months: Optional[int]) -> tuple[str, str]:
+    """The two searches for one topic: "18个月 宝宝 夜醒 宝妈" and "18 month old
+    sleep moms" — the age band and the words mom groups post in."""
+    query_age_zh, query_age_en = _query_age_words(months)
+    zh = " ".join(p for p in (query_age_zh, "宝宝", topic_zh, "宝妈") if p) if topic_zh else ""
+    who = query_age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
+    en = " ".join((who, topic_en, "moms")) if topic_en else ""
+    return zh, en
+
+
 def profile_plans(
     children: list[dict], concerns: list[str], day: date, locale: str = "zh-CN",
     limit: int = PROFILE_PLANS,
@@ -430,9 +495,9 @@ def profile_plans(
 
     plans = []
     for label_zh, label_en, topic_zh, topic_en in topics[:limit]:
-        zh = " ".join(p for p in (age_zh, "宝宝", topic_zh, "宝妈") if p)
+        zh = " ".join(p for p in (age_zh, "宝宝", topic_zh, "宝妈") if p) if topic_zh else ""
         who = age_en or ("baby" if topic_en in _BABY_TOPICS else "toddler")
-        en = " ".join((who, topic_en, "moms"))
+        en = " ".join((who, topic_en, "moms")) if topic_en else ""
         if locale == "en":
             shown = " · ".join(p for p in (age_en, label_en) if p)
         else:
@@ -515,12 +580,12 @@ def _scrub(text: str, children: list[dict]) -> str:
     ).replace("[名字]", "").replace("[name]", "").strip()
 
 
-def conversation_plan(
+def _llm_conversation_plan(
     user_messages: list[str], child_age_context: str, children: list[dict], locale: str = "zh-CN",
     standing: Sequence[str] = (),
 ) -> Optional[Plan]:
-    """Search words from what the parent has actually been saying. None when
-    the recent messages hold no parenting question to search for."""
+    """The model writes the search words from the recent messages
+    (DAILY_POST_QUERY_MODE=llm, the behaviour before 2026-11-18)."""
     from backend.content_research import redact_conversation_text
 
     lines = [redact_conversation_text(text, 300) for text in user_messages if text.strip()]
@@ -547,6 +612,256 @@ def conversation_plan(
     if not concern or not (query_zh or query_en):
         return None
     return Plan(basis="conversation", concern=concern, query_zh=query_zh, query_en=query_en)
+
+
+#: How the conversation plan gets its search words: "template" builds them
+#: from the chat router's topic (no model call); "llm" asks a model, as before.
+QUERY_MODE = os.getenv("DAILY_POST_QUERY_MODE", "template")
+
+#: Router topics that say nothing about a problem worth a post. The router
+#: writes these for greetings, thanks and follow-up turns.
+_GENERIC_TOPICS = {
+    "寒暄", "问候", "打招呼", "道谢", "感谢", "闲聊", "继续追问", "追问", "确认", "其他", "无",
+    "育儿", "带娃", "育儿问题", "情绪安抚", "安抚情绪", "家长情绪", "未知",
+}
+ROUTE_TOPIC_WINDOW_DAYS = 7
+
+
+async def recent_route_topics(user_id: str, *, now: Optional[datetime] = None) -> list[str]:
+    """What the chat router said this parent's recent turns were about, newest
+    first. The router already wrote these (chat_turn_logs.route_topic) with
+    the child's details scrubbed, so the card needs no model of its own."""
+    since = ((now or _now()) - timedelta(days=ROUTE_TOPIC_WINDOW_DAYS)).isoformat()
+
+    def read() -> list[dict]:
+        return (runtime.get_supabase().table("chat_turn_logs").select("route_topic,created_at")
+                .eq("user_id", user_id).gte("created_at", since)
+                .order("created_at", desc=True).limit(20).execute().data or [])
+
+    try:
+        rows = await anyio.to_thread.run_sync(read)
+    except Exception as exc:  # the profile plans still make a card
+        print(f"[warn] daily post route topics: {type(exc).__name__}")
+        return []
+    topics: list[str] = []
+    for row in rows:
+        # "寒暄/继续追问": each side is its own subject.
+        for part in re.split(r"[/／、,，]", str(row.get("route_topic") or "")):
+            part = normalize_space(part)
+            if part and part not in _GENERIC_TOPICS and part not in topics:
+                topics.append(part)
+    return topics
+
+
+def template_plan(
+    topics: Sequence[str], user_messages: Sequence[str], children: list[dict], locale: str = "zh-CN",
+) -> Optional[Plan]:
+    """Search words from what the parent has been talking about, by template.
+
+    The newest router topic is the subject ("入园分离焦虑" → "18个月 宝宝
+    入园分离焦虑 宝妈"); the keyword table says which onboarding concern it
+    belongs to, and that concern's English words make the English search.
+    With no topic, the recent messages themselves are matched against the
+    keyword table. Nothing matched → None, and the profile plans carry the day."""
+    months = youngest_age_months(children)
+    for topic in topics:
+        topic = _scrub(topic, children)[:20]
+        concern = topic_keywords.main_topic(topic)
+        if not topic or (locale == "en" and not concern):
+            continue
+        topic_en = _concern_topic(concern, months)[1] if concern else ""
+        zh, en = _search_words(topic, topic_en, months)
+        shown = topic_en if locale == "en" else topic
+        if locale == "zh-TW":
+            shown = shown.translate(_TO_TRADITIONAL)
+        return Plan(basis="conversation", concern=shown, query_zh=zh, query_en=en)
+
+    from backend.content_research import redact_conversation_text
+
+    # Newest message first: what the parent said last is what is on their mind.
+    for text in reversed([t for t in user_messages if t.strip()][-8:]):
+        concern = topic_keywords.main_topic(redact_conversation_text(text, 300))
+        if concern in CONCERN_EN:
+            label_zh, label_en, topic_zh, topic_en = _concern_topic(concern, months)
+            zh, en = _search_words(topic_zh, topic_en, months)
+            shown = label_en if locale == "en" else label_zh
+            if locale == "zh-TW":
+                shown = shown.translate(_TO_TRADITIONAL)
+            if shown:
+                return Plan(basis="conversation", concern=shown, query_zh=zh, query_en=en)
+    return None
+
+
+def conversation_plan(
+    user_messages: list[str], child_age_context: str, children: list[dict], locale: str = "zh-CN",
+    standing: Sequence[str] = (), *, topics: Sequence[str] = (),
+) -> Optional[Plan]:
+    """Search words from what the parent has actually been saying. None when
+    the recent messages hold no parenting question to search for."""
+    if QUERY_MODE == "llm":
+        return _llm_conversation_plan(user_messages, child_age_context, children, locale, standing)
+    return template_plan(topics, user_messages, children, locale)
+
+
+def plan_for_need(cand: "family_queries.Candidate", months: Optional[int], locale: str,
+                  *, pool_only: bool = False, child_id: str = "") -> Plan:
+    """The two searches for one ranked need. A clean chat topic for the need
+    is searched as written ("辅食拒食" says more than "辅食 添加") unless the
+    search budget is spent: then only the need's own words, which other
+    families of the same age share in the pool."""
+    need = cand.need
+    topic = cand.topic if cand.topic and not pool_only else ""
+    zh, en = _search_words(topic or need.words_zh, need.words_en, months)
+    age_zh, age_en = _age_words(months)
+    if locale == "en":
+        shown = " · ".join(p for p in (age_en, need.label_en) if p)
+    else:
+        shown = topic or " · ".join(p for p in (age_zh, need.label_zh) if p)
+        if locale == "zh-TW":
+            shown = shown.translate(_TO_TRADITIONAL)
+    reason = next((signal for signal in ("behavior", "memory", "interest", "concern", "chat", "stage")
+                   if signal in cand.sources), "")
+    return Plan(basis="conversation" if cand.personal else "profile", concern=shown,
+                query_zh=zh, query_en=en, why=family_queries.explain(cand),
+                child_id=child_id, age_months=months, shared_search=not topic and not cand.is_interest,
+                reason=reason)
+
+
+def family_plans(
+    children: list[dict], profile: dict, day: date, locale: str = "zh-CN", *,
+    memories: Sequence[dict] = (), topics: Sequence[str] = (), user_texts: Sequence[str] = (),
+    standing: Sequence[str] = (), personal: bool = True, pool_only: bool = False,
+) -> list[Plan]:
+    """Today's plans, built around the family (see feed/family_queries.py).
+    As many as before at most: PROFILE_PLANS, plus one when the parent's own
+    words were allowed to count and there is budget to search them."""
+    limit = PROFILE_PLANS + (1 if personal and not pool_only else 0)
+    if len(children) > 1:
+        return multi_child_plans(children, profile, day, locale, limit=limit, memories=memories, topics=topics,
+                                 user_texts=user_texts, standing=standing, personal=personal, pool_only=pool_only)
+    months = youngest_age_months(children)
+    # A chat topic may be searched as written, so it is scrubbed like any
+    # other text that leaves NURI (the router already redacts; this is the net).
+    topics = [t for t in (_scrub(t, children) for t in topics) if t and t not in _GENERIC_TOPICS]
+    period_needs, confirmed_needs = period_signals(children, memories if personal else (), day)
+    ranked = family_queries.rotate_lead(family_queries.rank_needs(
+        months=months, profile=profile, memories=memories, topics=topics, user_texts=user_texts,
+        standing=standing, personal=personal, period_needs=period_needs, confirmed_needs=confirmed_needs,
+    ), day)
+    return [plan_for_need(c, months, locale, pool_only=pool_only) for c in ranked[:limit]]
+
+
+def multi_child_plans(
+    children: list[dict], profile: dict, day: date, locale: str, *, limit: int,
+    memories: Sequence[dict], topics: Sequence[str], user_texts: Sequence[str],
+    standing: Sequence[str], personal: bool, pool_only: bool,
+) -> list[Plan]:
+    """Rank each child's relevant needs against the whole family's candidates."""
+    scoped_memories: dict[str, list[dict]] = {}
+    family_memories = []
+    for row in memories if personal else ():
+        child_id = str(row.get("child_id") or "")
+        if not child_id:
+            named = family_store.child_mentions(str(row.get("value") or ""), children)
+            if len(named) == 1:
+                child_id = str(named[0].get("id") or "")
+            elif not named and row.get("category") in {"fact", "preference"}:
+                family_memories.append(row)
+        if child_id:
+            scoped_memories.setdefault(child_id, []).append(row)
+
+    scoped_messages: dict[str, list[str]] = {}
+    for text in user_texts if personal else ():
+        named = family_store.child_mentions(text, children)
+        if len(named) == 1 and named[0].get("id"):
+            scoped_messages.setdefault(str(named[0]["id"]), []).append(_scrub(text, children))
+
+    entries: list[tuple[family_queries.Candidate, str, Optional[int]]] = []
+    for child in children:
+        months = family_store.age_in_months(str(child.get("birth_date") or ""), on=day)
+        if months is None:  # An unknown date or due date does not imply a born child.
+            continue
+        child_id = str(child.get("id") or "")
+        rows = scoped_memories.get(child_id, [])
+        # Prefer an explicitly bound row over the same key from before attribution.
+        by_key = {(row.get("category"), row.get("key")): row
+                  for row in sorted(rows, key=lambda item: bool(item.get("child_id")))}
+        remembered = list(by_key.values())
+        period_needs, confirmed_needs = period_signals(children, remembered, day, child=child)
+        ranked = family_queries.rank_needs(
+            months=months, profile=profile, memories=[*family_memories, *remembered],
+            user_texts=scoped_messages.get(child_id, []), standing=standing, personal=personal,
+            period_needs=period_needs, confirmed_needs=confirmed_needs,
+        )
+        entries.extend((cand, child_id, months) for cand in ranked if family_queries._fits_age(cand.need, months))
+    if not entries:
+        ranked = family_queries.rank_needs(months=None, profile=profile, standing=standing, personal=False)
+        entries = [(cand, "", None) for cand in ranked]
+
+    # Router topics are already de-identified. Preserve a parent's own extension,
+    # but only named user utterances may attach a chat signal to one child.
+    safe_topics = [t for t in (_scrub(topic, children) for topic in topics) if t and t not in _GENERIC_TOPICS]
+    if personal and not pool_only:
+        parent_interest = family_queries._interest_candidate(safe_topics, family_memories, profile)
+        if parent_interest:
+            entries.append((parent_interest, "", None))
+
+    entries.sort(key=lambda entry: (not entry[0].important, -entry[0].score))
+    subjects = {id(cand): (child_id, months) for cand, child_id, months in entries}
+    plans = []
+    seen = set()
+    for cand in family_queries.rotate_lead([entry[0] for entry in entries], day):
+        child_id, months = subjects[id(cand)]
+        plan = plan_for_need(cand, months, locale, pool_only=pool_only, child_id=child_id)
+        query = (plan.query_zh, plan.query_en)
+        if query not in seen:
+            seen.add(query)
+            plans.append(plan)
+        if len(plans) == limit:
+            break
+    return plans
+
+
+async def plans_for_today(
+    user_id: str, children: list[dict], profile: dict, day: date, now: datetime, *,
+    context: dict, locale: str, standing: Sequence[str], budget_left: bool,
+) -> list[Plan]:
+    """What today's post (and video) searches for, best first. Shared by
+    daily_post and daily_video so both cards read the family the same way."""
+    personal = bool(context.get("external_research_allowed"))
+    user_texts: list[str] = []
+    if personal:
+        messages = list(context.get("messages") or [])
+        if len(children) <= 1 or family_queries.PLANNER == "legacy":
+            messages = family_store.redact_child_profile_history(messages, children)
+        user_texts = [str(m.get("text") or "") for m in messages if m.get("role") == "user"]
+
+    if family_queries.PLANNER == "legacy":
+        plans: list[Plan] = []
+        # A conversation's search words are this parent's own and almost never
+        # in the shared pool, so without budget left they aren't worth a call.
+        if budget_left and personal:
+            child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
+            topics = await recent_route_topics(user_id, now=now) if QUERY_MODE != "llm" else []
+            plan = await anyio.to_thread.run_sync(
+                lambda: conversation_plan(user_texts, child_age_context, children, locale, standing, topics=topics)
+            )
+            if plan:
+                plans.append(plan)
+        # Always keep the coarse plans behind it: a conversation too specific
+        # to have a matching post still deserves a card about the child's stage.
+        plans.extend(profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
+        return plans
+
+    memories: list[dict] = []
+    topics: list[str] = []
+    if personal:
+        memories = await family_store.load_known_memories(user_id)
+        topics = await recent_route_topics(user_id, now=now)
+    return family_plans(
+        children, profile, day, locale, memories=memories, topics=topics, user_texts=user_texts,
+        standing=standing, personal=personal, pool_only=not budget_left,
+    )
 
 
 # ── Which post ───────────────────────────────────────────────────────────────
@@ -714,7 +1029,161 @@ def validate_pick(data: dict, candidates: list[Candidate]) -> Optional[dict]:
 PICK_ATTEMPTS = 3
 
 
+#: How the day's post is chosen: "rank" (default) filters and ranks the
+#: candidates by rule and shows the model one post at a time, only to check it
+#: and write the card; "llm" hands the model every candidate, as before.
+PICK_MODE = os.getenv("DAILY_POST_PICK_MODE", "rank")
+
+#: Never a card: selling something, or about a pet. 躲猫猫 (peekaboo) is a baby
+#: game, so the Chinese pet words are the ones only pets go by.
+_AD_WORDS = re.compile(
+    r"优惠|折扣|下单|团购|代购|抽奖|包邮|限时|促销|私信|giveaway|discount|promo code|use code|"
+    r"link in bio|shop now|sponsored|\d+% off",
+    re.IGNORECASE,
+)
+_PET_WORDS = re.compile(
+    r"猫咪|小猫|狗狗|小狗|宠物|毛孩子|\b(?:pupp(?:y|ies)|kittens?|dogs?|cats?|pets?)\b", re.IGNORECASE,
+)
+#: A parent telling their own story, and other parents answering in a group.
+_PARENT_VOICE = re.compile(
+    r"我家|我们家|我儿子|我女儿|我闺女|我娃|我宝|我的宝宝|娃爸|孩子他爸|"
+    r"\bmy (?:son|daughter|toddler|baby|kid|kids|little one|lo|boy|girl|husband)\b|\bLO\b|"
+    r"\bour (?:son|daughter|toddler|baby|kids?)\b|\bwe (?:tried|did|started|stopped)\b",
+    re.IGNORECASE,
+)
+_ANSWER_WORDS = re.compile(
+    r"我家也|我们家也|我也是|可以试试|试试看|亲测|what worked|worked for us|same here|"
+    r"\bhelped us\b|\btry (?:to|this|giving|putting)\b",
+    re.IGNORECASE,
+)
+#: Search filler that says nothing about the problem itself.
+_FILLER = {"宝宝", "宝妈", "moms", "mom", "month", "months", "old", "year", "years", "baby", "toddler",
+           "kid", "kids", "child"}
+_AGE_PATTERNS = (
+    (re.compile(r"(\d{1,2})\s*个?月"), 1),
+    (re.compile(r"(\d{1,2})\s*[岁歲]"), 12),
+    (re.compile(r"(\d{1,2})\s*(?:-|\s)?(?:months?|mos?)\b", re.IGNORECASE), 1),
+    (re.compile(r"(\d{1,2})\s*(?:-|\s)?(?:years?|yrs?)\b", re.IGNORECASE), 12),
+)
+RANK_WEIGHTS = {"relevance": 0.45, "parent": 0.25, "age": 0.2, "language": 0.1}
+
+
+def is_unusable(candidate: Candidate) -> bool:
+    """Selling something, or about a pet: never a card, so never shown to the model."""
+    text = f"{candidate.title}\n{candidate.text}"
+    return bool(_AD_WORDS.search(text) or _PET_WORDS.search(text))
+
+
+def _query_terms(query: str) -> list[str]:
+    terms = []
+    for word in re.split(r"\s+", (query or "").lower()):
+        if word and word not in _FILLER and not re.search(r"\d", word) and word not in terms:
+            terms.append(word)
+    return terms
+
+
+def _term_hit(term: str, text: str) -> float:
+    """1 when the term is in the text; for a long Chinese phrase ("入园分离焦虑")
+    half credit by how many of its two-character pieces are."""
+    if term in text:
+        return 1.0
+    stem = re.sub(r"(?:ing|es|ed|s)$", "", term)
+    if stem != term and len(stem) >= 3 and re.search(rf"\b{re.escape(stem)}", text):
+        return 1.0  # tantrums ~ tantrum, eating ~ eater
+    if len(term) >= 4 and re.search(r"[\u4e00-\u9fff]", term):
+        pieces = [term[i:i + 2] for i in range(len(term) - 1)]
+        return 0.5 * sum(p in text for p in pieces) / len(pieces)
+    return 0.0
+
+
+def relevance(text: str, query: str) -> float:
+    """0–1: how much of the search's subject the post is about. The search
+    words count most; the concern's keyword table catches posts that word the
+    same problem differently."""
+    lowered = text.lower()
+    terms = _query_terms(query)
+    # The query holds both languages' words; a post is written in one.
+    by_lang = ([t for t in terms if re.search(r"[\u4e00-\u9fff]", t)],
+               [t for t in terms if not re.search(r"[\u4e00-\u9fff]", t)])
+    words = max((sum(_term_hit(t, lowered) for t in group) / len(group) for group in by_lang if group),
+                default=0.0)
+    concern = topic_keywords.main_topic(query)
+    keywords = bool(concern) and any(w in lowered for w in topic_keywords.TOPIC_KEYWORDS[concern])
+    return 0.7 * words + 0.3 * keywords
+
+
+def mentioned_ages(text: str) -> list[int]:
+    """Ages the post names, in months ("18个月", "2岁", "18 month", "2 year old")."""
+    ages = []
+    for pattern, scale in _AGE_PATTERNS:
+        ages.extend(int(m.group(1)) * scale for m in pattern.finditer(text))
+    if re.search(r"\btoddler", text, re.IGNORECASE):
+        ages.append(24)
+    if re.search(r"\bnewborn|新生儿", text, re.IGNORECASE):
+        ages.append(1)
+    return ages
+
+
+def age_fit(text: str, months: Optional[int]) -> float:
+    ages = mentioned_ages(text)
+    if months is None or not ages:
+        return 0.5  # unknown, not wrong
+    return max(0.0, 1 - min(abs(a - months) for a in ages) / 24)
+
+
+def parent_voice(candidate: Candidate) -> float:
+    text = f"{candidate.title}\n{candidate.text}"
+    score = 0.6 * bool(_PARENT_VOICE.search(text)) + 0.4 * bool(_ANSWER_WORDS.search(text))
+    if "/groups/" in candidate.url:
+        score += 0.2
+    return min(1.0, score)
+
+
+def rank_score(candidate: Candidate, *, query: str, months: Optional[int], locale: str) -> float:
+    text = f"{candidate.title}\n{candidate.text}"
+    want = "en" if locale == "en" else "zh"
+    return (RANK_WEIGHTS["relevance"] * relevance(text, query)
+            + RANK_WEIGHTS["parent"] * parent_voice(candidate)
+            + RANK_WEIGHTS["age"] * age_fit(text, months)
+            + RANK_WEIGHTS["language"] * (candidate.lang == want))
+
+
+def rank_candidates(
+    candidates: list[Candidate], *, query: str, months: Optional[int], locale: str,
+) -> list[Candidate]:
+    """Usable candidates, best first. Ties keep the search engine's order."""
+    usable = [c for c in candidates if not is_unusable(c)]
+    return sorted(usable, key=lambda c: -rank_score(c, query=query, months=months, locale=locale))
+
+
 def pick_post(
+    candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
+    basis: str = "conversation", standing: Sequence[str] = (), query: str = "",
+    months: Optional[int] = None,
+) -> Optional[dict]:
+    if PICK_MODE == "llm":
+        return _pick_post_llm(candidates, concern=concern, child_age_context=child_age_context,
+                              locale=locale, basis=basis, standing=standing)
+    # The model sees one post at a time, best ranked first: it only checks the
+    # post is a parent's and on the question, and writes the card. Same prompt,
+    # same checks, about a tenth of the tokens of showing it all twelve.
+    for candidate in rank_candidates(candidates, query=query or concern, months=months,
+                                     locale=locale)[:PICK_ATTEMPTS]:
+        data = _ask_pick(
+            [candidate], concern=concern, child_age_context=child_age_context, locale=locale, basis=basis,
+            standing=standing,
+        )
+        picked = validate_pick(data, [candidate])
+        if picked and standing and standing_guard.conflicts(
+            pick_text(picked), standing, call_site="feed.daily_post_standing_check",
+        ):
+            continue
+        if picked:
+            return picked
+    return None
+
+
+def _pick_post_llm(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
     basis: str = "conversation", standing: Sequence[str] = (),
 ) -> Optional[dict]:
@@ -792,7 +1261,7 @@ def _ask_pick(
 
 # ── Search ───────────────────────────────────────────────────────────────────
 
-async def search_meta(query: str, lang: str) -> list:
+async def search_meta(query: str, lang: str, *, shared: bool = False) -> list:
     """One Tavily request limited to the three platforms. Separate from
     websearch.search_sources on purpose: that path ranks by the curated
     authority list, which is exactly what this card is not."""
@@ -801,12 +1270,13 @@ async def search_meta(query: str, lang: str) -> list:
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    await search_budget.spend("post")
-    return await TavilySearchProvider().fetch(SearchRequest(
-        query=query, lang="zh" if lang == "zh" else "en",
+    lang = "zh" if lang == "zh" else "en"
+    request = SearchRequest(
+        query=query, lang=lang,
         include_domains=META_DOMAINS, max_results=SEARCH_RESULTS,
         include_images=True,
-    ))
+    )
+    return await search_pool.search("post", query, lang, lambda: TavilySearchProvider().fetch(request), shared=shared)
 
 
 async def run_searches(searches: list) -> list[list]:
@@ -823,9 +1293,9 @@ async def run_searches(searches: list) -> list[list]:
 async def find_candidates(plan: Plan, locale: str, exclude_urls: set[str]) -> list[Candidate]:
     searches = []
     if plan.query_zh and locale != "en":
-        searches.append(search_meta(plan.query_zh, "zh"))
+        searches.append(search_meta(plan.query_zh, "zh", shared=True) if plan.shared_search else search_meta(plan.query_zh, "zh"))
     if plan.query_en:
-        searches.append(search_meta(plan.query_en, "en"))
+        searches.append(search_meta(plan.query_en, "en", shared=True) if plan.shared_search else search_meta(plan.query_en, "en"))
     batches = await run_searches(searches)
     # Interleave the languages so neither crowds the other out of the cap.
     merged = []
@@ -867,6 +1337,8 @@ def build_card(pick: dict, plan: Plan, *, locale: str) -> dict:
 
 def chat_context(card: dict) -> str:
     """What the reply model is told when a parent opens this card in chat."""
+    if card.get("format") == "summary":
+        return daily_summary.chat_context(card)
     kind = (
         "一个家长群里的提问和其他家长的回答"
         if card.get("author_kind") == "parent_group_answers"
@@ -1202,14 +1674,16 @@ async def get_daily_post(user_id: str, tz_name: Optional[str], *, now: Optional[
             print(f"[warn] daily post save failed: {type(exc).__name__}")
             return False
 
+    spent = search_pool.start_counting()
     try:
         card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily post generation failed: {type(exc).__name__}: {exc}")
-        await finish(status="failed", error=f"{type(exc).__name__}: {exc}")
+        await finish(status="failed", error=f"{type(exc).__name__}: {exc}", queries={"searches": spent[0]})
         return {**base, "state": "empty", "retry_after_s": FAILED_RETRY_S}
 
-    queries = {"zh": plan.query_zh, "en": plan.query_en} if plan else None
+    queries = ({"zh": plan.query_zh, "en": plan.query_en, "why": plan.why, "searches": spent[0]}
+               if plan else None)
     if not card:
         await finish(status="empty", basis=plan.basis if plan else None, queries=queries)
         return {**base, "state": "empty", "retry_after_s": EMPTY_RETRY_S}
@@ -1252,46 +1726,79 @@ async def get_card(user_id: str, row_id: str, locale: Optional[str] = None, *, t
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[Plan]]:
     from backend.feed import signals as feed_signals
 
-    await search_budget.require_some_left("post")
+    budget_left = await has_search_budget("post")
     context = await feed_signals.load_recent_main_chat(user_id)
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
     exclude = await anyio.to_thread.run_sync(lambda: store.recent_urls(user_id, now))
-    standing = await family_store.load_standing_memories(user_id, children)
-
-    plans: list[Plan] = []
-    if context.get("external_research_allowed"):
-        messages = family_store.redact_child_profile_history(
-            list(context.get("messages") or []), children,
-        )
-        user_texts = [
-            str(m.get("text") or "") for m in messages if m.get("role") == "user"
-        ]
-        plan = await anyio.to_thread.run_sync(
-            lambda: conversation_plan(user_texts, child_age_context, children, locale, standing)
-        )
-        if plan:
-            plans.append(plan)
-    # Always keep the coarse plans behind it: a conversation too specific to
-    # have a matching post still deserves a card about the child's stage.
-    plans.extend(profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
+    standing = await recommendation_standing(user_id, children, context)
+    plans = await plans_for_today(user_id, children, profile, day, now, context=context, locale=locale,
+                                  standing=standing, budget_left=budget_left)
 
     started = time.monotonic()
+    refused: Optional[Exception] = None
     for index, plan in enumerate(plans):
         # The first visitor's request is the one waiting on this: a fallback
         # plan is only worth starting while that wait is still reasonable.
         if index and time.monotonic() - started > GENERATION_BUDGET_S:
             break
-        candidates = await find_candidates(plan, locale, exclude)
+        if daily_summary.FORMAT == "summary":
+            # Many sources, one card, shared by every family with these search
+            # words (feed/daily_summary.py); same two searches when not pooled.
+            try:
+                summary = await daily_summary.summary_for(plan, locale, exclude, standing, now=now)
+            except search_budget.SearchBudgetSpent as exc:
+                refused = exc
+                continue
+            if summary:
+                return daily_summary.build_card(summary, plan, locale=locale), plan
+            continue
+        try:
+            candidates = await find_candidates(plan, locale, exclude)
+        except search_budget.SearchBudgetSpent as exc:
+            # These words aren't in the shared pool and there is no budget to
+            # search them; the next plan's may be.
+            refused = exc
+            continue
         if not candidates:
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_post(
-            candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
-            basis=plan.basis, standing=standing,
+            candidates, concern=plan.concern, child_age_context=plan_age_context(plan, child_age_context), locale=locale,
+            basis=plan.basis, standing=standing, query=f"{plan.query_zh} {plan.query_en}",
+            months=plan.age_months if plan.age_months is not None else youngest_age_months(children),
         ))
         if pick:
             return build_card(pick, plan, locale=locale), plan
+    if refused:
+        raise refused
     return None, plans[-1] if plans else None
+
+
+async def has_search_budget(kind: str) -> bool:
+    try:
+        await search_budget.require_some_left(kind)
+    except search_budget.SearchBudgetSpent:
+        return False
+    return True
+
+
+def plan_age_context(plan: Plan, fallback: str) -> str:
+    if plan.child_id and plan.age_months is not None:
+        return f"孩子当前年龄：{_age_words(plan.age_months)[0]}"
+    return fallback
+
+
+async def recommendation_standing(user_id: str, children: list[dict], context: dict) -> list[str]:
+    # A profile allergy still applies if chat personalization is off. Keep
+    # all family allergies as conservative filters and omit every child's name.
+    standing = [
+        f"孩子对{family_store.redact_child_profile_text(allergy, children)}过敏"
+        for child in children for allergy in (child.get("allergies") or [])
+        if str(allergy or "").strip()
+    ]
+    if context.get("state") not in {"privacy_off", "unavailable"}:
+        standing.extend(await family_store.load_standing_memories(user_id, children))
+    return list(dict.fromkeys(standing))
 
 
 def _table_missing(exc: Exception) -> bool:

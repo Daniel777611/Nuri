@@ -47,6 +47,7 @@ export type FinalCommunityState = Location & {
     safetyAction: SafetyAction;
     /** The client key of the question being sent; reused if the send is retried. */
     sendKey: string | null;
+    sendError: string | null;
     /** A short message for the current screen (a failed write), or null. */
     notice: string | null;
 };
@@ -59,7 +60,7 @@ export function createFinalCommunity(screen: FinalCommunityScreen = "hub"): Fina
     return { screen: entry, questionID: "", deliveryID: "", person: "", personName: "", receivedTab, replyTarget: "all", replyTargetName: "",
         history: [], page: entry === "friends" || entry === "inbox" ? 1 : 0, inboxExpanded: entry === "inbox",
         drafts: {}, questionVersion: "original", polishID: null, showAge: false, anonymous: false, selected: [], intents: [],
-        filters: { gender: 0, distance: 0 }, safetyAction: "block", sendKey: null, notice: null };
+        filters: { gender: 0, distance: 0 }, safetyAction: "block", sendKey: null, sendError: null, notice: null };
 }
 export function selectedQuestionText(s: FinalCommunityState) { return (s.questionVersion === "polished" ? s.drafts.polished : s.drafts.question)?.trim() ?? ""; }
 function isPagerScreen(screen: FinalCommunityScreen) { return screen === "hub" || screen === "friends" || screen === "inbox"; }
@@ -85,6 +86,7 @@ export type FinalCommunityEvent =
     | { type: "draft"; slot: string; text: string }
     | { type: "notice"; message: string | null }
     | { type: "newQuestion" }
+    | { type: "resumeQuestion" }
     | { type: "version"; version: "original" | "polished" }
     | { type: "polished"; text: string; id: string }
     | { type: "toggle"; key: "showAge" | "anonymous" }
@@ -101,8 +103,8 @@ export type FinalCommunityEvent =
     | { type: "previewQuestion" }
     // Results, dispatched only after the server confirmed the write:
     | { type: "sending"; key: string }
-    | { type: "sent"; id: string }
-    | { type: "sendFailed"; message: string }
+    | { type: "sent"; key: string; id: string }
+    | { type: "sendFailed"; key: string; message: string }
     | { type: "questionsChanged" }
     | { type: "responseSent" }
     | { type: "commentSent"; slot: string }
@@ -116,7 +118,10 @@ export type FinalCommunityEvent =
 const DISTANCE_MAX = 4, GENDER_MAX = 2;
 export function finalCommunityReducer(s: FinalCommunityState, e: FinalCommunityEvent): FinalCommunityState {
     switch (e.type) {
-        case "go": return navigate(s, e.screen, e.screen === "receivedReplied" ? { receivedTab: "replied" } : e.screen === "receivedLocked" ? { receivedTab: "locked" } : e.screen === "received" ? { receivedTab: "waiting" } : {});
+        case "go": {
+            if (s.screen === "sent" && e.screen === "myQuestions") return navigate(settle(s, "hub"), "myQuestions");
+            return navigate(s, e.screen, e.screen === "selection" ? { selected: [] } : e.screen === "receivedReplied" ? { receivedTab: "replied" } : e.screen === "receivedLocked" ? { receivedTab: "locked" } : e.screen === "received" ? { receivedTab: "waiting" } : {});
+        }
         case "back": {
             const last = s.history.at(-1);
             return last ? { ...s, ...last, ...pagerLocation(last.screen, s.inboxExpanded), history: s.history.slice(0, -1), notice: null } : navigate(s, s.page ? s.inboxExpanded ? "inbox" : "friends" : "hub");
@@ -124,7 +129,8 @@ export function finalCommunityReducer(s: FinalCommunityState, e: FinalCommunityE
         case "page": return !isPagerScreen(s.screen) || (e.page !== 0 && e.page !== 1) ? s : { ...s, page: e.page, screen: e.page ? s.inboxExpanded ? "inbox" : "friends" : "hub", history: [] };
         case "draft": return { ...s, drafts: { ...s.drafts, [e.slot]: e.text }, ...(e.slot === "question" || e.slot === "polished" ? { sendKey: null } : {}) };
         case "notice": return { ...s, notice: e.message };
-        case "newQuestion": return navigate(s, "compose", { drafts: { ...s.drafts, question: "", polished: "" }, questionVersion: "original", polishID: null, sendKey: null });
+        case "newQuestion": return navigate(s, "compose", { drafts: { ...s.drafts, question: "", polished: "" }, questionVersion: "original", polishID: null, sendKey: null, sendError: null });
+        case "resumeQuestion": return s.sendKey ? navigate(navigate(s, s.polishID ? s.questionVersion : "compose"), "preview") : s;
         case "version": return { ...s, questionVersion: e.version, screen: e.version, sendKey: null };
         case "polished": return { ...s, drafts: { ...s.drafts, polished: e.text }, polishID: e.id, questionVersion: "polished", screen: "polished", sendKey: null, notice: null };
         case "toggle": return { ...s, [e.key]: !s[e.key], sendKey: null };
@@ -139,12 +145,20 @@ export function finalCommunityReducer(s: FinalCommunityState, e: FinalCommunityE
         case "replyTarget": return navigate(s, e.expanded ? "replyExpanded" : "replyDetail", { replyTarget: e.target, replyTargetName: e.name ?? "" });
         case "safety": return navigate(s, "safetyConfirm", { safetyAction: e.action, ...(e.person ? { person: e.person, personName: e.name ?? s.personName } : {}) });
         case "previewQuestion": return selectedQuestionText(s) ? navigate(s, "preview", { sendKey: s.sendKey }) : s;
-        case "sending": return s.screen !== "preview" || !selectedQuestionText(s) ? s : navigate(s, "sending", { sendKey: e.key });
-        // Progress is transient, never a Back destination.
-        case "sent": return s.screen !== "sending" ? s : settle(s, "sent", { questionID: e.id, sendKey: null, drafts: { ...s.drafts, question: "", polished: "" }, polishID: null });
+        case "sending": return s.screen !== "preview" || !selectedQuestionText(s) ? s : navigate(s, "sending", { sendKey: e.key, sendError: null });
+        case "sent": {
+            if (s.sendKey !== e.key) return s;
+            const draftReset = { sendKey: null, sendError: null, drafts: { ...s.drafts, question: "", polished: "" }, polishID: null };
+            if (s.screen === "sending" || s.screen === "preview") return navigate(settle(s, "hub"), "sent", { ...draftReset, questionID: e.id });
+            return { ...s, ...draftReset };
+        }
         // The key is kept: a retry after an unknown outcome must not post twice.
-        case "sendFailed": return s.screen !== "sending" ? s : { ...s, screen: "preview", history: s.history.slice(0, -1), notice: e.message };
-        case "questionsChanged": return settle(s, "myQuestions", { selected: [] });
+        case "sendFailed": {
+            if (s.sendKey !== e.key) return s;
+            const resumed = s.screen === "sending" ? finalCommunityReducer(s, { type: "back" }) : s;
+            return { ...resumed, sendError: e.message };
+        }
+        case "questionsChanged": return navigate(settle(s, "hub", { selected: [] }), "myQuestions");
         case "responseSent": return settle(s, "responseSent", { drafts: { ...s.drafts, [`answer:${s.questionID}`]: "" }, receivedTab: "replied" });
         case "commentSent": return { ...s, drafts: { ...s.drafts, [e.slot]: "" }, screen: s.replyTarget === "all" ? "replies" : "comments", notice: null };
         case "messageSent": return { ...s, drafts: { ...s.drafts, [e.slot]: "" }, notice: null };

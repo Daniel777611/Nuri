@@ -778,6 +778,14 @@ final class NuriPushBridge: RCTEventEmitter {
     }
   }
 
+  @objc(getInstalledAppVersion:rejecter:)
+  func getInstalledAppVersion(
+    _ resolve: RCTPromiseResolveBlock,
+    rejecter reject: RCTPromiseRejectBlock
+  ) {
+    resolve(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString"))
+  }
+
   @objc(refreshPushState:rejecter:)
   func refreshPushState(
     _ resolve: @escaping RCTPromiseResolveBlock,

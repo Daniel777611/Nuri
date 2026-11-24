@@ -20,7 +20,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 
-from backend import llm_usage, push_apns, push_fcm
+from backend import llm_usage, locales, push_apns, push_fcm, stores
+from backend.feed import local_activity_service as activities
 from backend.nuri_core import care_notifications as care
 
 log = logging.getLogger("nuri.push")
@@ -307,6 +308,79 @@ async def generate_video_event(
     ))
 
 
+_LOCAL_ACTIVITY_DAYS = {1, 4}  # Tuesday and Friday in the parent's time zone.
+_LOCAL_ACTIVITY_COPY = {
+    "en": ("Explore something nearby", "See a new family activity or local resource in Nuri."),
+    "zh-CN": ("看看附近有什么", "打开 Nuri 查看新的亲子活动或本地资源。"),
+    "zh-TW": ("看看附近有什麼", "打開 Nuri 查看新的親子活動或在地資源。"),
+}
+
+
+async def generate_local_activity_event(
+    sb: Any, uid: str, *, now: Optional[datetime] = None,
+) -> Optional[dict]:
+    """Occasionally queue one ready, opt-in activity for a compatible iOS build."""
+    builds = activities.supported_builds()
+    if not activities.enabled() or not builds:
+        return None
+    now = now or _now()
+    prefs = await anyio.to_thread.run_sync(lambda: _preferences(sb, uid, fail_closed=True))
+    local = now.astimezone(_zone(prefs))
+    scheduled = local.replace(hour=16, minute=30, second=0, microsecond=0)
+    # The shared preparation job runs in UTC, often after evening quiet hours
+    # in Asia. Prepare the next local slot instead of queueing a near-midnight alert.
+    if scheduled < local:
+        scheduled += timedelta(days=1)
+    if scheduled.weekday() not in _LOCAL_ACTIVITY_DAYS or not prefs.get("enabled", True):
+        return None
+    area = await activities.load_area(sb, uid)
+    if not area.get("enabled"):
+        return None
+
+    def delivery_context():
+        devices = sb.table("push_devices").select("platform,bundle_id,build_number").eq(
+            "user_id", uid,
+        ).eq("is_active", True).in_("permission_status", ["authorized", "provisional"]).execute().data or []
+        if not any(activities.supports_push(device, builds) for device in devices):
+            return None
+        cutoff = (now - timedelta(days=30)).isoformat()
+        rows = sb.table("notification_events").select("data").eq(
+            "user_id", uid,
+        ).eq("data->>kind", activities.KIND).in_(
+            "status", ["queued", "processing", "sent", "partial"],
+        ).gte("scheduled_at", cutoff).limit(32).execute().data or []
+        return {(row.get("data") or {}).get("local_activity_id") for row in rows}
+
+    seen = await anyio.to_thread.run_sync(delivery_context)
+    if seen is None:
+        return None
+    privacy = await stores.get_privacy(uid, fail_closed=True)
+    locale = locales.normalize_preferred_locale(privacy.get("language"))
+    day = scheduled.date()
+    result = await activities.recommendations(sb, uid, locale=locale, now=now, day=day, area=area)
+    # Same-day events may already be over when the notification arrives; the
+    # in-app list can still show them with a link to the organizer.
+    eligible = [
+        item for item in result["items"]
+        if item["id"] not in seen
+        and (item["kind"] == "ongoing_resource" or (item.get("start_date") or "") > day.isoformat())
+    ]
+    if not eligible:
+        return None
+    item = eligible[0]
+    revision = str(area["revision"])
+    if not await activities.find_activity(sb, uid, item["id"], now=now, day=day, revision=revision):
+        return None
+    expiry = (scheduled + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    title, body = _LOCAL_ACTIVITY_COPY[locale]
+    event = _event_row(uid, activities.KIND, title, body, day.isoformat(), scheduled, body, {
+        "local_activity_id": item["id"],
+        "local_activity_revision": revision,
+    })
+    event["expires_at"] = _iso(expiry)
+    return await _queue(sb, event)
+
+
 def fair_order(uids: list[str], now: datetime, *, shift: int = 0) -> list[str]:
     """`uids` starting one place further along each day."""
     ordered = sorted(uids)
@@ -344,13 +418,15 @@ def _tester_data(slot: Optional[str]) -> dict:
 
 # ── Preferences ───────────────────────────────────────────────────────────────
 
-def _preferences(sb: Any, uid: str) -> dict:
+def _preferences(sb: Any, uid: str, *, fail_closed: bool = False) -> dict:
     try:
         rows = (
             sb.table("notification_preferences").select("*").eq("user_id", uid)
             .limit(1).execute().data or []
         )
     except Exception:
+        if fail_closed:
+            raise
         rows = []
     if rows:
         return rows[0]
@@ -445,6 +521,7 @@ async def _requeue(sb: Any, event_id: str, delay_minutes: int, error: str = "") 
 
 async def dispatch_due_notifications(
     sb: Any, *, batch_size: int = DEFAULT_BATCH_SIZE, now: Optional[datetime] = None,
+    local_activities_only: bool = False,
 ) -> dict[str, int]:
     """Claim due events and try to deliver each to the account's devices."""
     now = now or _now()
@@ -453,12 +530,15 @@ async def dispatch_due_notifications(
                 "no_devices": 0, "deactivated": 0}
 
     def _claim() -> list[dict]:
+        rpc = "claim_due_local_activity_notifications" if local_activities_only else "claim_due_notifications"
         return (
-            sb.rpc("claim_due_notifications", {"batch_size": batch_size})
+            sb.rpc(rpc, {"batch_size": batch_size})
             .execute().data or []
         )
 
     events = await anyio.to_thread.run_sync(_claim)
+    if local_activities_only:
+        events = [event for event in events if (event.get("data") or {}).get("kind") == activities.KIND]
     counters["claimed"] = len(events)
     if not events:
         return counters
@@ -474,9 +554,18 @@ async def dispatch_due_notifications(
 
     for event in events:
         uid, event_id = event["user_id"], event["id"]
-        prefs = await anyio.to_thread.run_sync(lambda: _preferences(sb, uid))
+        data = event.get("data") or {}
+        is_local_activity = data.get("kind") == activities.KIND
+        try:
+            prefs = await anyio.to_thread.run_sync(
+                lambda: _preferences(sb, uid, fail_closed=True) if is_local_activity else _preferences(sb, uid),
+            )
+        except Exception:
+            await _requeue(sb, event_id, 15, "notification_preferences_unavailable")
+            continue
 
-        if not _type_enabled(prefs, event["type"]):
+        allowed = prefs.get("enabled", True) if is_local_activity else _type_enabled(prefs, event["type"])
+        if not allowed:
             await _finish(sb, event_id, "cancelled", "type_disabled")
             counters["skipped_prefs"] += 1
             continue
@@ -499,7 +588,7 @@ async def dispatch_due_notifications(
         def _devices() -> list[dict]:
             return (
                 sb.table("push_devices")
-                .select("id,platform,apns_token,apns_environment,permission_status,bundle_id")
+                .select("id,platform,apns_token,apns_environment,permission_status,bundle_id,build_number")
                 .eq("user_id", uid).eq("is_active", True).execute().data or []
             )
 
@@ -507,6 +596,25 @@ async def dispatch_due_notifications(
             d for d in await anyio.to_thread.run_sync(_devices)
             if d.get("permission_status") in {"authorized", "provisional"}
         ]
+        if is_local_activity:
+            builds = activities.supported_builds()
+            reachable = [d for d in reachable if activities.supports_push(d, builds)]
+            local_day = now.astimezone(_zone(prefs)).date()
+            revision = data.get("local_activity_revision")
+            activity_id = data.get("local_activity_id")
+            try:
+                current = bool(reachable and revision and activity_id) and await activities.find_activity(
+                    sb, uid, activity_id, now=now, day=local_day, revision=revision,
+                )
+            except Exception:
+                await _requeue(sb, event_id, 15, "local_activity_storage_unavailable")
+                continue
+            if not current:
+                await _finish(sb, event_id, "cancelled", "local_activity_no_longer_eligible")
+                counters["skipped_prefs"] += 1
+                continue
+            # Keep the account's coarse area and the consent revision off-device.
+            data = {"kind": activities.KIND}
         if not reachable:
             await _finish(sb, event_id, "cancelled", "no_active_device")
             counters["no_devices"] += 1
@@ -531,7 +639,7 @@ async def dispatch_due_notifications(
                     environment=device["apns_environment"],
                     title=event["title"], body=event["body"],
                     notification_id=event_id, notification_type=event["type"],
-                    route=event["route"], data=event.get("data") or {},
+                    route=event["route"], data=data,
                     thread_id=event.get("thread_id") or "nuri-reminders",
                     collapse_id=event.get("collapse_id"),
                     **topic,

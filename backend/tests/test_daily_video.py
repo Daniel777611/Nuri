@@ -95,6 +95,60 @@ def test_an_english_reader_never_gets_a_chinese_video():
     assert dv.choose_video([_score(0)], _cands("儿科医生讲幼儿发脾气"), "en") is None
 
 
+# ── Scoring by rule (the default) ────────────────────────────────────────────
+
+def _video(title, description=""):
+    return dv.Candidate(video_id=VID, title=title, description=description, lang="en")
+
+
+QUERY = "20个月 宝宝 发脾气 宝妈 18 month old tantrums moms"
+
+
+def test_rules_score_without_a_model(monkeypatch):
+    def refuse(*_a, **_k):
+        raise AssertionError("rule scoring must not call a model")
+
+    monkeypatch.setattr(dv, "_model_json", refuse)
+    cands = [
+        _video("宝宝巴士儿歌 | 不发脾气的好宝宝 | 动画片", "宝宝巴士 儿歌 动画"),
+        _video("Toddler Tantrums: What To Do | Cook Children's", "Our pediatrician explains toddler tantrums."),
+        _video("孩子发脾气怎么办？儿科医生黄瑽宁告诉你 #育儿 #发脾气", "黄瑽宁医师谈幼儿情绪"),
+        _video("Best stroller 2026 review", "Unboxing the new stroller"),
+    ]
+    rows = dv.rule_scores(cands, query=QUERY)
+    kids, aap_like, doctor, stroller = rows
+    assert kids["for_parents"] is False
+    assert aap_like["for_parents"] and aap_like["relevance"] == 5 and aap_like["expertise"] == 5
+    assert aap_like["channel"] == "Cook Children's" and aap_like["display_title"] == "Toddler Tantrums: What To Do"
+    assert doctor["channel"] == "黃瑽寧" and doctor["speaker_kind"] == "pediatrician"
+    assert doctor["display_title"] == "孩子发脾气怎么办？儿科医生黄瑽宁告诉你"
+    assert stroller["relevance"] < dv.MIN_RELEVANCE
+    picked = dv.pick_video(cands, concern="发脾气", child_age_context="", locale="zh-CN", query=QUERY)
+    # Both experts are on topic; the Chinese one wins the near-tie for a Chinese reader.
+    assert picked["candidate"] is cands[2]
+
+
+@pytest.mark.parametrize("title,description,field,expected", [
+    ("如何应对孩子沉迷动画片", "家长必读", "for_parents", True),  # about cartoons, for parents
+    ("Nursery Rhymes for Kids | Tantrum Song", "", "for_parents", False),
+    ("退烧偏方：宝宝发烧这样做", "", "safe", False),
+    ("Spanking toddlers for tantrums?", "", "safe", False),
+    ("Tantrums explained", "Licensed child psychologist", "expertise", 4),
+    ("Tantrums explained", "震惊！必看", "expertise", 1),
+    ("Tantrums explained", "just a mom sharing", "expertise", 2),
+])
+def test_rule_fields(title, description, field, expected):
+    assert dv.rule_scores([_video(title, description)], query=QUERY)[0][field] == expected
+
+
+def test_the_mode_switch_still_asks_the_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dv, "SCORE_MODE", "llm")
+    monkeypatch.setattr(dv, "_ask_scores", lambda c, **_k: calls.append(1) or [_score(0)])
+    assert dv.pick_video(_cands("Tantrum tips"), concern="c", child_age_context="", locale="zh-CN")
+    assert calls == [1]
+
+
 def test_the_intro_only_claims_a_conversation_that_happened():
     talked = dv.intro({"basis": "conversation", "concern": "躺地哭闹"}, "Linda", "zh-CN")
     assert talked.startswith("Linda你好呀") and "你和NURI聊到「躺地哭闹」" in talked
@@ -151,8 +205,11 @@ def world(monkeypatch):
 
     monkeypatch.setattr(family_store, "load_profile", fake_profile)
     monkeypatch.setattr(feed_signals, "load_recent_main_chat", fake_chat)
-    monkeypatch.setattr(dp, "conversation_plan", lambda *_a, **_k: dp.Plan(
-        basis="conversation", concern="躺地哭闹", query_zh="20个月 发脾气 宝妈", query_en="toddler tantrums moms"))
+    async def fake_plans(*_a, **_k):
+        return [dp.Plan(basis="conversation", concern="躺地哭闹", query_zh="20个月 发脾气 宝妈",
+                        query_en="toddler tantrums moms")]
+
+    monkeypatch.setattr(dp, "plans_for_today", fake_plans)
     monkeypatch.setattr(dv, "find_candidates", fake_find)
     monkeypatch.setattr(dv, "pick_video", fake_pick)
     monkeypatch.setattr(dv, "write_summary", fake_summary)

@@ -1,6 +1,6 @@
 // Presentation only: normalize the explicitly supplied short summary. This
 // module never selects titles, excerpts, source bodies or metadata, never calls
-// an AI/network service, and never rewrites or invents a statement.
+// an AI/network service, and never invents a source statement.
 // A length cap is not proof of permission, accuracy, or copyright compliance.
 
 export type ResourceSummaryOptions = { limit?: number; locale?: string };
@@ -9,7 +9,7 @@ export type ResourceSummaryOptions = { limit?: number; locale?: string };
  * turn arbitrary legacy fields into an AI summary. This is not a permission,
  * copyright, or factual-accuracy certification. */
 export function hasPostSummarySource(card: {summary_source?: unknown} | null | undefined): boolean {
-  return card?.summary_source === "post" || card?.summary_source === "facebook_ai_summary";
+  return card?.summary_source === "post" || card?.summary_source === "facebook_ai_summary" || card?.summary_source === "summary";
 }
 
 /** Detect a known mismatch, not a language/translation certification. Unknown
@@ -60,24 +60,27 @@ function normalizedText(value: unknown): string | null {
   return text || null;
 }
 
+function sentenceEnd(text: string, index: number): number {
+  const char = text[index];
+  if (!/[。！？.!?]/.test(char)) return 0;
+  if (char === ".") {
+    if (/\d/.test(text[index - 1] || "") && /\d/.test(text[index + 1] || "")) return 0;
+    if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|U\.S|U\.K|[A-Z])\.$/i.test(text.slice(0, index + 1))) return 0;
+  }
+  let end = index + 1;
+  while (end < text.length && /[。！？.!?"'”’」』）)]/.test(text[end])) end++;
+  // English punctuation inside a word/domain is not a sentence boundary.
+  return /[.!?]/.test(char) && end < text.length && !/\s/.test(text[end]) ? 0 : end;
+}
+
 function completePrefix(text: string, limit: number): string | null {
   const prefix = Array.from(text).slice(0, limit).join("");
   if (prefix.length === text.length) return text;
   let lastEnd = 0;
   for (let index = 0; index < prefix.length; index++) {
-    const char = prefix[index];
-    if (char === "\n") { lastEnd = index; continue; }
-    if (!/[。！？.!?]/.test(char)) continue;
-    if (char === ".") {
-      if (/\d/.test(text[index - 1] || "") && /\d/.test(text[index + 1] || "")) continue;
-      const preceding = text.slice(0, index + 1);
-      if (/\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|U\.S|U\.K|[A-Z])\.$/i.test(preceding)) continue;
-    }
-    let end = index + 1;
-    while (/[。！？.!?"'”’」』）)]/.test(text[end] || "") && end < text.length) end++;
-    // English punctuation inside a word/domain is not a sentence boundary.
-    if (/[.!?]/.test(char) && end < text.length && !/\s/.test(text[end])) continue;
-    if (end <= prefix.length) lastEnd = end;
+    if (prefix[index] === "\n") { lastEnd = index; continue; }
+    const end = sentenceEnd(text, index);
+    if (end && end <= prefix.length) lastEnd = end;
   }
   return lastEnd ? prefix.slice(0, lastEnd).trim() || null : null;
 }
@@ -96,6 +99,108 @@ export function resourceSummary(value: unknown, options: ResourceSummaryOptions 
 
 export function shortResourceSummary(value: unknown, maxChars = 220): string | null {
   return resourceSummary(value, { limit: maxChars });
+}
+
+function splitSummaryPoints(text: string | null): string[] {
+  if (!text) return [];
+  return text.split("\n").flatMap((paragraph) => {
+    const line = paragraph.replace(/^(?:[-*+]\s+|[•・]\s*|\d{1,2}[.)]\s+|\d{1,2}[、．）]\s*)/, "");
+    const points: string[] = [];
+    let start = 0;
+    let parentheses = 0;
+    for (let index = 0; index < line.length; index++) {
+      if (/[（(\[【]/.test(line[index])) parentheses++;
+      if (/[）)\]】]/.test(line[index])) parentheses = Math.max(0, parentheses - 1);
+      const end = parentheses === 0 ? sentenceEnd(line, index) : 0;
+      if (!end) continue;
+      points.push(line.slice(start, end).trim());
+      start = end;
+      index = end - 1;
+    }
+    return [...points, line.slice(start).trim()].filter(Boolean);
+  });
+}
+
+function duplicateKey(text: string): string {
+  return text.normalize("NFC").replace(/\s+/g, " ").replace(/[.。]$/, "");
+}
+
+function rangeKeys(text: string): string {
+  return Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(?:[-‐‑–—~～到至]|to)\s*(\d+(?:\.\d+)?)/gi),
+    ([, start, end]) => `${start}-${end}`).join(",");
+}
+
+function matchTerms(text: string): Set<string> {
+  const terms = new Set(text.toLowerCase().match(/\b[a-z]{4,}\b/g) || []);
+  for (const part of text.match(/[\u3400-\u9fff]{3,}/g) || []) {
+    for (let index = 0; index <= part.length - 3; index++) terms.add(part.slice(index, index + 3));
+  }
+  return terms;
+}
+
+function relatedDetailIndexes(preview: string[], detail: string[]): number[] | null {
+  const detailTerms = detail.map((text) => ({ ranges: rangeKeys(text), terms: matchTerms(text) }));
+  const indexes: number[] = [];
+  for (const text of preview) {
+    const ranges = rangeKeys(text);
+    if (!ranges) return null;
+    const terms = matchTerms(text);
+    const matches = detailTerms.flatMap((candidate, index) =>
+      ranges === candidate.ranges && [...terms].filter((term) => candidate.terms.has(term)).length >= 3
+        ? [index] : []);
+    // Keep both original phrasings, and group only when the excerpts have an
+    // unambiguous reading order. A shared range alone does not establish that.
+    if (matches.length !== 1 || matches[0] <= (indexes.at(-1) ?? -1)) return null;
+    indexes.push(matches[0]);
+  }
+  return indexes;
+}
+
+const AAP_NAMES = {
+  en: "American Academy of Pediatrics",
+  "zh-CN": "美国儿科学会",
+  "zh-TW": "美國兒科學會",
+};
+
+type ReadingSummaryPoint = { kind: "preview" | "detail"; text: string };
+
+/** Organize the already bounded, supplied excerpts in display order. */
+export function readingSummaryPoints(
+  preview: string | null,
+  detail: string | null,
+  locale: string,
+  { detailFirst = false, groupRelated = false }: { detailFirst?: boolean; groupRelated?: boolean } = {},
+): ReadingSummaryPoint[] {
+  const detailPoints = splitSummaryPoints(detail);
+  const seen = new Set(detailPoints.map(duplicateKey));
+  const previewPoints = splitSummaryPoints(preview).filter((text) => {
+    const key = duplicateKey(text);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const previewRows = previewPoints.map((text): ReadingSummaryPoint => ({ kind: "preview", text }));
+  const detailRows = detailPoints.map((text): ReadingSummaryPoint => ({ kind: "detail", text }));
+  const relatedIndexes = groupRelated && previewPoints.length > 0 ? relatedDetailIndexes(previewPoints, detailPoints) : null;
+  if (relatedIndexes) {
+    relatedIndexes.forEach((index, previewIndex) => { detailRows[index].text += `\n\n${previewPoints[previewIndex]}`; });
+  }
+  const rows = relatedIndexes ? detailRows : detailFirst ? [...detailRows, ...previewRows] : [...previewRows, ...detailRows];
+  const language = locale === "zh-TW" ? "zh-TW" : locale === "zh-CN" ? "zh-CN" : "en";
+  const fullName = AAP_NAMES[language];
+  const expansion = language === "en" ? `${fullName} (AAP)` : `${fullName}（AAP）`;
+  let explainedAap = false;
+  return rows.map((row) => {
+    if (explainedAap) return row;
+    const index = row.text.search(/\bAAP\b/);
+    if (index < 0) return row;
+    explainedAap = true;
+    const before = row.text.slice(0, index);
+    const after = row.text.slice(index + 3);
+    const alreadyExpanded = Object.values(AAP_NAMES).some((name) =>
+      before.replace(/[\s(（]+$/, "").endsWith(name) || after.replace(/^[\s(（]+/, "").startsWith(name));
+    return alreadyExpanded ? row : { ...row, text: before + expansion + after };
+  });
 }
 
 export function resourceSummaryDisclosure(t: (source: string) => string = (source) => source): string {

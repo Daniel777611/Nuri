@@ -21,6 +21,12 @@ export const CHAT_IMAGE_MAX_NATIVE_DATA_URI_CHARS = 3 * 1024 * 1024;
 // Mirrors the backend's decoded 2.5 MB ceiling, leaving room for the text,
 // client context and JSON envelope under the 3.7 MB request guard.
 export const CHAT_IMAGE_MAX_DATA_URI_CHARS = 3_250_000;
+// Ten separately encoded photos, JSON framing and the compatibility copy of
+// the first photo on readback fit the Alpha chat history response budget.
+export const CHAT_BATCH_PHOTO_MAX_DATA_URI_CHARS = 295_000;
+export const CHAT_BATCH_PHOTO_LIMIT = 10;
+
+export type ChatImagePreparationOptions = { personalAvatar: true } | { compactBatchPhoto: true };
 
 export type PreparedChatImage = {
   previewUri: string;
@@ -401,7 +407,7 @@ function deleteGeneratedImage(uri: string, sourceUri: string) {
   }
 }
 
-async function prepareNativeChatImage(asset: ImagePickerAsset): Promise<PreparedChatImage> {
+async function prepareNativeChatImage(asset: ImagePickerAsset, maxDimension: number, compactBatchPhoto: boolean): Promise<PreparedChatImage> {
   validateNativeDimensions(asset.width, asset.height, CHAT_IMAGE_MAX_NATIVE_SOURCE_DIMENSION, CHAT_IMAGE_MAX_NATIVE_SOURCE_PIXELS);
   if (asset.fileSize != null && (!Number.isFinite(asset.fileSize) || asset.fileSize < 0)) {
     throw new ChatImageInputError("processing_failed");
@@ -411,24 +417,31 @@ async function prepareNativeChatImage(asset: ImagePickerAsset): Promise<Prepared
   const saveJpeg = async (rendered: ImageManipulator.ImageRef, quality: number) => {
     const result = await rendered.saveAsync({ base64: true, compress: quality, format: ImageManipulator.SaveFormat.JPEG });
     if (typeof result.uri === "string") generatedFiles.add(result.uri);
-    validateNativeDimensions(result.width, result.height, CHAT_IMAGE_MAX_DIMENSION, CHAT_IMAGE_MAX_DIMENSION ** 2);
+    validateNativeDimensions(result.width, result.height, maxDimension, maxDimension ** 2);
     if (result.width !== rendered.width || result.height !== rendered.height || typeof result.base64 !== "string" || !result.base64.startsWith("/9j/")) {
       throw new ChatImageInputError("processing_failed");
     }
     return result;
   };
   try {
-    image = await resizeNativeImage(asset.uri, asset.width, asset.height, CHAT_IMAGE_MAX_DIMENSION);
+    image = await resizeNativeImage(asset.uri, asset.width, asset.height, maxDimension);
     let result = await saveJpeg(image, 0.72);
     const prefix = "data:image/jpeg;base64,";
-    const maxChars = Math.min(CHAT_IMAGE_MAX_DATA_URI_CHARS, CHAT_IMAGE_MAX_NATIVE_DATA_URI_CHARS);
+    const maxChars = compactBatchPhoto ? CHAT_BATCH_PHOTO_MAX_DATA_URI_CHARS
+      : Math.min(CHAT_IMAGE_MAX_DATA_URI_CHARS, CHAT_IMAGE_MAX_NATIVE_DATA_URI_CHARS);
     if (result.base64!.length + prefix.length > maxChars) {
       // Retry from the already bounded native reference, never decode the 48 MP
       // original a second time or keep two full-resolution contexts alive.
-      const smaller = await resizeNativeImage(image, image.width, image.height, 1200);
+      const smaller = await resizeNativeImage(image, image.width, image.height, Math.min(1200, maxDimension));
       image.release();
       image = smaller;
       result = await saveJpeg(image, 0.55);
+    }
+    if (compactBatchPhoto && result.base64!.length + prefix.length > maxChars) {
+      const smaller = await resizeNativeImage(image, image.width, image.height, 800);
+      image.release();
+      image = smaller;
+      result = await saveJpeg(image, 0.46);
     }
     const base64 = result.base64!;
     if (base64.length + prefix.length > maxChars) throw new ChatImageInputError("too_large");
@@ -447,7 +460,7 @@ async function prepareNativeChatImage(asset: ImagePickerAsset): Promise<Prepared
 
 let nativeImageWork: Promise<void> = Promise.resolve();
 
-export async function prepareChatImage(asset: ImagePickerAsset): Promise<PreparedChatImage> {
+export async function prepareChatImage(asset: ImagePickerAsset, options?: ChatImagePreparationOptions): Promise<PreparedChatImage> {
   if (asset.type && asset.type !== "image") throw new ChatImageInputError("unsupported");
   if (asset.fileSize && asset.fileSize > CHAT_IMAGE_MAX_SOURCE_BYTES) {
     throw new ChatImageInputError("too_large");
@@ -463,7 +476,9 @@ export async function prepareChatImage(asset: ImagePickerAsset): Promise<Prepare
 
   try {
     if (Platform.OS === "web") return await prepareWebChatImage(asset);
-    const work = nativeImageWork.then(() => prepareNativeChatImage(asset));
+    const maxDimension = options && "personalAvatar" in options ? 384 : CHAT_IMAGE_MAX_DIMENSION;
+    const compactBatchPhoto = Boolean(options && "compactBatchPhoto" in options);
+    const work = nativeImageWork.then(() => prepareNativeChatImage(asset, maxDimension, compactBatchPhoto));
     nativeImageWork = work.then(() => undefined, () => undefined);
     return await work;
   } catch (error) {

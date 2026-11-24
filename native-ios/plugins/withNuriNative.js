@@ -22,7 +22,7 @@ module.exports = function withNuriNative(config) {
   config = withDangerousMod(config, ['ios', async (mod) => {
     const target = path.join(mod.modRequest.platformProjectRoot, 'NURINativeLab');
     fs.mkdirSync(target, { recursive: true });
-    for (const name of ['NuriPushBridge.swift', 'NuriPushBridge.m', 'NuriGoogleAuthBridge.swift', 'NuriGoogleAuthBridge.m', 'PrivacyInfo.xcprivacy']) {
+    for (const name of ['NuriPushBridge.swift', 'NuriPushBridge.m', 'NuriGoogleAuthBridge.swift', 'NuriGoogleAuthBridge.m', 'NuriAppleAuthBridge.swift', 'NuriAppleAuthBridge.m', 'NuriKeyboardBridge.m', 'NuriKeyboardInputPolicy.h', 'PrivacyInfo.xcprivacy']) {
       fs.copyFileSync(path.join(mod.modRequest.projectRoot, 'native', name), path.join(target, name));
     }
     return mod;
@@ -32,7 +32,7 @@ module.exports = function withNuriNative(config) {
     const target = project.getFirstTarget().uuid;
     const group = project.findPBXGroupKey({ name: 'NURINativeLab' })
       || project.findPBXGroupKey({ path: 'NURINativeLab' });
-    for (const name of ['NuriPushBridge.swift', 'NuriPushBridge.m', 'NuriGoogleAuthBridge.swift', 'NuriGoogleAuthBridge.m']) {
+    for (const name of ['NuriPushBridge.swift', 'NuriPushBridge.m', 'NuriGoogleAuthBridge.swift', 'NuriGoogleAuthBridge.m', 'NuriAppleAuthBridge.swift', 'NuriAppleAuthBridge.m', 'NuriKeyboardBridge.m']) {
       const file = `NURINativeLab/${name}`;
       if (!project.hasFile(file)) project.addSourceFile(file, { target }, group);
     }

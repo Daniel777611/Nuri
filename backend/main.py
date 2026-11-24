@@ -70,6 +70,7 @@ from backend.feed import checkin as feed_checkin
 from backend.feed import daily_post as feed_daily_post
 from backend.feed import daily_video as feed_daily_video
 from backend.feed import delivery as feed_delivery
+from backend.feed import local_activity_service as local_activities
 from backend.feed import signals as feed_signals
 from backend.nuri_core import dialogue_reply as core_dialogue_reply
 from backend.nuri_core import knowledge_store as core_knowledge_store
@@ -6846,6 +6847,68 @@ async def patch_notification_preferences(
     return {k: v for k, v in row.items() if k != "user_id"}
 
 
+@api.get("/notifications/local-activities/preferences")
+async def get_local_activity_preferences(uid: str = Depends(_req_uid)):
+    if not local_activities.enabled():
+        return local_activities.public_area({})
+    try:
+        return local_activities.public_area(await local_activities.load_area(_require_push_storage(), uid))
+    except Exception as exc:
+        raise HTTPException(503, "Local activity preferences unavailable") from exc
+
+
+@api.patch("/notifications/local-activities/preferences")
+async def patch_local_activity_preferences(
+    body: local_activities.AreaPatch, uid: str = Depends(_req_uid),
+):
+    if body.enabled and not local_activities.enabled():
+        raise HTTPException(503, "Local activity recommendations are unavailable")
+    try:
+        return await local_activities.configure(_require_push_storage(), uid, body)
+    except Exception as exc:
+        raise HTTPException(503, "Local activity preferences unavailable") from exc
+
+
+async def _local_activity_clock(sb, uid: str) -> tuple[datetime, date]:
+    prefs = await anyio.to_thread.run_sync(lambda: push_service._preferences(sb, uid))
+    now = datetime.now(timezone.utc)
+    return now, now.astimezone(push_service._zone(prefs)).date()
+
+
+@api.get("/feed/local-activities")
+async def list_local_activities(
+    locale: Literal["en", "zh-CN", "zh-TW"] | None = None,
+    uid: str = Depends(_req_uid),
+):
+    if not local_activities.enabled():
+        return {"state": "disabled", "items": []}
+    try:
+        sb = _require_push_storage()
+        now, day = await _local_activity_clock(sb, uid)
+        if locale is None:
+            settings = await stores.get_privacy(uid, fail_closed=True)
+            locale = locales.normalize_preferred_locale(settings.get("language"))
+        return await local_activities.recommendations(sb, uid, locale=locale, now=now, day=day)
+    except Exception as exc:
+        logging.getLogger("nuri.push").warning("local activities unavailable: %s", type(exc).__name__)
+        return {"state": "unavailable", "items": []}
+
+
+@api.get("/feed/local-activities/{item_id}")
+async def read_local_activity(item_id: str, uid: str = Depends(_req_uid)):
+    if not local_activities.enabled() or not re.fullmatch(r"[0-9a-f]{32}", item_id):
+        raise HTTPException(404, "Local activity not found")
+    try:
+        sb = _require_push_storage()
+        now, day = await _local_activity_clock(sb, uid)
+        item = await local_activities.find_activity(sb, uid, item_id, now=now, day=day)
+    except Exception as exc:
+        raise HTTPException(503, "Local activity unavailable") from exc
+    if not item:
+        raise HTTPException(404, "Local activity not found")
+    return item
+
+
 #: Statuses that reached at least one phone. Queued, held or cancelled events
 #: never showed on a lock screen, so they are not history.
 _DELIVERED_STATUSES = ("sent", "partial")
@@ -6872,6 +6935,8 @@ async def list_notifications(uid: str = Depends(_req_uid), limit: int = 30):
     return {"items": [{
         "id": row["id"],
         "kind": (row.get("data") or {}).get("kind") or row["type"],
+        **({"local_activity_id": (row.get("data") or {}).get("local_activity_id")}
+           if (row.get("data") or {}).get("kind") == local_activities.KIND else {}),
         "title": row["title"],
         "body": row["body"],
         "sent_at": row["scheduled_at"],
@@ -6903,6 +6968,23 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
 
     row = rows[0]
     data = row.get("data") or {}
+    if data.get("kind") == local_activities.KIND:
+        item_id = data.get("local_activity_id")
+        revision = data.get("local_activity_revision")
+        try:
+            now, day = await _local_activity_clock(sb, uid)
+            item = await local_activities.find_activity(
+                sb, uid, item_id, now=now, day=day, revision=revision,
+            ) if item_id and revision else None
+        except Exception as exc:
+            raise HTTPException(503, "Local activity unavailable") from exc
+        return {
+            "id": row["id"], "type": row["type"], "kind": local_activities.KIND,
+            "title": row["title"], "content": row["body"],
+            "local_activity_id": item["id"] if item else None,
+            "target": {"kind": local_activities.KIND, "id": item["id"]} if item else {"kind": local_activities.KIND},
+            "created_at": row.get("created_at"),
+        }
     target: dict = {"kind": row["type"]}
     if str(data.get("kind") or "").startswith("community_"):
         # A typed in-app reference; GET /community/v1/me/notifications/{id}/target
@@ -6997,6 +7079,8 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
     row = rows[0]
     data = row.get("data") or {}
+    if data.get("kind") == local_activities.KIND:
+        raise HTTPException(409, "Open this recommendation in Nearby Activities")
     if str(data.get("kind") or "").startswith("community_"):
         # Opening writes a NURI AI message into the parent's private chat. A
         # community event must never do that (handoff E12): navigate instead.
@@ -7260,6 +7344,32 @@ async def internal_alpha_community_bots_tick(authorization: Optional[str] = Head
     return await tick(authorization)
 
 
+class AlphaLocalActivityTick(BaseModel):
+    model_config = {"extra": "forbid"}
+    action: Literal["status", "probe", "generate", "dispatch"]
+
+
+@api.post("/internal/alpha-local-activities/tick", include_in_schema=False)
+async def internal_alpha_local_activities_tick(
+    body: AlphaLocalActivityTick, authorization: Optional[str] = Header(default=None),
+):
+    from backend.alpha_local_activity_scheduler import authorize, public_city_probe
+
+    sb, scheduled = await authorize(authorization)
+    feature = local_activities.enabled()
+    compatible_build = bool(local_activities.supported_builds())
+    if body.action == "status":
+        return {"ok": True, "scheduled": scheduled, "feature": feature, "compatible_build": compatible_build}
+    if body.action == "probe":
+        return await public_city_probe()
+    if not scheduled or not feature or not compatible_build:
+        return {"ok": True, "state": "paused"}
+    if body.action == "generate":
+        return await _generate_local_activity_batch(sb)
+    counts = await push_service.dispatch_due_notifications(sb, batch_size=30, local_activities_only=True)
+    return {"ok": True, **counts}
+
+
 @api.post("/internal/alpha-community-bots/verify-translation/{language}", include_in_schema=False)
 async def internal_alpha_community_bots_verify_translation(
     language: Literal["zh-CN", "zh-TW", "en", "es", "fr", "he", "ja", "ko"],
@@ -7342,6 +7452,39 @@ async def internal_care_generate(
             else:
                 skipped[kind] += 1
     return {"ok": True, "candidates": len(uids), "queued": queued, "skipped": skipped}
+
+
+async def _generate_local_activity_batch(sb, *, limit: int = 30):
+    """Prepare local activities separately so a slow daily post cannot block them."""
+    now = datetime.now(timezone.utc)
+
+    def candidates():
+        return sb.table(local_activities.TABLE).select("user_id,revision").eq(
+            "enabled", True,
+        ).order("last_push_checked_at", nullsfirst=True).order(
+            "user_id",
+        ).limit(max(1, min(limit, 30))).execute().data or []
+
+    rows = await anyio.to_thread.run_sync(candidates)
+    slots = asyncio.Semaphore(3)
+
+    async def prepare(row):
+        async with slots:
+            try:
+                event = await push_service.generate_local_activity_event(sb, row["user_id"], now=now)
+            except Exception as exc:
+                logging.getLogger("nuri.push").warning("local activity generation failed: %s", type(exc).__name__)
+                event = None
+            try:
+                await anyio.to_thread.run_sync(lambda: sb.table(local_activities.TABLE).update(
+                    {"last_push_checked_at": now.isoformat()},
+                ).eq("user_id", row["user_id"]).eq("revision", row["revision"]).execute())
+            except Exception as exc:
+                logging.getLogger("nuri.push").warning("local activity scan marker unavailable: %s", type(exc).__name__)
+            return bool(event)
+
+    outcomes = await asyncio.gather(*(prepare(row) for row in rows))
+    return {"ok": True, "candidates": len(rows), "queued": sum(outcomes)}
 
 
 @api.get("/internal/push/test-accounts")

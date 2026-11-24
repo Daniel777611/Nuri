@@ -2,7 +2,7 @@ import { Stack } from "expo-router";
 import { useFonts } from "expo-font";
 import { TEXT_FONTS } from "@/src/textFonts";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect, useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import { Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
@@ -21,8 +21,7 @@ import { AIConsentStartupGate } from "@/src/components/AIConsentStartupGate";
 
 SplashScreen.preventAutoHideAsync();
 
-/** Stable app-lifetime effects consume the resolved UI language context.
- * Language/identity changes do not key or remount the navigator. */
+/** Run app-lifetime effects without remounting the navigator. */
 function AppRuntimeEffects() {
   useActivityHeartbeat();
   usePushBridge();
@@ -30,30 +29,31 @@ function AppRuntimeEffects() {
 }
 
 export default function RootLayout() {
+  const splashHidden = useRef(false);
   const identity=useSyncExternalStore(subscribeSessionBoundary,getIdentityGeneration,getIdentityGeneration);
   const [iconFontsLoaded, iconFontsError] = useIconFonts();
   const [textFontsLoaded, textFontsError] = useFonts(TEXT_FONTS);
   const fontsReady =
     (iconFontsLoaded || Boolean(iconFontsError)) &&
     (textFontsLoaded || Boolean(textFontsError));
-  useEffect(() => {
-    if (fontsReady) {
-      SplashScreen.hideAsync();
-    }
-  }, [fontsReady]);
-
   if (!fontsReady) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#FCF7F1" }} onLayout={() => {
+      if (splashHidden.current) return;
+      splashHidden.current = true;
+      void SplashScreen.hideAsync().catch(() => { splashHidden.current = false; });
+    }}>
       <I18nProvider>
         <AppRuntimeEffects />
         <SafeAreaProvider>
           <NuriThemeProvider><NuriNavigationTheme><AppKeyboardProvider ownerKey={identity}><AIConsentStartupGate><NuriShell><Stack
-            screenOptions={{
+            screenOptions={({ route }) => ({
               headerShown: false,
               contentStyle: { backgroundColor: "transparent" },
-            }}
+              animation: route.name === "(tabs)" || route.name === "community" ? "none" : "simple_push",
+              animationDuration: 300,
+            })}
           /></NuriShell></AIConsentStartupGate></AppKeyboardProvider></NuriNavigationTheme></NuriThemeProvider>
         </SafeAreaProvider>
       </I18nProvider>

@@ -21,12 +21,13 @@ export const REPORT_REASONS: readonly { key: ReportReason; cn: string; en: strin
   { key: "other", cn: "其他问题", en: "Something else" },
 ];
 
-export function CommunityReportSheet({ visible, busy, title, allowBlock, onClose, onSubmit }: {
+export function CommunityReportSheet({ visible, busy, title, allowBlock, originalText, onClose, onSubmit }: {
   visible: boolean;
   busy: boolean;
   title: string;
   /** Offer "also block": not for anonymous content, whose author must stay unknown. */
   allowBlock: boolean;
+  originalText?: string;
   onClose: () => void;
   onSubmit: (reason: ReportReason, note: string, block: boolean) => void;
 }) {
@@ -35,33 +36,53 @@ export function CommunityReportSheet({ visible, busy, title, allowBlock, onClose
   const [reason, setReason] = useState<ReportReason | null>(null);
   const [note, setNote] = useState("");
   const [block, setBlock] = useState(false);
+  const [showReportForm, setShowReportForm] = useState(false);
   // Each report starts blank, so a second report never inherits the first.
-  useEffect(() => { if (visible) { setReason(null); setNote(""); setBlock(false); } }, [visible]);
+  useEffect(() => { if (visible) { setReason(null); setNote(""); setBlock(false); setShowReportForm(false); } }, [visible]);
+  const showingOriginal = originalText !== undefined && !showReportForm;
+  const originalLabel = c("原文", "Original message");
 
   return <Modal visible={visible} transparent animationType="fade" onRequestClose={busy ? undefined : onClose}>
     <BlurView tint="light" intensity={40} style={{ flex: 1, justifyContent: "center", padding: 24, backgroundColor: "rgba(254,250,247,.5)" }} testID="community-report-sheet">
       <Pressable style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0 }} accessibilityRole="button" accessibilityLabel={c("取消", "Cancel")} onPress={busy ? undefined : onClose} />
-      <FinalSurface surfaceColor="rgba(255,255,255,.96)" style={{ width: 354, maxWidth: "100%", maxHeight: 620, alignSelf: "center", boxShadow: "0px 4px 8px rgba(89,71,92,.14)" }} contentStyle={{ padding: 24 }}>
-        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 12 }}>
-          <FinalText size={20} style={{ lineHeight: 28, fontWeight: "500" }}>{title}</FinalText>
-          <FinalText size={14} secondary>{c("请选择原因。举报会由 NURI 团队人工审核，对方不会知道是你举报的。", "Choose a reason. The NURI team reviews every report by hand; they won't know it was you.")}</FinalText>
-          {REPORT_REASONS.map(item => {
-            const selected = reason === item.key;
-            return <Pressable key={item.key} onPress={() => setReason(item.key)} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: selected, disabled: busy }} testID={`community-report-reason-${item.key}`} style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderRadius: 14, backgroundColor: selected ? "rgba(115,92,132,.12)" : "transparent" }}>
-              <Image source={selected ? require("@/assets/final-flow-20261101/community-radio-selected.svg") : require("@/assets/final-flow-20261101/community-radio-empty.svg")} style={{ width: 16, height: 16 }} contentFit="contain" accessible={false} />
-              <FinalText style={{ flex: 1 }}>{c(item.cn, item.en)}</FinalText>
-            </Pressable>;
-          })}
-          <NuriTextInput testID="community-report-note" accessibilityLabel={c("补充说明（可选）", "More detail (optional)")} multiline maxLength={500} editable={!busy} value={note} onChangeText={setNote} placeholder={c("补充说明（可选）", "More detail (optional)")} placeholderTextColor="#918896" style={{ minHeight: 72, borderRadius: 18, borderWidth: 1, borderColor: "rgba(93,80,96,.25)", backgroundColor: "rgba(255,250,245,.9)", padding: 12, fontSize: 14, lineHeight: 20, color: FINAL_COLOR.ink, textAlignVertical: "top" }} />
-          {allowBlock ? <Pressable onPress={() => setBlock(v => !v)} disabled={busy} accessibilityRole="checkbox" accessibilityState={{ checked: block, disabled: busy }} testID="community-report-block" style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12 }}>
-            <Image source={block ? require("@/assets/final-flow-20261101/community-checkbox-selected.svg") : require("@/assets/final-flow-20261101/community-checkbox-empty.svg")} style={{ width: 20, height: 20 }} contentFit="contain" accessible={false} />
-            <FinalText style={{ flex: 1 }}>{c("同时屏蔽这位家长", "Also block this parent")}</FinalText>
-          </Pressable> : null}
-          <View style={{ flexDirection: "row", gap: 12 }}>
+      <FinalSurface surfaceColor="rgba(255,255,255,.96)" style={{ width: 354, maxWidth: "100%", maxHeight: 620, alignSelf: "center", boxShadow: "0px 4px 8px rgba(89,71,92,.14)" }} contentStyle={{ minHeight: 0 }}>
+        <ScrollView
+          key={showingOriginal ? "original" : "report"}
+          style={{ flexGrow: 0, minHeight: 0 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, gap: 12 }}
+          automaticallyAdjustsScrollIndicatorInsets={false}
+          scrollIndicatorInsets={{ top: 20, right: 6 }}
+          keyboardShouldPersistTaps="handled"
+        >
+          {showingOriginal ? <>
+            <FinalText size={20} style={{ lineHeight: 28, fontWeight: "500" }}>{originalLabel}</FinalText>
+            <FinalText selectable testID="community-original-message">{originalText}</FinalText>
+          </> : <>
+            <FinalText size={20} style={{ lineHeight: 28, fontWeight: "500" }}>{title}</FinalText>
+            <FinalText size={14} secondary>{c("请选择原因。举报会由 NURI 团队人工审核，对方不会知道是你举报的。", "Choose a reason. The NURI team reviews every report by hand; they won't know it was you.")}</FinalText>
+            {REPORT_REASONS.map(item => {
+              const selected = reason === item.key;
+              return <Pressable key={item.key} onPress={() => setReason(item.key)} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: selected, disabled: busy }} testID={`community-report-reason-${item.key}`} style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderRadius: 14, backgroundColor: selected ? "rgba(115,92,132,.12)" : "transparent" }}>
+                <Image source={selected ? require("@/assets/final-flow-20261101/community-radio-selected.svg") : require("@/assets/final-flow-20261101/community-radio-empty.svg")} style={{ width: 16, height: 16 }} contentFit="contain" accessible={false} />
+                <FinalText style={{ flex: 1 }}>{c(item.cn, item.en)}</FinalText>
+              </Pressable>;
+            })}
+            <NuriTextInput testID="community-report-note" accessibilityLabel={c("补充说明（可选）", "More detail (optional)")} multiline maxLength={500} editable={!busy} value={note} onChangeText={setNote} placeholder={c("补充说明（可选）", "More detail (optional)")} placeholderTextColor="#918896" style={{ minHeight: 72, borderRadius: 18, borderWidth: 1, borderColor: "rgba(93,80,96,.25)", backgroundColor: "rgba(255,250,245,.9)", padding: 12, fontSize: 14, lineHeight: 20, color: FINAL_COLOR.ink, textAlignVertical: "top" }} />
+            {allowBlock ? <Pressable onPress={() => setBlock(v => !v)} disabled={busy} accessibilityRole="checkbox" accessibilityState={{ checked: block, disabled: busy }} testID="community-report-block" style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12 }}>
+              <Image source={block ? require("@/assets/final-flow-20261101/community-checkbox-selected.svg") : require("@/assets/final-flow-20261101/community-checkbox-empty.svg")} style={{ width: 20, height: 20 }} contentFit="contain" accessible={false} />
+              <FinalText style={{ flex: 1 }}>{c("同时屏蔽这位家长", "Also block this parent")}</FinalText>
+            </Pressable> : null}
+          </>}
+        </ScrollView>
+        <View style={{ flexDirection: "row", flexShrink: 0, gap: 12, paddingHorizontal: 24, paddingTop: 12, paddingBottom: 24 }}>
+          {showingOriginal ? <>
+            <FinalButton small secondary label={c("关闭", "Close")} onPress={onClose} />
+            <FinalButton small secondary label={title} onPress={() => setShowReportForm(true)} testID="community-original-report" />
+          </> : <>
             <FinalButton small secondary label={c("取消", "Cancel")} disabled={busy} onPress={onClose} />
             <FinalButton small label={c("提交举报", "Report")} disabled={!reason || busy} onPress={() => reason && onSubmit(reason, note.trim(), allowBlock && block)} testID="community-report-submit" />
-          </View>
-        </ScrollView>
+          </>}
+        </View>
       </FinalSurface>
     </BlurView>
   </Modal>;

@@ -27,11 +27,13 @@ function ComposerAction({name,label,onPress,disabled,testID,empty=false,targetRe
   return <Pressable ref={targetRef} collapsable={false} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{disabled:!!disabled}} onPointerDown={Platform.OS==="web"?event=>event.preventDefault():undefined} onPress={onPress} disabled={disabled} testID={testID} style={({pressed})=>[s.actionTarget,{opacity:disabled?.4:pressed?.6:1}]}><Image source={source} style={{width:size,height:size}} contentFit="contain" accessible={false} accessibilityElementsHidden /></Pressable>;
 }
 
-export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, disabled, busy, recording, inputRef, onFocus, onBlur, testID = "chat", placeholder, hasAttachment = false, attachments, onRemoveAttachment, onPreviewAttachment, availableHeight }: { value: string; onChangeText: (s:string)=>void; onSend:()=>void; onAttach:(anchor?:ChatAttachmentAnchor)=>void; onMic:()=>void; disabled?:boolean; busy?:boolean; recording?:boolean; inputRef?:RefObject<TextInput|null>; onFocus?:()=>void; onBlur?:()=>void; testID?:string; placeholder?:string; hasAttachment?:boolean; attachments?:readonly ChatDraftAttachment[]; onRemoveAttachment?:(id:string)=>void; onPreviewAttachment?:(attachment:ChatDraftAttachment)=>void; availableHeight?:number }) {
+const MAX_INLINE_LINES = 4;
+
+export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, disabled, busy, recording, inputRef, onFocus, onBlur, testID = "chat", placeholder, hasAttachment = false, attachments, onRemoveAttachment, onPreviewAttachment, availableHeight, growWithText = false, hideNativeKeyboardAccessory = false }: { value: string; onChangeText: (s:string)=>void; onSend:()=>void; onAttach:(anchor?:ChatAttachmentAnchor)=>void; onMic:()=>void; disabled?:boolean; busy?:boolean; recording?:boolean; inputRef?:RefObject<TextInput|null>; onFocus?:()=>void; onBlur?:()=>void; testID?:string; placeholder?:string; hasAttachment?:boolean; attachments?:readonly ChatDraftAttachment[]; onRemoveAttachment?:(id:string)=>void; onPreviewAttachment?:(attachment:ChatDraftAttachment)=>void; availableHeight?:number; growWithText?:boolean; hideNativeKeyboardAccessory?:boolean }) {
   const [height,setHeight] = useState(24);
   const [roomy,setRoomy] = useState(false);
   const [width,setWidth] = useState(0);
-  const [textMeasure,setTextMeasure] = useState<{value:string;width:number;fontScale:number;wraps:boolean}|null>(null);
+  const [textMeasure,setTextMeasure] = useState<{value:string;width:number;fontScale:number;lines:number}|null>(null);
   const currentMeasure = useRef({value:"",width:0,fontScale:1});
   const [modalKeyboardVisible,setModalKeyboardVisible] = useState(false);
   const wrapLength = useRef<number|null>(null);
@@ -56,17 +58,33 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
   const attachmentMode=!!attachments?.length;
   const effectiveAttachment=hasAttachment||attachmentMode;
   const minInputHeight=layout.lineHeight;
-  // RN-web has no onTextLayout implementation; keep its working input-size
-  // path, and use this independent native measurement only for iOS.
-  const measureWidth=Platform.OS==="ios"?compactComposerTextWidth(width,!!value.trim()||effectiveAttachment):0;
-  currentMeasure.current={value,width:measureWidth,fontScale};
-  const measuredWrap=textMeasure?.value===value&&textMeasure.width===measureWidth&&textMeasure.fontScale===fontScale?textMeasure.wraps:null;
-  const automaticPanel=attachmentMode||!!value.length&&layout.roomyAllowed&&(value.includes("\n")||(measuredWrap??(roomy||height>minInputHeight+1)));
+  const growsInline = growWithText && Platform.OS === "ios";
   const sendVisible=!!value.trim()||effectiveAttachment;
   const emptyMode=!value.length&&!effectiveAttachment;
   const capsuleWidth=compactComposerSurfaceWidth(width,emptyMode);
-  const compactHeight=attachmentMode?mediaLayout.inputHeight:automaticPanel?layout.roomyInputHeight:minInputHeight;
-  const compactFrameHeight=Math.max(60,minInputHeight+16);
+  const inputPaddingLeft=emptyMode?22:20;
+  const inputPaddingRight=sendVisible?108:50;
+  // RN-web has no onTextLayout implementation; keep its working input-size
+  // path, and use this independent native measurement only for iOS.
+  const measureWidth=Platform.OS!=="ios"?0:growsInline
+    ?Math.max(0,(capsuleWidth??0)-inputPaddingLeft-inputPaddingRight)
+    :compactComposerTextWidth(width,sendVisible);
+  currentMeasure.current={value,width:measureWidth,fontScale};
+  const measuredWrap=textMeasure?.value===value&&textMeasure.width===measureWidth&&textMeasure.fontScale===fontScale?textMeasure.lines>1:null;
+  const automaticPanel=attachmentMode||!growsInline&&!!value.length&&layout.roomyAllowed&&(value.includes("\n")||(measuredWrap??(roomy||height>minInputHeight+1)));
+  const inlineChrome = value ? Math.max(40, 88 - 2 * minInputHeight) : 36;
+  const inlineLineLimit = Math.max(1, Math.min(MAX_INLINE_LINES, Math.floor((available / 2 - inlineChrome) / minInputHeight)));
+  // Hold the last line count while iOS measures a changed draft. Pinyin can
+  // replace several composing characters at once within the same native field.
+  const inlineLines = growsInline && value
+    ? Math.min(inlineLineLimit, Math.max(value.split("\n", inlineLineLimit).length, textMeasure?.lines ?? 1))
+    : 1;
+  const inlineExpanded = !automaticPanel && inlineLines > 1;
+  const compactHeight=attachmentMode?mediaLayout.inputHeight:automaticPanel?layout.roomyInputHeight:inlineLines*minInputHeight;
+  // Keep a steady amount of air as each line appears. Preserve two
+  // independent 44pt targets when the expand and send controls stack.
+  const compactFrameHeight=Math.max(60,compactHeight+(growsInline&&!automaticPanel?inlineChrome:16));
+  const showsNativeAccessory=Platform.OS==="ios"&&!hideNativeKeyboardAccessory;
   const accessoryId=`nuri-composer-${useId()}`;
   const modalScope=accessoryId+"-modal",appKeyboard=useAppKeyboard(),appKeyboardVisible=useAppKeyboardVisible();
   const resetAutomatic=()=>{wrapLength.current=null;setRoomy(false);setHeight(minInputHeight);setTextMeasure(null);};
@@ -143,6 +161,7 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
     // The expanded field fills its own keyboard-safe viewport; its measurements must
     // not change the compact field when the modal is collapsed.
     onContentSizeChange={large?undefined:e=>{
+      if(growsInline)return; // UIKit's scroll content can include transient IME geometry.
       const current=currentMeasure.current;
       if(current.value!==value||current.width!==measureWidth||current.fontScale!==fontScale)return;
       if(measuredWrap!==null)return; // Native Text layout is authoritative.
@@ -153,8 +172,9 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
         if(value.length&&measured>minInputHeight+1&&!roomy){wrapLength.current=value.length;setRoomy(true);}
       }
     }}
-    inputAccessoryViewID={Platform.OS==="ios"?(large?accessoryId+"-expanded":accessoryId):undefined}
-    style={[s.input,{height:large?undefined:compactHeight,color:t.ink,fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined,fontWeight:"400",textAlignVertical:large||automaticPanel?"top":"center",...(Platform.OS==="web"?{outlineWidth:0,outlineStyle:"solid" as const,outlineColor:"transparent"}:{})},large?s.fullInput:null]}
+    hideNativeKeyboardAccessory={hideNativeKeyboardAccessory}
+    inputAccessoryViewID={showsNativeAccessory?(large?accessoryId+"-expanded":accessoryId):undefined}
+    style={[s.input,{height:large?undefined:compactHeight,color:t.ink,fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined,fontWeight:"400",textAlignVertical:large||automaticPanel||inlineExpanded?"top":"center",...(Platform.OS==="web"?{outlineWidth:0,outlineStyle:"solid" as const,outlineColor:"transparent"}:{})},large?s.fullInput:null]}
     testID={`${testID}-${large?"expanded-":""}input`} accessibilityLabel={en?"Message to Nuri":translate(locale, "给 Nuri 的消息")}
     accessibilityActions={[{name:"expand",label:en?"Expand composer":translate(locale,"展开输入")}]} onAccessibilityAction={e=>{if(e.nativeEvent.actionName==="expand"&&!large)expand();}}
   />;
@@ -183,14 +203,15 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
     return <InputAccessoryView nativeID={id}>{content}</InputAccessoryView>;
   };
   return <View style={s.container} onLayout={e=>{const next=e.nativeEvent.layout.width;if(Number.isFinite(next)&&next>0)setWidth(old=>old===next?old:next);}}>
-    <View testID={`${testID}-composer-row`} style={{alignSelf:"stretch",minWidth:0,maxWidth:"100%",...(automaticPanel?null:{flexDirection:"row",gap:emptyMode?14:16,alignItems:"center",...(emptyMode?{marginLeft:3,marginRight:5}:null)})}}>
+    <View testID={`${testID}-composer-row`} style={{alignSelf:"stretch",minWidth:0,maxWidth:"100%",...(automaticPanel?null:{flexDirection:"row",gap:emptyMode?14:16,alignItems:inlineExpanded?"flex-end":"center",...(emptyMode?{marginLeft:3,marginRight:5}:null)})}}>
     {!automaticPanel?<View ref={outerAttach} collapsable={false} style={{width:60,height:60,flexShrink:0}}><FinalSurface radius={999} surfaceColor="rgba(255,250,242,.64)" style={{width:60,height:60,flexShrink:0}} contentStyle={{height:60,alignItems:"center",justifyContent:"center"}}><ComposerAction name="plus" empty={emptyMode} label={en?"Add photos or videos":locale==="zh-TW"?"加入照片或影片":"添加照片或视频"} onPress={()=>attach(false)} disabled={disabled||busy} testID={`${testID}-attach`} /></FinalSurface></View>:null}
-    <FinalSurface radius={automaticPanel?24:999} surfaceColor="rgba(255,250,242,.64)" style={[s.surface,automaticPanel?{width:"100%"}:{width:0,flexBasis:0,flexGrow:1,flexShrink:1,maxWidth:capsuleWidth??"100%"}]} contentStyle={[s.compactCard,automaticPanel?s.roomyCard:null]} testID={`${testID}-composer`}>
+    <FinalSurface radius={automaticPanel?24:growsInline?30:999} surfaceColor="rgba(255,250,242,.64)" style={[s.surface,automaticPanel?{width:"100%"}:{width:0,flexBasis:0,flexGrow:1,flexShrink:1,maxWidth:capsuleWidth??"100%"}]} contentStyle={[s.compactCard,automaticPanel?s.roomyCard:null]} testID={`${testID}-composer`}>
       {automaticPanel?<View style={attachmentMode?[s.editorHeader,s.attachmentHeader]:s.editorHeader} testID={`${testID}-editor-header`}>{attachmentMode?<View style={s.attachmentSlot}>{tray()}</View>:<View pointerEvents="none" style={{flex:1}}/>}<ComposerAction name="expand" label={en?"Expand composer":translate(locale,"展开输入")} onPress={expand} testID={`${testID}-expand`} /></View>:null}
-      <View testID={`${testID}-editor-region`} style={[s.editor,automaticPanel?s.roomyEditor:{height:compactFrameHeight,paddingLeft:emptyMode?22:20,paddingRight:sendVisible?108:50}]}>
+      <View testID={`${testID}-editor-region`} style={[s.editor,automaticPanel?s.roomyEditor:{height:compactFrameHeight,paddingLeft:inputPaddingLeft,paddingRight:inputPaddingRight}]}>
         {input()}
       </View>
-      <View pointerEvents="box-none" style={[s.actions,automaticPanel?null:[s.inlineActions,{left:undefined,right:emptyMode?6:8,gap:sendVisible?6:0}]]} testID={`${testID}-actions`}>{controls()}</View>
+      <View pointerEvents="box-none" style={[s.actions,automaticPanel?null:[inlineExpanded?s.growingActions:s.inlineActions,{left:undefined,right:emptyMode?6:8,gap:sendVisible?6:0}]]} testID={`${testID}-actions`}>{controls()}</View>
+      {inlineExpanded?<View pointerEvents="box-none" style={s.inlineExpand}><ComposerAction name="expand" label={en?"Expand composer":translate(locale,"展开输入")} onPress={expand} testID={`${testID}-expand`} /></View>:null}
     </FinalSurface>
     </View>
     {measureWidth>0&&value.length>0?<Text
@@ -199,15 +220,18 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
       // same draft with native Text instead; never estimate from characters.
       key={`${fontScale}:${measureWidth}:${value}`} testID={`${testID}-wrap-measure`}
       pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
-      numberOfLines={2} ellipsizeMode="clip" style={[s.measure,{width:measureWidth,fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined,fontWeight:"400"}]}
+      numberOfLines={growsInline?MAX_INLINE_LINES:2} ellipsizeMode="clip" style={[s.measure,{width:measureWidth,fontFamily:locale==="zh-CN"?"NotoSansSC_400Regular":undefined,fontWeight:"400"}]}
       onTextLayout={e=>{
         const current=currentMeasure.current;
-        if(current.value!==value||current.width!==measureWidth||current.fontScale!==fontScale||!e.nativeEvent.lines.length)return;
-        const wraps=value.includes("\n")||e.nativeEvent.lines.length>1;
-        setTextMeasure(old=>old?.value===value&&old.width===measureWidth&&old.fontScale===fontScale&&old.wraps===wraps?old:{value,width:measureWidth,fontScale,wraps});
+        const count=e.nativeEvent.lines.length;
+        if(current.value!==value||current.width!==measureWidth||current.fontScale!==fontScale||!count)return;
+        const lines=Math.max(value.includes("\n")?2:1,count);
+        setTextMeasure(old=>old?.value===value&&old.width===measureWidth&&old.fontScale===fontScale&&old.lines===lines?old:{value,width:measureWidth,fontScale,lines});
+        if(growsInline)return;
+        const wraps=lines>1;
         setRoomy(wraps);setHeight(wraps?2*minInputHeight:minInputHeight);wrapLength.current=wraps?value.length:null;
       }}
-    >{value}</Text>:null}
+    >{growsInline&&value.endsWith("\n")?`${value}\u200b`:value}</Text>:null}
     <Modal visible={expanded} transparent animationType="slide" onRequestClose={done} onDismiss={onExpandedDismiss} onShow={()=>expandedInput.current?.focus()}>
       <AppKeyboardScope id={modalScope} active={expanded}><KeyboardAvoidingView behavior={Platform.OS==="ios"?"padding":"height"} style={[s.modal,{paddingTop:Platform.OS==="web"?62:safe.top}]}>
        <View style={[s.modalViewport,{paddingBottom:modalKeyboardVisible||appKeyboardVisible?12:Math.max(safe.bottom,27)}]} testID={`${testID}-expanded-viewport`}>
@@ -221,9 +245,9 @@ export function NuriComposer({ value, onChangeText, onSend, onAttach, onMic, dis
         </FinalSurface>
        </View>
       <AppKeyboardHost scopeId={modalScope}/></KeyboardAvoidingView></AppKeyboardScope>
-      {Platform.OS==="ios"&&expanded?keyboardAccessory(true):null}
+      {showsNativeAccessory&&expanded?keyboardAccessory(true):null}
     </Modal>
-    {Platform.OS==="ios"&&!expanded?keyboardAccessory():null}
+    {showsNativeAccessory&&!expanded?keyboardAccessory():null}
   </View>;
 }
 const inputTypography={fontSize:16,lineHeight:24,paddingVertical:0,paddingHorizontal:0};
@@ -240,6 +264,8 @@ const s=StyleSheet.create({
   roomyEditor:{minHeight:0,position:"relative"},
   actions:{height:44,flexShrink:0,flexDirection:"row",alignItems:"center"},
   inlineActions:{position:"absolute",top:"50%",transform:[{translateY:-22}]},
+  growingActions:{position:"absolute",bottom:0},
+  inlineExpand:{position:"absolute",top:0,right:8},
   // Stretch inside the already-bounded editor. A percentage width must not
   // retain the wider media-panel size when the same UIKit field becomes empty.
   input:{...inputTypography,alignSelf:"stretch",maxWidth:"100%",flexShrink:1,textAlignVertical:"top",includeFontPadding:false,minWidth:0},

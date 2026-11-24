@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A50400000000000000000002 /* NuriNearbyEventsBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A50400000000000000000001 /* NuriNearbyEventsBridge.m */; };
+		A50300000000000000000002 /* NuriNearbyEventsBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50300000000000000000001 /* NuriNearbyEventsBridge.swift */; };
+		A50200000000000000000002 /* NuriReplySpeechBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A50200000000000000000001 /* NuriReplySpeechBridge.m */; };
+		A50100000000000000000002 /* NuriReplySpeechBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50100000000000000000001 /* NuriReplySpeechBridge.swift */; };
+		A0A11E520000000000000001 /* NuriAppleAuthBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A11E520000000000000003 /* NuriAppleAuthBridge.swift */; };
+		A0A11E520000000000000002 /* NuriAppleAuthBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = A0A11E520000000000000004 /* NuriAppleAuthBridge.m */; };
+		AB1028000000000000000001 /* NuriKeyboardBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = AB1028000000000000000002 /* NuriKeyboardBridge.m */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		1C0005023945D463C37CB8B6 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6598702D6EEE6FA8D30975 /* ExpoModulesProvider.swift */; };
 		31335899E4154F40B02FA5D0 /* NuriGoogleAuthBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79CB825216184327A77D20CD /* NuriGoogleAuthBridge.swift */; };
@@ -24,6 +31,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A50400000000000000000001 /* NuriNearbyEventsBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NuriNearbyEventsBridge.m; path = NURINativeLab/NuriNearbyEventsBridge.m; sourceTree = "<group>"; };
+		A50300000000000000000001 /* NuriNearbyEventsBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NuriNearbyEventsBridge.swift; path = NURINativeLab/NuriNearbyEventsBridge.swift; sourceTree = "<group>"; };
+		A50200000000000000000001 /* NuriReplySpeechBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NuriReplySpeechBridge.m; path = NURINativeLab/NuriReplySpeechBridge.m; sourceTree = "<group>"; };
+		A50100000000000000000001 /* NuriReplySpeechBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NuriReplySpeechBridge.swift; path = NURINativeLab/NuriReplySpeechBridge.swift; sourceTree = "<group>"; };
+		A0A11E520000000000000003 /* NuriAppleAuthBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NuriAppleAuthBridge.swift; path = NURINativeLab/NuriAppleAuthBridge.swift; sourceTree = "<group>"; };
+		A0A11E520000000000000004 /* NuriAppleAuthBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NuriAppleAuthBridge.m; path = NURINativeLab/NuriAppleAuthBridge.m; sourceTree = "<group>"; };
+		AB1028000000000000000002 /* NuriKeyboardBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = NuriKeyboardBridge.m; path = NURINativeLab/NuriKeyboardBridge.m; sourceTree = "<group>"; };
+		AB1028000000000000000003 /* NuriKeyboardInputPolicy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = NuriKeyboardInputPolicy.h; path = NURINativeLab/NuriKeyboardInputPolicy.h; sourceTree = "<group>"; };
 		0E579BFE0C344C3A916A2C5B /* NuriGoogleAuthBridge.m */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.c.objc; name = NuriGoogleAuthBridge.m; path = NURINativeLab/NuriGoogleAuthBridge.m; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* NURINativeLab.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NURINativeLab.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = NURINativeLab/Images.xcassets; sourceTree = "<group>"; };
@@ -70,6 +85,8 @@
 			isa = PBXGroup;
 			children = (
 				EC6598702D6EEE6FA8D30975 /* ExpoModulesProvider.swift */,
+				A0A11E520000000000000003 /* NuriAppleAuthBridge.swift */,
+				A0A11E520000000000000004 /* NuriAppleAuthBridge.m */,
 				79CB825216184327A77D20CD /* NuriGoogleAuthBridge.swift */,
 				0E579BFE0C344C3A916A2C5B /* NuriGoogleAuthBridge.m */,
 				08DB13C8021B4AC4A950C62C /* Supporting */,
@@ -81,12 +98,18 @@
 			isa = PBXGroup;
 			children = (
 				F11748412D0307B40044C1D9 /* AppDelegate.swift */,
+				AB1028000000000000000002 /* NuriKeyboardBridge.m */,
+				AB1028000000000000000003 /* NuriKeyboardInputPolicy.h */,
 				F11748442D0722820044C1D9 /* NURINativeLab-Bridging-Header.h */,
 				BB2F792B24A3F905000567C9 /* Supporting */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
 				4441B22E7D6F4E348E90243C /* NuriPushBridge.swift */,
+				A50400000000000000000001 /* NuriNearbyEventsBridge.m */,
+				A50300000000000000000001 /* NuriNearbyEventsBridge.swift */,
+				A50200000000000000000001 /* NuriReplySpeechBridge.m */,
+				A50100000000000000000001 /* NuriReplySpeechBridge.swift */,
 				86582FBBA9054D2A9A19E0FD /* NuriPushBridge.m */,
 				4C405906E6C63F4F40A3C7CC /* PrivacyInfo.xcprivacy */,
 			);
@@ -408,7 +431,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
+				A0A11E520000000000000001 /* NuriAppleAuthBridge.swift in Sources */,
+				A0A11E520000000000000002 /* NuriAppleAuthBridge.m in Sources */,
+				AB1028000000000000000001 /* NuriKeyboardBridge.m in Sources */,
 				EEAF90F87F004A119F865194 /* NuriPushBridge.swift in Sources */,
+				A50400000000000000000002 /* NuriNearbyEventsBridge.m in Sources */,
+				A50300000000000000000002 /* NuriNearbyEventsBridge.swift in Sources */,
+				A50200000000000000000002 /* NuriReplySpeechBridge.m in Sources */,
+				A50100000000000000000002 /* NuriReplySpeechBridge.swift in Sources */,
 				9C9A9395CB9342CF9191477A /* NuriPushBridge.m in Sources */,
 				1C0005023945D463C37CB8B6 /* ExpoModulesProvider.swift in Sources */,
 				31335899E4154F40B02FA5D0 /* NuriGoogleAuthBridge.swift in Sources */,

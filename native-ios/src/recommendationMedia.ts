@@ -17,7 +17,9 @@ export function socialPostThumbnail(value:unknown,sourceUrl:unknown):string|null
  const url=new URL(safe),host=url.hostname.toLowerCase();
  if(!["fbcdn.net","cdninstagram.com"].some(domain=>host===domain||host.endsWith(`.${domain}`)))return null;
  if(!/\.(?:jpe?g|png|webp|avif|gif)$/i.test(url.pathname))return null;
- // Social avatars and page furniture must not be labelled as post artwork.
- if(/avatar|profile[\s_-]*(?:picture|photo|image)|favicon|\blogo\b|\bicon\b/i.test(url.pathname)||/\/t\d+(?:\.\d+)*-(?:1|19)\//i.test(url.pathname))return null;
+ // A provider result can include page furniture or a reaction asset.
+ const furniture=/avatar|profile[\s_-]*(?:picture|photo|image)|favicon|\blogo\b|\bicon\b/i;
+ const reactions=/(?:^|[/_.-])(?:emojis?|reactions?|stickers?|placeholders?|badges?)(?=[/_.-]|$)/i;
+ if(furniture.test(url.pathname)||reactions.test(url.pathname)||/\/t\d+(?:\.\d+)*-(?:1|19)\//i.test(url.pathname))return null;
  return safe;
 }

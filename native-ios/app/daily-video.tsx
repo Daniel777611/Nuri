@@ -1,5 +1,5 @@
 import { useCallback, useRef } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Platform, View } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { CenteredCard } from "@/src/uiux48/Primitives";
 import { FinalCardPage as CardList, FinalText as NuriText } from "@/src/uiuxfinal/Primitives";
@@ -13,9 +13,11 @@ import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailur
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { useT } from "@/src/i18n";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
-import { resourceSummary } from "@/src/resourceSummary";
+import { readingSummaryPoints, resourceSummary } from "@/src/resourceSummary";
 import { useAIConsent } from "@/src/useAIConsent";
 import { youtubeVideoThumbnail } from "@/src/recommendationMedia";
+
+const summaryPointStyle = { fontSize: 18, lineHeight: 26, fontWeight: "500" } as const;
 
 export default function DailyVideoScreen() {
   const { capture, current } = useAccountScope();
@@ -150,6 +152,10 @@ export default function DailyVideoScreen() {
   const guide = card ? nuriResourceGuide({ concern: card.concern }, t, locale) : null;
   const shortPoints = card ? resourceSummary(card.key_points, { limit: card.locale === "en" ? 280 : 90, locale: card.locale }) : null;
   const summary = card && summaryResult?.cardId === card.id ? summaryResult.text : null;
+  const organizeSummary = Platform.OS === "ios" && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? "");
+  const summaryPoints = organizeSummary ? readingSummaryPoints(shortPoints, summary, locale, { groupRelated: true }) : [];
+  const firstPreview = summaryPoints.findIndex(({kind}) => kind === "preview");
+  const firstDetail = summaryPoints.findIndex(({kind}) => kind === "detail");
 
   if(state==="loading"||(card&&id!==undefined&&card.id!==id))return <CenteredCard><ActivityIndicator /></CenteredCard>;
   if(!card)return <CardList>{notice}{!failure?<NuriText>{t("这个视频暂时打不开，回首页再试试。")}</NuriText>:null}<NuriButton label={t("重试")} onPress={()=>setRetry(n=>n+1)} testID="daily-video-load-retry" /></CardList>;
@@ -162,8 +168,14 @@ export default function DailyVideoScreen() {
     notice={<>{notice}{sourceFailure?<NuriText secondary testID="daily-video-source-error">{t("外部内容暂时无法打开，请稍后再试")}</NuriText>:null}</>}>
       <NuriText secondary style={{fontSize:12,lineHeight:16}}>{locale==="en"?"Organized by Nuri · Refer to the original video for full details":t("Nuri 整理 · 完整说明以原视频为准")}</NuriText>
       <View testID="daily-video-summary-section" style={{gap:16}}>
-        {shortPoints?<ReadingStep index={0}><NuriText style={{fontSize:18,lineHeight:26,fontWeight:"500"}} testID="daily-video-key-points">{shortPoints}</NuriText></ReadingStep>:null}
-        {summary?<ReadingStep index={shortPoints?1:0}><NuriText style={{fontSize:16,lineHeight:24}} testID="daily-video-summary">{summary}</NuriText></ReadingStep>:null}
+        {organizeSummary ? summaryPoints.map((point, index) => (
+          <ReadingStep key={index} index={index} testID={`daily-video-summary-point-${index}`}>
+            <NuriText style={summaryPointStyle} testID={index === firstPreview ? "daily-video-key-points" : index === firstDetail ? "daily-video-summary" : undefined}>{point.text}</NuriText>
+          </ReadingStep>
+        )) : <>
+          {shortPoints?<ReadingStep index={0}><NuriText style={summaryPointStyle} testID="daily-video-key-points">{shortPoints}</NuriText></ReadingStep>:null}
+          {summary?<ReadingStep index={shortPoints?1:0}><NuriText style={summaryPointStyle} testID="daily-video-summary">{summary}</NuriText></ReadingStep>:null}
+        </>}
         {summaryState==="loading"?<View testID="daily-video-summary-loading"><ActivityIndicator /><NuriText>{t("正在整理检索摘要…")}</NuriText></View>:null}
         {summaryState==="empty"?<><NuriText testID="daily-video-summary-empty">{t("暂无可用摘要，请到原站查看。")}</NuriText><NuriButton secondary label={t("重试摘要")} onPress={retrySummary} testID="daily-video-summary-retry" /></>:null}
         {summaryFailure?<View testID="daily-video-summary-error"><RequestFailureNotice error={summaryFailure} onRetry={retrySummary} onPermission={()=>router.push(aiPermissionHref(permissionReturn))} onLogin={()=>router.push("/login")} /></View>:null}

@@ -1,20 +1,23 @@
 import { useCallback, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Platform, View } from "react-native";
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { api } from "@/src/api";
 import { colors } from "@/src/theme";
 import { aiPermissionHref } from "@/src/aiPermissionNavigation";
 import { requestFailureKind, type RequestFailureKind } from "@/src/requestFailure";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
+import ChatDetail from "../chat/[id]";
 
-// 产品只有一个持续会话；这个 tab 只是负责跳到那个真实会话（没有就创建一个）。
+// The tab opens the account's existing conversation or creates it with AI consent.
 export default function Chats() {
   const { capture, current } = useAccountScope();
   const router = useRouter();
+  const alphaChat = Platform.OS === "ios" && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? "");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [failure, setFailure] = useState<RequestFailureKind | null>(null);
   const requests = useRef(0);
+  const resolvedAlphaSession = alphaChat ? sessionId : null;
 
   const load = useCallback(async () => {
     const ticket = capture();
@@ -34,17 +37,24 @@ export default function Chats() {
     }
   }, [capture, current, setFailure, setSessionId]);
   useFocusEffect(useCallback(() => {
+    if (resolvedAlphaSession) return;
     void load();
     const counter = requests;
     return () => { counter.current++; };
-  }, [load]));
+  }, [resolvedAlphaSession, load]));
+
+  const failureNotice = failure ? <RequestFailureNotice error={failure} onRetry={() => void load()}
+    onPermission={() => router.push(aiPermissionHref("/(tabs)/chats"))}
+    onLogin={() => router.push("/login")} /> : null;
+
+  if (alphaChat) {
+    return <ChatDetail sessionId={sessionId ?? undefined} mainEntry={{failureNotice, replaceSessionId:setSessionId}} />;
+  }
 
   if (!sessionId) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        {failure ? <RequestFailureNotice error={failure} onRetry={() => void load()}
-          onPermission={() => router.push(aiPermissionHref("/(tabs)/chats"))}
-          onLogin={() => router.push("/login")} /> : <ActivityIndicator color={colors.brand} testID="chat-entry-loading" />}
+        {failureNotice ?? <ActivityIndicator color={colors.brand} testID="chat-entry-loading" />}
       </View>
     );
   }

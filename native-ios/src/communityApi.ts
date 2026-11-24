@@ -63,6 +63,7 @@ export type Contact = { relationship_id: string; state: string; version: number;
 export type Conversation = {
   conversation_id: string; parent: PublicParent | null; relationship_state: string;
   allowed_actions: string[]; ai: { effective: boolean; epoch: number };
+  message_media_limit?: number;
   last_message_seq: number | null; last_message_at: string | null;
 };
 export type InboxItem = Conversation & {
@@ -84,6 +85,16 @@ export type CommunityNotificationTarget =
   | { kind: "community_reply"; question_id: string; thread_id: string }
   | { kind: "community_invitation"; invitation_id: string; state?: string }
   | { kind: "community_conversation" | "community_ai_consent"; conversation_id: string };
+export type BottleNotification = {
+  notification_id: string;
+  target: Extract<CommunityNotificationTarget, { kind: "community_question" | "community_reply" }>;
+};
+export type BottleNotificationSnapshot = { notifications: BottleNotification[]; waiting: Delivery[]; waitingError?: Error };
+type CommunityNotification = {
+  notification_id: string;
+  target: CommunityNotificationTarget | null;
+  read_at: string | null;
+};
 export type CommunityNotificationTargetResult = { notification_id: string } & (
   | { accessible: true; target: CommunityNotificationTarget; reason: null }
   | { accessible: false; target: null; reason: string }
@@ -124,6 +135,128 @@ const get = <T,>(path: string) => apiRequest<T>(V1 + path);
 const send = <T,>(method: string, path: string, body?: unknown, timeoutMs?: number) =>
   apiRequest<T>(V1 + path, { method, body: body === undefined ? undefined : JSON.stringify(body) }, timeoutMs);
 
+async function readUnreadBottleNotifications(isCurrent: () => boolean): Promise<BottleNotification[]> {
+  const unread = new Map<string, BottleNotification>();
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  while (isCurrent()) {
+    const page: Page<CommunityNotification> = await get(`/me/notifications${q({ cursor, page_size: 50 })}`);
+    if (!isCurrent()) break;
+    for (const item of page.items) {
+      const { notification_id, target, read_at } = item;
+      if (!notification_id || read_at !== null) continue;
+      if ((target?.kind === "community_reply" && target.question_id && target.thread_id)
+        || (target?.kind === "community_question" && target.question_id && target.delivery_id)) {
+        unread.set(notification_id, { notification_id, target });
+      }
+    }
+    if (!page.has_more) return [...unread.values()];
+    cursor = page.next_cursor;
+    if (!cursor || cursors.has(cursor)) throw new Error("Invalid Community notification cursor");
+    cursors.add(cursor);
+  }
+  return [];
+}
+
+/** The preview, waiting list and received badge share this current-account
+ * snapshot. Notification rows can survive after their delivery stops waiting. */
+export async function bottleNotificationSnapshot(isCurrent: () => boolean): Promise<BottleNotificationSnapshot> {
+  let waitingError: Error | undefined;
+  const [events, waiting] = await Promise.all([
+    readUnreadBottleNotifications(isCurrent).catch(() => []),
+    waitingBottleDeliveries(isCurrent).catch(error => {
+      waitingError = error instanceof Error ? error : new Error("Received questions are unavailable");
+      return [];
+    }),
+  ]);
+  if (!isCurrent()) return { notifications: [], waiting: [] };
+  const replies = await validateBottleReplyNotifications(events, isCurrent);
+  const validReplies = new Set(replies.map(event => event.notification_id));
+  const deliveries = new Map(waiting.map(delivery => [delivery.delivery_id, delivery.question.question_id]));
+  return isCurrent() ? {
+    notifications: events.filter(event => event.target.kind === "community_question"
+      ? deliveries.get(event.target.delivery_id) === event.target.question_id
+      : validReplies.has(event.notification_id)),
+    waiting,
+    ...(waitingError ? { waitingError } : {}),
+  } : { notifications: [], waiting: [] };
+}
+
+export async function unreadBottleNotifications(isCurrent: () => boolean): Promise<BottleNotification[]> {
+  return (await bottleNotificationSnapshot(isCurrent)).notifications;
+}
+
+async function waitingBottleDeliveries(isCurrent: () => boolean): Promise<Delivery[]> {
+  const waiting = new Map<string, Delivery>();
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  while (isCurrent()) {
+    const page: Page<Delivery> = await get(`/me/question-deliveries${q({ tab: "waiting", cursor, page_size: 50 })}`);
+    if (!isCurrent()) return [];
+    for (const delivery of page.items) {
+      if (delivery.delivery_id && delivery.state === "waiting" && !delivery.lock_reason && !delivery.my_reply
+        && delivery.question?.question_id && delivery.question.is_mine === false && delivery.question.status === "open") {
+        waiting.set(delivery.delivery_id, delivery);
+      }
+    }
+    if (!page.has_more) return [...waiting.values()];
+    cursor = page.next_cursor;
+    if (!cursor || cursors.has(cursor)) throw new Error("Invalid Community delivery cursor");
+    cursors.add(cursor);
+  }
+  return [];
+}
+
+/** Notification targets may outlive a deleted reply or refer to someone else's
+ * question. Count only replies which are still visible on an owned question. */
+async function validateBottleReplyNotifications(events: BottleNotification[], isCurrent: () => boolean): Promise<BottleNotification[]> {
+  const byQuestion = new Map<string, BottleNotification[]>();
+  const valid = new Set<string>();
+  for (const event of events) {
+    if (event.target.kind !== "community_reply") continue;
+    const group = byQuestion.get(event.target.question_id) ?? [];
+    group.push(event);
+    byQuestion.set(event.target.question_id, group);
+  }
+  const groups = [...byQuestion.entries()];
+  let next = 0;
+  const validate = async () => {
+    while (isCurrent() && next < groups.length) {
+      const [questionId, group] = groups[next++];
+      const pending = new Map(group.map(event => [event.notification_id, event]));
+      const cursors = new Set<string>();
+      let cursor: string | null = null;
+      try {
+        while (isCurrent() && pending.size) {
+          const page: ReplyPage = await get(`/questions/${encodeURIComponent(questionId)}/replies${q({ cursor, page_size: 50 })}`);
+          if (!isCurrent() || !page.question.is_mine || page.question.question_id !== questionId) break;
+          const targets = new Set(page.items.map(reply => reply.reply_id));
+          if (page.all_thread?.comment_count) targets.add("all");
+          for (const [id, event] of pending) {
+            if (event.target.kind === "community_reply" && targets.has(event.target.thread_id)) {
+              valid.add(id);
+              pending.delete(id);
+            }
+          }
+          if (!page.has_more) break;
+          cursor = page.next_cursor;
+          if (!cursor || cursors.has(cursor)) break;
+          cursors.add(cursor);
+        }
+      } catch {
+        // An inaccessible or failed target is unknown, never a positive badge.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, groups.length) }, validate));
+  return isCurrent() ? events.filter(event => valid.has(event.notification_id)) : [];
+}
+
+export type ReplyPage = Page<Reply> & {
+  question: Question;
+  all_thread: { thread_id: "all"; comment_count: number; can_post: boolean } | null;
+};
+
 export const communityApi = {
   notificationTarget: (id: string) => get<CommunityNotificationTargetResult>(`/me/notifications/${encodeURIComponent(id)}/target`),
   markNotificationRead: (id: string) => send<{ notification_id: string; read_at: string }>("POST", `/me/notifications/${encodeURIComponent(id)}/read`),
@@ -140,21 +273,20 @@ export const communityApi = {
       { text, language, ai_consent_version: AI_CONSENT_VERSION, client_request_id: key }, 30000),
   ask: (body: { body: string; original_language: string; version_source: "original" | "polished"; polish_id?: string | null; anonymous: boolean; show_child_age: boolean; client_request_id: string }) =>
     send<{ question: Question; delivery: { recipient_count: number; state: string }; created: boolean }>("POST", "/questions", body, 20000),
-  myQuestions: (params: { status?: "all" | "open" | "closed"; q?: string; cursor?: string | null } = {}) =>
-    get<Page<Question>>(`/me/questions${q({ status: params.status, q: params.q, cursor: params.cursor, page_size: 50 })}`),
+  myQuestions: (params: { status?: "all" | "open" | "closed"; q?: string; cursor?: string | null; pageSize?: number } = {}) =>
+    get<Page<Question>>(`/me/questions${q({ status: params.status, q: params.q, cursor: params.cursor, page_size: params.pageSize ?? 50 })}`),
   question: (questionId: string) => get<{ question: Question }>(`/questions/${encodeURIComponent(questionId)}`),
   transitionQuestions: (action: "close" | "delete", ids: { question_id: string; expected_version?: number }[], key: string) =>
     send<{ results: { question_id: string; ok: boolean; error?: { code: string } }[]; all_succeeded: boolean }>(
       "POST", "/questions/batch-transitions", { action, items: ids, confirmed: true, client_request_id: key }),
   // P11–P14
-  deliveries: (tab: "waiting" | "replied" | "locked", cursor?: string | null) =>
-    get<Page<Delivery>>(`/me/question-deliveries${q({ tab, cursor, page_size: 50 })}`),
+  deliveries: (tab: "waiting" | "replied" | "locked", cursor?: string | null, pageSize = 50) =>
+    get<Page<Delivery>>(`/me/question-deliveries${q({ tab, cursor, page_size: pageSize })}`),
   respond: (deliveryId: string, body: string, key: string, expectedVersion?: number) =>
     send<{ reply: Reply; delivery: DeliveryMeta; created: boolean }>("POST", `/question-deliveries/${encodeURIComponent(deliveryId)}/responses`,
       { body, client_request_id: key, expected_version: expectedVersion }),
   replies: (questionId: string) =>
-    get<Page<Reply> & { question: Question; all_thread: { thread_id: "all"; comment_count: number; can_post: boolean } | null }>(
-      `/questions/${encodeURIComponent(questionId)}/replies${q({ page_size: 50 })}`),
+    get<ReplyPage>(`/questions/${encodeURIComponent(questionId)}/replies${q({ page_size: 50 })}`),
   comments: (questionId: string, threadId: string) =>
     get<Page<Comment> & { can_post: boolean }>(`/questions/${encodeURIComponent(questionId)}/reply-threads/${encodeURIComponent(threadId)}/comments${q({ page_size: 50 })}`),
   comment: (questionId: string, threadId: string, body: string, key: string) =>

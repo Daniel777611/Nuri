@@ -37,7 +37,7 @@ import anyio
 
 from backend import llm_usage, locales, runtime
 from backend.feed import daily_post as dp
-from backend.feed import search_budget
+from backend.feed import search_budget, search_pool
 from backend.feed import standing as standing_guard
 from backend.nuri_core import family_store
 
@@ -145,26 +145,27 @@ def video_queries(plan: dp.Plan) -> tuple[str, str]:
     return (f"{zh} 怎么办 育儿专家" if zh else "", f"{en} pediatrician tips" if en else "")
 
 
-async def search_youtube(query: str, lang: str) -> list:
+async def search_youtube(query: str, lang: str, *, shared: bool = False) -> list:
     if not query or not os.getenv("TAVILY_API_KEY"):
         return []
     from backend.search_tavily import TavilySearchProvider
     from backend.websearch import SearchRequest
 
-    await search_budget.spend("video")
-    return await TavilySearchProvider().fetch(SearchRequest(
-        query=query, lang="zh" if lang == "zh" else "en",
+    lang = "zh" if lang == "zh" else "en"
+    request = SearchRequest(
+        query=query, lang=lang,
         include_domains=YOUTUBE_DOMAINS, max_results=SEARCH_RESULTS,
-    ))
+    )
+    return await search_pool.search("video", query, lang, lambda: TavilySearchProvider().fetch(request), shared=shared)
 
 
 async def find_candidates(plan: dp.Plan, locale: str, exclude_urls: set[str]) -> list[Candidate]:
     query_zh, query_en = video_queries(plan)
     searches = []
     if query_zh and locale != "en":
-        searches.append(search_youtube(query_zh, "zh"))
+        searches.append(search_youtube(query_zh, "zh", shared=True) if plan.shared_search else search_youtube(query_zh, "zh"))
     if query_en:
-        searches.append(search_youtube(query_en, "en"))
+        searches.append(search_youtube(query_en, "en", shared=True) if plan.shared_search else search_youtube(query_en, "en"))
     batches = await dp.run_searches(searches)
     merged = []
     for i in range(max((len(b) for b in batches), default=0)):
@@ -342,6 +343,127 @@ def choose_video(scores: list[dict], candidates: list[Candidate], locale: str) -
     }
 
 
+# ── Scoring by rule ──────────────────────────────────────────────────────────
+# The same seven fields the model used to fill, from the title and the
+# description alone (the search gives nothing else: no made-for-kids flag, no
+# channel id). DAILY_VIDEO_SCORE_MODE=llm goes back to asking the model.
+
+SCORE_MODE = os.getenv("DAILY_VIDEO_SCORE_MODE", "rules")
+
+#: Made for the child, not the parent: songs, cartoons, stories, lessons.
+_KIDS_CONTENT = re.compile(
+    r"儿歌|兒歌|童谣|童謠|卡通|动画片|動畫|绘本|繪本|睡前故事|讲故事|講故事|童话|童話|早教课|启蒙|啟蒙|"
+    r"宝宝巴士|寶寶巴士|贝乐虎|碰碰狐|小猪佩奇|nursery rhymes?|for kids|kids songs?|songs for|cartoons?|"
+    r"lullab(?:y|ies)|cocomelon|pinkfong|baby shark|super simple|bedtime stor(?:y|ies)|read aloud|"
+    r"learn (?:colou?rs|numbers|abc)|abc song|sing ?along",
+    re.IGNORECASE,
+)
+#: Words that say the video speaks to parents, even about cartoons or songs.
+_FOR_PARENTS = re.compile(
+    r"家长|家長|父母|爸妈|爸媽|妈妈|媽媽|育儿|育兒|怎么办|怎麼辦|如何|怎么|怎麼|医生|醫生|医师|醫師|"
+    r"parents?|parenting|moms?\b|dads?\b|how to|tips|pediatrician|doctor|expert",
+    re.IGNORECASE,
+)
+_UNSAFE = re.compile(
+    r"偏方|土方|秘方|体罚|體罰|打孩子|打屁股|褪黑素|安眠药|安眠藥|spank(?:ing)?|melatonin|whoop",
+    re.IGNORECASE,
+)
+_JUNK = re.compile(
+    r"带货|帶貨|搬运|搬運|震惊|震驚|必看|赚钱|賺錢|下单|下單|优惠|優惠|#shorts|\bprank\b|\breaction\b|giveaway",
+    re.IGNORECASE,
+)
+#: (pattern, channel shown on the card, speaker_kind, expertise 0–5).
+_KNOWN_SPEAKERS = (
+    (r"\bAAP\b|American Academy of Pediatrics|HealthyChildren", "AAP", "institution", 5),
+    (r"\bCDC\b|Centers for Disease Control", "CDC", "institution", 5),
+    (r"Mayo Clinic", "Mayo Clinic", "institution", 5),
+    (r"Cleveland Clinic", "Cleveland Clinic", "institution", 5),
+    (r"Nemours|KidsHealth", "Nemours KidsHealth", "institution", 5),
+    (r"Cook Children'?s", "Cook Children's", "institution", 5),
+    (r"Boston Children'?s", "Boston Children's", "institution", 5),
+    (r"Children'?s Hospital|\bCHOP\b|Johns Hopkins|Stanford Medicine", "Children's Hospital", "institution", 5),
+    (r"ZERO TO THREE|Zero to Three", "ZERO TO THREE", "institution", 5),
+    (r"\bNHS\b", "NHS", "institution", 5),
+    (r"UNICEF|World Health Organization", "UNICEF / WHO", "institution", 5),
+    (r"丁香医生|丁香醫生|丁香妈妈|丁香媽媽", "丁香医生", "institution", 5),
+    (r"卫健委|衛福部|国民健康署|國民健康署|卫生部|衛生署", "卫生部门", "institution", 5),
+    (r"黄瑽宁|黃瑽寧", "黃瑽寧", "pediatrician", 5),
+    (r"崔玉涛|崔玉濤", "崔玉涛", "pediatrician", 5),
+    (r"张思莱|張思萊", "张思莱", "pediatrician", 5),
+    (r"Dr\.? ?Becky|Good Inside", "Dr. Becky Kennedy", "psychologist", 4),
+    (r"Big Little Feelings", "Big Little Feelings", "psychologist", 4),
+)
+_CREDENTIALS = (
+    (re.compile(r"儿科医生|兒科醫生|儿科医师|兒科醫師|小儿科|小兒科|pediatrician|paediatrician|neonatolog|\bM\.?D\.?\b"),
+     "pediatrician", 5),
+    (re.compile(r"心理(?:师|師|咨询|諮商|学家|學家)|治疗师|治療師|psycholog|therapist|counselor", re.IGNORECASE),
+     "psychologist", 4),
+    (re.compile(r"幼教|早教老师|早教老師|educator|child development|speech[- ]language|IBCLC|lactation",
+                re.IGNORECASE), "educator", 4),
+    (re.compile(r"\bDr\.? [A-Z]|医生|醫生|医师|醫師|护士|護理師|\bnurse\b"), "pediatrician", 4),
+)
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
+_HASHTAG = re.compile(r"#\S+")
+_BRACKETS = re.compile(r"[【\[][^】\]]{0,20}[】\]]")
+_TITLE_SPLIT = re.compile(r"\s*(?:\||｜|\s-\s|\s—\s|\s–\s)\s*")
+
+
+def speaker(text: str) -> tuple[str, str, int]:
+    """(channel, speaker_kind, expertise 0–5) from what the title and the
+    description say about who is talking."""
+    for pattern, channel, kind, expertise in _KNOWN_SPEAKERS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return channel, kind, expertise
+    if _JUNK.search(text):
+        return "", "other", 1
+    for pattern, kind, expertise in _CREDENTIALS:
+        if pattern.search(text):
+            return "", kind, expertise
+    return "", "creator", 2
+
+
+def clean_title(title: str) -> str:
+    """The title without hashtags, emoji, bracketed tags or the channel's name
+    tacked on after a bar, short enough for the card."""
+    text = _EMOJI.sub("", _HASHTAG.sub("", title or ""))
+    unbracketed = _BRACKETS.sub(" ", text)
+    text = unbracketed if dp.normalize_space(unbracketed) else text
+    parts = [p for p in _TITLE_SPLIT.split(dp.normalize_space(text)) if len(p.strip()) >= 4]
+    text = dp.normalize_space(parts[0] if parts else text).strip(" -|｜")
+    return dp._trim(text, 90 if video_lang_of(text) == "en" else 28)
+
+
+def video_lang_of(text: str) -> str:
+    return "zh" if re.search(r"[一-鿿]", text or "") else "en"
+
+
+def _title_channel(title: str) -> str:
+    """A channel named after the last bar of the title ("… | Cook Children's")."""
+    parts = [p for p in _TITLE_SPLIT.split(dp.normalize_space(title or "")) if p.strip()]
+    return parts[-1][:60] if len(parts) > 1 and len(parts[-1]) <= 30 else ""
+
+
+def rule_scores(candidates: list[Candidate], *, query: str) -> list[dict]:
+    """Every candidate scored the way the model used to score it (see
+    _SCORE_SYSTEM), so choose_video picks among them unchanged."""
+    rows = []
+    for i, c in enumerate(candidates):
+        text = f"{c.title}\n{c.description[:600]}"
+        relevance01 = max(dp.relevance(c.title, query), 0.8 * dp.relevance(text, query))
+        channel, kind, expertise = speaker(text)
+        rows.append({
+            "index": i,
+            "for_parents": not _KIDS_CONTENT.search(text) or bool(_FOR_PARENTS.search(text)),
+            "safe": not _UNSAFE.search(text),
+            "relevance": round(relevance01 * 5),
+            "expertise": expertise,
+            "speaker_kind": kind,
+            "channel": channel or _title_channel(c.title),
+            "display_title": clean_title(c.title),
+        })
+    return rows
+
+
 #: How many top-scored videos the standing check may strike before giving up
 #: on this plan. The scores are already in hand, so a strike costs only the
 #: check itself.
@@ -356,14 +478,17 @@ def video_text(pick: dict) -> str:
 
 def pick_video(
     candidates: list[Candidate], *, concern: str, child_age_context: str, locale: str,
-    standing: Sequence[str] = (),
+    standing: Sequence[str] = (), query: str = "",
 ) -> Optional[dict]:
     if not candidates:
         return None
-    scores = _ask_scores(
-        candidates, concern=concern, child_age_context=child_age_context, locale=locale,
-        standing=standing,
-    )
+    if SCORE_MODE == "llm":
+        scores = _ask_scores(
+            candidates, concern=concern, child_age_context=child_age_context, locale=locale,
+            standing=standing,
+        )
+    else:
+        scores = rule_scores(candidates, query=query or concern)
     for _ in range(STANDING_ATTEMPTS):
         pick = choose_video(scores, candidates, locale)
         if not pick or not standing:
@@ -734,16 +859,17 @@ async def get_daily_video(
         except Exception as exc:
             print(f"[warn] daily video save failed: {type(exc).__name__}")
 
+    spent = search_pool.start_counting()
     try:
         card, plan = await _generate(user_id, children, profile, day, store, now)
     except Exception as exc:
         print(f"[warn] daily video generation failed: {type(exc).__name__}: {exc}")
-        await finish(status="failed", error=f"{type(exc).__name__}: {exc}")
+        await finish(status="failed", error=f"{type(exc).__name__}: {exc}", queries={"searches": spent[0]})
         return {**base, "state": "empty", "retry_after_s": dp.FAILED_RETRY_S}
     queries = None
     if plan:
         query_zh, query_en = video_queries(plan)
-        queries = {"zh": query_zh, "en": query_en}
+        queries = {"zh": query_zh, "en": query_en, "why": plan.why, "searches": spent[0]}
     if not card:
         await finish(status="empty", basis=plan.basis if plan else None, queries=queries)
         return {**base, "state": "empty", "retry_after_s": dp.EMPTY_RETRY_S}
@@ -756,37 +882,43 @@ async def get_daily_video(
 async def _generate(user_id, children, profile, day, store, now) -> tuple[Optional[dict], Optional[dp.Plan]]:
     from backend.feed import signals as feed_signals
 
-    await search_budget.require_some_left("video")
+    budget_left = await dp.has_search_budget("video")
     context = await feed_signals.load_recent_main_chat(user_id)
     locale = locales.normalize_preferred_locale(context.get("preferred_locale"))
     child_age_context = family_store.safe_child_recommendation_context(children).get("child_age_context", "")
     exclude = await anyio.to_thread.run_sync(lambda: store.recent_urls(user_id, now))
-    standing = await family_store.load_standing_memories(user_id, children)
-
-    plans: list[dp.Plan] = []
-    if context.get("external_research_allowed"):
-        messages = family_store.redact_child_profile_history(list(context.get("messages") or []), children)
-        user_texts = [str(m.get("text") or "") for m in messages if m.get("role") == "user"]
-        plan = await anyio.to_thread.run_sync(
-            lambda: dp.conversation_plan(user_texts, child_age_context, children, locale, standing)
-        )
-        if plan:
-            plans.append(plan)
-    plans.extend(dp.profile_plans(children, list(profile.get("top_concerns") or []), day, locale))
+    standing = await dp.recommendation_standing(user_id, children, context)
+    plans = await dp.plans_for_today(user_id, children, profile, day, now, context=context, locale=locale,
+                                     standing=standing, budget_left=budget_left)
 
     started = time.monotonic()
+    refused: Optional[Exception] = None
     for index, plan in enumerate(plans):
         if index and time.monotonic() - started > dp.GENERATION_BUDGET_S:
             break
-        candidates = await find_candidates(plan, locale, exclude)
+        try:
+            candidates = await find_candidates(plan, locale, exclude)
+        except search_budget.SearchBudgetSpent as exc:
+            refused = exc
+            continue
         if not candidates:
             continue
         pick = await anyio.to_thread.run_sync(lambda: pick_video(
-            candidates, concern=plan.concern, child_age_context=child_age_context, locale=locale,
-            standing=standing,
+            candidates, concern=plan.concern, child_age_context=dp.plan_age_context(plan, child_age_context), locale=locale,
+            standing=standing, query=f"{plan.query_zh} {plan.query_en}",
         ))
         if pick:
             card = build_card(pick, plan, locale=locale)
+            if SCORE_MODE != "llm" and video_lang_of(card["display_title"]) != ("en" if locale == "en" else "zh"):
+                # The rules only tidy the title; one in another language is
+                # put into the parent's (the model used to do it while scoring).
+                try:
+                    translated = await anyio.to_thread.run_sync(
+                        lambda: translate_fields({"display_title": card["display_title"]}, locale)
+                    )
+                    card["display_title"] = translated.get("display_title") or card["display_title"]
+                except Exception as exc:
+                    print(f"[warn] daily video title translation failed: {type(exc).__name__}")
             try:
                 card["key_points"] = await anyio.to_thread.run_sync(
                     lambda: write_key_points(card, plan.concern, locale)
@@ -794,6 +926,8 @@ async def _generate(user_id, children, profile, day, store, now) -> tuple[Option
             except Exception as exc:  # the card is still worth showing without them
                 print(f"[warn] daily video key points failed: {type(exc).__name__}")
             return card, plan
+    if refused:
+        raise refused
     return None, (plans[0] if plans else None)
 
 

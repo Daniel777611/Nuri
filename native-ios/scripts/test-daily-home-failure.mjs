@@ -12,12 +12,12 @@ export function load(path, dependencies = {}) {
   new Function("require", "module", "exports", code)((name) => {
     if(name==="@/src/keyboard/AppKeyboard")return {NuriTextInput:dependencies["react-native"]?.TextInput??"TextInput",useAppKeyboardVisible:()=>false,useAppKeyboard:()=>({visible:false,height:0,activeHostId:null,dismiss:()=>{}}),AppKeyboardScope:({children})=>children,AppKeyboardHost:"AppKeyboardHost"};
     if (name.startsWith("@/assets/")) return "fixture-image";
-    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow"].map(n=>[n,n]));
+    if(name==="@/src/uiux48/Primitives")return Object.fromEntries(["AuthFrame","NuriKeyboardFrame","CardList","CenteredCard","NuriButton","NuriText","NuriField","IconAction","GlassSurface","NuriIcon","MenuRow","InlineState"].map(n=>[n,n]));
     if(name==="@/src/uiux48/StateCard")return {StateCard:"StateCard"};
     if(name==="@/src/uiuxfinal/UserAvatar")return {CurrentUserAvatarAction:"UserAvatarAction"};
     if(name==="@/src/uiuxfinal/HomeVideoThumbnail")return {HomeVideoThumbnail:"HomeVideoThumbnail"};
     if(name==="@/src/uiuxfinal/Primitives")return {FinalSurface:"GlassSurface",FinalText:"NuriText",FinalDivider:"Divider",FinalCardPage:"CardList",FINAL_COLOR:{accent:"#735C84"}};
-    if(name==="@/src/uiuxfinal/Settings")return {SettingsButton:"NuriButton"};
+    if(name==="@/src/uiuxfinal/Settings")return {SettingsButton:"NuriButton",SettingsField:"SettingsField",SettingsPage:"SettingsPage",SettingsRow:"SettingsRow"};
     if(name==="@/src/recommendationMedia")return load("../src/recommendationMedia.ts",{"./externalContent":load("../src/externalContent.ts")});
     // This boundary records controller props; the scoped preview suite loads
     // the actual native/web components with independent hook lifecycles.
@@ -149,11 +149,14 @@ export function page(f, kind = "daily", params = {}) {
   const player = load("../src/components/YouTubePlayer.tsx", { react: r.react, "react/jsx-runtime": runtime, "react-native": native,
     "@/src/i18n": i18n, "react-native-webview": { WebView: "WebView" }, "expo-constants": { __esModule: true, default: { expoConfig: { ios: { bundleIdentifier: "com.ordashtech.nuri.nativelab" } } } } });
   const handoffs = load("../src/recommendationDetailHandoff.ts", { "./sessionBoundary": f.boundary });
+  const router = { push: (href) => routes.push(href), replace: (href) => routes.push(href), canGoBack: () => false };
   const dependencies = {
     react: r.react, "react/jsx-runtime": runtime, "react-native": native,
     "@/src/api": f, "@/src/theme": theme, "@/src/i18n": i18n,
     "@/src/nuriResourceGuide": guide,
     "@/src/resourceSummary": summary,
+    "@/src/personalAvatar": { readPersonalAvatar: async () => null },
+    "@/src/profileDisplayName": load("../src/profileDisplayName.ts"),
     "@/src/useAIConsent": load("../src/useAIConsent.ts", { react: r.react, "./api": f }),
     "@/src/components/NativeSafeAreaView": { SafeAreaView: "SafeAreaView" },
     "@/src/components/RequestFailureNotice": notice, "@/src/components/DailyPostCard": daily,
@@ -171,8 +174,12 @@ export function page(f, kind = "daily", params = {}) {
     "@/src/recommendationPresentation": load("../src/recommendationPresentation.ts"),
     "@/src/cardText": load("../src/cardText.ts"),
     "@/src/externalContent": load("../src/externalContent.ts"),
+    "@/src/localActivities": load("../src/localActivities.ts", { "./externalContent": externalContent }),
+    "@/src/nearbyEvents": { nearbyEventsAvailable: () => Boolean(f.locate), enableNearbyDeviceLocation: () => f.locate() },
+    "@/src/nativePushRuntime": { safeNotificationRoute: (value) => value },
+    "@/src/communityNotificationEntry": { isCommunityNotificationKind: () => false },
     "expo-router": { useLocalSearchParams: () => params,
-      useRouter: () => ({ push: (href) => routes.push(href), replace: (href) => routes.push(href), canGoBack: () => false }),
+      useRouter: () => router,
       useFocusEffect: (fn) => {
         const id = focusSlot++;
         r.react.useEffect(() => {
@@ -182,7 +189,9 @@ export function page(f, kind = "daily", params = {}) {
         }, [fn]);
       } },
   };
-  const path = kind === "home" ? "../app/(tabs)/index.tsx" : kind === "detail" ? "../app/detail/[id].tsx" : kind === "video" ? "../app/daily-video.tsx" : "../app/daily-post.tsx";
+  const path = kind === "home" ? "../app/(tabs)/index.tsx" : kind === "detail" ? "../app/detail/[id].tsx"
+    : kind === "video" ? "../app/daily-video.tsx" : kind === "activities" ? "../app/nearby-activities.tsx"
+    : kind === "notification" ? "../app/notifications/[id].tsx" : "../app/daily-post.tsx";
   const component = load(path, dependencies).default;
   function expand(node) {
     if (!node || typeof node !== "object") return node;

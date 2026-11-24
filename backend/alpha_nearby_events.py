@@ -104,7 +104,7 @@ def _dates(text: str) -> set[date]:
     return values
 
 
-def _public_source(url: str) -> tuple[str, str] | None:
+def public_activity_source(url: str, *, allow_listing: bool = False) -> tuple[str, str] | None:
     if len(url) > 900 or any(ord(char) < 33 or char == "\\" for char in url):
         return None
     try:
@@ -124,14 +124,14 @@ def _public_source(url: str) -> tuple[str, str] | None:
                 return None
         if any(host == excluded or host.endswith("." + excluded) for excluded in _SEARCH_ENGINES):
             return None
-        if not parsed.path.strip("/") or _LISTING_PATH.fullmatch(parsed.path):
+        if not allow_listing and (not parsed.path.strip("/") or _LISTING_PATH.fullmatch(parsed.path)):
             return None
         return host, parsed._replace(fragment="").geturl()
     except ValueError:
         return None
 
 
-def _near_location(area: NearbyEventsRequest, combined: str) -> bool:
+def activity_near_location(area: NearbyEventsRequest, combined: str) -> bool:
     # Bound Latin names by word boundaries rather than accepting e.g. York in
     # Yorkshire. Non-segmented writing (e.g. 臺北市) can match within a place name.
     def strip_accents(value: str) -> str:
@@ -169,14 +169,14 @@ def parse_nearby_events(
     for result in results:
         title = " ".join(result.title.split())[:160]
         text = " ".join(result.snippet.split())[:3000]
-        source = _public_source(result.url)
+        source = public_activity_source(result.url)
         if not source or not title or title == result.url:
             continue
         host, url = source
         combined = f"{title} {text}"
         if not _FAMILY.search(combined) or not _EVENT.search(combined) or _CANCELLED.search(combined):
             continue
-        if not _near_location(area, combined):
+        if not activity_near_location(area, combined):
             continue
         # Listings containing several dates frequently mix sessions from
         # different organizers. Prefer a page with a single explicit date,

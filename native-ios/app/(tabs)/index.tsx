@@ -1,12 +1,15 @@
 import { NuriIcon, NuriText, NuriKeyboardFrame } from "@/src/uiux48/Primitives";
 import { NuriAvatar } from "@/src/uiux48/Scene";
 import { CurrentUserAvatarAction } from "@/src/uiuxfinal/UserAvatar";
+import { readPersonalAvatar } from "@/src/personalAvatar";
+import { shortChineseDisplayName } from "@/src/profileDisplayName";
 import { FinalSurface, FinalText } from "@/src/uiuxfinal/Primitives";
 import { HomeVideoThumbnail } from "@/src/uiuxfinal/HomeVideoThumbnail";
 import { useNuriTheme } from "@/src/uiux48/Theme";
 import { requestGuardedNativeNavigation } from "@/src/components/nativeNavigation";
 import { nuriResourceGuide } from "@/src/nuriResourceGuide";
 import { resourceLanguageMismatch, hasPostSummarySource } from "@/src/resourceSummary";
+import { activityCopy, localActivitiesEnabled, localActivityTitle } from "@/src/localActivities";
 import { KeyboardAvoidingView } from "react-native";
 import { useCallback, useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
@@ -35,7 +38,7 @@ import {
   type MainConversationPreview,
 } from "@/src/api";
 import Toast from "@/src/components/Toast";
-import DailyPostCard, { type DailyPostStatus } from "@/src/components/DailyPostCard";
+import DailyPostCard, { isSummaryCard, summarySourceLine, type DailyPostStatus } from "@/src/components/DailyPostCard";
 import DailyVideoCard from "@/src/components/DailyVideoCard";
 import RequestFailureNotice from "@/src/components/RequestFailureNotice";
 import { useT, translate } from "@/src/i18n";
@@ -80,9 +83,18 @@ const conversationExcerpt = (text: string, maxLength = 18) => {
     : normalized;
 };
 
+function checkinMatchesLocale(line: string, locale: string): boolean {
+  if (!line.trim()) return false;
+  if (locale === "en") return !resourceLanguageMismatch(line, undefined, locale);
+  // The check-in response has no locale field. A Latin-only cached question
+  // cannot serve as the Chinese prompt, but mixed text with names can.
+  return /[\u3400-\u9fff]/.test(line);
+}
+
 export default function Home() {
   const { generation, capture, current } = useAccountScope();
   const { t, locale } = useT();
+  const alpha = Platform.OS === "ios" && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? "");
   const router = useRouter();
   const theme48 = useNuriTheme();
   const insets = useSafeAreaInsets();
@@ -93,6 +105,7 @@ export default function Home() {
   const phoneWidth = Math.min(viewportWidth, FIGMA_FRAME_WIDTH);
   const dailyCardWidth = Math.max(0, phoneWidth - 60);
   const [nickname, setNickname] = useState("");
+  const [personalPhoto, setPersonalPhoto] = useState<string | null>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [devSheet, setDevSheet] = useState<{ emoji: string; name: string } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -122,6 +135,10 @@ export default function Home() {
   const [checkin, setCheckin] = useState<MainCheckin | null>(null);
   const [checkinFailure, setCheckinFailure] = useState<RequestFailureKind | null>(null);
   const checkinRequest = useRef(0);
+  const checkinLine = checkin?.state === "ready" ? checkin.line : undefined;
+  const displayCheckin = alpha
+    ? Boolean(checkinLine && checkinMatchesLocale(checkinLine, locale))
+    : Boolean(checkinLine && !resourceLanguageMismatch(checkinLine, undefined, locale));
 
   useEffect(() => {
     dailyPostRequest.current++;
@@ -149,7 +166,7 @@ export default function Home() {
     // A warm focus keeps the card on screen while it is re-read.
     if (!quiet) setDailyPostStatus((current) => (current === "ready" ? current : "loading"));
     try {
-      const res = await api.getDailyPost();
+      const res = await api.getDailyPost(locale);
       if (!current(ticket) || requestId !== dailyPostRequest.current) return;
       if (res.state === "ready" && res.card) {
         setDailyPost(res.card);
@@ -172,7 +189,7 @@ export default function Home() {
         setDailyPostStatus((current) => (current === "ready" ? current : "error"));
       }
     }
-  }, [capture, current, setDailyPost, setDailyPostStatus, setDailyFailure]);
+  }, [capture, current, locale, setDailyPost, setDailyPostStatus, setDailyFailure]);
 
   const loadDailyVideo = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
     const ticket = capture();
@@ -320,7 +337,7 @@ export default function Home() {
       // history is a pure read; only creating/greeting a conversation needs AI.
       const preview = await api.getMainConversationPreview();
       if (!acceptsResult()) return;
-      const session = checkin?.state === "ready" && checkin.id
+      const session = checkin?.state === "ready" && checkin.id && (!alpha || (displayCheckin && !checkin.opened))
         ? { id: (await api.openMainCheckin(checkin.id)).session_id }
         : preview.has_conversation && preview.session_id
           ? { id: preview.session_id }
@@ -346,7 +363,7 @@ export default function Home() {
       if (ticket === null) return;
       api
         .me()
-        .then((me: any) => {
+        .then(async (me: any) => {
           if (!current(ticket)) return;
           if (me?.nickname) setNickname(me.nickname);
           const candidate = me?.avatar_url || me?.photo_url || me?.picture;
@@ -355,9 +372,13 @@ export default function Home() {
               ? candidate
               : null,
           );
+          if (alpha) {
+            const photo = await readPersonalAvatar(me.id).catch(() => null);
+            if (current(ticket)) setPersonalPhoto(photo);
+          }
         })
         .catch(() => {});
-    }, [capture, current, setNickname, setAvatarUrl])
+    }, [alpha, capture, current, setNickname, setAvatarUrl, setPersonalPhoto])
   );
 
   useFocusEffect(
@@ -396,9 +417,9 @@ export default function Home() {
   const nuriMemo =
     nuriPreviewStatus === "error" && nuriFailure
       ? requestFailureCopy(locale, nuriFailure).title
-    : checkin?.state === "ready" && checkin.line && !resourceLanguageMismatch(checkin.line,undefined,locale)
-      ? checkin.line
-    : checkin?.state === "ready" && checkin.line
+    : displayCheckin && checkinLine
+      ? checkinLine
+    : checkinLine
       ? t("欢迎回来。想从哪里聊起？")
     : checkin?.state === "active"
       ? t("刚才的话还没聊完，要接着聊吗？")
@@ -418,7 +439,7 @@ export default function Home() {
       ? t("正在加载")
       : nuriPreviewStatus === "error" && nuriFailure
         ? requestFailureCopy(locale, nuriFailure).action
-      : checkin?.state === "ready" && !checkin.opened
+      : checkin?.state === "ready" && !checkin.opened && (!alpha || displayCheckin)
         ? t("回复NURI")
       : nuriPreviewStatus === "error" && !hasPersonalContext
       ? t("重试加载")
@@ -429,12 +450,13 @@ export default function Home() {
           : t("和我聊聊");
 
   const en=locale==="en";
+  const greetingName=alpha?shortChineseDisplayName(nickname):nickname;
   const statusTitle=(status:DailyPostStatus,failure:RequestFailureKind|null)=>failure?requestFailureCopy(locale,failure).title:status==="loading"||status==="pending"?(en?"Finding something for you…":translate(locale, "正在为你整理推荐…")):status==="disabled"?(en?"This recommendation is not available":translate(locale, "这项推荐暂未开放")):status==="error"?(en?"Could not load — tap to retry":translate(locale, "加载失败，点此重试")):(en?"No recommendation yet":translate(locale, "暂时没有新的推荐"));
   const greeting=theme48.mode==="Morning"?(en?"Good morning":translate(locale, "早上好")):theme48.mode==="Afternoon"?(en?"Good afternoon":translate(locale, "下午好")):(en?"Good evening":translate(locale, "晚上好"));
   return <View style={{flex:1,minHeight:0}} testID="home-screen">
-    <View style={{height:60,paddingLeft:16,paddingRight:32,flexDirection:"row",alignItems:"center",gap:10}}>
-      <NuriAvatar /><FinalText size={20} secondary style={{lineHeight:28,fontWeight:"500",flex:1}}>{en?`Welcome, ${nickname}!`:t("欢迎，{nickname}！",{nickname})}</FinalText>
-      <CurrentUserAvatarAction path="/" displayName={nickname} photoURL={avatarUrl} testID="home-settings" />
+    <View style={{height:60,paddingLeft:16,paddingRight:alpha?18:32,flexDirection:"row",alignItems:"center",gap:10}}>
+      <NuriAvatar /><FinalText size={20} secondary numberOfLines={alpha?1:undefined} style={{lineHeight:28,fontWeight:"500",flex:1,minWidth:0}}>{en?`Welcome, ${greetingName}!`:t("欢迎，{nickname}！",{nickname:greetingName})}</FinalText>
+      <CurrentUserAvatarAction path="/" displayName={nickname} photoURL={avatarUrl} personalPhoto={personalPhoto} testID="home-settings" />
     </View>
     <NuriKeyboardFrame>
       <View style={{flex:1,minHeight:0}} >
@@ -443,20 +465,26 @@ export default function Home() {
             <Pressable onPress={()=>dailyPost?openDailyPost(dailyPost):handleFailure(dailyFailure,()=>void loadDailyPost())} accessibilityRole="button" testID={dailyPost?"home-daily-post-card":"home-daily-post-empty"}>
               <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingTop:33,paddingBottom:20,justifyContent:"space-between"}}>
                 <FinalText size={18} numberOfLines={1} style={{fontWeight:"500",lineHeight:26}}>{dailyPost?(!hasPostSummarySource(dailyPost)||resourceLanguageMismatch(dailyPost.headline,dailyPost.locale,locale)?t("为你找到的育儿话题"):dailyPost.headline):statusTitle(dailyPostStatus,dailyFailure)}</FinalText>
-                <FinalText size={12} secondary style={{fontWeight:"500"}}>{en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
+                <FinalText size={12} secondary numberOfLines={1} style={{fontWeight:"500"}} testID="home-daily-post-source-line">{dailyPost && isSummaryCard(dailyPost) ? summarySourceLine(t, dailyPost) : en?"Recommended for you":translate(locale,"推荐给您")}</FinalText>
               </FinalSurface>
             </Pressable>
-            <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>
+            {!alpha || (dailyVideoStatus === "ready" && dailyVideo) ? <Pressable onPress={()=>dailyVideo?openDailyVideo(dailyVideo):handleFailure(videoFailure,()=>void loadDailyVideo())} accessibilityRole="button" testID={dailyVideo?"home-daily-video-card":"home-daily-video-empty"}>
               <FinalSurface surfaceColor="rgba(235,223,216,.75)" style={{width:330}} contentStyle={{height:112,paddingLeft:12,paddingRight:20,paddingVertical:16,flexDirection:"row",gap:12}}>
                 <HomeVideoThumbnail videoId={dailyVideo?.video_id}/>
                 <View style={{flex:1,minWidth:0,marginTop:-2,gap:6}}><FinalText size={12} style={{fontWeight:"500"}}>YouTube {en?"video":translate(locale, "视频")}</FinalText><FinalText size={18} numberOfLines={1} style={{lineHeight:26,fontWeight:"500"}} testID="home-daily-video-external-title">{dailyVideo?nuriResourceGuide({concern:dailyVideo.concern},t,locale).headline:statusTitle(dailyVideoStatus,videoFailure)}</FinalText><FinalText size={12} style={{fontWeight:"500"}}>{en?"Parenting picks":translate(locale, "育儿精选")}</FinalText></View>
               </FinalSurface>
-            </Pressable>
+            </Pressable> : null}
+            {localActivitiesEnabled ? <Pressable onPress={()=>router.push("/nearby-activities")} accessibilityRole="button" testID="home-local-activities-card">
+              <FinalSurface style={{width:330}} contentStyle={{height:112,paddingHorizontal:20,paddingVertical:24,justifyContent:"space-between"}}>
+                <FinalText size={18} numberOfLines={1} style={{fontWeight:"500",lineHeight:26}}>{localActivityTitle(locale)}</FinalText>
+                <FinalText size={12} secondary>{activityCopy(locale,"活动、场所与本地资源","Events, places and local resources","活動、場所與在地資源")}</FinalText>
+              </FinalSurface>
+            </Pressable> : null}
           </ScrollView>
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel={nuriFailure?requestFailureCopy(locale,nuriFailure).action:en?"Open full conversation":translate(locale,"展开完整对话")} onPress={openNuriChat} style={{position:"absolute",left:24,right:24,bottom:9}} testID="home-nuri-action">
-          <FinalSurface bordered contentStyle={{minHeight:169,paddingHorizontal:20,paddingTop:16,paddingBottom:46,gap:7}} testID="home-inline-chat-card">
-            <View style={{height:44,justifyContent:"center"}}><FinalText size={14} secondary style={{lineHeight:26,fontWeight:"500"}}>{en?`${greeting}, ${nickname}`:`${greeting}，${nickname}`}</FinalText></View>
+          <FinalSurface contentStyle={{minHeight:169,paddingHorizontal:20,paddingTop:16,paddingBottom:46,gap:7}} testID="home-inline-chat-card">
+            <View style={{height:44,justifyContent:"center"}}><FinalText size={14} secondary numberOfLines={alpha?1:undefined} style={{lineHeight:26,fontWeight:"500"}}>{en?`${greeting}, ${greetingName}`:`${greeting}，${greetingName}`}</FinalText></View>
             <FinalText size={18} numberOfLines={2} style={{lineHeight:28,fontWeight:"500"}} testID="home-nuri-memo">{nuriMemo}</FinalText>
           </FinalSurface>
         </Pressable>

@@ -1,11 +1,13 @@
+import { AppStoreUpdatePrompt } from "@/src/components/AppStoreUpdatePrompt";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { aiConsent } from "@/src/api";
 import { AI_CONSENT_VERSION, AI_PRIVACY_URL, AI_PROVIDER_DATA_URL } from "@/src/aiConsent";
 import { aiConsentCopy } from "@/src/aiConsentCopy";
 import { initialAIChoiceAcknowledgement, InitialAIChoiceController, shouldShowInitialAIChoice, type InitialAIChoice, type InitialAIChoiceAcknowledgement } from "@/src/initialAIChoice";
 import { useAIConsent } from "@/src/useAIConsent";
+import { startNearbyForegroundRefresh } from "@/src/nearbyEvents";
 import { storage } from "@/src/utils/storage";
 import { useT, translate } from "@/src/i18n";
 import { NuriButton, NuriText } from "@/src/uiux48/Primitives";
@@ -14,6 +16,8 @@ import { NuriButton, NuriText } from "@/src/uiux48/Primitives";
  * sign-in and permission changes; typing cannot remount a page or lose history. */
 export function AIConsentStartupGate({ children }: { children: ReactNode }) {
   const { locale } = useT();
+  const currentLocale = useRef(locale);
+  currentLocale.current = locale;
   const copy = aiConsentCopy(locale);
   const { state } = useAIConsent();
   const [controller] = useState(() => { aiConsent.setStartupHold(true); return new InitialAIChoiceController(storage); });
@@ -113,6 +117,23 @@ export function AIConsentStartupGate({ children }: { children: ReactNode }) {
     && errorOwner.current?.userId === state.userId && errorOwner.current?.version === state.version || !!currentError;
   const held = !loaded || loadFailed || busy || visible || record?.phase === "pending" || state.version !== AI_CONSENT_VERSION;
   useEffect(() => { aiConsent.setStartupHold(held); }, [held]);
+  useEffect(() => {
+    if (process.env.EXPO_PUBLIC_RELEASE_FLAVOR !== "live-alpha" || held) return;
+    return startNearbyForegroundRefresh(() => currentLocale.current, {
+      onLocationSettingsRequired() {
+        const language = currentLocale.current;
+        const text = language === "en"
+          ? ["Use your location?", "Allow location while using Nuri to find nearby library and family activities.", "Later", "Open Settings"]
+          : language === "zh-TW"
+            ? ["使用目前位置？", "在使用 Nuri 時允許定位，即可查找附近的圖書館和親子活動。", "稍後", "開啟系統設定"]
+            : ["使用当前位置？", "在使用 Nuri 时允许定位，即可查找附近的图书馆和亲子活动。", "稍后", "打开系统设置"];
+        Alert.alert(text[0], text[1], [
+          { text: text[2], style: "cancel" },
+          { text: text[3], onPress: () => void Linking.openSettings().catch(() => undefined) },
+        ]);
+      },
+    });
+  }, [held]);
   const openLink = (url: string) => {
     const expected = state;
     void Linking.openURL(url).catch(() => {
@@ -141,7 +162,7 @@ export function AIConsentStartupGate({ children }: { children: ReactNode }) {
       </View>
     </SafeAreaView>
     </SafeAreaProvider>
-  </Modal></>;
+  </Modal><AppStoreUpdatePrompt enabled={loaded && !loadFailed && !visible} /></>;
 }
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#FFFAF5" },

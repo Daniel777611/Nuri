@@ -43,4 +43,4 @@ export function NuriScene({ welcome = false, mascot = false, focused = false }: 
     {focused && !welcome ? <View style={[StyleSheet.absoluteFill,{backgroundColor:String(t.token("color/scene/chat-focus-scrim"))}]} /> : null}
   </View>;
 }
-export function NuriAvatar({size=34}:{size?:number}={}) { const { mode } = useNuriTheme(); return <View style={{width:size,height:size}}><View style={{width:34,height:34,borderRadius:17,overflow:"hidden",backgroundColor:"rgba(245,237,222,.12)",borderWidth:1,borderColor:"rgba(255,255,255,.35)",transform:[{scale:size/34}],transformOrigin:"top left"}}><Image source={scenes[mode].avatar} style={{width:84.24,height:112.657,position:"absolute",left:-12.42,top:-3.43}} /></View></View>; }
+export function NuriAvatar({size=34}:{size?:number}={}) { const { mode } = useNuriTheme(); return <View style={{width:size,height:size}}><View style={{width:34,height:34,borderRadius:17,overflow:"hidden",backgroundColor:"rgba(245,237,222,.12)",transform:[{scale:size/34}],transformOrigin:"top left"}}><Image source={scenes[mode].avatar} style={{width:84.24,height:112.657,position:"absolute",left:-12.42,top:-3.43}} /></View></View>; }

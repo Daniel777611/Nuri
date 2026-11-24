@@ -7,6 +7,7 @@ import { isPreviewMode, previewRequest } from "./preview-api";
 import { storage } from "./utils/storage";
 import { AIConsentController, requiresAIConsent } from "./aiConsent";
 import { assertSessionGeneration, getIdentityGeneration, getSessionGeneration, invalidateSession, subscribeSessionBoundary, SessionChangedError } from "./sessionBoundary";
+import type { ActivityLocale, ActivityPreferences, ActivityPreferencesPatch, LocalActivities, LocalActivity } from "./localActivities";
 
 export type PersonalizedResourceStatus =
   | "research_on_open"
@@ -218,6 +219,7 @@ export type NotificationHistoryItem = {
   title: string;
   body: string;
   sent_at: string;
+  local_activity_id?: string | null;
 };
 export type OpenedNotification = {
   session_id: string;
@@ -265,14 +267,27 @@ function createRecommendationEventId(): string {
 }
 
 // ── Daily post card (backend/feed/daily_post.py) ────────────────────────────
+export type DailyPostSource = {
+  n: number;
+  title: string;
+  url: string;
+  platform: "xiaohongshu" | "facebook" | "instagram" | "threads" | "web";
+  label: string;
+};
+
 export type DailyPostCard = {
   id: string;
   /** Pass to startSession({ card_id }) to talk it through with NURI. */
   card_id: string;
   day: string;
-  platform: "facebook" | "instagram" | "threads";
+  platform: string;
   source_url: string;
   source_label: string;
+  format?: "post" | "summary";
+  source_count?: number;
+  source_platforms?: DailyPostSource["platform"][];
+  sources?: DailyPostSource[];
+  takeaway_sources?: number[][];
   /** Forward-compatible optional source media; never substitute design art. */
   thumbnail_url?: string | null;
   image_url?: string | null;
@@ -288,7 +303,7 @@ export type DailyPostCard = {
   why_this: string;
   caution: string;
   author_kind: "parent" | "parent_group_answers";
-  summary_source: "post" | "facebook_ai_summary";
+  summary_source: "post" | "facebook_ai_summary" | "summary";
   concern: string;
   basis: "conversation" | "profile";
   locale: string;
@@ -373,6 +388,17 @@ export type AuthResponse = {
 };
 
 export type GoogleLoginResult = AuthResponse & { created: boolean };
+
+export type AppleChallengePurpose = "signin" | "link" | "delete";
+export type AppleCredential = {
+  identity_token: string;
+  authorization_code: string;
+  nonce: string;
+  first_name?: string;
+  last_name?: string;
+};
+export type AppleLoginResult = AuthResponse & { created: boolean };
+export type DeleteAccountResult = { ok: boolean; account_deleted: boolean; subscription_cancelled: boolean; apple_revocation_pending?: boolean };
 
 // ── Token storage ────────────────────────────────────────────────────────────
 const TOKEN_KEY = "auth_token";
@@ -1115,12 +1141,18 @@ export const api = {
     return deactivatePushInstallation(installationId, token || "");
   },
   listNotifications: (limit = 30) => req<{ items: NotificationHistoryItem[] }>(`/notifications?limit=${Math.max(1, Math.min(100, Math.trunc(Number.isFinite(limit) ? limit : 30)))}`),
-  getNotification: (id: string) => req<{ id: string; target?: { kind?: unknown } }>(`/notifications/${encodeURIComponent(id)}`),
+  getNotification: (id: string) => req<{ id: string; kind?: string; local_activity_id?: string | null; target?: { kind?: unknown } }>(`/notifications/${encodeURIComponent(id)}`),
   openNotification: (id: string) =>
     req<OpenedNotification>(`/notifications/${encodeURIComponent(id)}/open`, { method: "POST" }),
   getNotificationPreferences: () => req<NotificationPreferences>("/notifications/preferences"),
   setNotificationPreferences: (patch: Partial<NotificationPreferences>) =>
     req<NotificationPreferences>("/notifications/preferences", {method:"PATCH",body:JSON.stringify(patch)}),
+  getLocalActivityPreferences: () => req<ActivityPreferences>("/notifications/local-activities/preferences"),
+  setLocalActivityPreferences: (patch: ActivityPreferencesPatch) =>
+    req<ActivityPreferences>("/notifications/local-activities/preferences", { method: "PATCH", body: JSON.stringify(patch) }),
+  listLocalActivities: (locale: ActivityLocale) =>
+    req<LocalActivities>(`/feed/local-activities?locale=${encodeURIComponent(locale)}`, undefined, 45000),
+  getLocalActivity: (id: string) => req<LocalActivity>(`/feed/local-activities/${encodeURIComponent(id)}`),
   // A model turn can legitimately run past the 12s default. Aborting early
   // doesn't stop the backend, it just makes users resend and stack more work,
   // so this has to stay above the backend's own OpenAI timeout budget.
@@ -1156,21 +1188,31 @@ export const api = {
   // Destructive, owner-bound request. The confirmation/password are supplied
   // only by the dedicated account-deletion screen, never persisted or logged.
   deleteAccount: (password: string, expectedToken: string) =>
-    req<{ ok: boolean; account_deleted: boolean; subscription_cancelled: boolean }>(
+    req<DeleteAccountResult>(
       "/auth/account", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", password }) },
+      45000, expectedToken,
+    ),
+
+  deleteAccountWithApple: (apple: AppleCredential, expectedToken: string) =>
+    req<DeleteAccountResult>(
+      "/auth/account", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE", apple }) },
       45000, expectedToken,
     ),
 
   // ── Daily post card ───────────────────────────────────────────────────────
   // The first request of the parent's day builds the card (search + two model
   // calls), so it gets a long timeout; every later request is a row read.
-  getDailyPost: (): Promise<DailyPostResponse> => {
+  getDailyPost: (locale?: ResourceLocale): Promise<DailyPostResponse> => {
     const tz = deviceTimeZone();
-    return req(`/feed/daily-post${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`, undefined, 60000);
+    const query = [tz ? `tz=${encodeURIComponent(tz)}` : "", locale ? `locale=${encodeURIComponent(locale)}` : ""].filter(Boolean).join("&");
+    return req(`/feed/daily-post${query ? `?${query}` : ""}`, undefined, 60000);
   },
   // An earlier card by id, for a care notification that named it.
-  getDailyPostById: (id: string): Promise<DailyPostResponse> =>
-    req(`/feed/daily-post/${encodeURIComponent(id)}`),
+  getDailyPostById: (id: string, locale?: ResourceLocale): Promise<DailyPostResponse> => {
+    const translate = !!locale && aiConsent.getState().status === "allowed";
+    const query = locale ? `?locale=${encodeURIComponent(locale)}${translate ? "&translate=1" : ""}` : "";
+    return req(`/feed/daily-post/${encodeURIComponent(id)}${query}`, undefined, translate ? 30000 : 12000);
+  },
   getDailyVideo: (locale?: ResourceLocale): Promise<DailyVideoResponse> => {
     const tz = deviceTimeZone();
     const query=[tz?`tz=${encodeURIComponent(tz)}`:"",locale?`locale=${encodeURIComponent(locale)}`:""].filter(Boolean).join("&");
@@ -1218,6 +1260,13 @@ export const api = {
   // The caller owns CAS installation; a response never changes local identity.
   googleLogin: (b: { credential: string; language?: string }) =>
     req<GoogleLoginResult>(`/auth/google`, { method: "POST", body: JSON.stringify(b) }, 30000),
+  appleChallenge: (purpose: AppleChallengePurpose, expectedToken?: string) =>
+    req<{ nonce: string }>("/auth/apple/challenge", { method: "POST", body: JSON.stringify({ purpose }) }, 15000, expectedToken),
+  appleStatus: () => req<{ enabled: boolean }>("/auth/apple/status", undefined, 15000),
+  appleLogin: (b: AppleCredential & { language: string }) =>
+    req<AppleLoginResult>("/auth/apple", { method: "POST", body: JSON.stringify(b) }, 30000),
+  linkApple: (b: AppleCredential, expectedToken: string) =>
+    req<AppleLoginResult>("/auth/apple/link", { method: "POST", body: JSON.stringify(b) }, 30000, expectedToken),
   // Generous timeout: this is the launch check, and it's the request most
   // likely to hit a serverless cold start.
   me: () => req(`/auth/me`, undefined, 30000),

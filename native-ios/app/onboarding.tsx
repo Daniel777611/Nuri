@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
-import { AccessibilityInfo, ActivityIndicator, Keyboard, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { AccessibilityInfo, ActivityIndicator, Keyboard, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
-import { api, auth, isAuthError } from "@/src/api";
+import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
 import { useAccountScope, useAccountState as useState } from "@/src/useAccountState";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { registerNativeNavigationGuard } from "@/src/components/nativeNavigation";
@@ -14,14 +14,17 @@ import { appendChildDraft, blankChildDraft, cloneChildDraft, committableChildDra
 import { readParentGender, saveParentGender } from "@/src/onboardingParentGender";
 import { ChildProfileCard, ParentProfileCard, OnboardingPrompt, ChildReviewCard, type ParentDraft } from "@/src/uiuxfinal/OnboardingForm";
 import { OnboardingKeyboardFooter, useOnboardingKeyboardVisible } from "@/src/uiuxfinal/OnboardingKeyboardFooter";
+import { isCurrentNativeRelease } from "@/src/release/currentNativeRelease";
+import { CHINESE_NAME_TOO_LONG, chineseDisplayNameLimitMessage, isChineseDisplayNameTooLong } from "@/src/profileDisplayName";
 
-type SetupError = "" | "load" | "delete" | "unconfirmed" | "save" | "invalid-edit" | "parent-name" | "incomplete-children";
+type SetupError = "" | "load" | "delete" | "unconfirmed" | "save" | "invalid-edit" | "parent-name" | "parent-name-limit" | "incomplete-children";
 
 /** Replaces the retired topic/preferences tour. Navigation and editing are
  * local; only final Confirm completes setup through the real guarded API. */
 export default function Onboarding() {
   const { capture, current } = useAccountScope();
   const { t, locale } = useT();
+  const limitParentName=Platform.OS==="ios"&&isCurrentNativeRelease();
   const keyboardVisible = useOnboardingKeyboardVisible();
   const theme = useNuriTheme(), copy = onboardingChildCopy(locale), router = useRouter();
   const cn = (text: string, en: string, vars?: Record<string, string | number>) => translate(locale, locale === "en" ? en : text, vars);
@@ -41,6 +44,7 @@ export default function Onboarding() {
     : error === "save" ? cn("保存失败，这次资料尚未完整写入。请检查网络后重试。", "Setup was not fully saved. Check your connection and retry.")
     : error === "invalid-edit" ? cn("请填写昵称并选择有效日期。", "Enter a nickname and choose a valid date.")
     : error === "parent-name" ? cn("请填写称呼，或跳过此步骤。", "Enter your name, or skip this step.")
+    : error === "parent-name-limit" ? chineseDisplayNameLimitMessage(locale)
     : error === "incomplete-children" ? cn("请补全孩子昵称和有效日期，或移除未填写的卡片。", "Complete each child's nickname and date, or remove the incomplete card.") : "";
   const initialParent = useRef<{ ticket: number; userId: string; value: ParentDraft } | null>(null);
   const progress = useRef<{ ticket: number; value: ChildSaveProgress } | null>(null);
@@ -174,7 +178,12 @@ export default function Onboarding() {
       if (!await owns()) return;
       // Retired role/topic preferences are preserved. Gender is local and is
       // deliberately never inferred as a parenting role.
-      const profile: any = await api.updateMe({ ...(parentCommitted ? { nickname: parentCommitted.nickname.trim(), city: parentCommitted.city.trim() } : {}), onboarding_completed: true });
+      const nickname=parentCommitted?.nickname.trim();
+      const preserveLegacyName=limitParentName&&nickname===original.value.nickname.trim()&&isChineseDisplayNameTooLong(nickname);
+      const profile: any = await api.updateMe({
+        ...(parentCommitted ? { ...(!preserveLegacyName ? { nickname } : {}), city: parentCommitted.city.trim() } : {}),
+        onboarding_completed: true,
+      });
       if (!await owns()) return;
       if (profile?.onboarding_completed !== true) throw new Error("Completion unconfirmed");
       if (!await auth.setOnboarded(true, { expectedToken: token, expectedGeneration: ticket })) throw new Error("Local completion unconfirmed");
@@ -182,7 +191,8 @@ export default function Onboarding() {
     } catch (failure) {
       if (!current(ticket)) return;
       if (isAuthError(failure)) await recover(failure, token);
-      else setError(failure instanceof ChildSaveError && failure.code === "unconfirmed" ? "unconfirmed" : "save");
+      else setError(apiErrorDetail(failure) === CHINESE_NAME_TOO_LONG ? "parent-name-limit"
+        : failure instanceof ChildSaveError && failure.code === "unconfirmed" ? "unconfirmed" : "save");
     } finally { action.current = false; if (current(ticket)) setSaving(false); }
   };
   const next = () => {
@@ -195,6 +205,10 @@ export default function Onboarding() {
     }
     if (page === 0) {
       if (!parent.nickname.trim()) { setError("parent-name"); return; }
+      if (limitParentName&&parent.nickname.trim()!==initialParent.current?.value.nickname.trim()&&isChineseDisplayNameTooLong(parent.nickname)) {
+        setError("parent-name-limit");
+        return;
+      }
       setParentCommitted({ ...parent }); setPage(1); return;
     }
     if (page === 1) {

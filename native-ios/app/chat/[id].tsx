@@ -13,7 +13,7 @@ import { useNuriTheme } from "@/src/uiux48/Theme";
 import { readChatDraft, writeChatDraft } from "@/src/uiux48/chatDraft";
 import { auth } from "@/src/api";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
 import {
   ActivityIndicator,
@@ -37,7 +37,6 @@ import { SafeAreaView } from "@/src/components/NativeSafeAreaView";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
@@ -47,6 +46,8 @@ import { ChatReportSheet } from "@/src/components/ChatReportSheet";
 import { ApiError, api, isStreamUnsupported, type ChatReportReason } from "@/src/api";
 import { buildChatMessagePayload } from "@/src/chatClientContext";
 import {
+  CHAT_BATCH_PHOTO_LIMIT,
+  CHAT_BATCH_PHOTO_MAX_DATA_URI_CHARS,
   ChatImageInputError,
 } from "@/src/chatImageInput";
 import {
@@ -59,11 +60,17 @@ import {
 import { colors, radius, spacing, type } from "@/src/theme";
 import { useT, translate } from "@/src/i18n";
 import { shortResourceSummary } from "@/src/resourceSummary";
+import { replySpeechAvailable, speakReply, stopReplySpeech } from "@/src/chatReplySpeech";
+import { useAIConsent } from "@/src/useAIConsent";
+import { AlphaRealtimeVoiceButton, type SavedVoiceMessage } from "@/src/components/AlphaRealtimeVoiceButton";
+import { ChatMediaCarousel } from "@/src/components/ChatMediaCarousel";
+import { readChatMedia } from "@/src/replyMedia";
 
 const blurredTaskBackground = require("@/assets/images/tasks-blurred-background.png");
 
 // 对话背景渐变（复刻高保真设计稿的粉紫渐变）
 const GRADIENT = ["#C5C8F0", "#F5E6F0"] as const;
+const ALPHA_DOCK_TOP_INSET = 19;
 
 // ── Types & mock data ────────────────────────────────────────────────────────
 type Msg = {
@@ -72,6 +79,7 @@ type Msg = {
   text: string;
   created_at?: string;
   image_base64?: string | null;
+  images_base64?: string[];
   quick_replies?: string[];
   transition?: any;
   feedback_rating?: "like" | "dislike" | null;
@@ -250,16 +258,27 @@ function MemoryContextCard({ transition }: { transition: MemoryContextTransition
 }
 
 // ── Main screen ────────────────────────────────────────────────────────────────
-export default function ChatDetail({ sessionId, embedded = false, initialDraft, initialAction, onExpand }: { sessionId?:string; embedded?:boolean; initialDraft?:string; initialAction?:"send"|"attach"|"mic"|"focus"; onExpand?:()=>void } = {}) {
+type MainChatEntry = {
+  failureNotice: ReactNode;
+  replaceSessionId: (id: string) => void;
+};
+
+export default function ChatDetail({ sessionId, embedded = false, initialDraft, initialAction, onExpand, mainEntry }: { sessionId?:string; embedded?:boolean; initialDraft?:string; initialAction?:"send"|"attach"|"mic"|"focus"; onExpand?:()=>void; mainEntry?:MainChatEntry } = {}) {
   const { generation, capture: captureAccount, current: currentAccount } = useAccountScope();
   const { t, locale } = useT();
+  const alphaChatLayout = Platform.OS === "ios" && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR ?? "");
+  const alphaPreviewFeatures = Platform.OS === "ios" && process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha";
+  const { state: voiceConsent } = useAIConsent();
+  const attachmentLimit = alphaChatLayout ? CHAT_BATCH_PHOTO_LIMIT : CHAT_MAX_ATTACHMENTS;
   const router = useRouter();
   const headerHeight = useHeaderHeight();
   const [pageHeaderHeight, setPageHeaderHeight] = useState(0);
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const phoneWidth = Math.min(viewportWidth, 402);
   const params = useLocalSearchParams<{ id: string }>();
-  const id = sessionId ?? params.id;
+  const id = mainEntry ? sessionId ?? "" : sessionId ?? params.id;
+  const replaceEntrySessionId = mainEntry?.replaceSessionId;
+  const navigationPath = embedded ? "/" : mainEntry ? "/chats" : `/chat/${id}`;
   // A covered native screen can be reused for another conversation without
   // changing accounts. Bind every async callback to this exact render's route
   // epoch as well as the account epoch, including an A → B → A transition.
@@ -271,7 +290,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const capture = useCallback(() => routeOwnerRef.current.version === routeVersion ? captureAccount() : null, [captureAccount, routeVersion]);
   const current = useCallback((ticket: number | null) => routeOwnerRef.current.version === routeVersion && currentAccount(ticket), [currentAccount, routeVersion]);
   const safeInsets = useSafeAreaInsets();
-  const dockBottom = useComposerDockInset(!embedded);
+  const safeDockBottom = useComposerDockInset(!embedded);
+  const dockBottom = alphaChatLayout && !embedded ? Math.max(12, safeDockBottom - 27) : safeDockBottom;
   const composerRef = useRef<TextInput>(null);
   const launchAction = useRef(initialAction);
   const theme48 = useNuriTheme();
@@ -279,12 +299,17 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const [historyLoadState, setHistoryLoadState] = useState<
     "loading" | "ready" | "error"
   >("loading");
+  const loadedHistoryRoute = useRef<number | null>(null);
+  const historyRead = useRef(0);
+  const [positionedHistoryRoute, setPositionedHistoryRoute] = useState<number | null>(null);
+  const ownsAlphaHistory = loadedHistoryRoute.current === routeVersion;
   const [input, setInput] = useState("");
   const [composerSpace,setComposerSpace] = useState<number|undefined>(undefined);
   const initialDraftOwner=useRef(generation);
   const initialDraftUsed=useRef(false);
   const draftWriteScope=useRef<{id:string;generation:number}|null>(null);
   useEffect(() => {
+    if(!id)return;
     // Hydrate the bridge before the first write. Otherwise a fresh empty input
     // would erase the draft handed over by the still-mounted Home screen.
     if(draftWriteScope.current?.id!==id||draftWriteScope.current.generation!==generation){draftWriteScope.current={id,generation};return;}
@@ -341,16 +366,107 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   // the persisted message arrives and replaces it.
   const [streamingText, setStreamingText] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [readingReplyId, setReadingReplyId] = useState<string | null>(null);
+  const replyPlayback = useRef<{ id: string } | null>(null);
+  const [liveVoiceActive, setLiveVoiceActive] = useState(false);
+  const liveVoiceActiveRef = useRef(false);
+  const stopReadingReply = useCallback(() => {
+    if (!replyPlayback.current) return;
+    replyPlayback.current = null;
+    stopReplySpeech();
+    setReadingReplyId(null);
+  }, [setReadingReplyId]);
+  const changeLiveVoice = useCallback((active: boolean) => {
+    liveVoiceActiveRef.current = active;
+    setLiveVoiceActive(active);
+    if (active) {
+      Keyboard.dismiss();
+      stopReadingReply();
+    }
+  }, [setLiveVoiceActive, stopReadingReply]);
+  useFocusEffect(useCallback(() => stopReadingReply, [routeVersion, stopReadingReply]));
+  useEffect(() => {
+    if (!alphaPreviewFeatures) return;
+    const listener = AppState.addEventListener("change", state => {
+      if (state !== "active") stopReadingReply();
+    });
+    return () => listener.remove();
+  }, [alphaPreviewFeatures, stopReadingReply]);
+  useEffect(() => {
+    if (voiceConsent.status !== "allowed") stopReadingReply();
+  }, [voiceConsent.status, stopReadingReply]);
+  const toggleReplySpeech = useCallback(async (message: Msg) => {
+    const ticket = capture();
+    if (ticket === null || !id || !replySpeechAvailable || message.role !== "ai" || voicePhaseRef.current !== "idle"
+        || voiceConsent.status !== "allowed" || liveVoiceActiveRef.current || AppState.currentState !== "active") return;
+    if (replyPlayback.current?.id === message.id) {
+      stopReadingReply();
+      return;
+    }
+    const playback = { id: message.id };
+    replyPlayback.current = playback;
+    setReadingReplyId(message.id);
+    try {
+      await speakReply(id, message.id, () => replyPlayback.current === playback && current(ticket) && AppState.currentState === "active");
+    } catch {
+      if (replyPlayback.current === playback && current(ticket)) {
+        setToastMsg(locale === "en" ? "Couldn’t play this reply." : translate(locale, "无法播放这条回复。"));
+      }
+    } finally {
+      if (replyPlayback.current === playback) {
+        replyPlayback.current = null;
+        if (current(ticket)) setReadingReplyId(null);
+      }
+    }
+  }, [capture, current, id, locale, setReadingReplyId, setToastMsg, stopReadingReply, voiceConsent.status]);
   const [feedbackSavingIds, setFeedbackSavingIds] = useState<Set<string>>(new Set());
   const feedbackSavingRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<ScrollView>(null);
-  const scrollGeometry = useRef({viewportHeight:0,contentHeight:0});
+  const scrollGeometry = useRef({
+    routeVersion,
+    viewportHeight: 0,
+    contentHeight: null as number | null,
+    lastY: null as number | null,
+    revealFrame: null as number | null,
+  });
+  if (scrollGeometry.current.routeVersion !== routeVersion) {
+    scrollGeometry.current = { routeVersion, viewportHeight: 0, contentHeight: null, lastY: null, revealFrame: null };
+  }
   const scrollToLatest = useCallback((animated=false) => {
     // Native scrollToEnd can choose the horizontal axis when transient content
     // is wider than its viewport. This conversation always scrolls vertically.
-    const {viewportHeight,contentHeight}=scrollGeometry.current;
-    scrollRef.current?.scrollTo({x:0,y:Math.max(0,contentHeight-viewportHeight),animated});
-  },[]);
+    const geometry = scrollGeometry.current;
+    const {viewportHeight, contentHeight} = geometry;
+    const y = Math.max(0, (contentHeight ?? 0) - viewportHeight);
+    const scroll = scrollRef.current;
+    if (!alphaChatLayout) {
+      scroll?.scrollTo({ x:0, y, animated });
+      return;
+    }
+    if (!scroll || viewportHeight <= 0 || contentHeight === null || geometry.lastY === y) return;
+    const initialPlacement = geometry.lastY === null;
+    geometry.lastY = y;
+    scroll.scrollTo({ x:0, y, animated:false });
+    if (initialPlacement) {
+      // Position the initial history before revealing it. Subsequent layout
+      // events keep the dock anchored without a second delayed animation.
+      geometry.revealFrame = requestAnimationFrame(() => {
+        geometry.revealFrame = null;
+        if (scrollGeometry.current === geometry) setPositionedHistoryRoute(geometry.routeVersion);
+      });
+    }
+  }, [alphaChatLayout, setPositionedHistoryRoute]);
+  useEffect(() => {
+    const geometry = scrollGeometry.current;
+    return () => {
+      if (geometry.revealFrame !== null) cancelAnimationFrame(geometry.revealFrame);
+    };
+  }, [routeVersion]);
+  const updateScrollGeometry = (axis: "viewportHeight" | "contentHeight", height: number) => {
+    if (scrollGeometry.current.routeVersion !== routeVersion || (alphaChatLayout && !ownsAlphaHistory)) return;
+    scrollGeometry.current[axis] = height;
+    scrollToLatest();
+  };
   const showToast = useCallback((message: string) => {
     setToastMsg(message);
     setTimeout(() => setToastMsg(null), 1800);
@@ -416,39 +532,55 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     }
   }, [id, reportTarget, reportSaving, showToast, t, capture, current, setMessages, setReportSaving, setReportTarget]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (keepCurrentHistory = false) => {
     const ticket = capture();
     if (ticket === null) return;
     if (!id) return;
-    setHistoryLoadState("loading");
+    const read = ++historyRead.current;
+    const ownsRead = () => historyRead.current === read && current(ticket);
+    if (!alphaChatLayout || loadedHistoryRoute.current !== routeVersion) setHistoryLoadState("loading");
     try {
       const msgs = await api.getMessages(id);
-      if (!current(ticket)) return;
+      if (!ownsRead()) return;
+      if (alphaChatLayout) loadedHistoryRoute.current = routeVersion;
       setMessages(msgs);
       setHistoryLoadState("ready");
     } catch (error) {
-      if (!current(ticket)) return;
+      if (!ownsRead() || keepCurrentHistory) return;
       // Old clients could keep a deleted session URL in navigation history.
       // A 404 is safe to heal because the authenticated, idempotent endpoint
       // returns only this account's current canonical conversation.
       if (error instanceof ApiError && error.status === 404) {
         try {
           const session = await api.getOrStartMainSession();
-          if (!current(ticket)) return;
+          if (!ownsRead()) return;
           if (session?.id && session.id !== id) {
-            router.replace(`/chat/${session.id}`);
+            if (replaceEntrySessionId) replaceEntrySessionId(session.id);
+            else router.replace(`/chat/${session.id}`);
             return;
           }
         } catch {
-          if (!current(ticket)) return;
+          if (!ownsRead()) return;
           // Fall through to an explicit retry state; never render fake history.
         }
       }
       setHistoryLoadState("error");
     }
-  }, [id, router, capture, current, setMessages, setHistoryLoadState]);
+  }, [id, router, capture, current, setMessages, setHistoryLoadState, alphaChatLayout, routeVersion, replaceEntrySessionId]);
+
+  const showSavedTranscript = useCallback((savedSession: string, savedMessages: SavedVoiceMessage[]) => {
+    if (savedSession !== id || capture() === null) return;
+    setMessages(previous => {
+      const existing = new Set(previous.map(message => message.id));
+      return [...previous, ...savedMessages.filter(message => !existing.has(message.id))];
+    });
+    // Display the saved messages immediately while refreshing authoritative
+    // history for any transcript items also written by a retry.
+    void load(true);
+  }, [capture, id, load, setMessages]);
 
   useFocusEffect(useCallback(() => {
+    if (!id) return;
     void load();
     const draft=!initialDraftUsed.current&&initialDraftOwner.current===generation
       ? initialDraft??readChatDraft(id) : readChatDraft(id);
@@ -457,9 +589,10 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   }, [load,id,setInput,initialDraft,generation]));
 
   useEffect(() => {
+    if (alphaChatLayout) return;
     const timer=setTimeout(() => scrollToLatest(true),100);
     return () => clearTimeout(timer);
-  }, [messages, typing, streamingText, scrollToLatest]);
+  }, [alphaChatLayout, messages, typing, streamingText, scrollToLatest]);
 
   // Home's daily card is fixed for the day, so a finished turn no longer
   // needs to hand it a refresh nonce; the NURI preview re-reads on focus.
@@ -493,7 +626,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     returnHome();
   }, [returnHome, showToast, t, capture]);
 
-  useFocusEffect(useCallback(() => registerNativeNavigationGuard(embedded?"/":`/chat/${id}`, (action) => {
+  useFocusEffect(useCallback(() => registerNativeNavigationGuard(navigationPath, (action) => {
     if (capture() === null) return;
     if (action === "home") { requestHomeReturn(); return; }
     if(voiceRecordingRef.current){showToast(locale==="en"?"Finish recording before leaving.":translate(locale, "请先结束录音，再离开对话。"));return;}
@@ -504,26 +637,41 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     } else {
       navigateFromChat(action);
     }
-  }), [id, embedded, locale, requestHomeReturn, navigateFromChat, showToast, capture]));
+  }), [navigationPath, locale, requestHomeReturn, navigateFromChat, showToast, capture]));
 
   const send = async (textOverride?: string, imageBase64?: string | null) => {
     const ticket = capture();
     if (ticket === null) return;
-    if (!id || sendingRef.current || attachmentWorkInFlightRef.current) return;
+    if (!id || sendingRef.current || attachmentWorkInFlightRef.current || liveVoiceActiveRef.current) return;
     const text = (textOverride ?? input).trim();
-    // This TestFlight build exposes the complete local media draft flow. The
-    // verified transport sends one photo: never discard extra media, pretend
-    // to upload a video, or silently send its cover as the original clip.
-    if (!imageBase64 && (attachments.length > 1 || attachments.some(item => item.kind === "video"))) {
+    const hasVideo = attachments.some(item => item.kind === "video");
+    if (!imageBase64 && alphaChatLayout && hasVideo) {
+      setMediaError(locale === "en" ? "Videos stay in your draft. Remove them before sending photos to Nuri." : locale === "zh-TW" ? "影片會保留在草稿中。傳送照片給 Nuri 前，請先移除影片。" : "视频会保留在草稿中。向 Nuri 发送照片前，请先移除视频。");
+      return;
+    }
+    if (!imageBase64 && !alphaChatLayout && (attachments.length > 1 || hasVideo)) {
       setMediaError(locale === "en" ? "This test build can send one photo at a time. Multiple photos and videos remain in your draft and have not been sent." : locale === "zh-TW" ? "此測試版暫時只能傳送一張照片。多張照片和影片已保留在草稿中，尚未傳送。" : "此测试版暂时只能发送一张照片。多张照片和视频已保留在草稿中，尚未发送。");
       return;
     }
     const selectedAttachments = attachments;
-    const selectedImage = imageBase64
-      ? { previewUri: imageBase64, dataUri: imageBase64, width: 0, height: 0 }
-      : attachments[0]?.image;
-    const normalizedImage = selectedImage?.dataUri || null;
+    const photoData = imageBase64 ? [imageBase64] : attachments.map(item => item.image?.dataUri ?? "");
+    if (photoData.some(photo => !photo)) {
+      setMediaError(locale === "en" ? "A photo could not be prepared. Remove it and try again." : locale === "zh-TW" ? "有照片無法處理，請移除後再試。" : "有照片无法处理，请移除后再试。");
+      return;
+    }
+    const batch = photoData.length > 1 ? photoData : undefined;
+    if (batch && (batch.length > attachmentLimit || batch.some(photo => photo.length > CHAT_BATCH_PHOTO_MAX_DATA_URI_CHARS))) {
+      setMediaError(locale === "en" ? "These photos are too large to send together. Try sending fewer photos." : locale === "zh-TW" ? "這批照片太大，請減少照片張數後再試。" : "这批照片太大，请减少照片张数后再试。");
+      return;
+    }
+    // The same validated field carries single photos and batches. An older
+    // server rejects a batch before creating a turn instead of sending text
+    // without the attachments it did not understand.
+    const normalizedImage = batch ? JSON.stringify(batch) : photoData[0] ?? null;
     if (!text && !normalizedImage) return;
+    // A transcript may have started a quiet history refresh before the user
+    // sent this message. Its snapshot must not replace the optimistic turn.
+    historyRead.current += 1;
     setInput("");
     setAttachments([]);
     sendingRef.current = true;
@@ -534,7 +682,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       role: "user",
       text: text || "[图片]",
       created_at: new Date().toISOString(),
-      image_base64: normalizedImage,
+      image_base64: photoData[0] ?? null,
+      images_base64: batch,
     };
     setMessages((p) => [...p, optimistic]);
 
@@ -544,14 +693,14 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       && failedSend.text === text
       && failedSend.imageBase64 === normalizedImage
       ? failedSend.payload
-      : buildChatMessagePayload(text, normalizedImage, locale);
+      : { ...buildChatMessagePayload(text, normalizedImage, locale), ...(alphaPreviewFeatures ? { compare_products: true, include_media: true } : {}) };
     if (payload !== failedSend?.payload) failedSendRef.current = null;
     try {
       let res;
       try {
         res = await api.streamMessage(id, payload, (chunk) => {
           if (!current(ticket)) return;
-          // First token replaces the typing dots with the live bubble.
+          // The first token replaces the pending reply with the live bubble.
           setTyping(false);
           setStreamingText((prev) => prev + chunk);
         });
@@ -741,7 +890,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
   const startVoice = async () => {
     const ticket = capture();
     if (ticket === null) return;
-    if (voicePhaseRef.current !== "idle" || voiceStartInFlightRef.current || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
+    if (voicePhaseRef.current !== "idle" || voiceStartInFlightRef.current || liveVoiceActiveRef.current || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
+    stopReadingReply();
     if (!isVoiceInputSupported()) {
       setMediaError(locale==="en"?"Voice input is unavailable on this device. Use text instead.":translate(locale, "此设备暂不支持语音输入，可以改用文字。"));
       showToast(t(Platform.OS === "web" ? "当前浏览器不支持语音输入" : "语音输入功能即将上线"));
@@ -800,18 +950,18 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
       releaseChatPickerAssets(result.assets);
       return;
     }
-    const remaining = CHAT_MAX_ATTACHMENTS - attachmentOwnerRef.current.length;
+    const remaining = attachmentLimit - attachmentOwnerRef.current.length;
     if (remaining <= 0) { releaseChatPickerAssets(result.assets); return; }
     const version = ++attachmentWorkVersionRef.current;
     attachmentWorkInFlightRef.current = true;
     setProcessingImage(true);
     const prepared: ChatDraftAttachment[] = [];
     try {
-      // Bound and serialize image decoding/video thumbnails; never create six
+      // Bound and serialize image decoding/video thumbnails; never create ten
       // full-resolution bitmaps at once. Nothing uploads on selection.
       for (const asset of result.assets.slice(0, remaining)) {
         if (!current(ticket) || !voiceActiveRef.current || version !== attachmentWorkVersionRef.current) return;
-        const attachment = await prepareChatAttachment(asset);
+        const attachment = await prepareChatAttachment(asset, alphaChatLayout ? { compactBatchPhoto:true } : undefined);
         prepared.push(attachment);
       }
       if (!current(ticket) || !voiceActiveRef.current || version !== attachmentWorkVersionRef.current) return;
@@ -864,7 +1014,7 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
         mediaTypes: ["images", "videos"],
         allowsEditing: false,
         allowsMultipleSelection: true,
-        selectionLimit: Math.max(1, CHAT_MAX_ATTACHMENTS - attachmentOwnerRef.current.length),
+        selectionLimit: Math.max(1, attachmentLimit - attachmentOwnerRef.current.length),
         orderedSelection: true,
         base64: false,
         exif: false,
@@ -951,8 +1101,8 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 
   const openImageInput = (anchor?: ChatAttachmentAnchor) => {
     if (capture() === null || !voiceActiveRef.current || voicePhaseRef.current !== "idle" || sendingRef.current || processingImage || nativePickerInFlightRef.current || historyLoadState !== "ready") return;
-    if (attachmentOwnerRef.current.length >= CHAT_MAX_ATTACHMENTS) {
-      showToast(locale === "en" ? `You can add up to ${CHAT_MAX_ATTACHMENTS} items to this draft.` : translate(locale, `本次草稿最多添加 ${CHAT_MAX_ATTACHMENTS} 个附件。`));
+    if (attachmentOwnerRef.current.length >= attachmentLimit) {
+      showToast(locale === "en" ? `You can add up to ${attachmentLimit} items to this draft.` : locale === "zh-TW" ? `本次草稿最多可加入 ${attachmentLimit} 個附件。` : `本次草稿最多添加 ${attachmentLimit} 个附件。`);
       return;
     }
     setMediaError("");
@@ -1023,19 +1173,55 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
     else if (action === "mic") void startVoice();
     else composerRef.current?.focus();
   }, [historyLoadState, id]);
+  const entryFailureNotice = mainEntry?.failureNotice;
+  const alphaHistoryLoading = alphaChatLayout && !entryFailureNotice
+    && historyLoadState !== "error" && positionedHistoryRoute !== routeVersion;
   const content = <View testID="chat-content" style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%"}} onLayout={e=>{const next=e.nativeEvent.layout.height;setComposerSpace(previous=>previous===next?previous:next);}}>
     {!embedded ? <Stack.Screen options={{ gestureEnabled: !sending }} /> : null}
-    <ScrollView ref={scrollRef} horizontal={false} directionalLockEnabled alwaysBounceHorizontal={false} style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%"}} contentContainerStyle={{width:"100%",minWidth:0,maxWidth:"100%",paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" onLayout={e=>{scrollGeometry.current.viewportHeight=e.nativeEvent.layout.height;scrollToLatest();}} onContentSizeChange={(_width,height)=>{scrollGeometry.current.contentHeight=height;scrollToLatest();}} testID="chat-scroll">
-      {historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
-      {historyLoadState==="error"?<Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
-      {messages.map(m=><MessageBubble key={m.id} msg={m} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} onReport={setReportTarget} />)}
-      {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} actionsEnabled={false} />:null}
-      {typing?<TypingDots />:null}
+    <ScrollView
+      key={alphaChatLayout ? `${routeVersion}:${ownsAlphaHistory}` : undefined}
+      ref={scrollRef}
+      horizontal={false}
+      directionalLockEnabled
+      alwaysBounceHorizontal={false}
+      style={{flex:1,minHeight:0,width:"100%",minWidth:0,maxWidth:"100%",opacity:alphaHistoryLoading?0:1}}
+      accessibilityElementsHidden={alphaHistoryLoading}
+      contentContainerStyle={{width:"100%",minWidth:0,maxWidth:"100%",paddingHorizontal:embedded?0:24,paddingTop:embedded?0:8,paddingBottom:16,gap:16}}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="interactive"
+      onLayout={e=>updateScrollGeometry("viewportHeight",e.nativeEvent.layout.height)}
+      onContentSizeChange={(_width,height)=>updateScrollGeometry("contentHeight",height)}
+      testID="chat-scroll"
+    >
+      {!alphaChatLayout&&historyLoadState==="loading"?<View testID="chat-history-loading"><ActivityIndicator /><NuriText secondary>{t("正在加载对话…")}</NuriText></View>:null}
+      {entryFailureNotice}
+      {id && historyLoadState==="error" ? <Pressable onPress={()=>void load()} style={{minHeight:44}} testID="chat-history-retry"><NuriText>{t("对话未能打开，点此重试")}</NuriText></Pressable>:null}
+      {(!alphaChatLayout||ownsAlphaHistory)&&messages.map(m=><MessageBubble key={m.id} msg={m} alphaLayout={alphaChatLayout} mediaEnabled={alphaPreviewFeatures} onOpenMedia={stopReadingReply} actionsEnabled={!m.id.startsWith("tmp-")} feedbackSaving={feedbackSavingIds.has(m.id)} onCopy={copyResponse} onFeedback={rateResponse} onReport={setReportTarget} onSpeak={replySpeechAvailable && voiceState === "idle" && !liveVoiceActive && voiceConsent.status === "allowed" ? toggleReplySpeech : undefined} speaking={readingReplyId === m.id} />)}
+      {streamingText?<MessageBubble msg={{id:"__streaming__",role:"ai",text:streamingText}} alphaLayout={alphaChatLayout} actionsEnabled={false} />:null}
+      {typing?(alphaChatLayout?<PendingReply />:<TypingDots />):null}
     </ScrollView>
-    <View ref={composerDockRef} collapsable={false} testID="chat-composer-dock" style={{width:"100%",alignSelf:"stretch",minWidth:0,maxWidth:"100%",flexShrink:0,paddingHorizontal:embedded?0:24,paddingBottom:voiceState!=="idle"&&!embedded?Math.max(114,dockBottom):dockBottom}}>
+    {alphaHistoryLoading?<View testID="chat-history-loading" pointerEvents="none" style={{position:"absolute",top:embedded?0:8,left:embedded?0:24,right:embedded?0:24}}>
+      <ActivityIndicator />
+      <NuriText secondary accessibilityLiveRegion="polite">{t("正在加载对话…")}</NuriText>
+    </View>:null}
+    <View ref={composerDockRef} collapsable={false} testID="chat-composer-dock" style={{width:"100%",alignSelf:"stretch",minWidth:0,maxWidth:"100%",flexShrink:0,paddingHorizontal:embedded?0:alphaChatLayout?18:24,paddingTop:alphaChatLayout?ALPHA_DOCK_TOP_INSET:0,paddingBottom:!alphaChatLayout&&voiceState!=="idle"&&!embedded?Math.max(114,dockBottom):dockBottom}}>
+      {alphaChatLayout?<View testID="chat-composer-backdrop" pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={StyleSheet.absoluteFill}>
+        <BlurView style={StyleSheet.absoluteFill} tint={theme48.night?"dark":"light"} intensity={18} />
+        <View style={[StyleSheet.absoluteFill,{backgroundColor:theme48.night?"rgba(53,41,66,.28)":"rgba(255,255,255,.25)"}]} />
+      </View>:null}
       {processingImage?<View style={{padding:12}} testID="chat-image-processing"><ActivityIndicator /><NuriText secondary>{locale==="en"?"Preparing media…":translate(locale,"正在准备照片和视频…")}</NuriText></View>:null}
-      {voiceState!=="idle"?<VoiceInputBar phase={voiceState} seconds={voiceSeconds} metered={voiceMetered} level={readVoiceLevel} onCancel={cancelVoice} onStop={()=>void stopVoice("draft")} onSend={()=>void stopVoice("send")} />:
-        <NuriComposer value={input} onChangeText={setInput} availableHeight={composerSpace} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>void startVoice()} busy={sending||processingImage} disabled={historyLoadState!=="ready"} hasAttachment={attachments.length>0} attachments={attachments} onRemoveAttachment={removeAttachment} onPreviewAttachment={attachment=>{if(capture()!==null&&!sendingRef.current&&!attachmentWorkInFlightRef.current){Keyboard.dismiss();setPreviewAttachment(attachment);}}} testID={embedded?"home-chat":"chat"} />}
+      {voiceState!=="idle"?<View style={alphaChatLayout?styles.alphaVoiceDock:null}><VoiceInputBar phase={voiceState} seconds={voiceSeconds} metered={voiceMetered} level={readVoiceLevel} onCancel={cancelVoice} onStop={()=>void stopVoice("draft")} onSend={()=>void stopVoice("send")} /></View>:
+        <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <NuriComposer value={input} onChangeText={setInput} availableHeight={composerSpace} growWithText={alphaChatLayout} hideNativeKeyboardAccessory={alphaChatLayout} inputRef={composerRef} onSend={()=>void send()} onAttach={openImageInput} onMic={()=>void startVoice()} busy={sending||processingImage} disabled={liveVoiceActive||!id||historyLoadState!=="ready"||alphaChatLayout&&!ownsAlphaHistory} hasAttachment={attachments.length>0} attachments={attachments} onRemoveAttachment={removeAttachment} onPreviewAttachment={attachment=>{if(capture()!==null&&!sendingRef.current&&!attachmentWorkInFlightRef.current){Keyboard.dismiss();setPreviewAttachment(attachment);}}} testID={embedded?"home-chat":"chat"} />
+          </View>
+          {alphaPreviewFeatures ? (
+            <AlphaRealtimeVoiceButton key={routeVersion} locale={locale} allowed={voiceConsent.status === "allowed"}
+              disabled={!id || sending || processingImage || historyLoadState !== "ready" || !ownsAlphaHistory}
+              sessionId={typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : undefined}
+              onActiveChange={changeLiveVoice} onTranscriptSaved={showSavedTranscript} />
+          ) : null}
+        </View>}
       {mediaError?<View style={{flexDirection:"row",alignItems:"center",gap:8,paddingTop:8}} testID="chat-media-error"><NuriText accessibilityLiveRegion="assertive" style={{flex:1}}>{mediaError}</NuriText><IconAction name="close" label={t("关闭")} onPress={()=>setMediaError("")} /></View>:null}
     </View>
       <Modal visible={imageMenuVisible} transparent animationType="fade" onShow={refreshAttachmentAnchor} onRequestClose={()=>setImageMenuVisible(false)} onDismiss={flushNativePicker}>
@@ -1054,25 +1240,37 @@ export default function ChatDetail({ sessionId, embedded = false, initialDraft, 
 // ── Sub-component: message bubble (text, image, transitions) ────────────────
 function MessageBubble({
   msg,
+  alphaLayout,
+  mediaEnabled,
   actionsEnabled = true,
   feedbackSaving = false,
   onCopy,
   onFeedback,
   onReport,
+  onSpeak,
+  onOpenMedia,
+  speaking = false,
 }: {
   msg: Msg;
+  alphaLayout?: boolean;
+  mediaEnabled?: boolean;
   actionsEnabled?: boolean;
   feedbackSaving?: boolean;
   onCopy?: (message: Msg) => void;
   onFeedback?: (message: Msg, rating: "like" | "dislike") => void;
   onReport?: (message: Msg) => void;
+  onSpeak?: (message: Msg) => void;
+  onOpenMedia?: () => void;
+  speaking?: boolean;
 }) {
-  const { t } = useT();
+  const { t, locale } = useT();
   const palette = useNuriTheme();
   const [actionsVisible,setActionsVisible] = useState(false);
   const router = useRouter();
   const { capture } = useAccountScope();
   const isAI = msg.role === "ai";
+  const media = mediaEnabled && (!isAI || actionsEnabled) ? readChatMedia(msg, locale) : null;
+  const hasMedia = Boolean(media?.items.length);
   // A featured post NURI brought in from a tapped notification: the marker is
   // also NURI's message, and the post rides on it as a card.
   const post: DailyPostOnMessage | null =
@@ -1110,107 +1308,145 @@ function MessageBubble({
   // Never display invented hospital names, distances or phone numbers.
   if ((msg.transition?.kind === "task_card" || msg.transition?.kind === "hospital_card") && !msg.text) return null;
 
+  const responseActions = <>
+    {isAI && actionsEnabled && onSpeak && msg.text.trim() ? (
+      <View style={{ flexDirection: "row", alignItems: "center", alignSelf: "flex-start", marginTop: 4 }}>
+        <Pressable
+        onPress={() => onSpeak(msg)}
+        style={styles.responseAction}
+        accessibilityRole="button"
+        accessibilityLabel={locale === "en" ? (speaking ? "Stop reading" : "Read reply aloud with AI voice") : translate(locale, speaking ? "停止朗读" : "用 AI 语音朗读回复")}
+        accessibilityState={{ selected: speaking }}
+        testID={`chat-speech-${msg.id}`}
+      >
+        <Ionicons name={speaking ? "stop-circle-outline" : "volume-medium-outline"} size={20} color={speaking ? colors.brand : colors.onSurfaceTertiary} />
+        </Pressable>
+        {speaking ? <NuriText secondary>{locale === "en" ? "AI voice" : translate(locale, "AI 语音")}</NuriText> : null}
+      </View>
+    ) : null}
+    {isAI && actionsVisible && actionsEnabled && msg.text && !post && !video ? (
+      <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
+        <Pressable
+          onPress={() => onCopy?.(msg)}
+          style={styles.responseAction}
+          accessibilityRole="button"
+          accessibilityLabel={t("复制回复")}
+          testID={`chat-copy-${msg.id}`}
+        >
+          <Ionicons name="copy-outline" size={17} color={colors.onSurfaceTertiary} />
+        </Pressable>
+        <FrostedPressable
+          onPress={() => onFeedback?.(msg, "like")}
+          disabled={feedbackSaving}
+          style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
+          accessibilityRole="button"
+          accessibilityLabel={t("喜欢这条回复")}
+          accessibilityState={{ selected: msg.feedback_rating === "like", disabled: feedbackSaving }}
+          aria-pressed={msg.feedback_rating === "like"}
+          testID={`chat-like-${msg.id}`}
+        >
+          <Ionicons name={msg.feedback_rating === "like" ? "thumbs-up" : "thumbs-up-outline"} size={18} color={msg.feedback_rating === "like" ? colors.brand : colors.onSurfaceTertiary} />
+        </FrostedPressable>
+        <FrostedPressable
+          onPress={() => onFeedback?.(msg, "dislike")}
+          disabled={feedbackSaving}
+          style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
+          accessibilityRole="button"
+          accessibilityLabel={t("不喜欢这条回复")}
+          accessibilityState={{ selected: msg.feedback_rating === "dislike", disabled: feedbackSaving }}
+          aria-pressed={msg.feedback_rating === "dislike"}
+          testID={`chat-dislike-${msg.id}`}
+        >
+          <Ionicons name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"} size={18} color={msg.feedback_rating === "dislike" ? colors.brand : colors.onSurfaceTertiary} />
+        </FrostedPressable>
+        <FrostedPressable
+          onPress={() => onReport?.(msg)}
+          disabled={msg.reported === true}
+          style={[styles.responseAction, msg.reported === true && styles.responseActionSelected]}
+          accessibilityRole="button"
+          accessibilityLabel={msg.reported ? t("已举报这条回复") : t("举报这条回复")}
+          accessibilityState={{ disabled: msg.reported === true }}
+          testID={`chat-report-${msg.id}`}
+        >
+          <Ionicons name={msg.reported ? "flag" : "flag-outline"} size={17} color={msg.reported ? colors.brand : colors.onSurfaceTertiary} />
+        </FrostedPressable>
+      </View>
+    ) : null}
+  </>;
+
+  const bubble = (!hasMedia || (media?.text ?? msg.text).trim()) ? <FinalChatBubble incoming={isAI} style={{maxWidth:alphaLayout?"100%":isAI?"88%":"92%",flexShrink:1,alignSelf:hasMedia?(isAI?"flex-start":"flex-end"):undefined,paddingHorizontal:16,paddingVertical:isAI?14:12}} testID={`bubble-${msg.role}`}>
+    {hasMedia ? null : alphaLayout && msg.images_base64?.length ? <View style={styles.bubblePhotoBatch}>
+      {msg.images_base64.map((uri, index) => <Image key={index} source={{uri}} style={styles.bubbleBatchPhoto} contentFit="cover" />)}
+    </View> : msg.image_base64 ? (
+      <Image
+        source={{ uri: msg.image_base64 }}
+        style={styles.bubbleImage}
+        contentFit="cover"
+      />
+    ) : null}
+    {(media?.text ?? msg.text) && (hasMedia || !post && !video) ? (
+      <FinalText style={[styles.bubbleText, {color:palette.ink,fontSize:16,lineHeight:24,fontWeight:"400"}]}>
+        {isAI ? (
+          <RichText text={media?.text ?? msg.text} />
+        ) : (
+          msg.text
+        )}
+      </FinalText>
+    ) : null}
+    {post && !hasMedia ? (
+      <Pressable
+        style={styles.postCard}
+        onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-post", params: { id: post.id } }); }}
+        accessibilityRole="button"
+        testID="chat-daily-post-card"
+      >
+        <NuriText secondary style={styles.postCardEyebrow}>{t("每日精选")}</NuriText>
+        <NuriText style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</NuriText>
+        {postPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</NuriText> : null}
+        <View style={styles.postCardCta}>
+          <NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText>
+          <NuriIcon name="arrowRight" />
+        </View>
+      </Pressable>
+    ) : null}
+    {video && !hasMedia ? <Pressable style={styles.postCard}
+      onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
+      accessibilityRole="button" testID="chat-daily-video-card">
+      <NuriText secondary style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</NuriText>
+      <NuriText style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</NuriText>
+      {videoPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</NuriText> : null}
+      <NuriText secondary style={styles.postCardEyebrow}>{t("AI 检索摘要 · 非完整视频摘要")}</NuriText>
+      <View style={styles.postCardCta}><NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText><NuriIcon name="arrowRight" /></View>
+    </Pressable> : null}
+    {!hasMedia ? responseActions : null}
+      </FinalChatBubble> : null;
+
   return (
     <View
       style={[
         styles.row,
+        alphaLayout && styles.messageAvatarGutter,
         { justifyContent: isAI ? "flex-start" : "flex-end" },
       ]}
     >
-      {isAI?<Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={{width:36,minHeight:44,alignSelf:"flex-end",justifyContent:"center",marginRight:8}} hitSlop={4}><SceneAvatar size={36}/></Pressable>:null}
-      <FinalChatBubble incoming={isAI} style={{maxWidth:isAI?"88%":"92%",flexShrink:1,paddingHorizontal:16,paddingVertical:isAI?14:12}} testID={`bubble-${msg.role}`}>
-        {msg.image_base64 ? (
-          <Image
-            source={{ uri: msg.image_base64 }}
-            style={styles.bubbleImage}
-            contentFit="cover"
-          />
-        ) : null}
-        {msg.text && !post && !video ? (
-          <FinalText style={[styles.bubbleText, {color:palette.ink,fontSize:16,lineHeight:24,fontWeight:"400"}]}>
-            {isAI ? (
-              <RichText text={msg.text} />
-            ) : (
-              msg.text
-            )}
-          </FinalText>
-        ) : null}
-        {post ? (
-          <Pressable
-            style={styles.postCard}
-            onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-post", params: { id: post.id } }); }}
-            accessibilityRole="button"
-            testID="chat-daily-post-card"
-          >
-            <NuriText secondary style={styles.postCardEyebrow}>{t("每日精选")}</NuriText>
-            <NuriText style={styles.postCardTitle}>{postHeadline || t("打开推荐的家长分享")}</NuriText>
-            {postPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-post-summary">{postPreview}</NuriText> : null}
-            <View style={styles.postCardCta}>
-              <NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText>
-              <NuriIcon name="arrowRight" />
-            </View>
-          </Pressable>
-        ) : null}
-        {video ? <Pressable style={styles.postCard}
-          onPress={() => { if (capture() !== null) router.push({ pathname: "/daily-video", params: { id: video.id } }); }}
-          accessibilityRole="button" testID="chat-daily-video-card">
-          <NuriText secondary style={styles.postCardEyebrow} testID="chat-daily-video-source">YouTube · {t("精选视频")}</NuriText>
-          <NuriText style={styles.postCardTitle}>{t("在YouTube查看推荐视频")}</NuriText>
-          {videoPreview ? <NuriText style={styles.postCardSummary} numberOfLines={3} testID="chat-daily-video-summary">{videoPreview}</NuriText> : null}
-          <NuriText secondary style={styles.postCardEyebrow}>{t("AI 检索摘要 · 非完整视频摘要")}</NuriText>
-          <View style={styles.postCardCta}><NuriText style={styles.postCardCtaText}>{t("查看摘要与来源")}</NuriText><NuriIcon name="arrowRight" /></View>
-        </Pressable> : null}
-        {isAI && actionsVisible && actionsEnabled && msg.text && !post && !video ? (
-          <View style={styles.responseActions} testID={`chat-response-actions-${msg.id}`}>
-            <Pressable
-              onPress={() => onCopy?.(msg)}
-              style={styles.responseAction}
-              accessibilityRole="button"
-              accessibilityLabel={t("复制回复")}
-              testID={`chat-copy-${msg.id}`}
-            >
-              <Ionicons name="copy-outline" size={17} color={colors.onSurfaceTertiary} />
-            </Pressable>
-            <FrostedPressable
-              onPress={() => onFeedback?.(msg, "like")}
-              disabled={feedbackSaving}
-              style={[styles.responseAction, msg.feedback_rating === "like" && styles.responseActionSelected]}
-              accessibilityRole="button"
-              accessibilityLabel={t("喜欢这条回复")}
-              accessibilityState={{ selected: msg.feedback_rating === "like", disabled: feedbackSaving }}
-              aria-pressed={msg.feedback_rating === "like"}
-              testID={`chat-like-${msg.id}`}
-            >
-              <Ionicons name={msg.feedback_rating === "like" ? "thumbs-up" : "thumbs-up-outline"} size={18} color={msg.feedback_rating === "like" ? colors.brand : colors.onSurfaceTertiary} />
-            </FrostedPressable>
-            <FrostedPressable
-              onPress={() => onFeedback?.(msg, "dislike")}
-              disabled={feedbackSaving}
-              style={[styles.responseAction, msg.feedback_rating === "dislike" && styles.responseActionSelected]}
-              accessibilityRole="button"
-              accessibilityLabel={t("不喜欢这条回复")}
-              accessibilityState={{ selected: msg.feedback_rating === "dislike", disabled: feedbackSaving }}
-              aria-pressed={msg.feedback_rating === "dislike"}
-              testID={`chat-dislike-${msg.id}`}
-            >
-              <Ionicons name={msg.feedback_rating === "dislike" ? "thumbs-down" : "thumbs-down-outline"} size={18} color={msg.feedback_rating === "dislike" ? colors.brand : colors.onSurfaceTertiary} />
-            </FrostedPressable>
-            <FrostedPressable
-              onPress={() => onReport?.(msg)}
-              disabled={msg.reported === true}
-              style={[styles.responseAction, msg.reported === true && styles.responseActionSelected]}
-              accessibilityRole="button"
-              accessibilityLabel={msg.reported ? t("已举报这条回复") : t("举报这条回复")}
-              accessibilityState={{ disabled: msg.reported === true }}
-              testID={`chat-report-${msg.id}`}
-            >
-              <Ionicons name={msg.reported ? "flag" : "flag-outline"} size={17} color={msg.reported ? colors.brand : colors.onSurfaceTertiary} />
-            </FrostedPressable>
-          </View>
-        ) : null}
-      </FinalChatBubble>
+      {isAI?<Pressable onPress={()=>setActionsVisible(v=>!v)} accessibilityRole="button" accessibilityLabel={t("回复操作")} style={[styles.messageAvatar,alphaLayout&&styles.messageAvatarPosition]} hitSlop={4}><SceneAvatar size={36}/></Pressable>:null}
+      {hasMedia && media ? <View style={styles.mediaMessageColumn}>
+        {bubble}
+        <ChatMediaCarousel items={media.items} comparison={media.comparison} onOpen={onOpenMedia} />
+        {responseActions}
+      </View> : bubble}
     </View>
   );
+}
+
+function PendingReply() {
+  const { locale } = useT();
+  return <View style={styles.pendingReply} testID="chat-typing">
+    <View style={[styles.messageAvatar, styles.messageAvatarPosition]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants"><SceneAvatar size={36} /></View>
+    <FinalChatBubble incoming style={styles.pendingReplyBubble}>
+      <FinalText accessibilityLiveRegion="polite" secondary size={14}>{locale==="en"?"Nuri is thinking…":"Nuri正在思考中…"}</FinalText>
+    </FinalChatBubble>
+  </View>;
 }
 
 // ── Sub-component: animated "typing…" indicator ─────────────────────────────
@@ -1321,6 +1557,16 @@ const styles = StyleSheet.create({
   },
   historyStatusText: { color: colors.onSurface, fontSize: type.sm, fontWeight: "600" },
   row: { flexDirection: "row", width:"100%", minWidth:0, maxWidth:"100%", marginBottom: spacing.sm, alignItems: "flex-end" },
+  // Both roles reserve the same gutter, including when the user has no avatar.
+  messageAvatarGutter: { paddingLeft: 44 },
+  mediaMessageColumn: { width: "100%", flexShrink: 1, minWidth: 0, alignItems: "flex-start" },
+  messageAvatar: { width: 36, minHeight: 44, alignSelf: "flex-end", justifyContent: "center", marginRight: 8 },
+  // Keep the avatar on the first line while tokens grow the reply below it.
+  // A bottom anchor moves once for text layout and again for scroll placement.
+  messageAvatarPosition: { position: "absolute", left: 0, top: 8 },
+  alphaVoiceDock: { marginLeft: 3, marginRight: 5 },
+  pendingReply: { flexDirection: "row", alignItems: "flex-start", alignSelf: "flex-start", paddingLeft: 44, width: "100%", minWidth: 0, marginBottom: spacing.sm, maxWidth: "100%" },
+  pendingReplyBubble: { minHeight: 52, justifyContent: "center", paddingHorizontal: 16, paddingVertical: 14 },
   avatarSlot: { width: 38, marginRight: 6, alignItems: "center" },
 
   bubble: {
@@ -1346,6 +1592,20 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: radius.sm,
     marginBottom: spacing.sm,
+    backgroundColor: colors.surfaceTertiary,
+  },
+  bubblePhotoBatch: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    width: 192,
+    maxWidth: "100%",
+    marginBottom: 8,
+  },
+  bubbleBatchPhoto: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
     backgroundColor: colors.surfaceTertiary,
   },
   responseActions: {

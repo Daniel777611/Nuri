@@ -51,8 +51,7 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   // Substitute only this app's resolved module, never another package's
   // similarly named import, and leave main/Android/prototype channels intact.
   const liveAlphaIOS = platform === "ios"
-    && process.env.NURI_RELEASE_CHANNEL === "live-alpha"
-    && process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha"
+    && ["live-alpha", "early-access", "app-store"].includes(process.env.EXPO_PUBLIC_RELEASE_FLAVOR)
     && ["EXPO_PUBLIC_PREVIEW_MODE", "EXPO_PUBLIC_UIUX48_GALLERY", "EXPO_PUBLIC_FLOW_PROTOTYPE", "EXPO_PUBLIC_COMMUNITY_PROTOTYPE"].every(key => process.env[key] === undefined || process.env[key] === "0");
   if (liveAlphaIOS && resolution.type === "sourceFile"
     && path.resolve(resolution.filePath) === path.resolve(__dirname, "src/preview-api.ts")) {

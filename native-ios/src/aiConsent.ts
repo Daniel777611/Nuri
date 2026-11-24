@@ -46,6 +46,15 @@ export function requiresAIConsent(path: string, init?: RequestInit): boolean {
   if (route === "/auth/me" && method === "PUT"
       || route === "/children" && method === "POST"
       || /^\/children\/[^/]+$/.test(route) && method === "PUT") return false;
+  // A stored post read remains non-AI. Only the explicit translation opt-in
+  // can call a model when the requested language has not been cached yet.
+  if (method === "GET" && /^\/feed\/daily-post\/[a-zA-Z0-9_-]+$/.test(route)) {
+    const translate = new URLSearchParams(path.split("?")[1] || "").get("translate");
+    return translate === "1" || translate === "true";
+  }
+  // Nearby activity discovery uses an explicitly enabled coarse locality
+  // and public search results. The backend builds these cards without AI.
+  if (method === "GET" && /^\/feed\/local-activities(?:\/[a-zA-Z0-9_-]+)?$/.test(route)) return false;
   if (method === "GET" && (["/feed", "/feed/search", "/feed/alt", "/chat/main/preview"].includes(route)
       || /^\/feed\/[a-zA-Z0-9_-]+\/detail$/.test(route)
       || /^\/feed\/daily-(?:post|video)\/[a-zA-Z0-9_-]+$/.test(route))) return false;

@@ -46,6 +46,9 @@ class _Query:
         self.filters.append((column, value))
         return self
 
+    def is_(self, column, value):
+        return self.eq(column, None if value == "null" else value)
+
     def order(self, *_a, **_k):
         return self
 
@@ -175,7 +178,8 @@ def test_the_extractor_sees_what_is_remembered_and_can_retire_it(monkeypatch):
 
     request = client.calls[0]
     system, conversation = (m["content"] for m in request["messages"])
-    assert "[child_state] 睡眠训练：正在用法伯法训睡" in conversation
+    # Shown with its subcategory (inferred for a row from before them).
+    assert "[child_state/routine] 睡眠训练：正在用法伯法训睡" in conversation
     assert "我们不训睡了" in conversation
     assert "category=constraint" in system and "retire" in system
     schema = request["response_format"]["json_schema"]["schema"]
@@ -217,6 +221,51 @@ def test_retire_runs_before_the_upsert_so_a_rewritten_key_stays_active(monkeypat
 
     assert [step for step, _ in order] == ["extract", "retire", "upsert"]
     assert order[0][1][0]["key"] == "睡眠训练"
+
+
+def test_child_memory_write_requires_parent_evidence_and_never_retires_the_sibling(monkeypatch):
+    children = [{"id": "older", "nickname": "小满"}, {"id": "younger", "nickname": "小乐"}]
+    key = "motor/tag:walks"
+    known = [{"child_id": child["id"], "category": "child_state", "key": key, "value": "会走了"}
+             for child in children]
+    captured = {}
+
+    async def read_children(_uid):
+        return children
+
+    async def read_known(_uid):
+        return known
+
+    def extract(*_args):
+        return {
+            "memories": [
+                {"category": "child_state", "key": key, "value": "这周开始独走", "child_evidence": "小满这周会自己走了"},
+                {"category": "child_state", "key": "routine/awake", "value": "每晚醒来", "child_evidence": "小乐最近频繁夜醒"},
+            ],
+            "retire": [{"category": "child_state", "key": key}],
+        }
+
+    async def retire(items, **_kwargs):
+        captured["retire"] = items
+
+    async def upsert(items, *, child_id, **_kwargs):
+        captured[child_id] = items
+
+    monkeypatch.setattr(family_store, "load_children", read_children)
+    monkeypatch.setattr(family_store, "load_known_memories", read_known)
+    monkeypatch.setattr(family_store, "extract_memories_sync", extract)
+    monkeypatch.setattr(family_store, "retire_memories", retire)
+    monkeypatch.setattr(family_store, "upsert_memories", upsert)
+    monkeypatch.setattr(runtime, "get_supabase", lambda: None)
+    asyncio.run(family.extract_and_upsert_memories([
+        {"role": "user", "text": "小满这周会自己走了，好开心呀"},
+        {"role": "assistant", "text": "小乐最近频繁夜醒"},
+    ], "u1", "session-1"))
+
+    assert captured["retire"] == [{"category": "child_state", "key": key, "child_id": "older"}]
+    assert captured["older"][0]["key"] == key
+    assert "younger" not in captured
+    assert all("child_evidence" not in row for row in captured["older"] + captured[None])
 
 
 def test_restating_a_retired_memory_reactivates_it_with_the_new_value(monkeypatch):
@@ -368,6 +417,7 @@ def test_a_post_that_conflicts_is_struck_and_the_next_one_chosen(monkeypatch):
         asked.append((len(remaining), kwargs["standing"]))
         return _pick_for(0, "哭声免疫法训睡" if training in remaining else "固定睡前仪式")
 
+    monkeypatch.setattr(dp, "PICK_MODE", "llm")
     monkeypatch.setattr(dp, "_ask_pick", ask)
     monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "训睡" in text)
 
@@ -376,6 +426,23 @@ def test_a_post_that_conflicts_is_struck_and_the_next_one_chosen(monkeypatch):
 
     assert picked["candidate"] is routine
     assert asked == [(2, [NO_TRAINING]), (1, [NO_TRAINING])]
+
+
+def test_ranked_mode_strikes_a_conflicting_post_and_asks_about_the_next(monkeypatch):
+    training = _post("我们家用哭声免疫法训睡，夜醒三天就好了")
+    routine = _post("我们把睡前仪式固定下来，夜醒少了")
+    asked = []
+
+    def ask(remaining, **kwargs):
+        asked.append(([c.text for c in remaining], kwargs["standing"]))
+        return _pick_for(0, "哭声免疫法训睡" if remaining[0] is training else "固定睡前仪式")
+
+    monkeypatch.setattr(dp, "_ask_pick", ask)
+    monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "训睡" in text)
+    picked = dp.pick_post([routine, training], concern="夜醒", child_age_context="",
+                          locale="zh-CN", standing=[NO_TRAINING], query="夜醒")
+    assert picked["candidate"] is routine
+    assert asked == [([training.text], [NO_TRAINING]), ([routine.text], [NO_TRAINING])]
 
 
 def test_without_standing_memories_the_post_is_not_checked(monkeypatch):
@@ -421,6 +488,7 @@ def test_a_video_that_conflicts_falls_back_to_the_next_best(monkeypatch):
         seen["standing"] = kwargs["standing"]
         return [_score(0, 5), _score(1, 4)]
 
+    monkeypatch.setattr(dv, "SCORE_MODE", "llm")
     monkeypatch.setattr(dv, "_ask_scores", scores)
     monkeypatch.setattr(standing, "conflicts", lambda text, _s, **_k: "Sleep Training" in text)
 
@@ -432,6 +500,7 @@ def test_a_video_that_conflicts_falls_back_to_the_next_best(monkeypatch):
 
 def test_when_every_video_conflicts_there_is_no_video(monkeypatch):
     cands = _videos("Sleep Training 101", "Sleep Training Ferber")
+    monkeypatch.setattr(dv, "SCORE_MODE", "llm")
     monkeypatch.setattr(dv, "_ask_scores", lambda _c, **_k: [_score(0, 5), _score(1, 4)])
     monkeypatch.setattr(standing, "conflicts", lambda *_a, **_k: True)
     assert dv.pick_video(cands, concern="夜醒", child_age_context="", locale="zh-CN",
@@ -449,3 +518,32 @@ def test_the_video_prompt_turns_a_conflict_into_unsafe(monkeypatch):
     dv._ask_scores(_videos("x"), concern="夜醒", child_age_context="", locale="zh-CN",
                    standing=[NO_TRAINING])
     assert NO_TRAINING in seen["prompt"] and "safe 填 false" in seen["prompt"]
+
+
+# ── the keyword prefilter in front of the check ─────────────────────────────
+
+@pytest.mark.parametrize("card,standing_lines,expected", [
+    # Nothing in the card can touch "no sleep training": no model call.
+    ("固定睡前仪式，白天多晒太阳", [NO_TRAINING], False),
+    ("Picky eater: offer one new food next to a favourite", ["孩子腿骨折打了石膏"], False),
+    # A clash with no shared word is still caught by the concept group.
+    ("多带孩子去公园跑跑跳跳", ["孩子下肢瘫痪，坐轮椅"], True),
+    ("用法伯法训睡", [NO_TRAINING], True),
+    ("Add peanut butter to toast", ["孩子花生过敏"], True),
+    # A constraint the groups don't know always goes to the model.
+    ("固定睡前仪式", ["孩子确诊了自闭症"], True),
+    # One constraint that needs the model is enough.
+    ("固定睡前仪式", [NO_TRAINING, "孩子确诊了自闭症"], True),
+])
+def test_the_prefilter_skips_the_model_only_when_nothing_can_clash(card, standing_lines, expected):
+    assert standing.needs_check(card, standing_lines) is expected
+
+
+def test_a_card_the_prefilter_clears_never_reaches_the_model(monkeypatch):
+    never = _Client(error=AssertionError("must not be called"))
+    monkeypatch.setattr(runtime, "oai", never)
+    assert standing.conflicts("固定睡前仪式，白天多晒太阳", [NO_TRAINING], call_site="t") is False
+    assert never.calls == []
+    monkeypatch.setattr(standing, "PREFILTER", False)
+    monkeypatch.setattr(runtime, "oai", _Client({"reason": "", "conflict": False}))
+    assert standing.conflicts("固定睡前仪式，白天多晒太阳", [NO_TRAINING], call_site="t") is False

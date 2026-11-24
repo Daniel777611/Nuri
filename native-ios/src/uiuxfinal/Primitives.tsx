@@ -46,15 +46,16 @@ export function FinalSurface({ children, style, contentStyle, fill = false, test
 export function FinalChatBubble({children,incoming,style,testID}:{children:ReactNode;incoming:boolean;style?:StyleProp<ViewStyle>;testID?:string}){
  return <View testID={testID} style={[{borderRadius:18,padding:16,boxShadow:"0px 0px 8px rgba(0,0,0,.1)",backgroundColor:incoming?FINAL_COLOR.base:"rgba(235,129,131,.15)",flexShrink:1},style]}>{children}</View>;
 }
-export function FinalButton({ label, onPress, secondary = false, disabled = false, testID, small = false }: {
+export function FinalButton({ label, onPress, secondary = false, disabled = false, testID, small = false, style }: {
     label: string;
     onPress: () => void;
     secondary?: boolean;
     disabled?: boolean;
     testID?: string;
     small?: boolean;
+    style?: StyleProp<ViewStyle>;
 }) {
-    return <FrostedPressable onPress={onPress} disabled={disabled} testID={testID} accessibilityRole="button" accessibilityState={{ disabled }} style={({ pressed }) => ({ width: small ? 144 : 212, flexShrink:1, maxWidth: "100%", minHeight: 50, paddingVertical: 10, paddingHorizontal: 16, borderRadius: 25, backgroundColor: secondary ? (disabled?"rgba(255,250,244,.375)":"rgba(255,250,244,.75)") : disabled?"rgba(235,129,131,.2)":FINAL_COLOR.coral, alignSelf: "center", alignItems: "center", justifyContent: "center", opacity: pressed ? .7 : 1, boxShadow: "0px 2px 8px rgba(62,37,34,.10)" })}>
+    return <FrostedPressable onPress={onPress} disabled={disabled} testID={testID} accessibilityRole="button" accessibilityState={{ disabled }} style={({ pressed }) => [{ width: small ? 144 : 212, flexShrink:1, maxWidth: "100%", minHeight: 50, paddingVertical: 10, paddingHorizontal: 16, borderRadius: 25, backgroundColor: secondary ? (disabled?"rgba(255,250,244,.375)":"rgba(255,250,244,.75)") : disabled?"rgba(235,129,131,.2)":FINAL_COLOR.coral, alignSelf: "center", alignItems: "center", justifyContent: "center", opacity: pressed ? .7 : 1, boxShadow: "0px 2px 8px rgba(62,37,34,.10)" }, style]}>
     <FinalText style={{ color: secondary ? FINAL_COLOR.ink : "white", textAlign: "center" }}>{label}</FinalText>
   </FrostedPressable>;
 }

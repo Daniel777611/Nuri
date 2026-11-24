@@ -1,3 +1,4 @@
+import AppleSignInButton from "@/src/components/AppleSignInButton";
 import { AuthFrame, FormTabs, NuriField, NuriText, NuriButton } from "@/src/uiux48/Primitives";
 import { useEffect, useRef } from "react";
 import { useAccountState as useState, useAccountScope } from "@/src/useAccountState";
@@ -23,12 +24,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { TEXT_FONTS } from "@/src/textFonts";
 
-import { api, auth, isAuthError } from "@/src/api";
+import { api, apiErrorDetail, auth, isAuthError } from "@/src/api";
 import { ExpiredSessionRecoveryNotice, useExpiredSessionRecovery } from "@/src/authExpiredRecovery";
 import { authErrorMessage, savePendingVerification } from "@/src/authFlow";
 import { isPreviewMode } from "@/src/preview-api";
 import { useT, translate } from "@/src/i18n";
 import GoogleSignInButton from "@/src/components/GoogleSignInButton";
+import { isCurrentNativeRelease } from "@/src/release/currentNativeRelease";
+import { CHINESE_NAME_TOO_LONG, chineseDisplayNameLimitMessage, isChineseDisplayNameTooLong } from "@/src/profileDisplayName";
 
 const wordmark = require("@/assets/images/nuri-wordmark.png");
 const registrationReady = ({ email, password }: { email: string; password: string }) => /\S+@\S+\.\S+/.test(email) && password.length >= 6;
@@ -99,8 +102,13 @@ export default function Register() {
   const submit = async () => {
     const ticket = capture();
     const values = draft.read();
-    if (ticket === null || values === null || submitting || !acquireRegistration()) return;
+    if (ticket === null || values === null || submitting) return;
     const { email, nickname, password } = values;
+    if (Platform.OS === "ios" && isCurrentNativeRelease() && isChineseDisplayNameTooLong(nickname)) {
+      setError(chineseDisplayNameLimitMessage(locale));
+      return;
+    }
+    if (!acquireRegistration()) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -119,7 +127,7 @@ export default function Register() {
     } catch (e: any) {
       if (!current(ticket)) return;
       const msg = String(e?.message || "");
-      setError(
+      setError(apiErrorDetail(e)===CHINESE_NAME_TOO_LONG?chineseDisplayNameLimitMessage(locale):
         msg.includes("已注册")
           ? t("该邮箱已注册，请直接登录")
           : authErrorMessage(e, t) || t("注册失败，请检查信息后重试"),
@@ -146,6 +154,7 @@ export default function Register() {
     <NuriText secondary style={{fontSize:12,lineHeight:18}}>{locale==="en"?"You can review the privacy policy before continuing. Your AI choice is separate from account registration and can be changed in Privacy & AI.":locale==="zh-TW"?"繼續前可查看隱私說明。AI 選擇與帳號註冊分開，可隨時在「隱私與 AI」更改。":"继续前可查看隐私说明。AI 选择与账号注册分开，可随时在“隐私与 AI”更改。"}</NuriText>
     {error?<NuriText style={{color:"#9a606a",fontSize:13}} testID="register-error">{error}</NuriText>:null}
     <NuriButton label={submitting?t("创建中..."):t("创建账号")} busy={submitting} disabled={!draft.ready||submitting} onPress={submit} testID="register-next-btn" />
+    <AppleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
     <GoogleSignInButton disabled={submitting} acquire={acquireRegistration} release={releaseRegistration} onBusyChange={setSubmitting} />
   </AuthFrame>;
 }

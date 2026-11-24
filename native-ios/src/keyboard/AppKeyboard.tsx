@@ -223,6 +223,7 @@ export function AppKeyboardHost({ scopeId = "root" }: { scopeId?: string }) {
 
 export type NuriTextInputProps = TextInputProps & {
   appKeyboard?: boolean; keyboardActive?: boolean; keyboardId?: string;
+  hideNativeKeyboardAccessory?: boolean;
   onAppKeyboardSubmit?: () => void; onAppKeyboardDone?: () => void; onAppKeyboardDictation?: () => void; onAppKeyboardSticker?: (id: 1 | 2 | 3 | 4 | 5) => void;
 };
 /** Re-export the original host-instance type for existing useRef/forwardRef
@@ -255,7 +256,7 @@ export const NuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function 
   return <CustomNuriTextInput {...props} ref={ref} />;
 });
 
-const CustomNuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function CustomNuriTextInput({ appKeyboard = true, keyboardActive = true, keyboardId, onAppKeyboardSubmit, onAppKeyboardDone, onAppKeyboardDictation, onAppKeyboardSticker, ...props }, forwardedRef) {
+const CustomNuriTextInput = forwardRef<TextInput, NuriTextInputProps>(function CustomNuriTextInput({ appKeyboard = true, keyboardActive = true, keyboardId, hideNativeKeyboardAccessory: _hideNativeKeyboardAccessory, onAppKeyboardSubmit, onAppKeyboardDone, onAppKeyboardDictation, onAppKeyboardSticker, ...props }, forwardedRef) {
   const controller = useContext(ControllerContext), scope = useContext(ScopeContext), { locale } = useT();
   const generatedId = useId(), id = keyboardId ?? `nuri-input-${generatedId}`;
   const ref = useRef<TextInput | null>(null), mounted = useRef(true), focusVersion = useRef(0);

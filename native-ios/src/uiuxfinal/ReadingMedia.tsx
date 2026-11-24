@@ -8,9 +8,9 @@ import {socialPostThumbnail} from "@/src/recommendationMedia";
 import {ButtonBackdrop} from "./ButtonMaterial";
 
 function postCopy(locale:string){
- if(locale==="en")return {missing:"The source did not provide a usable thumbnail. Open the original post with the arrow.",failed:"The thumbnail is unavailable. Open the original post with the arrow; sign-in may be required.",unsafe:"No safe original-post link is available.",paused:"Post preview is paused.",loading:"Loading the source thumbnail…"};
- if(locale==="zh-TW")return {missing:"原站未提供可用縮圖，點右上角箭頭查看原帖。",failed:"縮圖暫時無法顯示，點右上角箭頭查看原帖，可能需要登入。",unsafe:"原帖未提供可安全開啟的連結。",paused:"原帖預覽已暫停。",loading:"正在載入原站縮圖…"};
- return {missing:"原站未提供可用缩略图，点右上角箭头查看原帖。",failed:"缩略图暂时无法显示，点右上角箭头查看原帖，可能需要登录。",unsafe:"原帖未提供可安全打开的链接。",paused:"原帖预览已暂停。",loading:"正在加载原站缩略图…"};
+ if(locale==="en")return {missing:"The source did not provide a usable thumbnail. Open the original post with the arrow.",failed:"The thumbnail is unavailable. Open the original post with the arrow; sign-in may be required.",unsafe:"No usable direct link to the original post is available.",paused:"Post preview is paused.",loading:"Loading the source thumbnail…"};
+ if(locale==="zh-TW")return {missing:"原站未提供可用縮圖，點右上角箭頭查看原帖。",failed:"縮圖暫時無法顯示，點右上角箭頭查看原帖，可能需要登入。",unsafe:"這則推薦沒有可直達原貼文的連結。",paused:"原帖預覽已暫停。",loading:"正在載入原站縮圖…"};
+ return {missing:"原站未提供可用缩略图，点右上角箭头查看原帖。",failed:"缩略图暂时无法显示，点右上角箭头查看原帖，可能需要登录。",unsafe:"这条推荐没有可直达原帖的链接。",paused:"原帖预览已暂停。",loading:"正在加载原站缩略图…"};
 }
 
 /** Use only this post's feed-supplied public image metadata. A provider page
@@ -19,7 +19,7 @@ function postCopy(locale:string){
 export function ReadingMedia({kind,uri,uris,sourceUrl,active=true,source,onPress,busy=false}:{kind:"post"|"video";uri?:string|null;uris?:readonly string[];sourceUrl?:string|null;active?:boolean;source:string;onPress:()=>void;busy?:boolean}){
  const {locale}=useT(),c=(cn:string,en:string)=>locale==="en"?en:translate(locale,cn),video=kind==="video";
  const [failed,setFailed]=useState<ReadonlySet<string>>(()=>new Set());
- const [loaded,setLoaded]=useState<ReadonlySet<string>>(()=>new Set());
+ const [loadedRevision,setLoadedRevision]=useState<number|null>(null);
  const show=Boolean(uri&&!failed.has(uri));
  const pageUrl=externalSourceUrl(sourceUrl);
  const postCandidates=[...new Set((uris??[uri]).map(value=>socialPostThumbnail(value,pageUrl)).filter((value):value is string=>Boolean(value)))].slice(0,2);
@@ -46,7 +46,7 @@ export function ReadingMedia({kind,uri,uris,sourceUrl,active=true,source,onPress
   foregroundRef.current=AppState.currentState==="active";setForeground(foregroundRef.current);
   return()=>{mounted.current=false;listener.remove();};
  },[video]);
- const showPost=active&&foreground&&Boolean(thumbnail),loadingPost=!video&&showPost&&!loaded.has(thumbnail!);
+ const showPost=active&&foreground&&Boolean(thumbnail),loadingPost=!video&&showPost&&loadedRevision!==revision;
  useEffect(()=>{
   if(!loadingPost||!thumbnail)return;
   // Two supplied candidates, one bounded attempt each: no polling, scraping,
@@ -57,9 +57,19 @@ export function ReadingMedia({kind,uri,uris,sourceUrl,active=true,source,onPress
  const openPost=()=>{if(pageUrl&&current()&&!authority.current.busy)authority.current.onPress();};
  if(!video)return <View testID="daily-post-media-region" style={{height:showPost?188:undefined,minHeight:showPost?undefined:96,width:"100%",minWidth:0,maxWidth:"100%",flexShrink:0,borderRadius:24,overflow:"hidden",backgroundColor:"#FFFAF2"}}>
   {showPost?<Image key={`${thumbnail}:${revision}`} testID="daily-post-thumbnail" accessible={false} source={{uri:thumbnail!}} recyclingKey={thumbnail} cachePolicy="memory" contentFit="cover" transition={0}
-   onLoad={()=>{if(thumbnail&&current())setLoaded(previous=>new Set(previous).add(thumbnail));}}
+   onLoad={event=>{
+    if(!thumbnail||!current())return;
+    const {width,height,isAnimated}=event.source;
+    // Keep small previews and animated reaction images behind the loading overlay.
+    // The card enlarges those assets into a roughly 320 × 188 point cover.
+    if(!Number.isFinite(width)||!Number.isFinite(height)||width<320||height<180||isAnimated){
+     setFailed(previous=>new Set(previous).add(thumbnail));
+     return;
+    }
+    setLoadedRevision(revision);
+   }}
    onError={()=>{if(thumbnail&&current())setFailed(previous=>new Set(previous).add(thumbnail));}}
-   style={{width:"100%",height:"100%"}}/>:
+   style={{width:"100%",height:"100%",opacity:loadingPost?0:1}}/>:
    <View testID={active&&foreground?"daily-post-thumbnail-unavailable":"daily-post-thumbnail-paused"} style={{minHeight:96,justifyContent:"center",padding:16,paddingRight:64}}>
     <FinalText size={12} style={{color:"#706A74",lineHeight:18}}>{!active||!foreground?post.paused:!pageUrl?post.unsafe:postCandidates.length?post.failed:post.missing}</FinalText>
    </View>}

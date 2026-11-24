@@ -17,6 +17,7 @@ import { colors, radius, spacing, type } from "@/src/theme";
 import { useT } from "@/src/i18n";
 import { safeNotificationRoute } from "@/src/nativePushRuntime";
 import { isCommunityNotificationKind } from "@/src/communityNotificationEntry";
+import { localActivitiesEnabled, localActivityNotificationId } from "@/src/localActivities";
 
 type LoadState = { kind: "loading" } | { kind: "missing" } | { kind: "error" };
 
@@ -31,6 +32,10 @@ export default function NotificationScreen() {
 
   const open = useCallback(async () => {
     if (!mountedRef.current) return;
+    if (process.env.EXPO_PUBLIC_RELEASE_FLAVOR === "live-alpha" && id === "nearby-activities") {
+      router.replace({ pathname: "/(tabs)/profile", params: { section: "nearby" } });
+      return;
+    }
     const request = ++requestSequenceRef.current;
     const revision = sessionRevisionRef.current;
     const requestIsCurrent = () => mountedRef.current && requestSequenceRef.current === request && sessionRevisionRef.current === revision;
@@ -48,6 +53,15 @@ export default function NotificationScreen() {
       if (!requestIsCurrent()) return;
       const classifiedToken = await auth.getToken();
       if (!requestIsCurrent() || classifiedToken !== token) return;
+      if (notification.kind === "local_activity") {
+        const activityId = localActivityNotificationId(notification);
+        if (localActivitiesEnabled && activityId) {
+          router.replace({ pathname: "/nearby-activities", params: { id: activityId } });
+        } else {
+          setState({ kind: "missing" });
+        }
+        return;
+      }
       if (isCommunityNotificationKind(notification.target?.kind)) {
         // CommunityFinal calls the authenticated /target endpoint again and
         // opens only its typed, currently accessible reference. No NURI AI

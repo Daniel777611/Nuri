@@ -199,11 +199,62 @@ def test_a_rejected_choice_is_struck_and_the_model_asked_again(monkeypatch):
         calls.append([c.url for c in candidates])
         return answers[len(calls) - 1]
 
+    monkeypatch.setattr(dp, "PICK_MODE", "llm")
     monkeypatch.setattr(dp, "_ask_pick", fake_ask)
     first, second = _cand(url="https://www.facebook.com/groups/aaaaaaaa/posts/1"), _cand()
     picked = dp.pick_post([first, second], concern="c", child_age_context="", locale="zh-CN")
     assert picked["candidate"].url == second.url
     assert calls == [[first.url, second.url], [second.url]]
+
+
+def test_ranked_mode_shows_the_model_one_post_at_a_time_best_first(monkeypatch):
+    calls = []
+
+    def fake_ask(candidates, **_k):
+        calls.append([c.url for c in candidates])
+        return _pick(author_kind="professional") if len(calls) == 1 else _pick()
+
+    monkeypatch.setattr(dp, "_ask_pick", fake_ask)
+    off_topic = _cand(url="https://www.facebook.com/groups/a1/posts/1",
+                      text="Anyone know a good pediatric dentist near Irvine? Looking for recommendations please.")
+    on_topic = _cand(url="https://www.facebook.com/groups/a2/posts/2",
+                     text="My son is 18 months and a picky eater, refuses veggies. What worked for us was blending them.")
+    also = _cand(url="https://www.facebook.com/groups/a3/posts/3",
+                 text="Picky eater toddler here too. We tried hiding spinach in pancakes and it helped us a lot.")
+    picked = dp.pick_post([off_topic, on_topic, also], concern="挑食", child_age_context="", locale="en",
+                          query="18 month old picky eating moms", months=18)
+    assert calls[0] == [on_topic.url]          # the best-ranked post, alone
+    assert picked["candidate"].url == also.url  # rejected → the next one, alone
+    assert len(calls) == 2
+
+
+def test_ads_and_pets_never_reach_the_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dp, "_ask_pick", lambda c, **_k: calls.append(c) or _pick())
+    ad = _cand(text="Picky eater? Our toddler snack box helps! Use code MOM20 for 20% off, link in bio.")
+    pet = _cand(text="My puppy is such a picky eater, won't touch his kibble unless I add chicken on top.")
+    assert dp.pick_post([ad, pet], concern="挑食", child_age_context="", locale="en", query="picky eating") is None
+    assert calls == []
+    # 躲猫猫 is peekaboo, not a cat.
+    assert not dp.is_unusable(_cand(text="我家宝宝18个月，最喜欢玩躲猫猫，每次都笑个不停，分享给大家参考一下。"))
+
+
+@pytest.mark.parametrize("text,months,expected", [
+    ("我家宝宝18个月了，晚上总是夜醒", 18, 1.0),
+    ("My 2 year old won't sleep", 24, 1.0),
+    ("孩子5岁了还尿床", 12, 0.0),
+    ("no age at all here", 12, 0.5),
+    ("我家宝宝18个月了", None, 0.5),
+])
+def test_the_age_a_post_names_is_compared_with_the_childs(text, months, expected):
+    assert dp.age_fit(text, months) == pytest.approx(expected)
+
+
+def test_relevance_counts_the_search_subject_in_either_language():
+    query = "18个月 宝宝 入园分离焦虑 宝妈 18 month old daycare drop off crying moms"
+    assert dp.relevance("我家孩子入园分离焦虑特别严重，每天哭", query) > 0.9
+    assert dp.relevance("Daycare drop off crying every morning, any tips?", query) > 0.9
+    assert dp.relevance("Best stroller for travel?", query) == 0.0
 
 
 def test_nothing_usable_stops_after_one_question(monkeypatch):
@@ -295,11 +346,60 @@ def test_family_searches_what_onboarding_asked_about():
 
 
 def test_search_words_leave_without_the_childs_name(monkeypatch):
+    monkeypatch.setattr(dp, "QUERY_MODE", "llm")
     monkeypatch.setattr(dp, "_model_json", lambda *_a, **_k: {
         "concern": "小满挑食", "query_zh": "小满 18个月 挑食 妈妈经验", "query_en": "Xiaoman picky eater",
     })
     plan = dp.conversation_plan(["小满最近不吃菜"], "孩子当前年龄：18个月", [{"nickname": "小满", "birth_date": "2025-03-05"}])
     assert "小满" not in plan.query_zh
+
+
+def _no_model(monkeypatch):
+    def refuse(*_a, **_k):
+        raise AssertionError("the template plan must not call a model")
+    monkeypatch.setattr(dp, "_model_json", refuse)
+
+
+def test_the_routers_topic_becomes_the_search_without_a_model(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan(["随便说说"], "", _months_old(18), topics=["入园分离焦虑", "睡眠倒退"])
+    assert plan.basis == "conversation" and plan.concern == "入园分离焦虑"
+    assert plan.query_zh == "18个月 宝宝 入园分离焦虑 宝妈"
+    assert plan.query_en == "18 month old daycare drop off crying moms"
+
+
+def test_an_english_parent_sees_the_concern_in_english(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan([], "", _months_old(18), "en", topics=["夜醒"])
+    assert plan.concern == "sleep" and plan.query_en == "18 month old sleep moms"
+    # A topic the keyword table cannot put into English is skipped for an English reader.
+    assert dp.conversation_plan([], "", _months_old(18), "en", topics=["产后抑郁"]) is None
+
+
+def test_without_a_topic_the_messages_are_matched_by_keyword(monkeypatch):
+    _no_model(monkeypatch)
+    plan = dp.conversation_plan(["你好", "宝宝最近晚上总是夜醒好几次"], "", _months_old(8))
+    assert plan.concern == "睡眠" and plan.query_zh == "9个月 宝宝 睡眠 夜醒 宝妈"
+    assert dp.conversation_plan(["你好", "谢谢"], "", _months_old(8)) is None
+
+
+def test_the_routers_topic_leaves_without_the_childs_name(monkeypatch):
+    _no_model(monkeypatch)
+    children = [{"nickname": "小满", "birth_date": "2025-03-05"}]
+    plan = dp.conversation_plan([], "", children, topics=["小满挑食"])
+    assert "小满" not in plan.query_zh and "挑食" in plan.query_zh
+
+
+def test_generic_router_topics_are_skipped(monkeypatch):
+    db = _DB()
+    db.tables["chat_turn_logs"] = [
+        {"user_id": "mom-1", "route_topic": "寒暄/继续追问", "created_at": "2026-09-11T15:00:00+00:00"},
+        {"user_id": "mom-1", "route_topic": "辅食添加", "created_at": "2026-09-11T14:00:00+00:00"},
+        {"user_id": "mom-2", "route_topic": "睡眠倒退", "created_at": "2026-09-11T14:00:00+00:00"},
+        {"user_id": "mom-1", "route_topic": "长牙", "created_at": "2026-08-01T14:00:00+00:00"},
+    ]
+    monkeypatch.setattr(runtime, "get_supabase", lambda: db)
+    assert asyncio.run(dp.recent_route_topics("mom-1", now=NOW)) == ["辅食添加"]
 
 
 # ── The daily row ────────────────────────────────────────────────────────────
@@ -349,6 +449,15 @@ class _DB:
 
 
 @pytest.fixture(autouse=True)
+def _one_post_format(monkeypatch):
+    """These tests are about the one-post card; the summary card has its own
+    (test_daily_summary.py)."""
+    from backend.feed import daily_summary
+
+    monkeypatch.setattr(daily_summary, "FORMAT", "single")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_database(monkeypatch):
     attempts: list = []
 
@@ -382,7 +491,7 @@ def world(monkeypatch):
             "messages": [{"role": "user", "text": "小满最近只吃白米饭"}],
         }
 
-    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN", _standing=()):
+    def fake_conversation_plan(texts, _age, _children, _locale="zh-CN", _standing=(), **_k):
         state.conversation_calls += 1
         return dp.Plan(basis="conversation", concern="挑食", query_zh="18个月 挑食", query_en="picky")
 
@@ -525,7 +634,7 @@ def test_a_generation_failure_is_recorded_and_retried_soon(world, monkeypatch):
 def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monkeypatch):
     calls = []
 
-    async def refused(query, lang):
+    async def refused(query, lang, **_kwargs):
         calls.append(query)
         raise SearchUnavailable("tavily HTTP 432: usage limit")
 
@@ -542,15 +651,48 @@ def test_a_refused_search_is_recorded_as_an_outage_not_an_empty_day(world, monke
     assert _get(now=NOW + timedelta(minutes=11))["state"] == "ready"
 
 
-def test_a_spent_search_budget_is_recorded_before_any_model_call(world, monkeypatch):
+def _budget_spent(monkeypatch):
     async def spent(_kind):
         raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
 
     monkeypatch.setattr(search_budget, "require_some_left", spent)
+    monkeypatch.setattr(search_budget, "spend", spent)
+
+
+def test_a_spent_search_budget_is_recorded_before_any_model_call(world, monkeypatch):
+    _budget_spent(monkeypatch)
+
+    async def no_pooled_card(plan, _locale, _exclude):
+        world.searched.append(plan.concern)
+        assert not plan.child_id
+        assert plan.shared_search
+        raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
+
+    monkeypatch.setattr(dp, "find_candidates", no_pooled_card)
     assert _get()["state"] == "empty"
     row = world.db.tables["daily_post_cards"][0]
     assert row["status"] == "failed" and "search limit" in row["error"]
-    assert world.conversation_calls == 0 and not world.searched
+    assert row["query"] == {"searches": 0}
+    # No words written from the chat: they could not be searched for anyway.
+    assert world.conversation_calls == 0 and world.generated == 0
+    # Every plan was asked, in case the pool held one of them — no more than
+    # the profile plans were before: no extra plan for words nobody can search.
+    assert len(world.searched) == dp.PROFILE_PLANS
+
+
+def test_a_spent_budget_still_makes_a_card_from_the_pool(world, monkeypatch):
+    _budget_spent(monkeypatch)
+    calls = []
+
+    async def second_plan_pooled(plan, _locale, _exclude):
+        calls.append(plan.query_en)
+        if len(calls) == 1:
+            raise search_budget.SearchBudgetSpent("daily post search limit of 10 reached")
+        return [_cand(url=world.card_url)]
+
+    monkeypatch.setattr(dp, "find_candidates", second_plan_pooled)
+    assert _get()["state"] == "ready"
+    assert len(calls) == 2 and world.conversation_calls == 0
 
 
 def test_one_language_failing_keeps_the_other_languages_posts(monkeypatch):

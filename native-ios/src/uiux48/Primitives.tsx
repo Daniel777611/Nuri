@@ -29,8 +29,9 @@ export function NuriIcon({ name, color, size=24 }: { name: NuriIconName; color?:
   const { ink, night } = useNuriTheme();
   // Figma 127:24534: original outline SVG, no material or backing plate.
   // Preserve its daytime artwork; Night is a white alpha-mask tint only.
-  const finalIcons={home:require("@/assets/final-flow-20261101/home.svg"),chat:require("@/assets/final-flow-20261101/chat.svg"),community:require("@/assets/final-flow-20261101/community.svg"),send:require("@/assets/final-flow-20261101/send.svg"),plus:require("@/assets/final-flow-20261101/plus.svg"),mic:require("@/assets/final-flow-20261101/microphone.svg")};
-  return <Image source={name in finalIcons?finalIcons[name as keyof typeof finalIcons]:icons[name]} style={{ width:size, height:size }} contentFit="contain" tintColor={color??ink} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
+  const finalIcons={home:require("@/assets/final-flow-20261101/home.svg"),chat:require("@/assets/final-flow-20261101/chat.svg"),community:require("@/assets/final-flow-20261101/community.svg"),send:require("@/assets/final-flow-20261101/send.svg"),plus:require("@/assets/final-flow-20261101/plus.svg")};
+  const tint = color ?? (name === "mic" ? night ? "#FFFFFF" : undefined : ink);
+  return <Image source={name in finalIcons?finalIcons[name as keyof typeof finalIcons]:icons[name]} style={{ width:size, height:size }} contentFit="contain" tintColor={tint} testID={`nuri-icon-${name}`} accessible={false} accessibilityElementsHidden />;
 }
 export function IconAction({ name, label, onPress, testID, disabled }: { name: NuriIconName; label: string; onPress: () => void; testID?: string; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} disabled={disabled} testID={testID} style={({ pressed }) => [s.iconTarget, { opacity: disabled ? .4 : pressed ? .6 : 1 }]}><NuriIcon name={name} /></Pressable>;

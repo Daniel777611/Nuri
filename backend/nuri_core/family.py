@@ -201,6 +201,41 @@ async def enrich(
     return enriched
 
 
+def _memory_child_id(item: dict, parent_text: str, children: list[dict]) -> Optional[str]:
+    quote = str(item.get("child_evidence") or "").strip()
+    if not quote or quote not in parent_text:
+        return None
+    mentioned = family_store.child_mentions(quote, children)
+    if len(mentioned) != 1 or not mentioned[0].get("id"):
+        return None
+    name = str(mentioned[0].get("nickname") or "")
+    if sum(char.isalnum() for char in quote) < sum(char.isalnum() for char in name) + 2:
+        return None
+    return str(mentioned[0]["id"])
+
+
+def _scoped_retirements(
+    requested: list[dict], known: list[dict], parent_text: str, children: list[dict],
+) -> list[dict]:
+    targets = family_store.child_mentions(parent_text, children)
+    child_id = str(targets[0].get("id") or "") if len(targets) == 1 else ""
+    out = []
+    for item in requested:
+        for row in known:
+            if (item.get("category"), item.get("key")) != (row.get("category"), row.get("key")):
+                continue
+            bound_id = str(row.get("child_id") or "")
+            legacy_targets = family_store.child_mentions(str(row.get("value") or ""), children)
+            if bound_id:
+                if child_id == bound_id:
+                    out.append({**item, "child_id": bound_id})
+            elif len(children) <= 1 or (
+                child_id and len(legacy_targets) == 1 and legacy_targets[0].get("id") == child_id
+            ) or (not targets and not legacy_targets and item.get("category") in {"fact", "preference"}):
+                out.append(item)
+    return out
+
+
 async def extract_and_upsert_memories(
     history: list[dict], user_id: str, source_id: str, source_type: str = "chat",
     *, temporal_context: Optional[temporal.TemporalContext] = None,
@@ -227,16 +262,30 @@ async def extract_and_upsert_memories(
             lambda: family_store.extract_memories_sync(history, temporal_context, known)
         )
         memories = extracted if isinstance(extracted, list) else extracted.get("memories", [])
-        if isinstance(extracted, dict):
+        retire = extracted.get("retire", []) if isinstance(extracted, dict) else []
+        if memories or retire:
+            children = await family_store.load_children(user_id)
+            parent_text = next(
+                (str(m.get("text") or "") for m in reversed(history)
+                 if m.get("role") == "user" and str(m.get("text") or "").strip()),
+                "",
+            )
             # Before the upsert: a retired key written again in the same
             # extraction comes back active with its new value.
             await family_store.retire_memories(
-                extracted.get("retire", []), user_id=user_id,
+                _scoped_retirements(retire, known, parent_text, children), user_id=user_id,
             )
-        await family_store.upsert_memories(
-            memories, user_id=user_id, child_id=None,
-            source_type=source_type, source_id=source_id,
-        )
+            grouped: dict[Optional[str], list[dict]] = {}
+            for item in memories:
+                child_id = _memory_child_id(item, parent_text, children)
+                grouped.setdefault(child_id, []).append(
+                    {k: v for k, v in item.items() if k != "child_evidence"}
+                )
+            for child_id, rows in grouped.items():
+                await family_store.upsert_memories(
+                    rows, user_id=user_id, child_id=child_id,
+                    source_type=source_type, source_id=source_id,
+                )
         if isinstance(extracted, dict):
             await family_store.upsert_follow_ups(
                 extracted.get("follow_ups", []), user_id=user_id,

@@ -5,7 +5,7 @@ module.exports = ({ config }) => {
   const env = { ...process.env };
   // EXConstants evaluates app config in its own static Pod. No other target
   // may replace its real bundle identity with an app-owned override.
-  const constantsPod = env.EXPO_PUBLIC_RELEASE_FLAVOR === 'live-alpha' && env.PROJECT_NAME === 'Pods'
+  const constantsPod = ['live-alpha', 'early-access', 'app-store'].includes(env.EXPO_PUBLIC_RELEASE_FLAVOR) && env.PROJECT_NAME === 'Pods'
     && env.TARGET_NAME === 'EXConstants' && env.PRODUCT_TYPE === 'com.apple.product-type.library.static'
     && env.PRODUCT_BUNDLE_IDENTIFIER === 'org.cocoapods.EXConstants';
   if (constantsPod) {
@@ -25,6 +25,6 @@ module.exports = ({ config }) => {
           ...(liveAlphaBackendMode(env) === 'simulator-local-router' ? { NSAllowsLocalNetworking: true } : {}) } } },
     plugins: config.plugins.map(p => Array.isArray(p) && p[0] === './plugins/withNuriGoogleSignIn' ? [p[0], google] : p),
     extra: { ...config.extra, releaseFlavor: profile.flavor, releaseChannel: profile.channel,
-      communityEnabled: true, communityMode: profile.communityMode },
+      communityEnabled: profile.communityEnabled, communityMode: profile.communityMode },
   };
 };

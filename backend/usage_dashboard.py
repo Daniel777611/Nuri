@@ -402,6 +402,9 @@ def card_searches(row: dict) -> int:
     """Tavily requests behind one card, at the fewest: one plan, one request per
     language. Fallback plans and same-day retries leave no trace in the row, so
     the real number can only be higher."""
+    recorded = (row.get("query") or {}).get("searches")
+    if type(recorded) is int and recorded >= 0:
+        return recorded
     if row.get("status") == "failed":
         return 0
     if row.get("status") == "empty" and _REFUSED_DAYS[0] <= str(row.get("day")) <= _REFUSED_DAYS[1]:
