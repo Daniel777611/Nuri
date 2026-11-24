@@ -5,10 +5,10 @@
       "appId": "6831012896",
       "bundleId": "com.ordashtech.nuri.beta",
       "version": "0.4.0",
-      "build": "1099",
+      "build": "1102",
       "minimumOSVersion": "15.1",
-      "publishedAt": "2026-11-24T14:43:48.700Z",
-      "expiresAt": "2027-02-22T14:40:39.000Z",
+      "publishedAt": "2026-11-24T15:17:24.031Z",
+      "expiresAt": "2027-02-22T15:13:35.000Z",
       "installable": true
     },
     "beta": {
