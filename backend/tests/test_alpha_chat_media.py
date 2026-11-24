@@ -11,11 +11,12 @@ from backend.router import TurnRoute
 from backend.websearch import SearchImage, SearchResult
 
 
-def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False, history=(), children=None):
+def _lookup(text, *, locale=None, allow_history=False, route=None, authority_only=False, history=(), children=None,
+            existing=None):
     return asyncio.run(media.find_chat_media(
         text, media.requested_media(text, history), locale=locale or ("zh-CN" if "视频" in text else "en"),
         route=route, children=children if children is not None else [{"nickname": "Juniper"}], allow_history=allow_history,
-        existing=[], authority_only=authority_only, history=history,
+        existing=existing or [], authority_only=authority_only, history=history,
     ))
 
 
@@ -105,7 +106,7 @@ def test_language_development_drops_ai_finance_and_wrong_parenting_topics(monkey
                      snippet="First words and toddler language development are in another video."),
         SearchResult("Best cartoons for toddlers", "https://www.youtube.com/watch?v=Cartoon2345",
                      snippet="Tagged: first words, toddler language development."),
-        SearchResult("Toddler speech and language development - YouTube", f"https://youtu.be/{valid_id}"),
+        SearchResult("幼儿语言发展：陪孩子学说话 - YouTube", f"https://youtu.be/{valid_id}"),
         SearchResult("Speech and language development for adults", "https://youtu.be/zzzzzzzzzzz"),
     ])
     result = _lookup("给我推荐一些孩子语言发展的 YouTube 视频。", locale="zh-CN")
@@ -236,7 +237,7 @@ def test_contextual_early_learning_videos_search_with_age_without_exporting_iden
     ])
     child = _child(13, "测试小朋友")
     result = _lookup("给我几个适合测试小朋友现在的情况的早教的视频。", children=[child])
-    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk", "lmnopqrstuv"]
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
     assert len(calls) == 1
     assert "13个月" in calls[0].query and "早教" in calls[0].query
     assert "测试小朋友" not in calls[0].query and child["birth_date"] not in calls[0].query
@@ -252,13 +253,14 @@ def test_video_retry_uses_other_search_language_only_if_user_allows_either(monke
 
         async def search(self, request):
             calls.append(request)
-            return [SearchResult("早教人工智能模型", "https://youtu.be/zzzzzzzzzzz")] if request.lang == "zh" else [
-                SearchResult("Toddler Early Learning Activities", "https://youtu.be/abcdefghijk"),
+            return [SearchResult("睡眠人工智能模型", "https://youtu.be/zzzzzzzzzzz")] if request.lang == "zh" else [
+                SearchResult("Baby sleep: bedtime routine for toddlers", "https://youtu.be/abcdefghijk"),
             ]
 
     monkeypatch.setattr(media, "get_provider", Provider)
-    result = _lookup("给我几个早教视频。", children=[_child(13)])
+    result = _lookup("给我几个宝宝睡眠视频。", children=[_child(13)])
     assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
+    assert result["items"][0]["title"].endswith("（英文）")
     assert [(request.lang, request.include_domains) for request in calls] == [
         ("zh", ("youtube.com",)), ("en", ("youtube.com",)),
     ]
@@ -267,9 +269,58 @@ def test_video_retry_uses_other_search_language_only_if_user_allows_either(monke
     assert "zzzzzzzzzzz" not in caplog.text
 
     calls.clear()
-    result = _lookup("给我几个早教视频，只要中文。", children=[_child(13)])
+    result = _lookup("给我几个宝宝睡眠视频，只要中文。", children=[_child(13)])
     assert [request.lang for request in calls] == ["zh"]
+    assert result is None
+
+
+@pytest.mark.parametrize("locale,video_ids", [
+    ("zh-CN", ["lmnopqrstuv", "zzzzzzzzzzz"]),
+    ("zh-TW", ["zzzzzzzzzzz", "lmnopqrstuv"]),
+    ("en", ["abcdefghijk"]),
+])
+def test_app_locale_prioritizes_actual_video_language_and_script(monkeypatch, locale, video_ids):
+    calls = _provider(monkeypatch, [
+        SearchResult("Toddler language development: how to help babies talk", "https://youtu.be/abcdefghijk", lang="zh"),
+        SearchResult("幼儿语言发展：家長怎麼讓孩子開口說話", "https://youtu.be/zzzzzzzzzzz", lang="en"),
+        SearchResult("幼儿语言发展：家长怎么让孩子开口说话", "https://youtu.be/lmnopqrstuv", lang="en"),
+    ])
+    result = _lookup("Show me speech and language development videos for toddlers", locale=locale)
+    assert [item["video_id"] for item in result["items"]] == video_ids
+    assert [request.lang for request in calls] == ["en" if locale == "en" else "zh"]
+
+
+def test_reviewed_chinese_video_beats_live_english_result(monkeypatch):
+    calls = _provider(monkeypatch, [
+        SearchResult("Early learning activities for toddlers", "https://youtu.be/abcdefghijk"),
+    ])
+    result = _lookup("给我几个早教视频。", locale="zh-CN")
     assert [item["video_id"] for item in result["items"]] == ["TW3J7YhX2CI"]
+    assert [request.lang for request in calls] == ["zh"]
+
+
+def test_article_locale_and_explicit_override_use_actual_publisher_variants(monkeypatch):
+    _provider(monkeypatch, [])
+    covers = (SearchImage("https://www.fhs.gov.hk/cover.jpg"),)
+    english = SearchResult("What to do about picky eaters", "https://www.fhs.gov.hk/english/health_info/child/20033.html",
+                           images=covers, lang="zh")
+    traditional = SearchResult("孩子偏食怎麼辦？", "https://www.fhs.gov.hk/tc_chi/health_info/child/20033.html",
+                               images=covers, lang="en")
+    simplified = SearchResult("孩子偏食怎么办？", "https://www.fhs.gov.hk/sc_chi/health_info/child/20033.html",
+                              images=covers, lang="en")
+    existing = [english, traditional, simplified]
+
+    async def keep_mocked_covers(rows):
+        return rows
+
+    monkeypatch.setattr(media, "_with_article_covers", keep_mocked_covers)
+    result = _lookup("给我几篇幼儿挑食的文章", locale="zh-CN", existing=existing)
+    assert [item["url"] for item in result["items"]] == [simplified.url, traditional.url]
+    result = _lookup("給我幾篇幼兒挑食的文章", locale="zh-TW", existing=existing)
+    assert [item["url"] for item in result["items"]] == [traditional.url, simplified.url]
+    result = _lookup("给我几篇幼儿挑食的文章，只要英文", locale="zh-CN", existing=existing)
+    assert result["items"][0]["url"] == english.url
+    assert all("/tc_chi/" not in item["url"] and "/sc_chi/" not in item["url"] for item in result["items"])
 
 
 @pytest.mark.parametrize("text", [
@@ -283,7 +334,7 @@ def test_reading_video_correction_triggers_media_and_gets_playable_links(monkeyp
     ])
     assert media.requested_media(text) == ("video",)
     result = _lookup(text)
-    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk", "lmnopqrstuv"]
+    assert [item["video_id"] for item in result["items"]] == ["abcdefghijk"]
     assert len(calls) == 1 and "书单" not in calls[0].query
 
 
@@ -328,13 +379,11 @@ def test_current_stage_uses_owned_profile_and_official_clips_without_search(monk
     result = _lookup(text, locale="zh-CN", history=history, children=[_child(13)], authority_only=True)
     assert media.requested_media(text, history) == ("video",)
     assert [item["video_id"] for item in result["items"]] == [
-        "GqV34gup6TQ", "Bu2W89FzKiw", "IsWTBFfj3Y0", "dWmRzywu97U", "3Qke5GVhqHw",
+        "NlWnbuOMMEE", "yVL2RclZ1J0",
     ]
     assert all(item["url"].startswith("https://www.youtube.com/watch?v=") for item in result["items"])
     assert all(item["thumbnail_url"].startswith("https://i.ytimg.com/vi/") for item in result["items"])
-    assert [item["source_url"].rsplit("/", 1)[-1] for item in result["items"]] == (
-        ["1-year.html"] * 3 + ["15-months.html"] * 2
-    )
+    assert all(item["source_url"] == "https://www.youtube.com/user/hpagov" for item in result["items"])
     assert all("Juniper" not in str(item) for item in result["items"])
     assert not calls
 
@@ -343,18 +392,28 @@ def test_milestone_video_picks_the_named_child_or_a_general_overview(monkeypatch
     calls = _provider(monkeypatch, [])
     siblings = [_child(13, "小叶"), _child(9, "小雨")]
     named = _lookup("请给我小雨的发展关键期视频", children=siblings)
-    assert [item["video_id"] for item in named["items"]] == ["2zEEh4hM7dw", "blts1HhYk6s"]
+    assert [item["video_id"] for item in named["items"]] == ["wG2wh9b3X8I", "yVL2RclZ1J0"]
     ambiguous = _lookup(MILESTONE_REQUEST, children=siblings)
-    assert [item["video_id"] for item in ambiguous["items"]] == ["T7bCsIIpC7M"]
+    assert [item["video_id"] for item in ambiguous["items"]] == ["yVL2RclZ1J0"]
     assert not calls
 
 
-def test_milestone_images_and_article_use_the_same_official_parent_resource(monkeypatch):
+def test_explicit_english_milestones_keep_the_cdc_examples(monkeypatch):
+    calls = _provider(monkeypatch, [])
+    result = _lookup("找几个发育里程碑的视频，只要英文", locale="zh-CN", children=[_child(13)])
+    assert [item["video_id"] for item in result["items"]] == [
+        "GqV34gup6TQ", "Bu2W89FzKiw", "IsWTBFfj3Y0", "dWmRzywu97U", "3Qke5GVhqHw",
+    ]
+    assert not calls
+
+
+def test_milestone_article_links_to_the_actual_chinese_checklist_and_image_keeps_provenance(monkeypatch):
     calls = _provider(monkeypatch, [])
     result = _lookup("给我找发育里程碑的文章和照片", locale="zh-CN", children=[_child(9)])
     article, image = result["items"]
-    assert article["url"] == image["source_url"] == "https://www.cdc.gov/act-early/milestones-in-action/9-months.html"
-    assert article["thumbnail_url"] == image["url"] == "https://i.ytimg.com/vi/2zEEh4hM7dw/hqdefault.jpg"
+    assert article["url"].endswith("/cdc-milestone-checklists-ltsae-chinese.pdf")
+    assert image["source_url"] == "https://www.cdc.gov/act-early/milestones-in-action/9-months.html"
+    assert image["url"] == "https://i.ytimg.com/vi/2zEEh4hM7dw/hqdefault.jpg"
     assert not calls
 
 
@@ -400,9 +459,9 @@ def test_explicit_article_and_image_request_has_reviewed_source_picture_if_provi
 
     monkeypatch.setattr(media, "get_provider", Offline)
     result = _lookup("给我几篇幼儿挑食的文章和图片", locale="zh-CN")
-    assert [item["type"] for item in result["items"]] == ["article", "article", "image"]
+    assert [item["type"] for item in result["items"]] == ["article", "image"]
     assert result["items"][0]["url"].startswith("https://www.fhs.gov.hk/")
-    assert result["items"][-1]["source_url"] == result["items"][1]["url"]
+    assert result["items"][-1]["source_url"] == "https://www.cdc.gov/nutrition/features/help-picky-eater.html"
     assert result["items"][-1]["thumbnail_url"].endswith("Pickyeater.jpg")
 
 
@@ -437,9 +496,9 @@ def test_explicit_link_again_does_not_treat_sign_in_or_a_new_subject_as_previous
 @pytest.mark.parametrize("streamed", [False, True])
 @pytest.mark.parametrize("request_text,history,video_id,risk", [
     ("那你给我的链接在哪里呢?", FEEDING_HISTORY, "W9LxMa7jRoM", "none"),
-    (MILESTONE_REQUEST, (), "GqV34gup6TQ", "medical"),
-    (MILESTONE_RETRY, MILESTONE_HISTORY, "GqV34gup6TQ", "none"),
-    ("视频链接呢？", MILESTONE_HISTORY, "GqV34gup6TQ", "medical"),
+    (MILESTONE_REQUEST, (), "NlWnbuOMMEE", "medical"),
+    (MILESTONE_RETRY, MILESTONE_HISTORY, "NlWnbuOMMEE", "none"),
+    ("视频链接呢？", MILESTONE_HISTORY, "NlWnbuOMMEE", "medical"),
 ])
 def test_resource_requests_return_and_persist_cards_and_direct_copy(monkeypatch, streamed, request_text,
                                                                history, video_id, risk):

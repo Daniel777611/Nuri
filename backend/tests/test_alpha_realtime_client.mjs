@@ -22,7 +22,7 @@ function webKit({ deferMicrophone = false, withMeters = false } = {}) {
   const timers = new Map();
   let timerId = 0, analyserClosed = false;
   const listeners = new Map();
-  const events = [];
+  const events = [], commands = [];
   const window = {
     isSecureContext: true,
     ReactNativeWebView: { postMessage: (message) => events.push(JSON.parse(message)) },
@@ -31,7 +31,13 @@ function webKit({ deferMicrophone = false, withMeters = false } = {}) {
   const document = { querySelector: () => audio, addEventListener: (type, fn) => listeners.set(type, fn) };
   class Peer {
     constructor() { peer = this; }
-    createDataChannel(label) { return this.channel = { label, close() {} }; }
+    createDataChannel(label) {
+      return this.channel = {
+        label, readyState: "connecting",
+        send(data) { assert.equal(this.readyState, "open"); commands.push(JSON.parse(data)); },
+        close() { this.readyState = "closed"; },
+      };
+    }
     iceGatheringState = "complete";
     createOffer = async () => ({ type: "offer", sdp: "v=0\nm=audio local" });
     setLocalDescription = async (offer) => { this.localDescription = offer; };
@@ -63,7 +69,7 @@ function webKit({ deferMicrophone = false, withMeters = false } = {}) {
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout: (id) => { timers.delete(id); },
   });
-  return { window, events, audio, track, stream, remoteStream, samples, timers, listeners,
+  return { window, events, commands, audio, track, stream, remoteStream, samples, timers, listeners,
     stats: () => ({ askMicCount, played, stopped, peer, analyserClosed }),
     tickActivity: () => {
       for (const [id, timer] of [...timers]) {
@@ -72,6 +78,15 @@ function webKit({ deferMicrophone = false, withMeters = false } = {}) {
         timer.callback();
       }
     },
+    openChannel() {
+      peer.channel.readyState = "open";
+      peer.channel.onopen();
+    },
+    connectPeer() {
+      peer.connectionState = "connected";
+      peer.onconnectionstatechange();
+    },
+    model(detail) { peer.channel.onmessage({ data: JSON.stringify(detail) }); },
     resolvePermission: () => resolveMicrophone() };
 }
 
@@ -83,7 +98,7 @@ test("a consented audio-only call negotiates SDP, receives speech and releases t
   assert.equal(peer.sentTrack, view.track);
   assert.equal(peer.sentTrack.enabled, false, "first audio does not flow until the connection is ready");
   assert.equal(peer.channel.label, "oai-events");
-  assert.deepEqual(view.events, [{ type: "offer", sdp: "v=0\nm=audio local" }]);
+  assert.deepEqual(view.events, [{ type: "offer", sdp: "v=0\nm=audio local", manualTurns: true }]);
   await view.window.nuriRealtime.answer("v=0\nm=audio remote");
   assert.equal(peer.remoteDescription.type, "answer");
   peer.connectionState = "connected";
@@ -103,6 +118,80 @@ test("a consented audio-only call negotiates SDP, receives speech and releases t
   assert.equal(view.stats().stopped, true);
   assert.equal(view.audio.srcObject, null);
   assert.equal(peer.closed, true);
+});
+
+test("waits for both connection and data channel, greets in the call language once, then enables the microphone", async () => {
+  for (const [locale, opening, connectFirst] of [
+    ["zh-CN", "嗨，我是 Nuri。你可以直接说，我在听。", true],
+    ["zh-TW", "嗨，我是 Nuri。你可以直接說，我在聽。", false],
+    ["en", "Hi, I’m Nuri. Go ahead whenever you’re ready. I’m listening.", true],
+  ]) {
+    const view = webKit();
+    await view.window.nuriRealtime.start();
+    await view.window.nuriRealtime.answer("v=0\nm=audio remote", true, locale, true);
+    if (connectFirst) view.connectPeer();
+    else view.openChannel();
+    assert.equal(view.commands.length, 0);
+    assert.equal(view.track.enabled, false);
+    if (connectFirst) view.openChannel();
+    else view.connectPeer();
+    assert.equal(view.commands.length, 1);
+    const [request] = view.commands;
+    assert.equal(request.type, "response.create");
+    assert.equal(request.response.conversation, "none");
+    assert.equal(request.response.metadata.nuri_kind, "greeting");
+    assert.equal(request.response.instructions.endsWith(opening), true);
+    const responseId = "resp_greeting";
+    const item = { type: "message", role: "assistant", id: "item_greeting", content: [{ transcript: opening }] };
+    view.model({ type: "response.created", response: { id: responseId, metadata: request.response.metadata } });
+    view.model({ type: "response.output_item.added", response_id: responseId, item });
+    view.model({ type: "output_audio_buffer.started", response_id: responseId });
+    assert(view.events.some(event => event.type === "speaking"));
+    view.model({ type: "response.done", response: { id: responseId, status: "completed", output: [item] } });
+    assert.equal(view.track.enabled, false);
+    view.model({ type: "output_audio_buffer.stopped", response_id: responseId });
+    assert.equal(view.track.enabled, true);
+    assert.equal(view.events.some(event => event.type === "transcript"), false);
+    view.connectPeer();
+    view.openChannel();
+    assert.equal(view.commands.length, 1, "reconnect may not replay the greeting");
+  }
+});
+
+test("completes audio playback before answering a queued parent turn and saves the full heard transcript", async () => {
+  const view = webKit();
+  await view.window.nuriRealtime.start();
+  await view.window.nuriRealtime.answer("v=0\nm=audio remote", true, "zh-CN", true);
+  view.openChannel();
+  view.connectPeer();
+  // A failed opening still lets the parent start the call normally.
+  view.model({ type: "error", error: { event_id: view.commands[0].event_id, code: "fixture_error" } });
+  assert.equal(view.track.enabled, true);
+
+  view.model({ type: "input_audio_buffer.speech_started" });
+  view.model({ type: "input_audio_buffer.speech_stopped" });
+  view.model({ type: "input_audio_buffer.committed", item_id: "item_first_user" });
+  assert.equal(view.commands.length, 2);
+  assert.deepEqual(view.commands[1].response, {});
+  const responseId = "resp_first_turn";
+  const words = "她睡前想多靠你一会儿。你可以先轻声告诉她你就在旁边。".repeat(40);
+  const item = { type: "message", role: "assistant", id: "item_first_answer", content: [{ transcript: words }] };
+  view.model({ type: "response.created", response: { id: responseId } });
+  assert.equal([...view.timers.values()].some(timer => timer.delay === 12000), false);
+  view.model({ type: "response.output_item.added", response_id: responseId, item });
+  view.model({ type: "output_audio_buffer.started", response_id: responseId });
+  view.model({ type: "input_audio_buffer.speech_started" });
+  view.model({ type: "input_audio_buffer.speech_stopped" });
+  view.model({ type: "input_audio_buffer.committed", item_id: "item_second_user" });
+  assert.equal(view.commands.length, 2, "parent audio is queued without an interruption command");
+  view.model({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_first_user", transcript: "最近宝宝总是夜醒。" });
+  view.model({ type: "response.done", response: { id: responseId, status: "completed", output: [item] } });
+  assert.equal(view.commands.length, 2, "model generation finishing does not mean playback is done");
+  view.model({ type: "output_audio_buffer.stopped", response_id: responseId });
+  assert.equal(view.commands.length, 3);
+  assert(view.commands.every(command => command.type === "response.create"));
+  const transcript = view.events.filter(event => event.type === "transcript").at(-1);
+  assert.deepEqual(transcript.entries.map(entry => entry.text), ["最近宝宝总是夜醒。", words]);
 });
 
 test("a consented call bridges final transcripts in turn order and omits cancelled replies", async () => {

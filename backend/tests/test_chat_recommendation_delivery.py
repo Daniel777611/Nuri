@@ -12,6 +12,31 @@ from backend.tests.test_single_session import _Supabase, _install_turn_dependenc
 from backend.websearch import NullSearchProvider, SearchResult
 
 
+@pytest.mark.parametrize(("selected", "saved", "expected"), [
+    ("zh-CN", "en", "zh-CN"),
+    ("en", "zh-CN", "en"),
+    ("zh", "en", "zh-CN"),
+    (None, "zh-TW", "zh-TW"),
+    ("unspecified", "en", "en"),
+])
+def test_resource_search_uses_current_app_language_then_saved_preference(monkeypatch, selected, saved, expected):
+    async def privacy(*_args, **_kwargs):
+        return {"language": saved}
+
+    async def find_media(*_args, locale, **_kwargs):
+        assert locale == expected
+        return {"kind": "chat_media", "items": []}
+
+    monkeypatch.setattr(main.stores, "get_privacy", privacy)
+    monkeypatch.setattr(alpha_chat_media, "find_chat_media", find_media)
+    body = main.UserMessageIn(
+        text="Find a video",
+        client_context={"locale": selected} if selected else None,
+    )
+    turn = SimpleNamespace(owner_uid="fixture-parent", context_hints={})
+    assert asyncio.run(main._find_turn_chat_media(body, turn, main._ReplyContext(), ("video",)))
+
+
 @pytest.mark.parametrize("streamed", [False, True])
 @pytest.mark.parametrize(("kind", "question", "video_title"), [
     ("video", "给我几个适合测试宝宝现在的情况的早教视频。", "13个月宝宝的早教游戏"),

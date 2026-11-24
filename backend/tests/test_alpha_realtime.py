@@ -10,6 +10,7 @@ from fastapi import FastAPI, Header, HTTPException
 import httpx
 
 from backend import alpha_realtime as voice
+from backend.nuri_core import Directive
 
 
 _AUDIO_OFFER = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
@@ -29,6 +30,7 @@ def _install(monkeypatch, upstream_handler, alpha=True, sb=None, load_owned_sess
     monkeypatch.setattr(voice.runtime, "OPENAI_API_KEY", "protocol-test-only")
     monkeypatch.setattr(voice.runtime, "JWT_SECRET", "isolated-test-secret")
     monkeypatch.setattr(voice.runtime, "get_supabase", lambda: sb)
+    monkeypatch.setattr(voice.dialogue, "_cache", None)
     monkeypatch.setattr(voice.quota, "enforced", lambda: False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
     monkeypatch.setattr(voice, "_provider_client", lambda timeout: httpx.AsyncClient(
@@ -155,8 +157,8 @@ def test_call_transcript_is_ordered_durable_owner_bound_and_retriable(monkeypatc
     def provider(request):
         config = request.content.decode()
         assert '"transcription": {"model": "gpt-4o-mini-transcribe"}' in config
-        assert '"max_output_tokens": 650' in config
-        assert "Give the answer first" in config
+        assert '"max_output_tokens": "inf"' in config
+        assert "start with specific empathy" in config
         return httpx.Response(201, text=_AUDIO_ANSWER, headers={"Location": "/v1/realtime/calls/rtc_protocol_test"})
 
     async def scenario():
@@ -199,6 +201,50 @@ def test_call_transcript_is_ordered_durable_owner_bound_and_retriable(monkeypatc
             assert len(upserts) == 2 and len(rows) == 2
 
     asyncio.run(scenario())
+
+
+def test_manual_turns_play_to_completion_and_use_shared_dialogue_rules(monkeypatch):
+    sb = object()
+    received_configs = []
+
+    async def shared_rules(ports):
+        assert ports.supabase() is sb
+        return [
+            Directive("keep", "听见父母真的在担心什么。"),
+            Directive("conditional", "未选择的睡眠场景规则。", applies_when={"topics": ["睡眠"]}),
+            Directive("off", "已禁用的表达。", weight=0),
+            Directive("other_layer", "家庭模型内部操作。", layer="family"),
+        ]
+
+    def provider(request):
+        multipart = request.content.decode()
+        session_json = multipart.split("Content-Type: application/json\r\n\r\n", 1)[1].split("\r\n--", 1)[0]
+        received_configs.append(json.loads(session_json))
+        return httpx.Response(201, text=_AUDIO_ANSWER, headers={"Location": "/v1/realtime/calls/rtc_protocol_test"})
+
+    async def scenario():
+        monkeypatch.setattr(voice.dialogue, "load_directives", shared_rules)
+        async with _install(monkeypatch, provider, sb=sb) as client:
+            offer = {"locale": "zh-CN", "sdp": _AUDIO_OFFER, "manual_turns": True}
+            headers = {"x-fake-account": "owner"}
+            response = await client.post(_CALL, json=offer, headers=headers)
+            assert response.status_code == 200 and response.json()["manual_turns"] is True
+            assert "听见父母真的在担心什么。" not in response.text
+            malformed = await client.post(_CALL, json={**offer, "manual_turns": "true"}, headers=headers)
+            assert malformed.status_code == 422
+
+    asyncio.run(scenario())
+    config, = received_configs
+    assert config["audio"]["input"]["turn_detection"] == {
+        "type": "semantic_vad", "eagerness": "medium",
+        "create_response": False, "interrupt_response": False,
+    }
+    assert config["max_output_tokens"] == "inf"
+    assert "听见父母真的在担心什么。" in config["instructions"]
+    assert all(rule not in config["instructions"] for rule in (
+        "未选择的睡眠场景规则。", "已禁用的表达。", "家庭模型内部操作。",
+        "one to three short natural sentences",
+    ))
 
 
 def test_malformed_provider_audio_answer_closes_provider_peer(monkeypatch):

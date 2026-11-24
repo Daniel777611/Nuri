@@ -24,7 +24,8 @@ import httpx
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from backend import alpha_voice_context, alpha_voice_transcript, quota, runtime
-from backend.nuri_core.dialogue_reply import NURI_PERSONA
+from backend.nuri_core import CorePorts, dialogue
+from backend.nuri_core.dialogue_reply import NURI_PERSONA, get_style_rules_ctx
 
 _MAX_SDP = 65_536
 _MODEL_NAME = re.compile(r"gpt-realtime(?:[-.a-zA-Z0-9]+)?\Z")
@@ -33,16 +34,25 @@ _CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 _HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
 _MAX_CALLS_PER_MINUTE = 6
 _CONTEXT_TIMEOUT_SECONDS = 2.5
+_STYLE_TIMEOUT_SECONDS = 1.0
 _seen: dict[str, deque[float]] = defaultdict(deque)
 _in_flight: set[str] = set()
 
 _WEBRTC_SCRIPT = r"""
 (() => {
   const audio = document.querySelector("audio");
-  let peer, remoteEvents, microphone, maxTimer, disconnectedTimer, audioContext, activityTimer;
+  let peer, remoteEvents, microphone, input, maxTimer, disconnectedTimer, audioContext, activityTimer;
   let state = "idle";
   let userActive = false, nuriActive = false, shownActor;
   let transcriptEnabled = false, finishing = false, finishTimer;
+  let callLocale, greeted = false, greetingResponseId;
+  let manualTurns = false, waitingForCommit = false, queuedTurn = false;
+  let managedResponse, responseStartTimer, responseSequence = 0;
+  const openingLines = {
+    en: "Hi, I’m Nuri. Go ahead whenever you’re ready. I’m listening.",
+    "zh-CN": "嗨，我是 Nuri。你可以直接说，我在听。",
+    "zh-TW": "嗨，我是 Nuri。你可以直接說，我在聽。",
+  };
   const meters = {};
   const transcriptItems = new Map();
   const audioTranscripts = new Map();
@@ -119,11 +129,58 @@ _WEBRTC_SCRIPT = r"""
     window.ReactNativeWebView?.postMessage(payload);
   }
 
+  function sendResponse(greeting) {
+    const eventId = "nuri_response_" + ++responseSequence;
+    const response = greeting ? {
+      conversation: "none",
+      input: [],
+      output_modalities: ["audio"],
+      metadata: { nuri_kind: "greeting" },
+      instructions: "Speak this exact line, in a friendly, natural voice, with no extra words: " + openingLines[callLocale],
+    } : {};
+    managedResponse = { eventId, greeting, audioStarted: false, drained: false, done: false };
+    try {
+      remoteEvents.send(JSON.stringify({ type: "response.create", event_id: eventId, response }));
+    } catch {
+      managedResponse = undefined;
+      return false;
+    }
+    // Bound a missing request acknowledgement, never the length of a reply.
+    responseStartTimer = setTimeout(() => fail("connection"), 12000);
+    return true;
+  }
+
+  function advanceDialogue() {
+    if (state !== "connected" || finishing) return;
+    const channelReady = remoteEvents?.readyState === "open";
+    if (callLocale && !greeted && channelReady) {
+      greeted = true;
+      sendResponse(true);
+    }
+    input.enabled = !callLocale || (greeted && !managedResponse?.greeting);
+    if (manualTurns && channelReady && queuedTurn && !waitingForCommit && !managedResponse) {
+      if (sendResponse(false)) queuedTurn = false;
+    }
+  }
+
+  function finishResponse() {
+    clearTimeout(responseStartTimer);
+    managedResponse = undefined;
+    advanceDialogue();
+  }
+
+  function audioDrained(responseId) {
+    if (!managedResponse || typeof responseId !== "string" || managedResponse.id !== responseId) return;
+    managedResponse.drained = true;
+    if (managedResponse.done) finishResponse();
+  }
+
   function close() {
     state = "closed";
     clearTimeout(maxTimer);
     clearTimeout(disconnectedTimer);
     clearTimeout(finishTimer);
+    clearTimeout(responseStartTimer);
     userActive = false;
     nuriActive = false;
     syncActivity();
@@ -143,57 +200,87 @@ _WEBRTC_SCRIPT = r"""
   }
 
   function modelEvent(event) {
-    if (state !== "connected" || typeof event.data !== "string" || event.data.length > 65536) return;
+    if ((state !== "connected" && state !== "disconnected") ||
+        typeof event.data !== "string" || event.data.length > 65536) return;
     let detail;
     try { detail = JSON.parse(event.data); } catch { return; }
     if (!detail || typeof detail !== "object") return;
     switch (detail.type) {
       case "input_audio_buffer.committed":
         reserveTranscript(detail.item_id, "user");
+        if (manualTurns) {
+          waitingForCommit = false;
+          queuedTurn = true;
+          advanceDialogue();
+        }
         break;
       case "conversation.item.input_audio_transcription.completed":
         recordTranscript(detail.item_id, "user", detail.transcript);
         break;
+      case "response.created":
+        if (managedResponse && !managedResponse.id && typeof detail.response?.id === "string") {
+          clearTimeout(responseStartTimer);
+          managedResponse.id = detail.response.id;
+          if (managedResponse.greeting) greetingResponseId = detail.response.id;
+        }
+        break;
       case "response.output_item.added":
-        if (detail.item?.type === "message" && detail.item.role === "assistant") {
+        if ((!greetingResponseId || detail.response_id !== greetingResponseId) &&
+            detail.item?.type === "message" && detail.item.role === "assistant") {
           reserveTranscript(detail.item.id, "ai");
         }
         break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
-        if (reserveTranscript(detail.item_id, "ai") && typeof detail.transcript === "string") {
+        if ((!greetingResponseId || detail.response_id !== greetingResponseId) &&
+            reserveTranscript(detail.item_id, "ai") && typeof detail.transcript === "string") {
           audioTranscripts.set(detail.item_id, detail.transcript);
         }
         break;
       case "response.done": {
         const completed = [];
-        for (const item of Array.isArray(detail.response?.output) ? detail.response.output : []) {
-          if (item?.type !== "message" || item.role !== "assistant") continue;
-          // The transcript-done event alone also fires on interrupted output.
-          if (detail.response.status === "completed" && (item.status ?? "completed") === "completed"
-              && reserveTranscript(item.id, "ai")) {
-            const content = Array.isArray(item.content) ? item.content : [];
-            const text = content.map(part => part?.transcript).filter(value => typeof value === "string").join(" ");
-            completed.push({ id: item.id, text: text || audioTranscripts.get(item.id) });
+        const response = detail.response;
+        if (response && (!greetingResponseId || response.id !== greetingResponseId) &&
+            response.metadata?.nuri_kind !== "greeting") {
+          for (const item of Array.isArray(response?.output) ? response.output : []) {
+            if (item?.type !== "message" || item.role !== "assistant") continue;
+            // The transcript-done event alone also fires on interrupted output.
+            if (response.status === "completed" && (item.status ?? "completed") === "completed"
+                && reserveTranscript(item.id, "ai")) {
+              const content = Array.isArray(item.content) ? item.content : [];
+              const text = content.map(part => part?.transcript).filter(value => typeof value === "string").join(" ");
+              completed.push({ id: item.id, text: text || audioTranscripts.get(item.id) });
+            }
+            audioTranscripts.delete(item.id);
           }
-          audioTranscripts.delete(item.id);
         }
-        if (completed.length && typeof detail.response.id === "string") {
-          completedAnswers.set(detail.response.id, completed);
+        if (completed.length && typeof response.id === "string") {
+          completedAnswers.set(response.id, completed);
+        }
+        if (managedResponse && typeof response?.id === "string" && response.id === managedResponse.id) {
+          managedResponse.done = true;
+          if (!managedResponse.audioStarted || managedResponse.drained) finishResponse();
         }
         break;
       }
       case "input_audio_buffer.speech_started":
         userActive = true;
-        nuriActive = false;
-        emit("listening");
+        waitingForCommit = manualTurns;
+        if (!manualTurns) nuriActive = false;
+        if (!nuriActive) emit("listening");
         break;
       case "input_audio_buffer.speech_stopped":
-      case "input_audio_buffer.cleared":
         userActive = false;
         break;
+      case "input_audio_buffer.cleared":
+        userActive = false;
+        waitingForCommit = false;
+        advanceDialogue();
+        break;
       case "output_audio_buffer.started":
-        nuriActive = !userActive;
+        if (managedResponse && typeof detail.response_id === "string" &&
+            detail.response_id === managedResponse.id) managedResponse.audioStarted = true;
+        nuriActive = manualTurns || !userActive;
         if (nuriActive) emit("speaking");
         break;
       case "output_audio_buffer.stopped":
@@ -205,15 +292,20 @@ _WEBRTC_SCRIPT = r"""
         completedAnswers.delete(detail.response_id);
         nuriActive = false;
         emit("listening");
+        audioDrained(detail.response_id);
         break;
       case "output_audio_buffer.cleared":
         completedAnswers.delete(detail.response_id);
         nuriActive = false;
         emit("listening");
+        audioDrained(detail.response_id);
+        break;
+      case "error":
+        if (["session_expired", "session_limit_exceeded"].includes(detail.error?.code)) return fail("ended");
+        if (managedResponse && detail.error?.event_id === managedResponse.eventId) finishResponse();
         break;
     }
     syncActivity();
-    if (detail.type === "error" && ["session_expired", "session_limit_exceeded"].includes(detail.error?.code)) fail("ended");
   }
 
   function done() {
@@ -269,7 +361,7 @@ _WEBRTC_SCRIPT = r"""
     try {
       microphone = stream;
       peer = new RTCPeerConnection();
-      const input = stream.getAudioTracks()[0];
+      input = stream.getAudioTracks()[0];
       if (!input) return fail("microphone");
       input.enabled = false;
       input.addEventListener("ended", () => fail("microphone"), { once: true });
@@ -284,20 +376,23 @@ _WEBRTC_SCRIPT = r"""
       remoteEvents = peer.createDataChannel("oai-events");
       remoteEvents.onmessage = modelEvent;
       remoteEvents.onerror = () => fail("connection");
+      remoteEvents.onclose = () => fail("connection");
+      remoteEvents.onopen = advanceDialogue;
       peer.onconnectionstatechange = () => {
         clearTimeout(disconnectedTimer);
         if (state === "closed") return;
         switch (peer.connectionState) {
           case "connected":
             state = "connected";
-            input.enabled = !finishing;
             emit("listening");
+            advanceDialogue();
             break;
           case "disconnected":
             state = "disconnected";
             input.enabled = false;
             userActive = false;
             nuriActive = false;
+            waitingForCommit = false;
             syncActivity();
             disconnectedTimer = setTimeout(() => fail("connection"), 4000);
             break;
@@ -311,14 +406,16 @@ _WEBRTC_SCRIPT = r"""
       await gatherCandidates(peer);
       if (state === "closed") return;
       state = "awaiting-answer";
-      emit("offer", { sdp: peer.localDescription?.sdp });
+      emit("offer", { sdp: peer.localDescription?.sdp, manualTurns: true });
       maxTimer = setTimeout(() => fail("ended"), 300000);
     } catch { fail("connection"); }
   }
 
-  async function answer(sdp, saveTranscript = false) {
+  async function answer(sdp, saveTranscript = false, locale, clientControlsTurns = false) {
     if (state !== "awaiting-answer" || typeof sdp !== "string") return;
     transcriptEnabled = saveTranscript === true;
+    callLocale = Object.prototype.hasOwnProperty.call(openingLines, locale) ? locale : undefined;
+    manualTurns = clientControlsTurns === true;
     state = "connecting";
     try {
       await peer.setRemoteDescription({ type: "answer", sdp });
@@ -351,6 +448,7 @@ class _Offer(BaseModel):
     share_context: StrictBool = False
     share_profile: StrictBool = False
     save_transcript: StrictBool = False
+    manual_turns: StrictBool = False
 
 
 class _EndCall(BaseModel):
@@ -402,29 +500,39 @@ def _call_id(location: str | None) -> str | None:
     return last if sep and prefix in {"/v1/realtime/calls", "/realtime/calls"} and _CALL_ID.fullmatch(last) else None
 
 
-def _session(locale: str, context: str, *, save_transcript: bool) -> dict:
+def _session(
+    locale: str, context: str, *, save_transcript: bool,
+    manual_turns: bool = False, style: str = "",
+) -> dict:
     language = {"zh-CN": "简体中文", "zh-TW": "繁體中文", "en": "English"}[locale]
     model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1").strip()
     if not _MODEL_NAME.fullmatch(model):
         raise HTTPException(503, "Live voice is unavailable")
-    instructions = NURI_PERSONA + "\n\nLive voice style: " + (
-            "You are Nuri, the same child-development and parenting companion as in the family's text chat. "
-            f"Start in {language}; follow the caregiver's current language when it changes. "
-            "Give the answer first, in one to three short natural sentences, unless they ask for more detail "
-            "or a safety-critical explanation needs more. Use the family's relevant facts and offer one concrete "
-            "next step when helpful. Skip acknowledgments, repeated summaries, generic reassurance, filler, and "
-            "follow-ups unless a missing detail changes the advice. Ask at most one focused question. "
-            "When asked what you remember or know about their child, state the relevant confirmed facts you know "
-            "immediately. Do not open with disclaimers about context or claim you know everything. "
-            "If one specific fact is unavailable, say only that detail is unconfirmed, without guessing. "
-            "Speak warmly with a conversational pace, restrained emphasis, and idiomatic Mandarin when speaking Chinese. "
-            "Identify yourself as AI if asked or unclear. You have no live web, location, pricing or purchase tools. "
-            "Do not claim that you searched the web, diagnosed a child, or took an action. "
-            "When the user asks about medicine or symptoms, provide general information, "
-            "never invent a dosage or diagnosis, and recommend a licensed pediatrician or "
-            "pharmacist for individual advice. For immediate danger, advise the caregiver "
-            "to contact their local emergency services promptly. "
-            "Avoid soliciting a child's name, address, identity or other unnecessary details."
+    instructions = NURI_PERSONA
+    if style:
+        instructions += "\n\n" + style
+    instructions += "\n\nLive voice style: " + (
+        f"Start in {language}; follow the caregiver's current language when it changes. "
+        "Speak like the same Nuri they know from text chat: warm, plain, and paying attention to what they just said. "
+        "When they are sharing worry, guilt, or exhaustion, start with specific empathy for the part that is "
+        "hard for them. For example, “这几晚都是你一个人哄，难怪你会累。” A brief, sincere response can be enough "
+        "when they mainly need to be heard. For a straightforward factual question, answer it directly. "
+        "Use a relevant detail from their family when it helps. If a next step would help, offer one they can "
+        "actually try and explain why. Ask one focused question only when its answer matters. "
+        "Use contractions and everyday words in English, and natural spoken Mandarin in Chinese. "
+        "Speak at a relaxed pace. Skip stock reassurance, official-sounding openings, scripted summaries, "
+        "and filler. Let the question determine how long the answer needs to be and complete the thought. "
+        "Keep the greeting short and introduce yourself only on the opening turn. "
+        "When asked what you remember or know about their child, state the relevant confirmed facts you know "
+        "immediately. If one specific fact is unavailable, say that detail is unconfirmed, without guessing. "
+        "Identify yourself as AI if asked or unclear. Apply the text chat rules to your conversational style. "
+        "Speak aloud in ordinary sentences. You cannot save a plan, search the web, access current location, "
+        "check a price or make a purchase from a live call. Do not offer or claim to have completed these actions. "
+        "When the user asks about medicine or symptoms, provide general information, "
+        "never invent a dosage or diagnosis, and recommend a licensed pediatrician or "
+        "pharmacist for individual advice. For immediate danger, advise the caregiver "
+        "to contact their local emergency services promptly. "
+        "Avoid soliciting a child's name, address, identity or other unnecessary details."
     )
     if context:
         instructions += (
@@ -437,20 +545,23 @@ def _session(locale: str, context: str, *, save_transcript: bool) -> dict:
             "due_date from birth_date. Do not infer values for missing fields. Use only what the question needs.\n"
             + context
         )
+    turn_detection = (
+        {"type": "semantic_vad", "eagerness": "medium", "create_response": False, "interrupt_response": False}
+        if manual_turns else {
+            "type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300,
+            "silence_duration_ms": 650, "create_response": True, "interrupt_response": True,
+        }
+    )
     session = {
         "type": "realtime",
         "model": model,
         "output_modalities": ["audio"],
-        "max_output_tokens": 650,
+        "max_output_tokens": "inf",
         "instructions": instructions,
         "audio": {
             "input": {
                 "noise_reduction": {"type": "near_field"},
-                "turn_detection": {
-                    "type": "server_vad", "threshold": 0.5,
-                    "prefix_padding_ms": 300, "silence_duration_ms": 650,
-                    "create_response": True, "interrupt_response": True,
-                },
+                "turn_detection": turn_detection,
             },
             "output": {"voice": "marin"},
         },
@@ -458,6 +569,49 @@ def _session(locale: str, context: str, *, save_transcript: bool) -> dict:
     if save_transcript:
         session["audio"]["input"]["transcription"] = {"model": "gpt-4o-mini-transcribe"}
     return session
+
+
+async def _load_voice_style(sb) -> str:
+    if sb is None:
+        return ""
+    try:
+        async with asyncio.timeout(_STYLE_TIMEOUT_SECONDS):
+            directives = await dialogue.load_directives(CorePorts(
+                supabase=lambda: sb, to_thread=anyio.to_thread.run_sync,
+                style_rules=get_style_rules_ctx,
+            ))
+    except Exception:
+        # The shared persona is still available when the rules store is down.
+        return ""
+
+    # Voice receives an audio stream, so only apply rules that do not depend
+    # on per-turn text pipeline facts, such as the current risk or topic.
+    rules = sorted(
+        (rule for rule in directives if rule.layer == "dialogue" and not rule.applies_when and rule.weight > 0),
+        key=lambda rule: (-rule.priority, -rule.weight),
+    )
+    must = [rule for rule in rules if rule.mode != "advisory"]
+    advisory = [rule for rule in rules if rule.mode == "advisory"][:dialogue.ALWAYS_ADVISORY_LIMIT]
+    return "\n\n".join(
+        "\n".join([dialogue.HEADINGS[heading], *(rule.render() for rule in bucket)])
+        for heading, bucket in (("always", must), ("advisory", advisory))
+        if bucket
+    )
+
+
+async def _load_call_context(offer: _Offer, sb, uid: str, load_owned_session) -> str:
+    # Profile and history disclosures authorize separate sources for this call.
+    if not (offer.share_context or offer.share_profile):
+        return ""
+    try:
+        async with asyncio.timeout(_CONTEXT_TIMEOUT_SECONDS):
+            return await alpha_voice_context.load_context(
+                sb, uid, str(offer.session_id) if offer.session_id else None, load_owned_session,
+                share_profile=offer.share_profile, share_context=offer.share_context,
+                budget_seconds=_CONTEXT_TIMEOUT_SECONDS * 0.9,
+            )
+    except TimeoutError:
+        return ""
 
 
 def _reserve_attempt(uid: str) -> None:
@@ -502,20 +656,14 @@ async def _exchange(uid: str, offer: _Offer, sb, load_owned_session) -> dict:
     }
     _reserve_attempt(uid)
     try:
-        context = ""
-        # Profile and history disclosures authorize separate sources for
-        # this call. Older clients only requested the narrower chat context.
-        if offer.share_context or offer.share_profile:
-            try:
-                async with asyncio.timeout(_CONTEXT_TIMEOUT_SECONDS):
-                    context = await alpha_voice_context.load_context(
-                        sb, uid, str(offer.session_id) if offer.session_id else None, load_owned_session,
-                        share_profile=offer.share_profile, share_context=offer.share_context,
-                        budget_seconds=_CONTEXT_TIMEOUT_SECONDS * 0.9,
-                    )
-            except TimeoutError:
-                pass
-        config = _session(offer.locale, context, save_transcript=offer.save_transcript)
+        context, style = await asyncio.gather(
+            _load_call_context(offer, sb, uid, load_owned_session),
+            _load_voice_style(sb),
+        )
+        config = _session(
+            offer.locale, context, save_transcript=offer.save_transcript,
+            manual_turns=offer.manual_turns, style=style,
+        )
         async with _provider_client(12) as client:
             response = await client.post(
                 _CALLS_URL, headers=client_headers,
@@ -548,6 +696,8 @@ async def _exchange(uid: str, offer: _Offer, sb, load_owned_session) -> dict:
             "proof": _sign("nuri-realtime-end", uid, call, str(expiration)),
         },
     }
+    if offer.manual_turns:
+        result["manual_turns"] = True
     if offer.save_transcript:
         expires = int(time.time()) + alpha_voice_transcript.PROOF_TTL
         result["transcript"] = {"expires": expires, "proof": _sign(

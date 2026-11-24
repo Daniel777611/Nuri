@@ -10,6 +10,19 @@ from .nuri_core.family_store import age_in_months
 
 _CDC_LIBRARY = "https://www.cdc.gov/act-early/milestones-in-action/"
 _CDC_LIBRARY_IMAGE = "https://www.cdc.gov/act-early/media/images/2025/06/30-month-image-1.png"
+_CDC_CHINESE_CHECKLIST = "https://www.cdc.gov/act-early/media/pdfs/2025/11/cdc-milestone-checklists-ltsae-chinese.pdf"
+_HPA_TRADITIONAL_GUIDE = "https://www.hpa.gov.tw/Pages/List.aspx?nodeid=4821"
+_HPA_YOUTUBE = "https://www.youtube.com/user/hpagov"
+# Videos from Taiwan's Health Promotion Administration. The public clips are
+# actually in Chinese, including when the app prefers Simplified Chinese.
+# The overview covers the preventive-care handbook for children under seven.
+_HPA_ALL_AGES = ("yVL2RclZ1J0", "寶貝成長路：全齡篇")
+_HPA_STAGE_VIDEOS = (
+    (2, 3, "jvDcZ47N6n8", "寶貝成長路：二個月至四個月篇"),
+    (4, 9, "wG2wh9b3X8I", "寶貝成長路：四個月至十個月篇"),
+    (10, 17, "NlWnbuOMMEE", "寶貝成長路：十個月至一歲半篇"),
+    (18, 24, "RGf7f0pjBjY", "寶貝成長路：一歲半至二歲篇"),
+)
 
 
 @dataclass(frozen=True)
@@ -134,9 +147,8 @@ def _age_group(months: int | None) -> tuple[int | None, int | None]:
 
 
 def reviewed_cards(months: int | None, locale: str, kinds: tuple[str, ...],
-                   *, include_videos: bool = True) -> list[dict[str, str]]:
-    # The CDC photo and video series ends at 5 years. Leave other ages to
-    # the ordinary provider instead of sending a preschool clip by default.
+                   *, include_videos: bool = True, explicit: str = "") -> list[dict[str, str]]:
+    # This library covers early childhood. Leave older children to search.
     if months is not None and months >= 72:
         return []
     group, upcoming = _age_group(months)
@@ -148,7 +160,17 @@ def reviewed_cards(months: int | None, locale: str, kinds: tuple[str, ...],
         title = f"{_age_title(group, locale)} · {title}"
     cover = thumbnail_url(examples[0].video_id) if group is not None else _CDC_LIBRARY_IMAGE
     items = []
-    if include_videos and "video" in kinds:
+    chinese = locale.startswith("zh")
+    if include_videos and "video" in kinds and chinese and explicit != "zh-CN":
+        stage = next(((video_id, name) for low, high, video_id, name in _HPA_STAGE_VIDEOS
+                      if months is not None and low <= months <= high), None)
+        for video_id, name in [stage, _HPA_ALL_AGES] if stage else [_HPA_ALL_AGES]:
+            items.append({
+                "type": "video", "video_id": video_id, "title": name,
+                "url": watch_url(video_id), "thumbnail_url": thumbnail_url(video_id),
+                "source_url": _HPA_YOUTUBE,
+            })
+    elif include_videos and "video" in kinds and not chinese:
         for stage in (group, upcoming) if upcoming is not None else (group,):
             video_rows = _EXAMPLES[stage][1] if stage is not None else (_OVERVIEW,)
             clip_limit = 2 if len(kinds) > 1 or stage == upcoming else 3
@@ -163,7 +185,12 @@ def reviewed_cards(months: int | None, locale: str, kinds: tuple[str, ...],
                     "source_url": stage_source,
                 })
     if "article" in kinds:
-        items.append({"type": "article", "title": title, "url": source, "thumbnail_url": cover})
+        if locale == "zh-CN":
+            items.append({"type": "article", "title": "CDC 发育里程碑清单（简体中文）", "url": _CDC_CHINESE_CHECKLIST})
+        elif locale == "zh-TW":
+            items.append({"type": "article", "title": "兒童發展篩檢量表 · 國民健康署", "url": _HPA_TRADITIONAL_GUIDE})
+        else:
+            items.append({"type": "article", "title": title, "url": source, "thumbnail_url": cover})
     if "image" in kinds:
         items.append({"type": "image", "title": title, "url": cover, "thumbnail_url": cover, "source_url": source})
     return items

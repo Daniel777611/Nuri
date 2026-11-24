@@ -12,9 +12,10 @@ from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import httpx
 
-from . import alpha_milestones
+from . import alpha_milestones, locales
 from .content_research import redact_conversation_text
 from .feed.daily_video import thumbnail_url, video_id_of, watch_url
+from .nuri_core.exemplars import script_of
 from .nuri_core.family_store import redact_child_profile_text
 from .websearch import SearchImage, SearchRequest, SearchResult, get_provider
 
@@ -83,7 +84,7 @@ _SHORT_REFERENCE = re.compile(
 )
 _ARTICLE_DOMAINS = (
     "healthychildren.org", "kidshealth.org", "nhs.uk", "cdc.gov", "nih.gov", "who.int",
-    "unicef.org", "zerotothree.org", "childmind.org", "raisingchildren.net.au", "parenting.com.tw",
+    "unicef.org", "unicef.cn", "mayoclinic.org", "zerotothree.org", "childmind.org", "raisingchildren.net.au", "parenting.com.tw",
     "aap.org", "fhs.gov.hk", "hpa.gov.tw", "mohw.gov.tw", "ntuh.gov.tw", "hch.gov.tw",
     "developingchild.harvard.edu", "chop.edu", "seattlechildrens.org", "asha.org",
 )
@@ -304,17 +305,32 @@ _OFF_TOPIC_VIDEO = re.compile(
 )
 
 
-_EXPLICIT_ZH_VIDEO = re.compile(
+_EXPLICIT_ZH_MEDIA = re.compile(
     r"\b(?:only|just) (?:in )?(?:chinese|mandarin)\b|\b(?:chinese|mandarin)[ -]only\b"
-    r"|\b(?:in chinese|mandarin chinese|chinese[- ]language|(?:chinese|mandarin) videos?)\b|中文(?:的|語音|语音|配音|解說|解说|[视視]頻|视频|影片)"
-    r"|(?<!不)(?:只[要給给]|要|找|看)[\s]*(?:中文|普通[话話]|[国國][语語]|[华華][语語])|不要英文",
+    r"|\b(?:in chinese|mandarin chinese|chinese[- ]language|(?:chinese|mandarin) (?:videos?|articles?|sources?))\b"
+    r"|(?<!不要)中文(?:的|語音|语音|配音|解說|解说|视频|視頻|影片|文章|[资資]料)"
+    r"|(?<!不)(?:只[要給给]|要|找|看)\s*(?:中文|普通[话話]|[国國][语語]|[华華][语語])|不要英文",
     re.I,
 )
-_EXPLICIT_EN_VIDEO = re.compile(
-    r"\b(?:in english|english[ -]only|english-language)\b|(?<!不)(?:要|找|只看)英文|不要中文|英文(?:的视频|的影片|視頻|视频|影片)",
+_EXPLICIT_EN_MEDIA = re.compile(
+    r"\b(?:in english|only english|english[ -]only|english-language|english (?:videos?|articles?|sources?))\b"
+    r"|(?<!不)(?:要|找|只看)英文|不要中文"
+    r"|(?<!不要)(?<![学學习習教练練])英文(?:的)?(?:视频|視頻|影片|文章|[资資]料)",
     re.I,
 )
+_EXPLICIT_ZHS_MEDIA = re.compile(r"\bsimplified chinese\b|简体中文|簡體中文|只要[简簡][体體]", re.I)
+_EXPLICIT_ZHT_MEDIA = re.compile(r"\btraditional chinese\b|繁[体體]中文|只要繁[体體]", re.I)
 _HAN_TEXT = re.compile(r"[㐀-鿿]")
+_KANA_OR_HANGUL = re.compile(r"[ぁ-ゖァ-ヺ가-힣]")
+_ENGLISH_RESOURCE_WORD = re.compile(
+    r"\b(?:and|bab(?:y|ies)|child(?:ren|hood)?|development|for|guide|how|kids?|learning|milestones?|"
+    r"parents?|read|the|toddlers?|tips|what|when|with|words|you(?:r)?)\b", re.I,
+)
+_ARTICLE_LOCALE_PATHS = {
+    "zh-cn": "zh-CN", "zh-hans": "zh-CN", "sc_chi": "zh-CN",
+    "zh-tw": "zh-TW", "zh-hant": "zh-TW", "tc_chi": "zh-TW",
+    "en": "en", "en-us": "en", "en-gb": "en", "english": "en",
+}
 _BOOK_TITLE = re.compile(r'《([^》]{2,80})》|“([^”]{2,80})”|"([^"]{2,80})"')
 _TITLE_BEFORE_READ_ALOUD = re.compile(r"\b((?:[A-Z][a-z'’-]+[ ,]+){1,8}[A-Z][a-z'’-]+),?\s+read[ -]aloud\b")
 # Each ID was checked against YouTube's public metadata and the named
@@ -405,12 +421,14 @@ _REVIEWED_ARTICLES = {
 }
 
 
-def _reviewed_videos(topic: _VideoTopic | None, locale: str, *, named_book: str = "") -> list[dict[str, str]]:
+def _reviewed_videos(topic: _VideoTopic | None, locale: str, *, named_book: str = "",
+                     explicit: str = "") -> list[dict[str, str]]:
     rows = _REVIEWED_VIDEOS.get(topic, {}).get("zh" if locale.startswith("zh") else "en", ())
     return [
         {"type": "video", "title": title, "source_url": source, **public_video_fields(watch_url(video_id))}
         for title, video_id, source in rows
-        if not named_book or _book_title_matches(title, named_book)
+        if (not named_book or _book_title_matches(title, named_book))
+        and (not explicit or _matches_language(_resource_language(title, ""), locale, explicit))
     ]
 
 
@@ -419,7 +437,54 @@ def _reviewed_articles(topic: _VideoTopic | None, locale: str) -> list[SearchRes
     if not rows:
         return []
     simplified, traditional, english = rows
-    return [traditional if locale == "zh-TW" else simplified, english] if locale.startswith("zh") else [english]
+    chinese = traditional if locale == "zh-TW" else simplified
+    return [chinese, english] if locale.startswith("zh") else [english, chinese]
+
+
+def _explicit_locale(text: str) -> str:
+    for pattern, locale in (
+        (_EXPLICIT_ZHS_MEDIA, "zh-CN"), (_EXPLICIT_ZHT_MEDIA, "zh-TW"),
+        (_EXPLICIT_ZH_MEDIA, "zh"), (_EXPLICIT_EN_MEDIA, "en"),
+    ):
+        if pattern.search(text):
+            return locale
+    return ""
+
+
+def _resource_language(title: str, snippet: str, url: str = "") -> str:
+    # Provider language is the input query's language, not the linked source's.
+    # For articles a publisher's explicit locale path describes the page itself.
+    if url:
+        path = urlsplit(url).path.casefold().split("/")
+        if explicit := next((_ARTICLE_LOCALE_PATHS[part] for part in path if part in _ARTICLE_LOCALE_PATHS), ""):
+            return explicit
+    if _KANA_OR_HANGUL.search(title):
+        return ""
+    han = len(_HAN_TEXT.findall(title))
+    if han >= 2:
+        script = script_of(title) or script_of(snippet[:240])
+        return {"zhs": "zh-CN", "zht": "zh-TW"}.get(script, "zh")
+    return "en" if _ENGLISH_RESOURCE_WORD.search(title) else ""
+
+
+def _matches_language(language: str, locale: str, explicit: str = "") -> bool:
+    if explicit in {"zh-CN", "zh-TW"}:
+        return language == explicit
+    return bool(language and language[:2] == locale[:2])
+
+
+def _language_label(items: list[dict[str, str]], locale: str) -> list[dict[str, str]]:
+    suffix = {"zh-CN": "（英文）", "zh-TW": "（英文）", "en": " (Chinese)"}[locale]
+    return [{**item, "title": item["title"][:160 - len(suffix)] + suffix} for item in items]
+
+
+def _localized_query(topic: _VideoTopic | None, subject: str, locale: str) -> str:
+    if topic:
+        return topic.query(locale)
+    if _matches_language(_resource_language(subject, ""), locale):
+        return subject
+    language = {"en": "English", "zh-CN": "简体中文", "zh-TW": "繁體中文"}[locale]
+    return f"{subject} {language}"
 
 
 def _recent_resource_text(history, role: str | None = None) -> list[str]:
@@ -524,9 +589,9 @@ def _subject_matches(title: str, subject: str) -> bool:
     return bool(significant and sum(token in title for token in significant) >= min(len(significant), 2))
 
 
-def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: str = "", subject: str = "",
-                 *, named_book: str = "") -> list[dict[str, str]]:
-    scored: list[tuple[int, dict[str, str]]] = []
+def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], locale: str, subject: str = "",
+                 *, named_book: str = "", explicit: str = "") -> list[dict[str, str]]:
+    scored: list[tuple[int, int, dict[str, str]]] = []
     for row in rows:
         title = _plain_title(row.title).removesuffix(" - YouTube")
         title_evidence = _video_subject(title)
@@ -534,8 +599,8 @@ def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: 
         if (not title or _OFF_TOPIC_VIDEO.search(title_evidence) or _OFF_TOPIC_VIDEO.search(snippet)
                 or _MEDICAL_TEXT.search(title_evidence)):
             continue
-        if ((language == "zh" and not _HAN_TEXT.search(title_evidence))
-                or (language == "en" and _HAN_TEXT.search(title_evidence))):
+        language = _resource_language(title_evidence, snippet)
+        if not _matches_language(language, locale, explicit):
             continue
         child_in_title = bool(_CHILD_VIDEO.search(title_evidence))
         if named_book:
@@ -547,11 +612,11 @@ def _video_items(topic: _VideoTopic | None, rows: list[SearchResult], language: 
         elif not _subject_matches(title_evidence, subject):
             continue
         if fields := public_video_fields(row.url):
-            scored.append((2 if child_in_title else 1, {"type": "video", "title": title, **fields}))
+            scored.append((int(language == locale), int(child_in_title), {"type": "video", "title": title, **fields}))
     # Use the snippet to corroborate the audience, never to turn an unrelated
     # title into a match. Prefer titles that themselves name the child audience.
     unique: dict[str, dict[str, str]] = {}
-    for _, item in sorted(scored, key=lambda row: -row[0]):
+    for _, _, item in sorted(scored, key=lambda row: (-row[0], -row[1])):
         unique.setdefault(item["video_id"], item)
     return list(unique.values())
 
@@ -598,9 +663,9 @@ def resource_reply(transition: dict | None, locale: str) -> str:
     """Match visible text to the resources this turn actually returned."""
     if transition and transition.get("catalog") == "cdc_milestones":
         return {
-            "zh-CN": "下面是 CDC 按月龄整理的发育里程碑示例，点卡片就能打开。",
-            "zh-TW": "下方是 CDC 按月齡整理的發展里程碑示例，點卡片就能開啟。",
-        }.get(locale, "Here are the CDC's milestone examples by age. Tap a card to open it.")
+            "zh-CN": "下面是儿童发育阶段的资料，点卡片就能打开。",
+            "zh-TW": "下方是兒童發展階段的資料，點卡片就能開啟。",
+        }.get(locale, "Here are resources on early childhood development. Tap a card to open it.")
     messages = {
         "zh-CN": ("相关资料在下面，点卡片就能打开。", "这次没找到可以核实的相关资料。"),
         "zh-TW": ("相關資料在下方，點卡片即可開啟。", "這次沒找到可以核實的相關資料。"),
@@ -648,6 +713,8 @@ def _subject(value: str, children: list) -> str:
     safe = redact_conversation_text(redact_child_profile_text(_RESOURCE_CORRECTION.sub("", value), children), 180)
     if _PRIVATE_TEXT.search(safe):
         return ""
+    for pattern in (_EXPLICIT_ZHS_MEDIA, _EXPLICIT_ZHT_MEDIA, _EXPLICIT_ZH_MEDIA, _EXPLICIT_EN_MEDIA):
+        safe = pattern.sub(" ", safe)
     for regex in _MEDIA.values():
         safe = regex.sub(" ", safe)
     if len(safe.strip()) < 3 or _is_reference(safe):
@@ -789,6 +856,15 @@ def _result_items(kind: str, rows: list[SearchResult]) -> list[dict[str, str]]:
     return items
 
 
+def _article_language(row: SearchResult) -> str:
+    return _resource_language(row.title, row.snippet, row.url)
+
+
+def _article_candidates(rows: list[SearchResult], locale: str, explicit: str) -> list[SearchResult]:
+    local = [row for row in rows if _matches_language(_article_language(row), locale, explicit)]
+    return sorted(local, key=lambda row: _article_language(row) != locale)
+
+
 async def find_chat_media(
     text: str,
     kinds: tuple[str, ...],
@@ -801,14 +877,20 @@ async def find_chat_media(
     history=(),
 ) -> dict | None:
     """Only verified public resources reach cards. No transcript is sent."""
+    locale = locales.normalize_preferred_locale(locale)
     compact_text = redact_conversation_text(text, 320)
     if _PRIVATE_TEXT.search(compact_text) or _OFF_TOPIC_VIDEO.search(compact_text):
         return None
-    direct_query = _query(text, None, children, locale, False)
+    explicit = _explicit_locale(text)
+    content_locale = explicit if explicit and explicit != "zh" else locale
+    if explicit == "zh" and not locale.startswith("zh"):
+        content_locale = "zh-CN"
+    fallback_locale = "en" if content_locale.startswith("zh") else "zh-CN"
+    direct_query = _query(text, None, children, content_locale, False)
     query = direct_query
     previous_request = _previous_resource_request(text, history, children) if not query else ""
     if not query and allow_history:
-        query = _subject(previous_request, children) or _query(text, route, children, locale, True)
+        query = _subject(previous_request, children) or _query(text, route, children, content_locale, True)
     medical = bool(authority_only or getattr(route, "is_medical", False)
                    or _MEDICAL_TEXT.search(text) or _MEDICAL_TEXT.search(query))
     topic = _resource_topic(text, query, route, children, allow_history, history)
@@ -823,10 +905,10 @@ async def find_chat_media(
         diagnostic_text = text if _MILESTONE_TOPIC.terms.search(text) else f"{text} {prior}"
         if _MEDICAL_TEXT.search(diagnostic_text) or _MILESTONE_CLINICAL.search(diagnostic_text):
             medical = True
-        elif not _EXPLICIT_ZH_VIDEO.search(text):
+        else:
             relevant = [message for message in recent if _MILESTONE_TOPIC.terms.search(message)]
             months = alpha_milestones.child_age(text, children, relevant)
-            cards = alpha_milestones.reviewed_cards(months, locale, kinds)
+            cards = alpha_milestones.reviewed_cards(months, content_locale, kinds, explicit=explicit)
             if cards:
                 return {"kind": "chat_media", "catalog": "cdc_milestones", "items": cards[:_MAX_ITEMS]}
     if not topic and not query:
@@ -834,7 +916,6 @@ async def find_chat_media(
     if not direct_query and not allow_history:
         # A local topic match can select from the reviewed library only.
         query = ""
-    lang = "zh" if locale.startswith("zh") else "en"
     provider = get_provider()
     live_provider = provider.name not in ("null", "stub")
     # Tavily exposes a strict fetch API for callers that need to distinguish
@@ -854,71 +935,83 @@ async def find_chat_media(
     async def videos():
         if medical or "video" not in kinds:
             return []
-        language = "zh" if _EXPLICIT_ZH_VIDEO.search(text) else "en" if _EXPLICIT_EN_VIDEO.search(text) else ""
-        search_locale = "en" if language == "en" else "zh-CN" if language == "zh" and lang != "zh" else locale
         context_request = text if direct_query else previous_request
         named_book = _book_subject(context_request, children) if topic is _READING_VIDEO_TOPIC else ""
         months = alpha_milestones.child_age(context_request, children, []) if topic in (
             _READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC,
         ) and not named_book else None
+        limit = _MAX_ITEMS if len(kinds) == 1 else 3
+
+        async def search_videos(target_locale: str, timeout: float):
+            is_zh = target_locale.startswith("zh")
+            subject = _localized_query(topic, query, target_locale)
+            if named_book:
+                spoken = "繪本朗讀" if target_locale == "zh-TW" else "绘本朗读" if is_zh else "read aloud"
+                subject = f"{named_book} {spoken}"
+            elif months is not None:
+                age = (f"{months}{'個' if target_locale == 'zh-TW' else '个'}月" if is_zh
+                       else f"{months}-month-old")
+                subject = f"{age} {subject}"
+            return await search(SearchRequest(
+                query=subject, lang="zh" if is_zh else "en",
+                include_domains=("youtube.com",), max_results=8,
+            ), timeout)
+
+        rows, status = [], "not_requested"
         if query or topic and allow_history:
-            locales = [search_locale]
-            if topic in (_READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC) and not language and lang == "zh":
-                locales.append("en")
-            clock = asyncio.get_running_loop()
-            deadline = clock.time() + 5.0
-            for index, video_locale in enumerate(locales):
-                is_zh = video_locale.startswith("zh")
-                subject = topic.query(video_locale) if topic else query
-                if named_book:
-                    subject = f"{named_book} {'绘本朗读' if is_zh else 'read aloud'}"
-                elif months is not None:
-                    age = (f"{months}{'個' if video_locale == 'zh-TW' else '个'}月" if is_zh
-                           else f"{months}-month-old")
-                    subject = f"{age} {subject}"
-                timeout = min(3.0, deadline - clock.time()) if len(locales) > index + 1 else deadline - clock.time()
-                if timeout <= 0:
-                    break
-                rows, status = await search(SearchRequest(
-                    query=subject, lang="zh" if is_zh else "en",
-                    include_domains=("youtube.com",), max_results=8,
-                ), timeout)
-                items = _video_items(topic, rows, language, query, named_book=named_book)
-                if items:
-                    return items[:_MAX_ITEMS if len(kinds) == 1 else 3]
-                if status == "completed":
-                    status = "filtered" if rows else "no_results"
-                logger.warning("alpha_video_search_empty provider=%s status=%s candidate_count=%s",
-                               provider.name, status, len(rows))
-                if status in {"provider_unavailable", "provider_error"}:
-                    break
-        items = _reviewed_videos(topic, search_locale, named_book=named_book)
-        if not language and lang == "zh" and topic in (_READING_VIDEO_TOPIC, _EARLY_LEARNING_VIDEO_TOPIC):
-            items.extend(_reviewed_videos(topic, "en", named_book=named_book))
-        return items[:_MAX_ITEMS if len(kinds) == 1 else 3]
+            rows, status = await search_videos(content_locale, 5.0 if explicit else 3.0)
+            items = _video_items(topic, rows, content_locale, query, named_book=named_book, explicit=explicit)
+            if items:
+                return items[:limit]
+            if status == "completed":
+                status = "filtered" if rows else "no_results"
+            logger.warning("alpha_video_search_empty provider=%s status=%s candidate_count=%s",
+                           provider.name, status, len(rows))
+
+        local = _reviewed_videos(topic, content_locale, named_book=named_book, explicit=explicit)
+        if local or explicit:
+            return local[:limit]
+        fallback = _video_items(topic, rows, fallback_locale, query, named_book=named_book)
+        if not fallback and topic and content_locale.startswith("zh") and status in {"filtered", "no_results", "timeout"}:
+            other_rows, _ = await search_videos(fallback_locale, 2.0)
+            fallback = _video_items(topic, other_rows, fallback_locale, query, named_book=named_book)
+        if not fallback:
+            fallback = _reviewed_videos(topic, fallback_locale, named_book=named_book)
+        return _language_label(fallback[:limit], content_locale)
 
     async def articles_and_images():
         requested = [kind for kind in ("article", "image") if kind in kinds]
         if not requested:
             return []
-        reviewed = _reviewed_articles(topic, locale)
+        reviewed = _reviewed_articles(topic, content_locale)
         rows = _source_rows(existing, medical, topic, query) if query or allow_history else []
-        if query and live_provider and (not rows or "image" in requested or not any(_images(row) for row in rows)):
-            source_query = topic.query(locale) if topic else query
+        local = _article_candidates(rows, content_locale, explicit)
+        if query and live_provider and (not local or "image" in requested or not any(_images(row) for row in local)):
             live, _ = await search(SearchRequest(
-                query=source_query, lang=lang, include_domains=_ARTICLE_DOMAINS,
+                query=_localized_query(topic, query, content_locale), lang="zh" if content_locale.startswith("zh") else "en",
+                include_domains=_ARTICLE_DOMAINS,
                 max_results=6, include_images=True,
             ))
             rows.extend(_source_rows(live, medical, topic, query))
         # Include the reviewed pictures when the search returned only text.
         combined = {row.url: row for row in reviewed}
         combined.update((row.url, row) for row in rows)
-        prioritized = list(dict.fromkeys(row.url for row in rows + reviewed))[:_MAX_ITEMS]
-        sources = [combined[url] for url in prioritized]
-        if query and live_provider:
-            sources = await _with_article_covers(sources)
+        ordered_urls = dict.fromkeys(row.url for row in rows + reviewed)
+        sources = [combined[url] for url in ordered_urls]
+        local = _article_candidates(sources, content_locale, explicit)[:_MAX_ITEMS]
+        fallback = [] if explicit else _article_candidates(sources, fallback_locale, "")[:_MAX_ITEMS]
         per_kind = _MAX_ITEMS if len(kinds) == 1 else 3 if len(kinds) == 2 else 2
-        return [item for kind in requested for item in _result_items(kind, sources)[:per_kind]]
+        if query and live_provider:
+            local = await _with_article_covers(local)
+            if fallback and (not local or "image" in requested and not any(_images(row) for row in local)):
+                fallback = await _with_article_covers(fallback)
+        items = []
+        for kind in requested:
+            matching = _result_items(kind, local)[:per_kind]
+            if not matching and fallback:
+                matching = _language_label(_result_items(kind, fallback)[:per_kind], content_locale)
+            items.extend(matching)
+        return items
 
     items = []
     seen = set()

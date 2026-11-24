@@ -6162,7 +6162,11 @@ async def _find_turn_chat_media(body: UserMessageIn, turn: _Turn, rc: _ReplyCont
         return None
     try:
         privacy = await stores.get_privacy(turn.owner_uid, fail_closed=True)
-        locale = (body.client_context.locale if body.client_context else None) or "en"
+        requested_locale = body.client_context.locale if body.client_context else None
+        locale = locales.with_requested_preferred_locale(
+            {"preferred_locale": privacy.get("language")},
+            "zh-CN" if requested_locale == "zh" else requested_locale,
+        )["preferred_locale"]
         return await alpha_chat_media.find_chat_media(
             body.text, kinds, locale=locale, route=rc.route,
             children=list(turn.context_hints.get("children") or []),
