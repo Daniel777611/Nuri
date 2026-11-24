@@ -67,6 +67,61 @@ def test_a_negated_behavior_is_not_a_tag():
     assert "walks" in tx.tags_in("这周突然会走了")
 
 
+# What first-time parents actually write. Each of these was read as the
+# behavior having happened, and the growth calendar showed it as 已出现
+# quoting the parent's own worried sentence back at them.
+@pytest.mark.parametrize("text", [
+    "快4个月了还不会翻身",          # 不 three characters before the word
+    "翻身还不会",                   # negated after the word
+    "抬头还不稳",
+    "坐得不稳",
+    "还没开始吃辅食",
+    "已经断夜奶了",                 # stopping something is not doing it
+    "夜奶戒掉了",
+    "不再夜醒了",
+    "不知道是不是在长牙",           # a doubt is not an observation
+    "she isn't rolling over yet",
+    "she is not sitting up yet",
+    "grandma does the babysitting",  # inside another word
+    "worried about the pediatrician appointment",
+])
+def test_misread_sentences_give_no_tag(text):
+    assert tx.tags_in(text) == []
+
+
+@pytest.mark.parametrize("text, tag", [
+    ("会翻身了", "rolls"),
+    ("一直不停地翻身", "rolls"),             # 不停 means "keeps on"
+    ("夜醒不少", "night_waking"),            # 不少 means "quite a lot"
+    ("会走路没多久", "walks"),
+    ("翻身没问题，坐还不稳", "rolls"),       # the negation stays in its clause
+    ("扶着沙发能走几步，但还不会自己走", "cruises"),
+    ("还在夜奶，一晚两次", "night_feeds"),
+    ("開始吃副食品了", "on_solids"),
+    ("she started rolling over", "rolls"),
+    ("he points at the dog", "points"),
+])
+def test_plainly_said_behaviors_still_tag(text, tag):
+    assert tx.tags_in(text) == [tag]
+
+
+def test_the_extractor_choosing_no_tag_is_final():
+    # A subcategory key is the new extractor's row with tag "": it read the
+    # conversation and decided no behavior is shown. The words are not
+    # re-read to overturn that.
+    c = tx.classify({"category": "child_state", "key": "motor/抬头", "value": "抬头还不太稳，趴一会就哭"})
+    assert c.subcategory == "motor" and c.tags == () and not c.inferred
+    c = tx.classify({"category": "child_state", "key": "motor/翻身", "value": "会翻身了"})
+    assert c.tags == ()
+
+
+def test_a_parents_worry_never_shows_as_reached_on_the_calendar():
+    birth = born_weeks_ago(15)
+    rows = [row("宝宝快4个月了还不会翻身，别人家的都会了"), row("抬头还不太稳，趴一会就哭")]
+    week = next(w for w in cp.calendar(birth, TODAY, rows, weeks=1, past=0)["weeks"] if w["is_current"])
+    assert all(p["status"] != "active" for p in week["periods"] if p["id"] in ("rolling", "head_control"))
+
+
 def test_the_extractor_output_is_folded_into_the_key():
     m = family_store.labelled_memory(
         {"category": "child_state", "subcategory": "motor", "tag": "cruises", "key": "走路",

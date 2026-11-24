@@ -133,8 +133,29 @@ BEHAVIOR_TAGS_BY_ID = {t.id: t for t in BEHAVIOR_TAGS}
 
 _TAG_KEY = re.compile(r"^(?:(?P<sub>[a-z_]+)/)?tag:(?P<tag>[a-z_]+)$")
 _SUB_KEY = re.compile(r"^(?P<sub>[a-z_]+)/(?P<rest>.+)$")
-#: "还不会走" names walking and means the opposite.
-_NEGATION = re.compile(r"(不|没|沒|没有|沒有|还不|還不|不太|不肯|未)$")
+#: Reading a tag from the words has to fail towards "not said": a tag shows
+#: the parent "已出现" on the growth calendar, quoting their own sentence, so
+#: "快4个月了还不会翻身" read as 会翻身 tells a worried parent the opposite of
+#: what they said. A sentence that is negated, doubtful or about stopping
+#: something gives no tag.
+_CLAUSE_END = re.compile(r"[，,。.;；！!？?、\n]")
+#: How far before the word a 不/没 still negates it, inside one clause:
+#: "还没开始吃辅食" has four characters between 没 and 辅食.
+_ZH_REACH = 5
+#: Not 别: it sits inside 特别, which is how parents say "very".
+_ZH_NEG_BEFORE = re.compile(r"[不没沒未]")
+#: Right in front of the word only: "断夜奶", "戒夜奶".
+_ZH_STOP_BEFORE = re.compile(r"[断斷戒]$")
+#: Right after the word: "翻身还不会", "抬头还不稳", "坐得不稳", "夜奶戒掉了".
+_ZH_NEG_AFTER = re.compile(r"^(还|還|都|也|得|的|已经|已經)?([不没沒未]|戒|断|斷|停)")
+#: Phrases with 不/没/断 in them that do not negate: "一直不停翻身",
+#: "夜醒不少", "会走路没多久", "翻身没问题". Masked before looking.
+_NOT_NEGATION = ("断断续续", "斷斷續續", "没多久", "沒多久", "没问题", "沒問題",
+                 "不停", "不断", "不斷", "不少", "不止", "不久", "不错", "不錯")
+_EN_NEG = re.compile(
+    r"\b(not|never|no longer|no more|isn'?t|aren'?t|doesn'?t|don'?t|hasn'?t|haven'?t|"
+    r"can'?t|cannot|won'?t|yet to|stopped)\b"
+)
 
 
 def make_key(subcategory: str, key: str, tag: str = "") -> str:
@@ -155,13 +176,37 @@ def bare_key(key: str) -> str:
     return m.group("rest") if m and m.group("sub") in SUBCATEGORIES_BY_ID else key
 
 
+def _mask_non_negations(text: str) -> str:
+    for phrase in _NOT_NEGATION:
+        text = text.replace(phrase, "·" * len(phrase))
+    return text
+
+
 def _mentions(text: str, word: str) -> bool:
-    lowered = text.lower()
-    start = lowered.find(word.lower())
+    """Whether the text says the word happens: one occurrence that is not
+    negated within its clause. English words must start a word, so "sitting"
+    is not found in "babysitting" nor "point" in "appointment"."""
+    lowered = _mask_non_negations(text.lower())
+    needle = word.lower()
+    english = needle.isascii()
+    start = lowered.find(needle)
     while start >= 0:
-        if not _NEGATION.search(lowered[max(0, start - 2):start]):
+        end = start + len(needle)
+        clause_start = max((m.end() for m in _CLAUSE_END.finditer(lowered, 0, start)), default=0)
+        after_clause = _CLAUSE_END.search(lowered, end)
+        before = lowered[clause_start:start]
+        after = lowered[end:after_clause.start() if after_clause else len(lowered)]
+        if english:
+            ok = (start == 0 or not lowered[start - 1].isalpha()) and not _EN_NEG.search(before)
+        else:
+            ok = not (
+                _ZH_NEG_BEFORE.search(before[-_ZH_REACH:])
+                or _ZH_STOP_BEFORE.search(before)
+                or _ZH_NEG_AFTER.search(after)
+            )
+        if ok:
             return True
-        start = lowered.find(word.lower(), start + 1)
+        start = lowered.find(needle, start + 1)
     return False
 
 
@@ -231,9 +276,11 @@ def classify(row: dict) -> Classified:
         return Classified(category, m.group("sub") or tag.subcategory, (tag.id,), False)
     m = _SUB_KEY.match(key)
     if m and m.group("sub") in SUBCATEGORIES_BY_ID:
-        sub = m.group("sub")
-        tags = tuple(tags_in(value)) if category == "child_state" else ()
-        return Classified(category, sub, tags, False)
+        # Written by the extractor, which read the whole conversation and
+        # chose tag "" (a behavior would have made this a tag: key). Its
+        # judgement stands; re-reading the words could only overturn it with
+        # a worse one ("抬头还不太稳" → 抬头稳了).
+        return Classified(category, m.group("sub"), (), False)
     text = f"{key} {value}".lower()
     tags = tuple(tags_in(text)) if category == "child_state" else ()
     if tags:
