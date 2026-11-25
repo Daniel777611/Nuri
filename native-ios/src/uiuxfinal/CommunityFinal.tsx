@@ -1529,7 +1529,7 @@ export default function CommunityFinal() {
         {canPost?<View testID="final-private-reply-dock" style={{flexShrink:0,gap:12,paddingHorizontal:20,paddingTop:8,paddingBottom:20}}><FinalText size={14} secondary style={{lineHeight:20,fontWeight:"500"}}>{c("你的回复","Your reply")}</FinalText>{editor(c("写下你的回复…","Write your reply…"),()=>comment(slot))}</View>:null}
       </FinalSurface>
     </View>{reportSheet}</NuriKeyboardFrame>;
-    return <NuriKeyboardFrame><ScrollView testID="final-reply-list-scroll" keyboardShouldPersistTaps="handled" style={{flex:1,minHeight:0}} contentContainerStyle={{flexGrow:1,padding:12,paddingBottom:34,gap:16}}>
+    return <NuriKeyboardFrame><ScrollView testID="final-reply-list-scroll" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{flex:1,minHeight:0}} contentContainerStyle={{flexGrow:1,padding:12,paddingBottom:34,gap:16}}>
       {questionContext}
       <FinalSurface testID={"final-community-"+state.screen} style={{flexGrow:1,flexShrink:0,boxShadow:"0px 0px 8px rgba(89,71,92,.12)"}} contentStyle={{flexGrow:1,padding:16,gap:16}}>
         {replyListContent()}
