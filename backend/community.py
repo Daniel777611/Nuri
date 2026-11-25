@@ -38,7 +38,7 @@ import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any, Callable, Literal, Optional
+from typing import AbstractSet, Any, Callable, Literal, Optional
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -71,6 +71,8 @@ DELIVERY_TTL_DAYS = int(os.getenv("COMMUNITY_DELIVERY_TTL_DAYS", "30"))
 AI_MATCHING = os.getenv("COMMUNITY_AI_MATCHING", "1") == "1"
 MATCH_SHORTLIST = 20
 MATCH_TIMEOUT_S = float(os.getenv("COMMUNITY_MATCH_TIMEOUT_S", "8"))
+_SYNTHETIC_BOTTLE_COOLDOWN = timedelta(hours=6)
+_SYNTHETIC_BOTTLE_MIN_REAL_FIT = 0.20
 MEDIA_UPLOAD_TTL_MIN = 30
 MEDIA_ACCESS_TTL_S = 300
 MEDIA_BUCKET = os.getenv("COMMUNITY_MEDIA_BUCKET", "community-media")
@@ -189,9 +191,9 @@ async def _db(fn: Callable[[], Any]) -> Any:
         ) from exc
 
 
-async def _select(table: str, build: Callable[[Any], Any]) -> list[dict]:
+async def _select(table: str, build: Callable[[Any], Any], *, fields: str = "*") -> list[dict]:
     sb = _sb()
-    res = await _db(lambda: build(sb.table(table).select("*")).execute())
+    res = await _db(lambda: build(sb.table(table).select(fields)).execute())
     return list(getattr(res, "data", None) or [])
 
 
@@ -1328,7 +1330,52 @@ async def _timed_complete(uid: str, system: str, text: str) -> str:
         return await _complete("community.match", uid, system, text)
 
 
-async def _deliver(question: dict) -> int:
+async def _recent_synthetic_bottle_recipients(
+    recipients: list[str], verified_bot_ids: AbstractSet[str],
+) -> set[str]:
+    """Check delivery time and synthetic authorship without reading any bodies."""
+    if not recipients:
+        return set()
+    cutoff = _iso(_now() - _SYNTHETIC_BOTTLE_COOLDOWN)
+    sb = _sb()
+    result = await _db(lambda: sb.table("community_question_deliveries")
+                       .select("recipient_id,community_questions!inner(author_id)")
+                       .in_("recipient_id", recipients)
+                       .in_("community_questions.author_id", sorted(verified_bot_ids))
+                       .gte("created_at", cutoff).execute())
+    return {row["recipient_id"] for row in (getattr(result, "data", None) or [])}
+
+
+async def _synthetic_bottle_targets(
+    question: dict, ranked: list[str], features: dict[str, dict], asker: dict,
+    profiles: dict[str, dict], verified_bot_ids: AbstractSet[str],
+) -> list[str]:
+    from backend.alpha_community_seed import ABOUT_PREFIX
+
+    bot_ranked = [uid for uid in ranked if uid in verified_bot_ids]
+    shortlist = await _ai_rank(question, bot_ranked[:MATCH_SHORTLIST], features, asker)
+    bot_ranked = shortlist + bot_ranked[MATCH_SHORTLIST:]
+    fanout = max(0, DELIVERY_FANOUT)
+    # Keep synthetic recipients in the majority even when the pool is small.
+    if fanout >= 3 and len(bot_ranked) >= 2:
+        real_ranked = [
+            uid for uid in ranked
+            if uid not in verified_bot_ids
+            and not str(profiles[uid].get("about") or "").startswith(ABOUT_PREFIX)
+            and _fit(asker, features[uid]) >= _SYNTHETIC_BOTTLE_MIN_REAL_FIT
+        ]
+        try:
+            recent = await _recent_synthetic_bottle_recipients(real_ranked, verified_bot_ids)
+        except CommunityError:
+            # Failure to establish a recipient's cooldown never opens a slot.
+            recent = set(real_ranked)
+        target = next((uid for uid in real_ranked if uid not in recent), None)
+        if target:
+            return [*bot_ranked[:fanout - 1], target]
+    return bot_ranked[:fanout]
+
+
+async def _deliver(question: dict, *, verified_bot_ids: AbstractSet[str] | None = None) -> int:
     """Hand a new question to up to DELIVERY_FANOUT parents (meeting D04).
 
     Eligible: other parents with a visible community profile and no block in
@@ -1337,21 +1384,40 @@ async def _deliver(question: dict) -> int:
     relevance to the question (falls back to the rule order on any failure).
     """
     author = question["author_id"]
+    bot_ids = verified_bot_ids or frozenset()
+    synthetic_author = author in bot_ids and runtime.alpha_features_available()
     i_blocked, blocked_me = await _block_sets(author)
     pool = await _select("community_profiles", lambda q: q.neq("user_id", author)
-                         .order("updated_at", desc=True).limit(200))
+                         .order("updated_at", desc=True).limit(200),
+                         fields="user_id" if synthetic_author else "*")
     ids = [p["user_id"] for p in pool]
-    hidden_rows = await _select("community_preferences", lambda q: q.in_("user_id", ids)) if ids else []
+    hidden_rows = await _select("community_preferences", lambda q: q.in_("user_id", ids),
+                                fields="user_id,profile_hidden" if synthetic_author else "*") if ids else []
     hidden = {row["user_id"] for row in hidden_rows if row.get("profile_hidden")}
     eligible = [i for i in ids if i not in i_blocked and i not in blocked_me and i not in hidden]
+    if synthetic_author:
+        pool = await _select("community_profiles", lambda q: q.in_("user_id", eligible),
+                             fields="user_id,about,city_label,intent_codes") if eligible else []
     profiles = {p["user_id"]: p for p in pool}
+    if synthetic_author:
+        eligible = [uid for uid in eligible if uid in profiles]
     author_profile = await _profiles([author])
-    features = await _family_features(eligible + [author], {**profiles, **author_profile})
+    feature_uids = [uid for uid in eligible if uid in bot_ids] if synthetic_author else eligible
+    features = await _family_features(feature_uids + [author], {**profiles, **author_profile})
+    if synthetic_author:
+        # A real recipient only supplies their public Community city for this feature.
+        for uid in eligible:
+            if uid not in bot_ids:
+                features[uid] = {"age": None, "region": (profiles[uid].get("city_label") or "").strip().lower(),
+                                 "concerns": set(), "intents": []}
     asker = features[author]
     # Ties are broken at random so the same parents are not always first.
     ranked = sorted(eligible, key=lambda uid: (_fit(asker, features[uid]), random.random()), reverse=True)
-    shortlist = await _ai_rank(question, ranked[:MATCH_SHORTLIST], features, asker)
-    chosen = (shortlist + ranked[MATCH_SHORTLIST:])[:DELIVERY_FANOUT]
+    if synthetic_author:
+        chosen = await _synthetic_bottle_targets(question, ranked, features, asker, profiles, bot_ids)
+    else:
+        shortlist = await _ai_rank(question, ranked[:MATCH_SHORTLIST], features, asker)
+        chosen = (shortlist + ranked[MATCH_SHORTLIST:])[:DELIVERY_FANOUT]
     expires = _iso(_now() + timedelta(days=DELIVERY_TTL_DAYS))
     delivered = 0
     for recipient in chosen:
@@ -1368,7 +1434,9 @@ async def _deliver(question: dict) -> int:
     return delivered
 
 
-async def create_question(uid: str, body: QuestionIn) -> dict:
+async def create_question(
+    uid: str, body: QuestionIn, *, verified_bot_ids: AbstractSet[str] | None = None,
+) -> dict:
     await _require_profile(uid)
     text = _clean_text(body.body, field="body", max_len=QUESTION_MAX)
     if body.version_source == "polished":
@@ -1396,7 +1464,10 @@ async def create_question(uid: str, body: QuestionIn) -> dict:
         },
     )
     if created:
-        await _deliver(row)
+        if verified_bot_ids is None:
+            await _deliver(row)
+        else:
+            await _deliver(row, verified_bot_ids=verified_bot_ids)
     deliveries = await _select("community_question_deliveries", lambda q: q.eq("question_id", row["id"]))
     return {
         "question": await _question_dto(uid, row),

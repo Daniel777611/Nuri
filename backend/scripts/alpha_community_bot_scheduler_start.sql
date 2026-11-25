@@ -25,7 +25,7 @@ create extension if not exists pg_net;
 
 select cron.schedule(
     'nuri-alpha-community-bot-tick',
-    '*/30 * * * *',
+    '*/10 * * * *',
     $tick$
     select net.http_post(
         url := 'https://nuri-git-testing-backend-alpha-ordashtech.vercel.app/api/internal/alpha-community-bots/tick',
