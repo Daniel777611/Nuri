@@ -19,7 +19,7 @@ from backend.nuri_core import family_store
 TABLE = "local_activity_areas"
 KIND = "local_activity"
 _ALPHA_BUNDLE = "com.ordashtech.nuri.beta"
-_ALPHA_PUSH_BUILDS = frozenset(f"{_ALPHA_BUNDLE}:{number}" for number in (1097, 1098, 1099, 1102, 1103))
+_ALPHA_PUSH_BUILDS = frozenset(f"{_ALPHA_BUNDLE}:{number}" for number in (1097, 1098, 1099, 1102, 1103, 1104))
 _MAX_ITEMS = 8
 _MAX_AGE_BANDS = 2
 _SEARCH_LEASE = timedelta(minutes=10)

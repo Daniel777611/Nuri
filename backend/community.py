@@ -2821,11 +2821,63 @@ def _decode_ts_cursor(cursor: Optional[str]) -> Optional[tuple[str, str]]:
         raise _invalid("cursor is not valid")
 
 
+def _community_notification_target(row: dict) -> Optional[dict]:
+    """Recover the exact displayed content ID from the existing notification key."""
+    data = row.get("data") or {}
+    target = data.get("target")
+    if not isinstance(target, dict):
+        return None
+    if target.get("kind") != "community_reply" or not runtime.alpha_features_available():
+        return target
+
+    target = {key: value for key, value in target.items() if key not in ("reply_id", "comment_id")}
+    recipient, dedupe_key = row.get("user_id"), row.get("dedupe_key")
+    if data.get("kind") != "community_reply" or not recipient or not isinstance(dedupe_key, str):
+        return target
+
+    prefix, suffix = "community:community_reply:", f":{recipient}"
+    if not dedupe_key.startswith(prefix) or not dedupe_key.endswith(suffix):
+        return target
+    business_id = dedupe_key[len(prefix):-len(suffix)]
+    comment = business_id.startswith("comment-")
+    content_id = business_id.removeprefix("comment-")
+    question_id, thread_id = target.get("question_id"), target.get("thread_id")
+    try:
+        if str(uuid.UUID(content_id)) != content_id or str(uuid.UUID(question_id or "")) != question_id:
+            return target
+        if thread_id != "all" and str(uuid.UUID(thread_id or "")) != thread_id:
+            return target
+    except (ValueError, TypeError, AttributeError):
+        return target
+    if comment:
+        target["comment_id"] = content_id
+    elif thread_id == content_id:
+        target["reply_id"] = content_id
+    return target
+
+
 def _notification_dto(row: dict) -> dict:
     data = row.get("data") or {}
     return {"notification_id": str(row["id"]), "kind": data.get("kind"), "title": row.get("title"),
-            "body": row.get("body"), "target": data.get("target"), "created_at": row.get("created_at"),
+            "body": row.get("body"), "target": _community_notification_target(row), "created_at": row.get("created_at"),
             "read_at": row.get("read_at")}
+
+
+async def _notification_comments(comment_ids: set[str]) -> dict[str, dict]:
+    if not comment_ids:
+        return {}
+    comments = await _select(
+        "community_comments", lambda q: q.in_("id", sorted(comment_ids)).limit(len(comment_ids)),
+        fields="id,question_id,reply_id",
+    )
+    return {str(comment["id"]): comment for comment in comments}
+
+
+def _notification_comment_matches(target: dict, comment: Optional[dict]) -> bool:
+    if comment is None or target["question_id"] != str(comment["question_id"]):
+        return False
+    reply_id = comment.get("reply_id")
+    return target["thread_id"] == ("all" if reply_id is None else str(reply_id))
 
 
 async def list_notifications(uid: str, cursor: Optional[str] = None, page_size: Optional[int] = None) -> dict:
@@ -2847,7 +2899,23 @@ async def list_notifications(uid: str, cursor: Optional[str] = None, page_size: 
     if has_more and rows:
         next_cursor = base64.urlsafe_b64encode(json.dumps(
             {"t": str(rows[-1]["created_at"]), "i": str(rows[-1]["id"])}).encode()).decode().rstrip("=")
-    return {"items": [_notification_dto(r) for r in rows], "next_cursor": next_cursor, "has_more": has_more}
+    items = [_notification_dto(row) for row in rows]
+    if runtime.alpha_features_available():
+        unread_comment_targets = {
+            item["notification_id"]: target
+            for item in items
+            if item["read_at"] is None and (target := item["target"])
+            and target.get("kind") == "community_reply" and target.get("comment_id")
+        }
+        comments = await _notification_comments({target["comment_id"] for target in unread_comment_targets.values()})
+        stale_ids = {
+            notification_id
+            for notification_id, target in unread_comment_targets.items()
+            if not _notification_comment_matches(target, comments.get(target["comment_id"]))
+        }
+        # Use the unfiltered page for pagination, even if every target on it disappeared.
+        items = [item for item in items if item["notification_id"] not in stale_ids]
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
 
 
 async def _own_community_event(uid: str, notification_id: str) -> dict:
@@ -2864,7 +2932,7 @@ async def _own_community_event(uid: str, notification_id: str) -> dict:
 async def notification_target(uid: str, notification_id: str) -> dict:
     """Re-check the target against today's permissions before the app goes there."""
     row = await _own_community_event(uid, notification_id)
-    target = dict((row.get("data") or {}).get("target") or {})
+    target = dict(_community_notification_target(row) or {})
     kind = target.get("kind")
     try:
         if kind == "community_question":
@@ -2872,6 +2940,11 @@ async def notification_target(uid: str, notification_id: str) -> dict:
         elif kind == "community_reply":
             question, _ = await _visible_question(uid, target["question_id"])
             await _thread_access(uid, question, target.get("thread_id") or "all")
+            comment_id = target.get("comment_id")
+            if runtime.alpha_features_available() and comment_id:
+                comments = await _notification_comments({comment_id})
+                if not _notification_comment_matches(target, comments.get(comment_id)):
+                    raise _not_found("comment")
         elif kind == "community_invitation":
             inv = await _one("community_invitations", lambda q: q.eq("id", target["invitation_id"]))
             if not inv or uid not in (inv["sender_id"], inv["recipient_id"]):

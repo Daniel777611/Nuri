@@ -19,7 +19,7 @@ import { aiConsent, api, apiErrorDetail, isAuthError } from "@/src/api";
 import { AI_CONSENT_VERSION } from "@/src/aiConsent";
 import { useAIConsent } from "@/src/useAIConsent";
 import { CommunityMessageTranslations, communityNotesConsentCopy, communityTranslationActions, communityTranslationScope, currentTranslationRequest } from "@/src/communityMessageTranslation";
-import { bottleNotificationSnapshot, childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
+import { bottleNotificationSnapshot, childAgeLabel, communityApi, communityErrorCode, communityKey, intentCodes, intentIndexes, shortTime, type AIParticipation, type BottleNotification, type Comment, type Contact, type InboxItem, type Invitation, type Message, type MyProfile, type Page, type Preferences, type PublicParent, type Question, type Recommendation, type RelationView, type Reply, type ReportKind, type ReportReason } from "@/src/communityApi";
 import { FinalButton, FinalChatBubble, FinalDivider, FinalSurface, FinalText, FINAL_COLOR } from "./Primitives";
 import { ButtonBackdrop, FrostedPressable } from "./ButtonMaterial";
 import { ParentChatAvatar, ParentChatHeader } from "./ParentChatHeader";
@@ -98,6 +98,27 @@ function useRemote<T>(key: string | null, load: (isCurrent: () => boolean) => Pr
   }, [key, nonce, enabled, refresh]);
   const reload = useCallback(() => setNonce(n => n + 1), []);
   return { value: state.key === key ? state.value : undefined, error: state.key === key ? state.error : undefined, loading: state.loading || state.key !== key, reload };
+}
+
+async function visibleBottlePages<T, P extends Page<T>>(
+  load: (cursor: string | null) => Promise<P>, itemId: (item: T) => string,
+  matches: (page: P) => boolean, current: () => boolean,
+): Promise<P> {
+  let cursor: string | null = null;
+  let first: P | undefined;
+  const seen = new Set<string>();
+  const items = new Map<string, T>();
+  while (current()) {
+    const page = await load(cursor);
+    if (!current() || !matches(page)) break;
+    first ??= page;
+    for (const item of page.items) items.set(itemId(item), item);
+    if (!page.has_more) return { ...first, items: [...items.values()], next_cursor: null, has_more: false };
+    cursor = page.next_cursor;
+    if (!cursor || seen.has(cursor)) throw new Error("Invalid Community content cursor");
+    seen.add(cursor);
+  }
+  throw new Error("Community content no longer matches the open view");
 }
 
 function SampleAvatar({
@@ -246,6 +267,7 @@ export default function CommunityFinal() {
     [consentNeeded,setConsentNeeded]=useState(false),
     [focusTick,setFocusTick]=useState(0),
     [writeTick,setWriteTick]=useState(0);
+  const [directBottleRead,setDirectBottleRead]=useState<{ticket:number;notice:BottleNotification}|null>(null);
   const tick=focusTick+writeTick;
   const { locale } = useT();
   const { state:localAI } = useAIConsent();
@@ -376,12 +398,16 @@ export default function CommunityFinal() {
       router.setParams({notificationId:undefined});
       // A read receipt is separate from navigation; a failed write is not
       // reported as read, and never sends this event to the NURI AI chat.
+      if(alphaCommunityLayout&&ticket!==null&&entry.bottleNotification){
+        setDirectBottleRead({ticket,notice:entry.bottleNotification});
+        return;
+      }
       try{await communityApi.markNotificationRead(notificationId);}catch{/* no false read receipt */}
     },()=>{
       if(current())dispatch({type:"notice",message:c("这条通知不存在或已过期","This notification is unavailable or has expired")});
     });
     return()=>{live=false;};
-  },[notificationId,accountScope.capture,accountScope.current]);
+  },[notificationId,alphaCommunityLayout,accountScope.capture,accountScope.current]);
   /** What a failed write tells the parent. Never a fake success. */
   const failure=(error:unknown)=>{
     const code=communityErrorCode(error),detail=apiErrorDetail(error);
@@ -480,6 +506,7 @@ export default function CommunityFinal() {
   const [readBottles,setReadBottles]=useState<{generation:number;ids:ReadonlySet<string>}|null>(null);
   const readIds=readBottles?.generation===accountScope.generation?readBottles.ids:undefined;
   const unreadReplies=new Map<string,number>();
+  const unreadReplyComments=new Map<string,number>();
   const unreadDeliveries=new Set<string>();
   let unreadSent=0;
   for(const {notification_id,target} of bottleNotifications.value??[]){
@@ -488,6 +515,9 @@ export default function CommunityFinal() {
     else{
       unreadReplies.set(target.question_id,(unreadReplies.get(target.question_id)??0)+1);
       unreadSent++;
+      if(target.question_id===state.questionID&&target.comment_id&&!target.reply_id&&target.thread_id!=="all"){
+        unreadReplyComments.set(target.thread_id,(unreadReplyComments.get(target.thread_id)??0)+1);
+      }
     }
   }
   const unreadReceived=unreadDeliveries.size;
@@ -499,45 +529,78 @@ export default function CommunityFinal() {
   const replyNotificationsKey = (bottleNotifications.value ?? [])
     .filter(event => event.target.kind === "community_reply" && event.target.question_id === state.questionID)
     .map(event => event.notification_id).sort().join(",");
-  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${state.questionID}:${tick}:${replyNotificationsKey}`:null,()=>communityApi.replies(state.questionID));
+  const replies=useRemote(threadScreens.includes(s)&&state.questionID?`replies:${accountScope.generation}:${state.questionID}:${tick}:${replyNotificationsKey}`:null,isCurrent=>{
+    const question=state.questionID,ticket=accountScope.capture();
+    return visibleBottlePages(cursor=>communityApi.replies(question,cursor),(reply:Reply)=>reply.reply_id,
+      page=>page.question.question_id===question,()=>isCurrent()&&accountScope.current(ticket));
+  });
   const allThread=replies.value?.all_thread;
-  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${state.questionID}:${state.replyTarget}:${tick}:${replyNotificationsKey}`:null,()=>communityApi.comments(state.questionID,state.replyTarget));
+  const comments=useRemote(threadScreens.includes(s)&&state.questionID&&(state.replyTarget!=="all"||allThread)?`comments:${accountScope.generation}:${state.questionID}:${state.replyTarget}:${tick}:${replyNotificationsKey}`:null,isCurrent=>{
+    const question=state.questionID,thread=state.replyTarget,ticket=accountScope.capture();
+    return visibleBottlePages(cursor=>communityApi.comments(question,thread,cursor),(comment:Comment)=>comment.comment_id,
+      page=>page.thread_id===thread,()=>isCurrent()&&accountScope.current(ticket));
+  });
   const askedQuestion=useRemote(["respond","responsePrompt"].includes(s)&&state.questionID?`question:${state.questionID}`:null,()=>communityApi.question(state.questionID));
   useEffect(()=>{
-    if(!alphaCommunityLayout||!filterFocused.current||!bottleNotifications.value?.length)return;
+    if(!alphaCommunityLayout||!filterFocused.current)return;
     const ticket=accountScope.capture();
     if(ticket===null)return;
-    const opened=bottleNotifications.value.filter(({notification_id,target})=>{
-      if(readIds?.has(notification_id)||bottleReadsInFlight.current.has(notification_id)||target.question_id!==state.questionID)return false;
+    const activeNotice=directBottleRead?.ticket===ticket?directBottleRead.notice:undefined;
+    const notices=bottleNotifications.value??[];
+    const candidates=activeNotice&&!notices.some(item=>item.notification_id===activeNotice.notification_id)
+      ?[...notices,activeNotice]:notices;
+    const receiptKey=(id:string)=>`${ticket}:${id}`;
+    const overview=s==="replies"||s==="replyExpanded";
+    const privateView=s==="comments"||s==="replyDetail"||s==="replyKeyboard";
+    const opened=candidates.filter(({notification_id,target})=>{
+      if(readIds?.has(notification_id)||bottleReadsInFlight.current.has(receiptKey(notification_id))||target.question_id!==state.questionID)return false;
       if(target.kind==="community_question"){
         const question=askedQuestion.value?.question;
         return ["respond","responsePrompt"].includes(state.screen)&&!askedQuestion.loading&&!askedQuestion.error&&
           target.delivery_id===state.deliveryID&&question?.question_id===target.question_id&&question.is_mine===false&&
           question.delivery?.delivery_id===target.delivery_id&&question.delivery.state==="waiting";
       }
-      if (replies.value?.question.question_id !== target.question_id) return false;
-      if (target.thread_id === "all") {
-        return state.replyTarget === "all" && !!replies.value.all_thread && !!comments.value &&
-          ["replies", "comments", "replyExpanded", "replyDetail", "replyKeyboard"].includes(state.screen);
+      if(replies.loading||replies.error||replies.value?.question.question_id!==target.question_id)return false;
+      const replyVisible=replies.value.items.some(reply=>reply.reply_id===target.thread_id);
+      if(target.reply_id!==undefined){
+        return target.comment_id===undefined&&target.reply_id===target.thread_id&&replyVisible&&
+          (overview||privateView&&state.replyTarget===target.thread_id);
       }
-      return target.thread_id === state.replyTarget && !!comments.value &&
-        replies.value.items.some(reply => reply.reply_id === target.thread_id) &&
-        ["comments", "replyDetail", "replyKeyboard"].includes(state.screen);
+      if(comments.loading||comments.error||!comments.value||comments.value.thread_id!==target.thread_id||state.replyTarget!==target.thread_id)return false;
+      const commentsVisible=target.thread_id==="all"
+        ?!!replies.value.all_thread&&(overview||privateView)
+        :privateView&&replyVisible;
+      if(!commentsVisible)return false;
+      return target.comment_id===undefined?replyVisible||comments.value.items.length>0:
+        comments.value.items.some(comment=>comment.comment_id===target.comment_id);
     });
     if(!opened.length)return;
-    for(const {notification_id} of opened)bottleReadsInFlight.current.add(notification_id);
-    void Promise.allSettled(opened.map(item=>communityApi.markNotificationRead(item.notification_id))).then(results=>{
-      for(const {notification_id} of opened)bottleReadsInFlight.current.delete(notification_id);
-      if(!accountScope.current(ticket)||!results.some(result=>result.status==="fulfilled"))return;
+    for(const {notification_id} of opened)bottleReadsInFlight.current.add(receiptKey(notification_id));
+    void Promise.allSettled(opened.map(async ({notification_id})=>{
+      let receipt;
+      try{receipt=await communityApi.markNotificationRead(notification_id);}
+      catch(error){
+        if(isAuthError(error)||!accountScope.current(ticket))return null;
+        await new Promise(resolve=>setTimeout(resolve,750));
+        if(!accountScope.current(ticket))return null;
+        receipt=await communityApi.markNotificationRead(notification_id);
+      }
+      return receipt?.notification_id===notification_id&&typeof receipt.read_at==="string"&&
+        /^\d{4}-\d{2}-\d{2}T/.test(receipt.read_at)&&Number.isFinite(Date.parse(receipt.read_at))?notification_id:null;
+    })).then(results=>{
+      for(const {notification_id} of opened)bottleReadsInFlight.current.delete(receiptKey(notification_id));
+      const confirmed=results.flatMap(result=>result.status==="fulfilled"&&result.value?[result.value]:[]);
+      if(!accountScope.current(ticket)||!confirmed.length)return;
       setReadBottles(previous=>{
         if(!accountScope.current(ticket))return previous;
         const ids=new Set(previous?.generation===ticket?previous.ids:undefined);
-        results.forEach((result,index)=>{if(result.status==="fulfilled")ids.add(opened[index].notification_id);});
+        for(const id of confirmed)ids.add(id);
         return {generation:ticket,ids};
       });
+      setDirectBottleRead(previous=>previous?.ticket===ticket&&confirmed.includes(previous.notice.notification_id)?null:previous);
       bottleNotifications.reload();
     });
-  },[alphaCommunityLayout,accountScope.capture,accountScope.current,askedQuestion.value,askedQuestion.loading,askedQuestion.error,bottleNotifications.value,bottleNotifications.reload,readIds,replies.value,comments.value,state.questionID,state.deliveryID,state.replyTarget,state.screen]);
+  },[alphaCommunityLayout,accountScope.capture,accountScope.current,askedQuestion.value,askedQuestion.loading,askedQuestion.error,bottleNotifications.value,bottleNotifications.reload,directBottleRead,readIds,replies.value,replies.loading,replies.error,comments.value,comments.loading,comments.error,state.questionID,state.deliveryID,state.replyTarget,state.screen]);
   const prefs=useRemote(s==="preferences"||parentChat?`prefs:${accountScope.generation}:${tick}`:null,()=>communityApi.preferences());
   const openTranslationSettings=alphaCommunityLayout&&s==="preferences"&&translationSettings?.ticket===accountScope.generation
     &&translationSettings.revision===navigationRevision.current?translationSettings:null;
@@ -1499,11 +1562,28 @@ export default function CommunityFinal() {
       {!closed?voiceBar(slot):null}
       {notice}
     </View>;
-    const answer=(reply:Reply,small=false)=><View key={reply.reply_id} style={{gap:small?4:detail?16:12}}>
-      <View style={{height:36,flexDirection:"row",alignItems:"center",gap:8}}><SampleAvatar size={36}/><FinalText size={small?14:16} secondary style={{flex:1,lineHeight:small?20:24,fontWeight:small?"400":"500"}}>{reply.is_mine?c("我的回复","My reply"):nameOf(reply.author)}</FinalText>{!detail&&!closed&&reply.allowed_actions.includes("comment")?<Pressable accessibilityRole="button" onPress={()=>dispatch({type:"replyTarget",target:reply.reply_id,name:reply.is_mine?c("我","me"):nameOf(reply.author)})} testID={"final-reply-"+reply.reply_id} style={{minWidth:60,height:36,alignItems:"center",justifyContent:"center"}}><FinalText size={12} secondary style={{lineHeight:18}}>{(reply.comment_count?reply.comment_count+" · ":"")+c("回复 ›","Reply ›")}</FinalText></Pressable>:null}{!reply.is_mine?reportButton("reply",reply.reply_id,c("举报这条经验","Report this reply"),!reply.anonymous,"final-report-reply-"+reply.reply_id):null}</View>
-      <FinalText size={small?14:16} style={{lineHeight:small?20:24}}>{reply.body}</FinalText>
-      <View style={st.quietDivider}/>
-    </View>;
+    const answer=(reply:Reply,small=false)=>{
+      const unread=unreadReplyComments.get(reply.reply_id)??0;
+      const canOpenThread=closed ? reply.comment_count>0||unread>0 : reply.allowed_actions.includes("comment");
+      const replyLabel=(reply.comment_count?reply.comment_count+" · ":"")+(closed?c("查看 ›","View ›"):c("回复 ›","Reply ›"));
+      return <View key={reply.reply_id} style={{gap:small?4:detail?16:12}}>
+        <View style={{height:36,flexDirection:"row",alignItems:"center",gap:8}}>
+          <SampleAvatar size={36}/>
+          <FinalText size={small?14:16} secondary style={{flex:1,lineHeight:small?20:24,fontWeight:small?"400":"500"}}>{reply.is_mine?c("我的回复","My reply"):nameOf(reply.author)}</FinalText>
+          {!detail&&canOpenThread?<Pressable accessibilityRole="button"
+            accessibilityLabel={unread?`${replyLabel}${en?", ":"，"}${bottleUnreadLabel(unread)}`:replyLabel}
+            onPress={()=>dispatch({type:"replyTarget",target:reply.reply_id,name:reply.is_mine?c("我","me"):nameOf(reply.author)})}
+            testID={"final-reply-"+reply.reply_id} style={{minWidth:60,height:36,flexDirection:"row",gap:5,alignItems:"center",justifyContent:"center"}}>
+            {unread>0?<View testID={"final-reply-unread-"+reply.reply_id} accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
+              style={{width:6,height:6,borderRadius:3,backgroundColor:FINAL_COLOR.coral}}/>:null}
+            <FinalText size={12} secondary style={{lineHeight:18}}>{replyLabel}</FinalText>
+          </Pressable>:null}
+          {!reply.is_mine?reportButton("reply",reply.reply_id,c("举报这条经验","Report this reply"),!reply.anonymous,"final-report-reply-"+reply.reply_id):null}
+        </View>
+        <FinalText size={small?14:16} style={{lineHeight:small?20:24}}>{reply.body}</FinalText>
+        <View style={st.quietDivider}/>
+      </View>;
+    };
     const commentRow=(entry:Comment)=><View key={entry.comment_id} style={{gap:8}}><View style={{flexDirection:"row",alignItems:"center",gap:8}}><FinalText size={12} secondary style={{flex:1}}>{entry.is_mine?c("你的回复","Your reply"):nameOf(entry.author)}</FinalText>{!entry.is_mine?reportButton("comment",entry.comment_id,c("举报这条回复","Report this comment"),!!entry.author.parent_id&&!entry.author.anonymous,"final-report-comment-"+entry.comment_id):null}</View><FinalText size={14} style={{lineHeight:20}}>{entry.body}</FinalText><View style={st.quietDivider}/></View>;
     const replyListContent=()=> <>
       <FinalText size={12} secondary style={{lineHeight:18}}>{answerer?c("我的经验","My experience"):c("收到 "+items.length+" 位家长的经验",items.length===1?"1 parent replied":`${items.length} parents replied`)}</FinalText>

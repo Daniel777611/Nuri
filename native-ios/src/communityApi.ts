@@ -83,7 +83,7 @@ export type Preferences = {
 };
 export type CommunityNotificationTarget =
   | { kind: "community_question"; question_id: string; delivery_id: string }
-  | { kind: "community_reply"; question_id: string; thread_id: string }
+  | { kind: "community_reply"; question_id: string; thread_id: string; reply_id?: string; comment_id?: string }
   | { kind: "community_invitation"; invitation_id: string; state?: string }
   | { kind: "community_conversation"; conversation_id: string }
   | { kind: "community_ai_consent"; conversation_id: string; consent_request_id?: string };
@@ -262,7 +262,7 @@ export type ReplyPage = Page<Reply> & {
 
 export const communityApi = {
   notificationTarget: (id: string) => get<CommunityNotificationTargetResult>(`/me/notifications/${encodeURIComponent(id)}/target`),
-  markNotificationRead: (id: string) => send<{ notification_id: string; read_at: string }>("POST", `/me/notifications/${encodeURIComponent(id)}/read`),
+  markNotificationRead: (id: string) => send<{ notification_id: string; read_at: string | null }>("POST", `/me/notifications/${encodeURIComponent(id)}/read`),
   // P01–P04
   myProfile: () => get<MyProfile>("/profiles/me"),
   saveProfile: (patch: { display_name?: string; about?: string; city?: string; intents?: IntentCode[]; gender_tag?: "mom" | "dad" | "other"; expected_version?: number }) =>
@@ -288,10 +288,10 @@ export const communityApi = {
   respond: (deliveryId: string, body: string, key: string, expectedVersion?: number) =>
     send<{ reply: Reply; delivery: DeliveryMeta; created: boolean }>("POST", `/question-deliveries/${encodeURIComponent(deliveryId)}/responses`,
       { body, client_request_id: key, expected_version: expectedVersion }),
-  replies: (questionId: string) =>
-    get<ReplyPage>(`/questions/${encodeURIComponent(questionId)}/replies${q({ page_size: 50 })}`),
-  comments: (questionId: string, threadId: string) =>
-    get<Page<Comment> & { can_post: boolean }>(`/questions/${encodeURIComponent(questionId)}/reply-threads/${encodeURIComponent(threadId)}/comments${q({ page_size: 50 })}`),
+  replies: (questionId: string, cursor?: string | null) =>
+    get<ReplyPage>(`/questions/${encodeURIComponent(questionId)}/replies${q({ cursor, page_size: 50 })}`),
+  comments: (questionId: string, threadId: string, cursor?: string | null) =>
+    get<Page<Comment> & { thread_id: string; can_post: boolean }>(`/questions/${encodeURIComponent(questionId)}/reply-threads/${encodeURIComponent(threadId)}/comments${q({ cursor, page_size: 50 })}`),
   comment: (questionId: string, threadId: string, body: string, key: string) =>
     send<{ comment: Comment; created: boolean }>("POST", `/questions/${encodeURIComponent(questionId)}/reply-threads/${encodeURIComponent(threadId)}/comments`,
       { body, client_message_id: key }),

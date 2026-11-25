@@ -25,6 +25,24 @@ test("question, reply, invitation, conversation and consent map to real server i
   assert.deepEqual((await open(id,api({kind:"community_invitation",invitation_id:d}))).events,[{type:"go",screen:"invitations"}]);
   for(const kind of ["community_conversation","community_ai_consent"]){const r=await open(id,api({kind,conversation_id:d}));assert.deepEqual(r.conversation,{parentId:p,id:d});assert.equal(r.events[0].person,p);}
 });
+test("typed bottle activity carries the exact visible content target into the read flow", async () => {
+  const reply = { kind: "community_reply", question_id: q, thread_id: d, reply_id: d };
+  assert.deepEqual(await open(id, api(reply)), {
+    events: [{ type: "openQuestion", id: q }],
+    bottleNotification: { notification_id: id, target: reply },
+  });
+  for (const threadId of [d, "all"]) {
+    const comment = { kind: "community_reply", question_id: q, thread_id: threadId, comment_id: p };
+    assert.deepEqual(await open(id, api(comment)), {
+      events: [{ type: "openQuestion", id: q }, { type: "replyTarget", target: threadId }],
+      bottleNotification: { notification_id: id, target: comment },
+    });
+  }
+  for (const malformed of [{ ...reply, reply_id: p }, { ...reply, comment_id: p },
+    { kind: "community_reply", question_id: q, thread_id: d, comment_id: "not-uuid" }]) {
+    await assert.rejects(open(id, api(malformed)), Missing);
+  }
+});
 test("a current translation notification opens the exact conversation permissions in Settings",async()=>{
   const target={kind:"community_ai_consent",conversation_id:d,consent_request_id:q};
   const current={conversation_id:d,epoch:2,notice_version:"current",requests:{translation:{

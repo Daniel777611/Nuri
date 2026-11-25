@@ -1,4 +1,4 @@
-import type { communityApi } from "./communityApi";
+import type { BottleNotification, communityApi } from "./communityApi";
 import type { FinalCommunityEvent } from "./uiuxfinal/communityModel";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -7,7 +7,7 @@ export class CommunityTargetUnavailable extends Error {
   constructor() { super("Community target is unavailable"); this.name = "CommunityTargetUnavailable"; }
 }
 type Entry = { events: FinalCommunityEvent[]; conversation?: { parentId: string; id: string };
-  translationSettings?: { conversationId: string; parentName: string } };
+  translationSettings?: { conversationId: string; parentName: string }; bottleNotification?: BottleNotification };
 type Client = Pick<typeof communityApi, "notificationTarget" | "question" | "messages" | "aiParticipation">;
 /** Only a current server authorization can open a typed Community target.
  * Never navigate to a route/URL supplied by a push payload or query string. */
@@ -26,9 +26,15 @@ export async function loadCommunityNotificationEntry(id: string, api: Client): P
         { type: "openReceived", id: target.question_id, deliveryID: target.delivery_id, status: question.delivery!.state },
       ] };
     }
-    case "community_reply":
+    case "community_reply": {
       if (!UUID.test(target.question_id) || target.thread_id !== "all" && !UUID.test(target.thread_id)) throw new CommunityTargetUnavailable();
-      return { events: [{ type: "openQuestion", id: target.question_id }, { type: "replyTarget", target: target.thread_id }] };
+      const { reply_id, comment_id } = target;
+      if (reply_id !== undefined && (!UUID.test(reply_id) || reply_id !== target.thread_id || comment_id !== undefined)
+          || comment_id !== undefined && !UUID.test(comment_id)) throw new CommunityTargetUnavailable();
+      const events: FinalCommunityEvent[] = [{ type: "openQuestion", id: target.question_id }];
+      if (!reply_id) events.push({ type: "replyTarget", target: target.thread_id });
+      return { events, ...(reply_id || comment_id ? { bottleNotification: { notification_id: id, target } } : {}) };
+    }
     case "community_invitation":
       if (!UUID.test(target.invitation_id)) throw new CommunityTargetUnavailable();
       return { events: [{ type: "go", screen: "invitations" }] };

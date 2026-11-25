@@ -122,15 +122,28 @@ const bottleFixture = (replyCount = 1) => ({
   question: { question_id: 'bottle-A', body: 'How did you manage the first day?', status: 'open', is_mine: true, reply_count: replyCount, created_at: '' },
   replies: Array.from({ length: replyCount }, (_, index) => ({ reply_id: 'reply-' + index, author: { parent_id: 'parent-' + index, display_name: 'Parent' }, body: 'One step at a time.', allowed_actions: ['comment'], comment_count: 0 })),
 });
+const replyNotice = (id, threadId, target = {}) => ({ notification_id: id, read_at: null,
+  target: { kind: 'community_reply', question_id: 'bottle-A', thread_id: threadId, ...target } });
+const commentFixture = id => ({ comment_id: id, seq: 1, created_at: '', body: 'A visible follow-up.',
+  author: { display_name: 'Another parent', parent_id: 'parent-comment' }, is_mine: false });
+const readCalls = f => f.calls.filter(call => call.path.endsWith('/read')).map(call => call.path.split('/').at(-2));
 function uiFixture({ ai = participation(), preference = true, preferenceVersion = 1, allowed = true, holdTranslation = null, transport = {}, bottle = null, notifications = [], waiting = [], initialScreen,
   localItems = new Map(), localOwner = 'account-A', connected = true } = {}) {
   let cursor = 0, tree, live = true, generation = 1, locale = 'en', serial = 0, notificationId, keyboardVisible = false, navigationGuard;
-  const slots = [], effects = [], pending = [], intervals = new Map(), frames = new Map(), calls = [], params = [], focusLeases = new Set(), entries = new Map(), requestKeys = new Map();
+  const slots = [], effects = [], pending = [], intervals = new Map(), timeouts = new Map(), frames = new Map(), calls = [], params = [], focusLeases = new Set(), entries = new Map(), requestKeys = new Map();
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const react = { useState(initial) { const i = cursor++; slots[i] ??= { value: typeof initial === 'function' ? initial() : initial }; slots[i].set ??= value => { slots[i].value = typeof value === 'function' ? value(slots[i].value) : value; }; return [slots[i].value, slots[i].set]; },
     useRef(initial) { return slots[cursor++] ??= { current: initial }; }, useReducer(reduce, arg, init) { const [value, set] = react.useState(() => init(arg)); return [value, event => set(old => reduce(old, event))]; },
     useMemo(fn, deps) { const i = cursor++; if (!same(slots[i]?.deps, deps)) slots[i] = { value: fn(), deps }; return slots[i].value; }, useCallback(fn, deps) { return react.useMemo(() => fn, deps); },
     useEffect(fn, deps) { const i = cursor++; if (!same(effects[i]?.deps, deps)) pending.push(() => { effects[i]?.cleanup?.(); effects[i] = { deps, cleanup: fn() }; }); } };
+  const useAccountScope = () => {
+    const owner = generation;
+    return {
+      generation: owner,
+      capture: react.useCallback(() => live && generation === owner ? owner : null, [owner]),
+      current: react.useCallback(ticket => live && ticket === owner && generation === owner, [owner]),
+    };
+  };
   const local = { status: allowed ? 'allowed' : 'not_allowed', userId: localOwner, session: 1, version: APP_VERSION };
   const list = [message(), message('mine', { sender: 'me', seq: 2, text: 'My original' })], conversation = { conversation_id: conversationId, parent: { parent_id: 'parent-A', display_name: 'Parent' },
     allowed_actions: connected ? ['send_message'] : [], relationship_state: connected ? 'connected' : 'disconnected' };
@@ -139,6 +152,7 @@ function uiFixture({ ai = participation(), preference = true, preferenceVersion 
     const body = init.body ? JSON.parse(init.body) : null; calls.push({ path, method: init.method ?? 'GET', body });
     if (path.startsWith('/community/v1/me/notifications?')) {
       if (transport.notificationError) throw transport.notificationError;
+      if (transport.notificationsRequest) return transport.notificationsRequest(path, generation);
       return { items: structuredClone(notifications), has_more: false };
     }
     if (path.startsWith('/community/v1/me/question-deliveries?')) {
@@ -155,11 +169,17 @@ function uiFixture({ ai = participation(), preference = true, preferenceVersion 
       const questionPath = '/community/v1/questions/' + bottle.question.question_id;
       const page = { has_more: false, next_cursor: null };
       if (path.startsWith('/community/v1/me/questions?')) return { ...page, items: [bottle.question] };
-      if (path.startsWith(questionPath + '/replies?')) return { ...page, question: bottle.question, items: bottle.replies, all_thread: { thread_id: 'all', can_post: true, comment_count: bottle.allCommentCount ?? 0 } };
+      if (path.startsWith(questionPath + '/replies?')) {
+        const result = { ...page, question: bottle.question, items: bottle.replies,
+          all_thread: { thread_id: 'all', can_post: true, comment_count: bottle.allCommentCount ?? 0 } };
+        return transport.repliesRequest ? transport.repliesRequest(path, generation, result) : result;
+      }
       if (path.startsWith(questionPath + '/reply-threads/')) {
         if (init.method === 'POST') return { created: true };
         if (transport.holdComments) await transport.holdComments.promise;
-        return { ...page, items: [], can_post: true };
+        const threadId = path.split('/reply-threads/')[1].split('/')[0];
+        const result = { ...page, thread_id: threadId, items: bottle.comments?.[threadId] ?? [], can_post: true };
+        return transport.commentsRequest ? transport.commentsRequest(path, generation, result) : result;
       }
     }
     const record = [...chats.values()].find(value => path.includes('/conversations/' + value.conversation.conversation_id + '/')) ?? chats.get(conversationId);
@@ -170,7 +190,14 @@ function uiFixture({ ai = participation(), preference = true, preferenceVersion 
     if (path.endsWith('/ai-participation')) return structuredClone(record.ai);
     if (path.includes('/ai-participation?purpose=')) { if (transport.holdRevoke) await transport.holdRevoke.promise; if (transport.revokeError) throw transport.revokeError; record.ai.epoch++; record.ai.effective = false; record.ai.requests = { conversation_notes: null, translation: null }; return { effective: false }; }
     if (path.endsWith('/read-cursor')) return {};
-    if (path.startsWith('/community/v1/me/notifications/') && path.endsWith('/read')) return {};
+    if (path.startsWith('/community/v1/me/notifications/') && path.endsWith('/read')) {
+      const id = path.split('/').at(-2);
+      if (transport.readRequest) return transport.readRequest(id, generation);
+      const notice = notifications.find(item => item.notification_id === id);
+      const readAt = notice?.read_at ?? '2026-11-25T17:00:00Z';
+      if (notice) notice.read_at = readAt;
+      return { notification_id: id, read_at: readAt };
+    }
     if (path.endsWith('/translations')) { if (holdTranslation) await holdTranslation.promise; return translated([...chats.values()].flatMap(value => value.list).find(m => path.includes('/' + m.message_id + '/')), body.target_language); }
     if (path.endsWith('/ai-consent-requests')) {
       const cached = requestKeys.get(body.client_request_id); if (cached) return { request: structuredClone(cached), created: false };
@@ -193,7 +220,7 @@ function uiFixture({ ai = participation(), preference = true, preferenceVersion 
     'expo-router': { useLocalSearchParams: () => ({ notificationId }), usePathname: () => '/community', useRouter: () => router, useFocusEffect: fn => react.useEffect(() => { const lease = { fn, cleanup: fn() }; focusLeases.add(lease); return () => { focusLeases.delete(lease); lease.cleanup?.(); }; }, [fn]) },
     '@/src/i18n': { useT: () => ({ locale }), translate: (_locale, s) => s }, '@/src/keyboard/AppKeyboard': { NuriTextInput: 'Input', useAppKeyboardVisible: () => false },
     '@/src/api': { api: {}, aiConsent: { getState: () => ({ ...local }) }, apiErrorDetail: () => '', isAuthError: () => false }, '@/src/aiConsent': { AI_CONSENT_VERSION: APP_VERSION }, '@/src/useAIConsent': { useAIConsent: () => ({ state: { ...local } }) },
-    '@/src/communityMessageTranslation': helper, '@/src/communityApi': client, '@/src/useAccountState': { useAccountScope: () => ({ generation, capture: () => live ? generation : null, current: ticket => live && ticket === generation }) },
+    '@/src/communityMessageTranslation': helper, '@/src/communityApi': client, '@/src/useAccountState': { useAccountScope },
     '@/src/components/nativeNavigation': { registerNativeNavigationGuard: (_path, guard) => { navigationGuard = guard; return () => { navigationGuard = undefined; }; } }, '@/src/aiPermissionNavigation': { aiPermissionHref: () => '/ai-permission' },
     '@/src/uiux48/Primitives': { IconAction: 'IconAction', NuriKeyboardFrame: 'NuriKeyboardFrame' }, '@/src/uiux48/Composer': { NuriComposer: 'NuriComposer' }, '@/src/uiux48/VoiceInputBar': { VoiceInputBar: 'VoiceInputBar' },
     '@/src/chatImageInput': { ChatImageInputError: Error, pickWebChatImageFile() {}, prepareChatImage() {} }, '@/src/chatVoiceInput': { MAX_VOICE_SECONDS: 60, VoiceInputError: Error, isVoiceInputSupported: () => false, startVoiceRecording() {} },
@@ -211,14 +238,23 @@ function uiFixture({ ai = participation(), preference = true, preferenceVersion 
       setItem: async (key, value) => { localItems.set(key, value); return true; },
     } },
   }, { setInterval: (fn, delay) => { const id = ++serial; intervals.set(id, { fn, delay }); return id; }, clearInterval: id => intervals.delete(id),
+    setTimeout: (fn, delay) => { const id = ++serial; timeouts.set(id, { fn, delay }); return id; }, clearTimeout: id => timeouts.delete(id),
     requestAnimationFrame: fn => { const id = ++serial; frames.set(id, fn); return id; }, cancelAnimationFrame: id => frames.delete(id) }).default;
   const render = () => { cursor = 0; tree = component(); pending.splice(0).forEach(fn => fn()); return tree; }, find = id => nodes(tree).find(n => n.props?.testID === id);
   return { calls, local, ai, list, params, render, find, nodes: () => nodes(tree), translations: () => calls.filter(c => c.path.endsWith('/translations')),
     addChat(id = 'conversation-B', parentId = 'parent-B', nextAI = participation({ conversation_id: id })) { const record = { ai: nextAI, list: [message('B-message', { conversation_id: id, text: 'B original' })], conversation: { ...conversation, conversation_id: id, parent: { parent_id: parentId, display_name: parentId } } }; chats.set(id, record); return record; },
     navigateChat(id, parentId) { notificationId = 'fixture-navigation-' + (++serial); entries.set(notificationId, { conversation: { id, parentId }, events: [{ type: 'person', person: parentId, name: parentId, screen: 'chat' }] }); render(); },
+    navigateBottle({ notification_id, target }) {
+      notificationId = notification_id;
+      const events = [{ type: 'openQuestion', id: target.question_id }];
+      if (!target.reply_id) events.push({ type: 'replyTarget', target: target.thread_id });
+      entries.set(notificationId, { events, bottleNotification: { notification_id, target } });
+      render();
+    },
     switchAccount() { generation++; local.userId = 'account-B'; local.session++; render(); },
     async settle() { for (let n = 0; n < 8; n++) { render(); await tick(); } render(); },
     poll() { for (const item of intervals.values()) if (item.delay === 8000) item.fn(); },
+    runReadRetry() { for (const [id, item] of [...timeouts]) if (item.delay === 750) { timeouts.delete(id); item.fn(); } },
     flushFrame() { const callbacks = [...frames.values()]; frames.clear(); for (const fn of callbacks) fn(); },
     keyboard(visible) { keyboardVisible = visible; render(); },
     blur() { for (const lease of focusLeases) { lease.cleanup?.(); lease.cleanup = undefined; } }, focus() { for (const lease of focusLeases) lease.cleanup = lease.fn(); },
@@ -369,7 +405,8 @@ test('unread global-thread comments clear only after the visible thread finished
   process.env.EXPO_PUBLIC_RELEASE_FLAVOR = 'live-alpha';
   const comments = deferred(), notifications = [{ notification_id: 'global-event', read_at: null,
     target: { kind: 'community_reply', question_id: 'bottle-A', thread_id: 'all' } }];
-  const f = uiFixture({ bottle: { ...bottleFixture(), allCommentCount: 1 }, notifications, transport: { holdComments: comments } });
+  const f = uiFixture({ bottle: { ...bottleFixture(), allCommentCount: 1, comments: { all: [commentFixture('old-global-comment')] } },
+    notifications, transport: { holdComments: comments } });
   try {
     await f.settle();
     assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1);
@@ -385,13 +422,199 @@ test('private reply comments stay unread on the question overview and clear afte
   process.env.EXPO_PUBLIC_RELEASE_FLAVOR = 'live-alpha';
   const notifications = [{ notification_id: 'private-event', read_at: null,
     target: { kind: 'community_reply', question_id: 'bottle-A', thread_id: 'reply-0' } }];
-  const f = uiFixture({ bottle: bottleFixture(), notifications });
+  const f = uiFixture({ bottle: { ...bottleFixture(), comments: { 'reply-0': [commentFixture('old-private-comment')] } }, notifications });
   try {
     await f.settle(); f.press('final-question-bottle-A'); await f.settle();
     assert.equal(f.calls.filter(call => call.path.endsWith('/read')).length, 0);
     f.press('final-reply-reply-0'); await f.settle();
     assert.equal(f.calls.filter(call => call.path.endsWith('/read')).length, 1);
   } finally { f.unmount(); if (previousFlavor === undefined) delete process.env.EXPO_PUBLIC_RELEASE_FLAVOR; else process.env.EXPO_PUBLIC_RELEASE_FLAVOR = previousFlavor; }
+});
+
+test('opening a bottle with a direct reply clears both badges and keeps it read across restart', async () => {
+  const bottle = bottleFixture(2), waiting = [receivedDelivery()];
+  const first = replyNotice('first-reply', 'reply-0', { reply_id: 'reply-0' });
+  const notifications = [first, receivedNotice('unrelated-received')];
+  await withReceivedFixture({ bottle, notifications, waiting }, async f => {
+    await f.settle();
+    assert.equal(f.find('final-bottle-icon-myQuestions').props.count, 1);
+    assert.equal(f.find('final-bottle-icon-received').props.count, 1);
+    f.press('final-open-my-questions'); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1);
+    assert.deepEqual(readCalls(f), [], 'Viewing the question list does not read a reply');
+
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.ok(f.find('final-reply-reply-0'), 'The acknowledged reply is shown in the overview');
+    assert.deepEqual(readCalls(f), ['first-reply']);
+    assert.ok(first.read_at, 'The server fixture persisted the read receipt');
+    f.back(); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 0);
+    f.back(); f.blur(); f.focus(); await f.settle();
+    assert.equal(f.find('final-bottle-icon-myQuestions').props.count, 0);
+    assert.equal(f.find('final-bottle-icon-received').props.count, 1);
+  });
+  await withReceivedFixture({ bottle, notifications, waiting }, async f => {
+    await f.settle();
+    assert.equal(f.find('final-bottle-icon-myQuestions').props.count, 0, 'Restart reads the persisted server state');
+    notifications.push(replyNotice('second-reply', 'reply-1', { reply_id: 'reply-1' }));
+    f.blur(); f.focus(); await f.settle();
+    assert.equal(f.find('final-bottle-icon-myQuestions').props.count, 1, 'A genuinely new reply gets its own badge');
+    f.press('final-open-my-questions'); await f.settle();
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.deepEqual(readCalls(f), ['second-reply'], 'The old receipt is not repeated and received questions are unaffected');
+  });
+});
+
+test('only the exact loaded comment clears its badge and private unread activity identifies the correct reply row', async () => {
+  const bottle = { ...bottleFixture(2), allCommentCount: 1, comments: { all: [commentFixture('global-comment')],
+    'reply-0': [commentFixture('other-private-comment')] } };
+  bottle.replies[0].comment_count = 2;
+  const notifications = [
+    replyNotice('direct', 'reply-0', { reply_id: 'reply-0' }),
+    replyNotice('global', 'all', { comment_id: 'global-comment' }),
+    replyNotice('private', 'reply-0', { comment_id: 'private-comment' }),
+  ];
+  await withReceivedFixture({ initialScreen: 'myQuestions', bottle, notifications }, async f => {
+    await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 3);
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.deepEqual(readCalls(f).sort(), ['direct', 'global']);
+    assert.ok(f.find('final-reply-unread-reply-0'));
+    assert.equal(f.find('final-reply-unread-reply-1'), undefined);
+    f.press('final-reply-reply-0'); await f.settle();
+    assert.deepEqual(readCalls(f).sort(), ['direct', 'global'], 'Another comment in the same thread cannot read the intended one');
+    f.back(); await f.settle();
+    bottle.comments['reply-0'].push(commentFixture('private-comment'));
+    f.press('final-reply-reply-0'); await f.settle();
+    assert.deepEqual(readCalls(f).sort(), ['direct', 'global', 'private']);
+    f.back(); await f.settle();
+    assert.equal(f.find('final-reply-unread-reply-0'), undefined);
+    f.back(); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 0);
+  });
+});
+
+test('an unavailable detail cannot acknowledge a visible-in-snapshot reply until the actual page has loaded', async () => {
+  const bottle = bottleFixture(), notifications = [replyNotice('direct', 'reply-0', { reply_id: 'reply-0' })];
+  const holdReplies = deferred();
+  let waitOnDetail = false;
+  const transport = { repliesRequest: async (_path, _generation, result) => {
+    if (waitOnDetail) await holdReplies.promise;
+    return result;
+  } };
+  await withReceivedFixture({ initialScreen: 'myQuestions', bottle, notifications, transport }, async f => {
+    await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1);
+    waitOnDetail = true;
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.deepEqual(readCalls(f), []);
+    assert.equal(f.find('final-reply-reply-0'), undefined);
+    holdReplies.resolve(); await f.settle();
+    assert.ok(f.find('final-reply-reply-0'));
+    assert.deepEqual(readCalls(f), ['direct']);
+  });
+});
+
+test('opening a typed reply notification waits for its visible content even before the list includes it', async () => {
+  const bottle = bottleFixture(), holdReplies = deferred();
+  const transport = { repliesRequest: async (_path, _generation, result) => {
+    await holdReplies.promise;
+    return result;
+  } };
+  await withReceivedFixture({ bottle, transport }, async f => {
+    await f.settle();
+    const notice = replyNotice('new-notification', 'reply-0', { reply_id: 'reply-0' });
+    f.navigateBottle(notice); await f.settle();
+    assert.deepEqual(readCalls(f), [], 'Navigating cannot acknowledge the notice before its content loads');
+    holdReplies.resolve(); await f.settle();
+    assert.ok(f.find('final-reply-reply-0'), 'The notification displays the exact reply');
+    assert.deepEqual(readCalls(f), [notice.notification_id]);
+  });
+});
+
+test('failed or malformed read receipts cause no badge clear and a later visit can retry', async () => {
+  for (const failure of ['network', 'wrong event', 'missing time']) {
+    const notice = replyNotice('direct', 'reply-0', { reply_id: 'reply-0' });
+    const transport = { readRequest: async id => {
+      if (failure === 'network') throw Error('Connection failed');
+      return { notification_id: failure === 'wrong event' ? 'a-different-id' : id, read_at: failure === 'missing time' ? null : '2026-11-25T17:00:00Z' };
+    } };
+    await withReceivedFixture({ initialScreen: 'myQuestions', bottle: bottleFixture(), notifications: [notice], transport }, async f => {
+      await f.settle();
+      f.press('final-question-bottle-A'); await f.settle();
+      if (failure === 'network') {
+        assert.deepEqual(readCalls(f), ['direct'], failure);
+        f.runReadRetry(); await f.settle();
+        assert.deepEqual(readCalls(f), ['direct', 'direct'], 'Retry once per detail visit after a network error');
+      } else {
+        const failedAttempts = readCalls(f);
+        assert.ok(failedAttempts.length >= 1 && failedAttempts.length <= 2
+          && failedAttempts.every(id => id === 'direct'), failure);
+      }
+      f.back(); await f.settle();
+      assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1, failure);
+      assert.equal(notice.read_at, null, failure);
+      const attempts = readCalls(f).length;
+      transport.readRequest = undefined;
+      f.press('final-question-bottle-A'); await f.settle();
+      assert.equal(readCalls(f).length, attempts + 1, failure);
+      f.back(); await f.settle();
+      assert.equal(f.find('final-my-bottle-bottle-A').props.count, 0, failure);
+    });
+  }
+});
+
+test('a receipt that finishes after switching accounts cannot hide the active account badge', async () => {
+  const aNotice = replyNotice('direct', 'reply-0', { reply_id: 'reply-0' });
+  const bNotice = replyNotice('other-account-direct', 'reply-0', { reply_id: 'reply-0' });
+  const holdReceipt = deferred();
+  const transport = {
+    notificationsRequest: (_path, generation) => ({ items: [generation === 1 ? aNotice : bNotice], has_more: false }),
+    readRequest: async (id, generation) => {
+      assert.equal(generation, 1);
+      await holdReceipt.promise;
+      aNotice.read_at = '2026-11-25T17:00:00Z';
+      return { notification_id: id, read_at: aNotice.read_at };
+    },
+  };
+  await withReceivedFixture({ bottle: bottleFixture(), initialScreen: 'myQuestions', transport }, async f => {
+    await f.settle();
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.deepEqual(readCalls(f), ['direct']);
+    f.back(); f.switchAccount(); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1);
+    holdReceipt.resolve(); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 1);
+    assert.equal(bNotice.read_at, null);
+    assert.deepEqual(readCalls(f), ['direct']);
+  });
+});
+
+test('a direct reply or comment older than the first page can still be rendered and acknowledged', async () => {
+  const bottle = bottleFixture(2);
+  bottle.replies[0].comment_count = 2;
+  const notifications = [replyNotice('older-direct', 'reply-0', { reply_id: 'reply-0' }),
+    replyNotice('older-comment', 'reply-0', { comment_id: 'older-comment-id' })];
+  const transport = {
+    repliesRequest: (path, _generation, result) => path.includes('cursor=')
+      ? { ...result, items: [result.items[0]] }
+      : { ...result, items: [result.items[1]], has_more: true, next_cursor: 'older-reply-page' },
+    commentsRequest: (path, _generation, result) => result.thread_id !== 'reply-0' ? result : path.includes('cursor=')
+      ? { ...result, items: [commentFixture('older-comment-id')] }
+      : { ...result, items: [commentFixture('newer-comment-id')], has_more: true, next_cursor: 'older-comment-page' },
+  };
+  await withReceivedFixture({ initialScreen: 'myQuestions', bottle, notifications, transport }, async f => {
+    await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 2);
+    f.press('final-question-bottle-A'); await f.settle();
+    assert.ok(f.find('final-reply-reply-0'), 'The older direct reply appears in the rendered overview');
+    assert.deepEqual(readCalls(f), ['older-direct']);
+    f.press('final-reply-reply-0'); await f.settle();
+    assert.ok(f.calls.some(call => call.path.includes('/comments?cursor=older-comment-page')));
+    assert.deepEqual(readCalls(f), ['older-direct', 'older-comment']);
+    f.back(); f.back(); await f.settle();
+    assert.equal(f.find('final-my-bottle-bottle-A').props.count, 0);
+  });
 });
 
 test('Reply All focuses one editor and keeps the draft and Send through keyboard transitions', async () => {

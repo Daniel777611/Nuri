@@ -949,6 +949,108 @@ def test_community_notifications_list_target_read_and_open_guard(env):
     assert gone["accessible"] is False and gone["target"] is None
 
 
+def test_alpha_bottle_notifications_identify_existing_reply_and_private_comment(env, monkeypatch):
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: False)
+    for uid in ("u_ann", "u_ben"):
+        make_profile(env, uid)
+    question_id = ok(ask(env, "u_ann"), 201)["question"]["question_id"]
+    delivery_id = _delivery(env, "u_ben")[0]["delivery_id"]
+    response = ok(env.call("u_ben", "POST", f"/question-deliveries/{delivery_id}/responses",
+                           json={"body": "First response", "client_request_id": "badge-reply-001"}), 201)
+    reply_id = response["reply"]["reply_id"]
+    thread = f"/questions/{question_id}/reply-threads/{reply_id}/comments"
+    comment = ok(env.call("u_ben", "POST", thread,
+                          json={"body": "Private follow-up", "client_message_id": "badge-comment-001"}), 201)
+    comment_id = comment["comment"]["comment_id"]
+
+    def events():
+        return [item for item in ok(env.call("u_ann", "GET", "/me/notifications"))["items"]
+                if item["kind"] == "community_reply"]
+
+    legacy_target = {"kind": "community_reply", "question_id": question_id, "thread_id": reply_id}
+    assert [event["target"] for event in events()] == [legacy_target, legacy_target]
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: True)
+    reply = next(event for event in events() if event["target"].get("reply_id") == reply_id)
+    private = next(event for event in events() if event["target"].get("comment_id") == comment_id)
+    assert reply["target"] == {**legacy_target, "reply_id": reply_id}
+    assert private["target"] == {**legacy_target, "comment_id": comment_id}
+    assert all(event["read_at"] is None for event in events())
+    assert "dedupe_key" not in reply and "dedupe_key" not in private
+    for event in (reply, private):
+        path = f"/me/notifications/{event['notification_id']}/target"
+        result = ok(env.call("u_ann", "GET", path))
+        assert result["accessible"] and result["target"] == event["target"]
+        err(env.call("u_ben", "GET", path), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
+
+    path = f"/me/notifications/{reply['notification_id']}/read"
+    err(env.call("u_ben", "POST", path), 404, "NOT_FOUND_OR_NOT_ACCESSIBLE")
+    read = ok(env.call("u_ann", "POST", path))
+    assert read["read_at"] and ok(env.call("u_ann", "POST", path)) == read
+    assert [event["notification_id"] for event in events() if event["read_at"] is None] == [private["notification_id"]]
+    ok(env.call("u_ann", "POST", f"/me/notifications/{private['notification_id']}/read"))
+    assert all(event["read_at"] for event in events())
+
+
+def test_alpha_bottle_notifications_leave_unverified_content_identity_untagged(monkeypatch):
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: True)
+    question_id = "12345678-0000-4000-8000-000000000001"
+    thread_id = "12345678-0000-4000-8000-000000000002"
+    other_id = "12345678-0000-4000-8000-000000000003"
+    target = {"kind": "community_reply", "question_id": question_id, "thread_id": thread_id}
+    for dedupe_key in (None, f"community:community_reply:{thread_id}:other",
+                       f"community:community_reply:{other_id}:recipient",
+                       "community:community_reply:comment-invalid:recipient"):
+        row = {"id": other_id, "user_id": "recipient", "dedupe_key": dedupe_key,
+               "data": {"kind": "community_reply", "target": {**target, "reply_id": other_id}}}
+        assert community._notification_dto(row)["target"] == target
+
+
+def test_alpha_bottle_notifications_skip_unavailable_comments_without_skipping_next_page(env, monkeypatch):
+    for uid in ("u_ann", "u_ben"):
+        make_profile(env, uid)
+    question_id = ok(ask(env, "u_ann"), 201)["question"]["question_id"]
+    delivery_id = _delivery(env, "u_ben")[0]["delivery_id"]
+    reply = ok(env.call("u_ben", "POST", f"/question-deliveries/{delivery_id}/responses",
+                        json={"body": "First response", "client_request_id": "stale-reply-001"}), 201)
+    thread_id = reply["reply"]["reply_id"]
+    thread = f"/questions/{question_id}/reply-threads/{thread_id}/comments"
+    comment_ids = [
+        ok(env.call("u_ben", "POST", thread,
+                    json={"body": "Follow-up", "client_message_id": f"stale-comment-{index}"}), 201)["comment"]["comment_id"]
+        for index in range(4)
+    ]
+    available, wrong_question, wrong_thread, deleted = comment_ids
+    rows = env.db.rows("community_comments")
+    rows[:] = [row for row in rows if row["id"] != deleted]
+    next(row for row in rows if row["id"] == wrong_question)["question_id"] = "deadbeef-0000-4000-8000-000000000001"
+    next(row for row in rows if row["id"] == wrong_thread)["reply_id"] = None
+    event_ids = {}
+    for index, content_id in enumerate([thread_id, *comment_ids]):
+        business_id = content_id if index == 0 else f"comment-{content_id}"
+        event = next(row for row in env.db.rows("notification_events")
+                     if row["dedupe_key"] == f"community:community_reply:{business_id}:u_ann")
+        event["created_at"] = f"2026-11-25T10:00:0{index}+00:00"
+        event_ids[content_id] = event["id"]
+
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: True)
+    env.db.calls.clear()
+    first = ok(env.call("u_ann", "GET", "/me/notifications", params={"page_size": 3}))
+    assert first["items"] == [] and first["has_more"] and first["next_cursor"]
+    assert env.db.calls.count(("community_comments", "select")) == 1
+    next_page = ok(env.call("u_ann", "GET", "/me/notifications", params={"cursor": first["next_cursor"]}))
+    assert [item["notification_id"] for item in next_page["items"]] == [event_ids[available], event_ids[thread_id]]
+
+    for content_id in (wrong_question, wrong_thread, deleted):
+        result = ok(env.call("u_ann", "GET", f"/me/notifications/{event_ids[content_id]}/target"))
+        assert not result["accessible"] and result["target"] is None
+    result = ok(env.call("u_ann", "GET", f"/me/notifications/{event_ids[available]}/target"))
+    assert result["accessible"] and result["target"]["comment_id"] == available
+
+    monkeypatch.setattr(runtime, "alpha_features_available", lambda: False)
+    legacy = ok(env.call("u_ann", "GET", "/me/notifications"))
+    assert {item["notification_id"] for item in legacy["items"]} == set(event_ids.values())
+
+
 def test_storage_outage_is_an_error_not_an_empty_list(env):
     make_profile(env, "u_ann")
     env.db.fail_tables.add("community_questions")
