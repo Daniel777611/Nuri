@@ -5,7 +5,7 @@
   "functions": {
     "api/backend.py": {
       "maxDuration": 300,
-      "includeFiles": "scripts/fixtures/alpha-community-parents.json"
+      "includeFiles": "scripts/fixtures/alpha-community-*.json"
     }
   },
   "rewrites": [

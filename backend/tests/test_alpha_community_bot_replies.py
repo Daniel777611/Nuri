@@ -80,8 +80,8 @@ def world(monkeypatch):
             "expires_at": (expires or NOW + timedelta(days=3)).isoformat(),
         }).execute().data[0]
 
-    def tick(*, human_first=True):
-        return asyncio.run(bots.reply_to_delivery(ELIGIBLE, PERSONAS, NOW, human_first=human_first))
+    def tick(*, human_first=True, now=NOW):
+        return asyncio.run(bots.reply_to_delivery(ELIGIBLE, PERSONAS, now, human_first=human_first))
 
     return SimpleNamespace(db=db, ask=ask, deliver=deliver, tick=tick,
                            generated=generated, notifications=notifications)
@@ -118,6 +118,60 @@ def test_existing_waiting_delivery_is_reused_without_adding_fallback(world, monk
     assert len(by_uid) == 2 and by_uid["bot-en"]["id"] == first["id"]
     assert by_uid["bot-en"]["state"] == "waiting"
     assert by_uid["bot-zh"]["state"] == "replied"
+
+
+def test_explicit_pass_releases_only_fresh_fallback_for_next_bot(world, monkeypatch):
+    monkeypatch.setattr(community, "_now", lambda: NOW)
+    question = world.ask("question about a personal experience")
+    human_delivery = world.deliver(question, "human-replier")
+    asyncio.run(community.respond("human-replier", human_delivery["id"], community.ResponseIn(
+        body="Ordinary answer", language="zh-TW", client_request_id="human-answer-fixture",
+    )))
+    original = dict(world.db.rows("community_question_deliveries")[0])
+    world.notifications.clear()
+
+    async def write(uid, _person, _task, *, pass_result, **context):
+        world.generated.append((uid, context["question"]))
+        return pass_result if uid == "bot-zh" else "Relevant experience from another parent."
+
+    monkeypatch.setattr(bots, "write_as", write)
+    assert world.tick() is None
+    assert world.db.rows("community_question_deliveries") == [original]
+    assert world.generated == [("bot-zh", question["body"])]
+    assert not world.notifications
+
+    later = NOW + timedelta(minutes=bots.TICK_MINUTES)
+    assert world.tick(now=later) == ("bot-en", True)
+    assert world.tick(now=later) is None
+    assert [r["author_id"] for r in world.db.rows("community_replies")] == ["human-replier", "bot-en"]
+    assert world.db.rows("community_question_deliveries")[0] == original
+    assert [notice[:2] for notice in world.notifications] == [("asker", "community_reply")]
+    assert world.generated == [("bot-zh", question["body"]), ("bot-en", question["body"])]
+
+
+@pytest.mark.parametrize("event", ["original_match", "no_scene", "version_change", "reply_already_exists"])
+def test_pass_preserves_existing_or_changed_delivery(world, monkeypatch, event):
+    question = world.ask("existing or changed reservation")
+    if event == "original_match":
+        world.deliver(question, "bot-zh")
+
+    async def write(uid, _person, _task, *, pass_result, **_context):
+        row, = world.db.rows("community_question_deliveries")
+        if event == "version_change":
+            world.db.table("community_question_deliveries").update({"version": 2}).eq("id", row["id"]).execute()
+        if event == "reply_already_exists":
+            world.db.table("community_replies").insert({
+                "question_id": question["id"], "delivery_id": row["id"], "author_id": uid,
+                "client_request_id": "existing-reply",
+            }).execute()
+        return None if event == "no_scene" else pass_result
+
+    monkeypatch.setattr(bots, "write_as", write)
+    assert world.tick() is None
+    row, = world.db.rows("community_question_deliveries")
+    assert row["recipient_id"] == "bot-zh"
+    assert row["version"] == (2 if event == "version_change" else 1)
+    assert row["state"] == "waiting"
 
 
 def test_stale_closed_and_expired_matches_are_not_reopened(world):

@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,20 +10,23 @@ from backend.tests.community_fakes import FakeDB
 
 NOW = datetime(2026, 11, 25, 18, 0, tzinfo=timezone.utc)
 PERSONAS = {
-    "active": {"activity": "high", "language": "en", "timeZone": "America/Chicago"},
-    "quiet": {"activity": "low", "language": "en", "timeZone": "America/Chicago"},
+    "active": {"slug": "active", "activity": "high", "language": "en", "timeZone": "America/Chicago"},
+    "quiet": {"slug": "quiet", "activity": "low", "language": "en", "timeZone": "America/Chicago"},
 }
 
 
-def test_reply_cooldowns_allow_active_parents_to_reply_sooner_and_keep_quiet_hours():
+def test_scheduler_uses_simulated_availability_and_per_person_spacing(monkeypatch):
+    monkeypatch.setattr(bots.routines, "participates", lambda *_args, **_kwargs: True)
     previous = int((NOW - timedelta(minutes=30)).timestamp())
     recent = {uid: previous for uid in PERSONAS}
-    assert bots.eligible_parents(PERSONAS, recent, NOW, action="replies") == ["active"]
-    assert bots.eligible_parents(PERSONAS, {}, NOW + timedelta(hours=12), action="replies") == []
+    awake = {uid: object() for uid in PERSONAS}
+    assert bots.eligible_parents(PERSONAS, recent, awake, NOW, action="replies") == ["active"]
+    assert bots.eligible_parents(PERSONAS, {}, {"quiet": awake["quiet"]}, NOW, action="replies") == ["quiet"]
+    assert bots.eligible_parents(PERSONAS, {}, {}, NOW, action="replies") == []
 
 
 @pytest.mark.anyio
-async def test_publish_respects_pool_gap_daily_cap_and_routes_verified_bots(monkeypatch):
+async def test_publish_respects_personal_and_community_caps_without_a_global_posting_slot(monkeypatch):
     db = FakeDB()
     monkeypatch.setattr(runtime, "get_supabase", lambda: db)
     calls = []
@@ -41,16 +46,14 @@ async def test_publish_respects_pool_gap_daily_cap_and_routes_verified_bots(monk
         {"id": "older", "author_id": "active", "created_at": (NOW - timedelta(hours=2)).isoformat()},
         {"id": "newest", "author_id": "active", "created_at": (NOW - timedelta(minutes=10)).isoformat()},
     ])
-    assert await bots.publish_question(list(PERSONAS), PERSONAS, NOW) is None
-    assert calls == []
-    assert await bots.publish_question(list(PERSONAS), PERSONAS, NOW + timedelta(minutes=20)) == "quiet"
+    assert await bots.publish_question(list(PERSONAS), PERSONAS, NOW) == "quiet"
     assert calls == [("write", "quiet"), ("publish", "quiet", set(PERSONAS), "en")]
 
     questions.extend([
         {"id": f"older-{i}", "author_id": "active", "created_at": (NOW - timedelta(hours=3)).isoformat()}
         for i in range(bots.DAILY_QUESTION_LIMIT)
     ])
-    assert await bots.publish_question(list(PERSONAS), PERSONAS, NOW + timedelta(minutes=20)) is None
+    assert await bots.publish_question(list(PERSONAS), PERSONAS, NOW) is None
     assert len(calls) == 2
 
 
@@ -89,6 +92,9 @@ async def test_tick_reports_reply_cohort_and_leaves_one_slot_for_bot_threads(mon
 
     monkeypatch.setattr(bots, "authorize_scheduler", authorize)
     monkeypatch.setattr(bots, "verified_personas", personas)
+    monkeypatch.setattr(bots.routines, "load_routines", lambda: {uid: object() for uid in PERSONAS})
+    monkeypatch.setattr(bots.routines, "current_scene", lambda *_args: object())
+    monkeypatch.setattr(bots.routines, "participates", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bots, "reply_to_delivery", reply)
     monkeypatch.setattr(bots, "publish_question", skip)
     monkeypatch.setattr(bots, "continue_thread", skip)
@@ -102,3 +108,34 @@ async def test_tick_reports_reply_cohort_and_leaves_one_slot_for_bot_threads(mon
     assert sum(result["human_replies"] for result in results) == 2
     assert sum(result["bot_replies"] for result in results) == 1
     assert all(result["replies"] == 1 and result["errors"] == 0 for result in results)
+    assert all(result["routine_profiles"] == 2 and result["available_scenes"] == 2 for result in results)
+
+
+@pytest.mark.anyio
+async def test_writer_gets_an_individual_local_scene_and_can_pass(monkeypatch):
+    calls = []
+    scene = SimpleNamespace(
+        story="The family shares daycare pickup and the parents alternate early shifts.",
+        local_date="2026-11-25", weekday="Wednesday", local_hour=12, kind="transition",
+        description="Morning shift is over and school pickup is an hour away.",
+        moment="Wondering what to take to the park after pickup.",
+    )
+    monkeypatch.setattr(bots.routines, "load_routines", lambda: {"active": object()})
+    monkeypatch.setattr(bots.routines, "current_scene", lambda *_args: scene)
+
+    async def complete(_site, _uid, system, payload):
+        calls.append((system, json.loads(payload)))
+        return "[SKIP]"
+
+    monkeypatch.setattr(community, "_complete", complete)
+    assert await bots.write_as("active", PERSONAS["active"], "Reply", now=NOW, question="A sample") is None
+    system, payload = calls[0]
+    assert "[SKIP]" in system
+    assert payload["local_moment"]["family_story"] == scene.story
+    assert payload["local_moment"]["current_activity"] == scene.description
+    assert payload["local_moment"]["something_on_their_mind"] == scene.moment
+    assert payload["question"] == "A sample"
+
+    monkeypatch.setattr(bots.routines, "current_scene", lambda *_args: None)
+    assert await bots.write_as("active", PERSONAS["active"], "Reply", now=NOW) is None
+    assert len(calls) == 1

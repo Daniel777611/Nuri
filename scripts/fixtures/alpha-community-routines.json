@@ -1,0 +1,2399 @@
+{
+  "ren-yu": {
+    "story": "He opens the neighborhood cafe before the baby wakes. A whiteboard at home alternates his daycare pickups with his partner's so neither has to remember from a rushed conversation.",
+    "wake": "05:00",
+    "sleep": "21:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:00",
+        "end": "10:25",
+        "kind": "work",
+        "scene": "Opens the cafe and covers the morning rush."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "10:25",
+        "end": "10:40",
+        "kind": "rest",
+        "scene": "Has coffee on the scheduled break once the second lead is at the counter."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "10:40",
+        "end": "13:30",
+        "kind": "work",
+        "scene": "Returns to the counter and counts the drawer at handover."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "15:45",
+        "end": "18:40",
+        "kind": "care",
+        "scene": "Collects the baby from daycare, offers a snack, and stays close for sofa cruising."
+      },
+      {
+        "days": [1, 3],
+        "start": "18:00",
+        "end": "19:15",
+        "kind": "care",
+        "scene": "Takes over food and the bath after his partner's pickup."
+      },
+      {
+        "days": [5],
+        "start": "09:20",
+        "end": "10:40",
+        "kind": "outing",
+        "scene": "Walks to the bakery with the stroller and brings bread home."
+      }
+    ],
+    "moments": [
+      "One pickup ran late when the other shift lead called out.",
+      "The baby stood long enough for him to take both hands off the sofa.",
+      "He and his partner rewrote the whiteboard after nearly showing up together."
+    ]
+  },
+  "lu-wen": {
+    "story": "Remote design gives her room to handle different routines for the school child and the toddler, but client review days are immovable. Grandma helps during visits and is usually on a call from afar.",
+    "wake": "06:35",
+    "sleep": "22:55",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:15",
+        "end": "08:30",
+        "kind": "care",
+        "scene": "Gets the older child to school and transfers toddler care to her partner or daycare."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:00",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Does design reviews and builds product mockups from home."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "12:25",
+        "end": "12:50",
+        "kind": "rest",
+        "scene": "Takes lunch away from the desk if both children are already in school or daycare."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:45",
+        "kind": "work",
+        "scene": "Meets with engineers and finishes design changes."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "17:00",
+        "end": "19:40",
+        "kind": "care",
+        "scene": "Picks up the toddler and helps the school child check their reading folder."
+      },
+      {
+        "days": [6],
+        "start": "10:00",
+        "end": "11:30",
+        "kind": "outing",
+        "scene": "Stops by the library's bilingual children's shelf with both kids."
+      }
+    ],
+    "moments": [
+      "The toddler answered Grandma's Mandarin question with a full English sentence.",
+      "A school holiday moved both the design review and the lunch plan.",
+      "The older child chose two library books with different scripts for the same story."
+    ]
+  },
+  "sui-nan": {
+    "story": "She works overnight in a hospital lab and parents the six-month-old on her own. Daycare makes post-shift sleep possible. Her evening sitter stays through the morning handoff on shift days. She keeps a mostly late rhythm between shifts and sleeps earlier if the baby settles on a night off.",
+    "wake": "15:20",
+    "sleep": "08:10",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:05",
+        "end": "08:00",
+        "kind": "care",
+        "scene": "Meets the morning babysitter or handles the authorized handoff at daycare before sleeping."
+      },
+      {
+        "days": [0, 1, 2, 3, 4, 6],
+        "start": "15:40",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Collects the baby when daycare is open and takes over feeds, floor play, and crib bedtime."
+      },
+      {
+        "days": [0, 1, 2, 3, 6],
+        "start": "22:30",
+        "end": "06:30",
+        "kind": "work",
+        "scene": "Processes overnight lab samples while the separately arranged sitter stays with the baby."
+      },
+      {
+        "days": [5],
+        "start": "16:00",
+        "end": "17:00",
+        "kind": "outing",
+        "scene": "Buys groceries after the baby's afternoon feed."
+      },
+      {
+        "days": [4, 5],
+        "start": "23:00",
+        "end": "05:30",
+        "kind": "care",
+        "scene": "Stays in with the baby for overnight feeds between stretches of sleep on nights off."
+      }
+    ],
+    "moments": [
+      "A daycare closure meant she had to arrange daytime backup before the lab roster was final.",
+      "The baby started rolling to the edge of the new crib while trying to settle.",
+      "She put a written milk inventory next to the cooler after a rushed handoff."
+    ]
+  },
+  "yi-shan": {
+    "story": "She and her partner alternate pickup duties for their adopted sisters. A quarterly accounting deadline may bring a Saturday session, so they confirm transport in writing at the start of the week.",
+    "wake": "06:30",
+    "sleep": "22:30",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:55",
+        "end": "08:25",
+        "kind": "care",
+        "scene": "Packs two lunches and gets the children out for their different school starts."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:45",
+        "end": "12:15",
+        "kind": "work",
+        "scene": "Works through reconciliations and client close items."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "17:10",
+        "kind": "work",
+        "scene": "Handles review notes, with less flexibility around quarter end."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "17:25",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Takes the aftercare pickup and listens to the children read."
+      },
+      {
+        "days": [6],
+        "start": "10:30",
+        "end": "11:45",
+        "kind": "outing",
+        "scene": "Lets the sisters pick a school snack for the week at the grocery store."
+      }
+    ],
+    "moments": [
+      "One sister asked where the adults' childhood photos were kept.",
+      "The younger sister waited through a whole appointment by telling a story from memory.",
+      "A late close coincided with a classroom reading event and required a pickup swap."
+    ]
+  },
+  "bo-shu": {
+    "story": "Exhibit load-ins start early. His husband takes mornings on site days and he leaves in time for late pickups. The three kids organize their weekend breakfast around who gets which kitchen task.",
+    "wake": "05:55",
+    "sleep": "22:00",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:00",
+        "end": "15:10",
+        "kind": "work",
+        "scene": "Coordinates crews and delivery windows on exhibition sites."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "15:40",
+        "end": "18:10",
+        "kind": "care",
+        "scene": "Handles aftercare pickup and gets all three children home."
+      },
+      {
+        "days": [2, 4],
+        "start": "17:05",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Takes over dinner prep and settles disputes about the table seats."
+      },
+      {
+        "days": [5, 6],
+        "start": "08:10",
+        "end": "09:50",
+        "kind": "care",
+        "scene": "Makes breakfast with his husband while the children each claim a small task."
+      }
+    ],
+    "moments": [
+      "The oldest taped a handwritten pancake recipe to a cabinet.",
+      "On the way home the toddler copied the middle child's bus announcement.",
+      "A crew call changed Thursday pickup by twenty minutes and the adults renegotiated seats in the car."
+    ]
+  },
+  "ke-you": {
+    "story": "She is starting a one-person translation studio from home and keeps agency assignments while looking for the first direct clients. Her partner travels every Wednesday, so she keeps intake calls clear of the two pickups that day.",
+    "wake": "06:40",
+    "sleep": "23:05",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:00",
+        "end": "08:45",
+        "kind": "care",
+        "scene": "Organizes school and toddler care, with the Wednesday dropoffs entirely hers."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "09:10",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Translates at home before lunch."
+      },
+      {
+        "days": [2],
+        "start": "09:15",
+        "end": "11:50",
+        "kind": "work",
+        "scene": "Takes a shorter deadline block while her partner travels."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "13:15",
+        "end": "15:45",
+        "kind": "work",
+        "scene": "Handles terminology checks and client revisions."
+      },
+      {
+        "days": [4],
+        "start": "13:20",
+        "end": "14:25",
+        "kind": "work",
+        "scene": "Prepares quotes, emails potential clients, and catches up on invoices for the new studio."
+      },
+      {
+        "days": [2],
+        "start": "14:45",
+        "end": "20:10",
+        "kind": "care",
+        "scene": "Collects both children and handles all afternoon activities, dinner, and bath."
+      },
+      {
+        "days": [0, 4],
+        "start": "16:00",
+        "end": "18:20",
+        "kind": "care",
+        "scene": "Prepares a snack and takes the older child to riding practice when the weather permits."
+      },
+      {
+        "days": [6],
+        "start": "09:50",
+        "end": "11:00",
+        "kind": "outing",
+        "scene": "Tries a quiet cycle path where the older child can practice starting alone."
+      }
+    ],
+    "moments": [
+      "The toddler rejected an offered spoon but then asked to refill it herself.",
+      "A two-page rush job arrived while the older child was learning to brake.",
+      "A Wednesday trip cancellation changed who showed up for pickup."
+    ]
+  },
+  "ren-qin": {
+    "story": "She runs a small Queens grocery while her partner does deliveries. Her younger child sometimes plays checkout within sight of the real register, and practice shapes the teenager's after-school route.",
+    "wake": "06:30",
+    "sleep": "22:35",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:00",
+        "end": "15:15",
+        "kind": "work",
+        "scene": "Opens the shop, stocks shelves, and handles customers."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "15:30",
+        "end": "18:30",
+        "kind": "care",
+        "scene": "Meets the younger child at pickup and supervises the kids when they stop at the shop."
+      },
+      {
+        "days": [2, 4],
+        "start": "16:30",
+        "end": "18:00",
+        "kind": "outing",
+        "scene": "Picks up from team practice and makes a short supply run."
+      },
+      {
+        "days": [5],
+        "start": "08:45",
+        "end": "13:00",
+        "kind": "work",
+        "scene": "Covers the weekend shift while her partner is home with both children."
+      }
+    ],
+    "moments": [
+      "The younger child rang up a basket of imaginary produce while the real receipt printer jammed.",
+      "Practice was moved indoors and the older child needed a ride from a different gym.",
+      "A delivery delay left the family eating soup at the store's back table once."
+    ]
+  },
+  "qiao-book": {
+    "story": "He works the public library desk on a schedule that includes a later Tuesday. His wife and he trade homework support. Grandma usually comes by on Saturday.",
+    "wake": "06:45",
+    "sleep": "22:20",
+    "blocks": [
+      {
+        "days": [0, 2, 3, 4],
+        "start": "08:45",
+        "end": "16:45",
+        "kind": "work",
+        "scene": "Covers the main library desk and helps prepare children's programs."
+      },
+      {
+        "days": [1],
+        "start": "11:30",
+        "end": "19:30",
+        "kind": "work",
+        "scene": "Runs the Tuesday late desk rotation."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "17:05",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Collects the child from aftercare and handles dinner and reading."
+      },
+      {
+        "days": [1, 3],
+        "start": "07:00",
+        "end": "08:30",
+        "kind": "care",
+        "scene": "Takes the school-morning shift before his wife takes the afternoon."
+      },
+      {
+        "days": [5],
+        "start": "10:00",
+        "end": "12:00",
+        "kind": "outing",
+        "scene": "Walks to the greenway with Grandma and the child's sketchbook."
+      }
+    ],
+    "moments": [
+      "The child volunteered to read only the captions in a homemade comic.",
+      "Grandma brought the wrong sketchbook and they improvised with an old envelope.",
+      "A library event ran over while his wife was waiting for a call about school."
+    ]
+  },
+  "mika-fern": {
+    "story": "Exhibition caption edits cluster around live events. Mika and their partner use a shared calendar to make daycare handoff predictable for a toddler who likes to watch first.",
+    "wake": "07:00",
+    "sleep": "22:40",
+    "blocks": [
+      {
+        "days": [0, 2, 4],
+        "start": "07:20",
+        "end": "08:30",
+        "kind": "care",
+        "scene": "Handles daycare dropoff and a familiar goodbye in the entryway."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:00",
+        "end": "12:30",
+        "kind": "work",
+        "scene": "Edits timed captions and checks names against the event schedule."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:15",
+        "end": "16:30",
+        "kind": "work",
+        "scene": "Reviews corrections or attends a live event setup remotely."
+      },
+      {
+        "days": [1, 3],
+        "start": "16:50",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Picks up from daycare and keeps time open for toddler play."
+      },
+      {
+        "days": [6],
+        "start": "10:05",
+        "end": "11:20",
+        "kind": "outing",
+        "scene": "Visits a small playground before it gets noisy."
+      }
+    ],
+    "moments": [
+      "A daycare photo showed the toddler watching the circle all the way through before joining.",
+      "Both parents had a call at the usual handoff time and reset the calendar.",
+      "The toddler recognized an opening song on the walk home."
+    ]
+  },
+  "qin-nai": {
+    "story": "Grandma is retired and looks after her grandson while his mother works in another city. She still hems the occasional pair of trousers and saves Sunday for a family video call.",
+    "wake": "06:45",
+    "sleep": "21:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:00",
+        "end": "08:20",
+        "kind": "care",
+        "scene": "Serves breakfast and gets her grandson to school."
+      },
+      {
+        "days": [1, 3],
+        "start": "10:00",
+        "end": "11:30",
+        "kind": "work",
+        "scene": "Finishes occasional neighbor clothing repairs at the kitchen table."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:45",
+        "end": "18:45",
+        "kind": "care",
+        "scene": "Walks home from school with him and gives him time to act out what happened."
+      },
+      {
+        "days": [5],
+        "start": "09:15",
+        "end": "10:45",
+        "kind": "outing",
+        "scene": "Brings him to the market and lets him choose one ingredient."
+      },
+      {
+        "days": [6],
+        "start": "17:00",
+        "end": "18:15",
+        "kind": "care",
+        "scene": "Sets up the standing call with his mother and helps him tell her one story."
+      }
+    ],
+    "moments": [
+      "Her grandson acted out a crossing guard's entire routine while she basted a hem.",
+      "His mother missed the video call once, so they recorded a short message together.",
+      "A broken school umbrella turned the rainy walk into a story about a boat."
+    ]
+  },
+  "leo-ma": {
+    "story": "He runs a small seasonal landscaping business and may trade outdoor jobs for equipment repair when Anchorage weather turns. His middle-schooler takes the lead on their part of the weekend.",
+    "wake": "06:10",
+    "sleep": "22:55",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:30",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Works local garden jobs in season or services tools and estimates winter work."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "13:00",
+        "end": "15:25",
+        "kind": "work",
+        "scene": "Finishes jobs and drives between sites before the school day ends."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "16:30",
+        "end": "18:20",
+        "kind": "care",
+        "scene": "Makes dinner after a brief check-in about school and the library."
+      },
+      {
+        "days": [5],
+        "start": "11:00",
+        "end": "12:20",
+        "kind": "outing",
+        "scene": "Stocks up on ingredients for their weekend cooking."
+      },
+      {
+        "days": [6],
+        "start": "16:50",
+        "end": "18:30",
+        "kind": "care",
+        "scene": "Makes the agreed shared meal and leaves the afternoon before it open."
+      }
+    ],
+    "moments": [
+      "The teenager asked to walk home from the library with a friend instead of being met.",
+      "An outdoor job was cancelled after a sudden freeze.",
+      "They divided the weekend meal into two recipes so each could be in charge of one."
+    ]
+  },
+  "jay-kai": {
+    "story": "She coordinates shifts for a midwifery service. Her partner handles early dropoff and another adult in the house can cover short gaps, while she does afternoons with the two children.",
+    "wake": "06:45",
+    "sleep": "22:15",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:40",
+        "end": "12:15",
+        "kind": "work",
+        "scene": "Handles scheduling gaps and intake calls from the office."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:05",
+        "kind": "work",
+        "scene": "Confirms shifts and updates the on-call roster."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "16:20",
+        "end": "19:25",
+        "kind": "care",
+        "scene": "Collects both kids and hears the older child's story while setting up the baby's meal."
+      },
+      {
+        "days": [1, 3],
+        "start": "17:40",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Does dinner and bath after another adult has handled pickup."
+      },
+      {
+        "days": [6],
+        "start": "11:00",
+        "end": "12:15",
+        "kind": "outing",
+        "scene": "Packs an early lunch to practice feeding the baby away from home."
+      }
+    ],
+    "moments": [
+      "The baby ate lunch at a cafe for the first time and dropped most of it on a bib.",
+      "A late shift swap delayed her pickup enough to need Grandma's backup.",
+      "The older child restarted a story when the timer went off at dinner."
+    ]
+  },
+  "yi-pae": {
+    "story": "The localization tester logs in around school dropoff and splits care in a Korean- and Mandarin-speaking household. Weekend language lessons matter, but the children also get time to make up games on their own.",
+    "wake": "06:50",
+    "sleep": "23:00",
+    "blocks": [
+      {
+        "days": [0, 1, 3, 4],
+        "start": "07:00",
+        "end": "08:20",
+        "kind": "care",
+        "scene": "Prepares school things and takes the younger child to preschool."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:15",
+        "end": "12:30",
+        "kind": "work",
+        "scene": "Runs localized game test cases and records language bugs."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:15",
+        "end": "17:00",
+        "kind": "work",
+        "scene": "Retests fixes and sends the test handoff."
+      },
+      {
+        "days": [2, 4],
+        "start": "17:15",
+        "end": "19:50",
+        "kind": "care",
+        "scene": "Collects the children and alternates home languages over dinner."
+      },
+      {
+        "days": [5],
+        "start": "09:45",
+        "end": "11:50",
+        "kind": "outing",
+        "scene": "Takes both children to weekend language classes and shops nearby."
+      }
+    ],
+    "moments": [
+      "The older child added a Korean rule and a Mandarin title to a homemade board game.",
+      "The younger child pointed at a sign and asked for the story behind a character.",
+      "A release candidate arrived at exactly the wrong time for pickup."
+    ]
+  },
+  "jing-ber": {
+    "story": "She designs venue lighting and her hours move with rehearsals. The youngest is at home on weekdays. The two older siblings keep their own plans between homes and the family checks the calendar before assuming they are free.",
+    "wake": "07:10",
+    "sleep": "23:20",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:25",
+        "end": "08:30",
+        "kind": "care",
+        "scene": "Gets the youngest out the door and checks any school handoff notes."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "09:45",
+        "end": "17:00",
+        "kind": "work",
+        "scene": "Draws and rigs lighting plans at the venue."
+      },
+      {
+        "days": [3, 4],
+        "start": "13:30",
+        "end": "21:45",
+        "kind": "work",
+        "scene": "Runs late lighting rehearsals while another adult handles bedtime."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "17:20",
+        "end": "19:40",
+        "kind": "care",
+        "scene": "Picks up the youngest and keeps dinner calm when siblings have conflicting plans."
+      },
+      {
+        "days": [6],
+        "start": "17:00",
+        "end": "18:25",
+        "kind": "care",
+        "scene": "Reviews the household schedule and prepares for the next school morning."
+      }
+    ],
+    "moments": [
+      "A teenager asked to skip a family outing for a plan they had made with friends.",
+      "The youngest drew three squares on the calendar for the days the older kids were expected.",
+      "A lamp cue ran late just as a school bag needed to be moved between homes."
+    ]
+  },
+  "luc-dum": {
+    "story": "He draws route maps in the daytime. His partner works restaurant evenings; he handles most study checks and the children increasingly make their own route and activity plans.",
+    "wake": "06:30",
+    "sleep": "22:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:30",
+        "end": "12:15",
+        "kind": "work",
+        "scene": "Updates transport diagrams and reviews route changes."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:05",
+        "end": "16:25",
+        "kind": "work",
+        "scene": "Checks street names and prints revised route sheets."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "12:20",
+        "end": "12:40",
+        "kind": "rest",
+        "scene": "Has a short walk or lunch between route drafts."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "16:50",
+        "end": "19:50",
+        "kind": "care",
+        "scene": "Handles home arrivals, dinner, and after-school logistics during the restaurant shift."
+      },
+      {
+        "days": [6],
+        "start": "10:30",
+        "end": "12:15",
+        "kind": "outing",
+        "scene": "Chooses a short bus route and lets the younger child navigate it with a paper map."
+      }
+    ],
+    "moments": [
+      "The older child put captions on a video before sending it to the grandparents.",
+      "Road work made the younger child notice a change the official sign still missed.",
+      "A restaurant shift was swapped and both parents were unexpectedly home for dinner."
+    ]
+  },
+  "mei-rui": {
+    "story": "She runs a shop and cafe. The parents exchange midweek, with the child at her place from Wednesday evening through Saturday on most weeks.",
+    "wake": "07:10",
+    "sleep": "22:50",
+    "blocks": [
+      {
+        "days": [0, 1],
+        "start": "08:45",
+        "end": "17:30",
+        "kind": "work",
+        "scene": "Manages the bookstore cafe and does inventory while the other parent handles care."
+      },
+      {
+        "days": [2, 3, 4],
+        "start": "08:45",
+        "end": "15:35",
+        "kind": "work",
+        "scene": "Works the earlier retail schedule."
+      },
+      {
+        "days": [2],
+        "start": "16:30",
+        "end": "18:15",
+        "kind": "care",
+        "scene": "Meets the other parent for the weekly handoff and checks what needs to travel."
+      },
+      {
+        "days": [3, 4],
+        "start": "16:15",
+        "end": "19:25",
+        "kind": "care",
+        "scene": "Picks up after school and checks the sports bag together."
+      },
+      {
+        "days": [5],
+        "start": "09:15",
+        "end": "11:10",
+        "kind": "outing",
+        "scene": "Takes the child to practice and waits nearby with a book."
+      }
+    ],
+    "moments": [
+      "The child packed a shin guard twice and left the water bottle at the other home.",
+      "A school form needed both parents' attention after handoff.",
+      "The child marked the sports bag with the day it needed to leave."
+    ]
+  },
+  "hao-bao": {
+    "story": "As a self-employed repair contractor, he books morning jobs so he can collect four kids while his partner has class. He closes the work calendar rather than trying to take a job during pickup.",
+    "wake": "06:00",
+    "sleep": "22:20",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:15",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Visits homes to assess and make neighborhood repairs."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "12:35",
+        "end": "14:15",
+        "kind": "work",
+        "scene": "Buys parts or finishes one local call before school lets out."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:35",
+        "end": "19:40",
+        "kind": "care",
+        "scene": "Makes multiple pickups, does homework and snacks, and handles dinner."
+      },
+      {
+        "days": [5],
+        "start": "09:00",
+        "end": "12:00",
+        "kind": "outing",
+        "scene": "Gets the eldest to a game while his partner sets up the younger children's morning."
+      },
+      {
+        "days": [6],
+        "start": "16:15",
+        "end": "17:30",
+        "kind": "care",
+        "scene": "Helps the kids pack bags and assign tasks before the next school week."
+      }
+    ],
+    "moments": [
+      "The youngest put a missing tape measure in the toy basket.",
+      "Two of the children asked for the same chore because each thought it was the easy one.",
+      "A job turned into a second visit so he could make the last pickup on time."
+    ]
+  },
+  "jamie-river": {
+    "story": "She restores city archive materials three mornings a week and shares care with her partner. They keep time with French-speaking relatives but plan an exit when their preschooler gets tired.",
+    "wake": "06:55",
+    "sleep": "22:15",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:20",
+        "end": "08:45",
+        "kind": "care",
+        "scene": "Does breakfast and hands over or takes the preschool dropoff."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "09:20",
+        "end": "13:30",
+        "kind": "work",
+        "scene": "Restores municipal records at the archive bench."
+      },
+      {
+        "days": [1, 3],
+        "start": "11:45",
+        "end": "14:45",
+        "kind": "care",
+        "scene": "Handles lunch, building-together time, and a quieter rest."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "15:35",
+        "end": "18:00",
+        "kind": "care",
+        "scene": "Picks up from preschool and plans a predictable wind-down."
+      },
+      {
+        "days": [6],
+        "start": "10:00",
+        "end": "12:00",
+        "kind": "outing",
+        "scene": "Visits nearby relatives and leaves before the family lunch gets too crowded."
+      }
+    ],
+    "moments": [
+      "The child asked to build the same bridge twice, with each parent once.",
+      "At a crowded family meal they took a break outside before going home.",
+      "A damaged map at work reminded her of the child's taped cardboard town."
+    ]
+  },
+  "tao-na": {
+    "story": "Her bakery apprenticeship starts in the dark. Her husband does morning dropoff, her mother picks the two children up, and she takes over when she gets back.",
+    "wake": "04:35",
+    "sleep": "21:10",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "05:20",
+        "end": "13:00",
+        "kind": "work",
+        "scene": "Works the bakery prep and counter handover."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:20",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Takes over from Grandma and handles snack, play and bedtime with her husband."
+      },
+      {
+        "days": [5],
+        "start": "10:10",
+        "end": "11:40",
+        "kind": "outing",
+        "scene": "Buys fruit on foot if the toddler's nap can stay on time."
+      },
+      {
+        "days": [6],
+        "start": "08:40",
+        "end": "10:00",
+        "kind": "care",
+        "scene": "Makes a small breakfast project while the older child looks at bakery photos."
+      }
+    ],
+    "moments": [
+      "The toddler clapped when the bakery song came on at home.",
+      "Grandma arrived for pickup without the spare mittens they had just set aside.",
+      "The older child asked why bread dough had to wait when everyone else was hungry."
+    ]
+  },
+  "wei-lun": {
+    "story": "Port orders run on a fixed daytime schedule. His partner travels often, so he checks the school plan in advance and helps their daughter choose how to keep in touch with grandparents away from Jersey City.",
+    "wake": "06:20",
+    "sleep": "22:30",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:55",
+        "end": "08:00",
+        "kind": "care",
+        "scene": "Organizes breakfast and takes his daughter to school on the trip days."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:30",
+        "end": "12:25",
+        "kind": "work",
+        "scene": "Checks equipment quotes and matches deliveries at the port."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:05",
+        "end": "16:30",
+        "kind": "work",
+        "scene": "Confirms purchase orders and the following day's receiving windows."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "16:55",
+        "end": "19:10",
+        "kind": "care",
+        "scene": "Picks up from aftercare or takes over dinner and the school calendar."
+      },
+      {
+        "days": [6],
+        "start": "11:15",
+        "end": "12:45",
+        "kind": "outing",
+        "scene": "Walks by the waterfront and lets his daughter take her own photos."
+      }
+    ],
+    "moments": [
+      "His daughter swapped a voice call for a short video about a ferry horn.",
+      "A supplier's late paperwork nearly overlapped with a parent meeting.",
+      "She asked whether it was okay to send a picture of a project that was still unfinished."
+    ]
+  },
+  "li-eat": {
+    "story": "She helps her family with a breakfast stand and lives with older relatives. The other parent rotates weekend shifts, so weekend childcare is sorted before she agrees to any extra stall work.",
+    "wake": "04:50",
+    "sleep": "21:40",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4, 6],
+        "start": "05:45",
+        "end": "11:30",
+        "kind": "work",
+        "scene": "Handles breakfast stall setup, orders, and the late-morning clean."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "12:00",
+        "end": "15:10",
+        "kind": "care",
+        "scene": "Switches into lunch and nap duty for both young children."
+      },
+      {
+        "days": [5],
+        "start": "07:30",
+        "end": "12:00",
+        "kind": "care",
+        "scene": "Takes the morning at home while her partner works the weekend rotation."
+      },
+      {
+        "days": [5],
+        "start": "15:10",
+        "end": "16:30",
+        "kind": "outing",
+        "scene": "Takes the children to look at fruit at the market after nap."
+      }
+    ],
+    "moments": [
+      "The three-year-old tried to count one piece of fruit per family member.",
+      "The baby pulled a stool close to the breakfast table.",
+      "A late stall customer made Grandma take the first half of naptime duty."
+    ]
+  },
+  "yuan-foster": {
+    "story": "Evening venue shifts are common. The two adults keep the younger child's after-school seating ritual steady and let the older child decide which park route to share.",
+    "wake": "06:40",
+    "sleep": "22:40",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:00",
+        "end": "08:35",
+        "kind": "care",
+        "scene": "Sets out breakfast and covers school or preschool dropoff."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "09:15",
+        "end": "16:40",
+        "kind": "work",
+        "scene": "Handles venue supplies and minor maintenance."
+      },
+      {
+        "days": [3, 4],
+        "start": "12:20",
+        "end": "20:20",
+        "kind": "work",
+        "scene": "Covers event setups while his partner takes pickup and dinner."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "17:00",
+        "end": "19:10",
+        "kind": "care",
+        "scene": "Collects the children or takes over dinner and reading at home."
+      },
+      {
+        "days": [6],
+        "start": "14:15",
+        "end": "16:00",
+        "kind": "outing",
+        "scene": "Walks through the park with both children and lets the older one choose the path."
+      }
+    ],
+    "moments": [
+      "The younger child asked to keep the same reading seat after a chair was moved.",
+      "The two children chose different stops on the same park walk.",
+      "A venue booking moved dinner handoff to a night they had both expected to be home."
+    ]
+  },
+  "hua-me": {
+    "story": "She and her wife trade baby duty around hotel reservations shifts. Grandma usually covers Thursday so both can work at once, with a written handover for feeds and wake periods.",
+    "wake": "07:25",
+    "sleep": "22:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:40",
+        "end": "09:10",
+        "kind": "care",
+        "scene": "Handles the first daytime feed and a short spell of play before handing over."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:30",
+        "end": "13:40",
+        "kind": "work",
+        "scene": "Takes reservation calls and updates bookings."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:25",
+        "end": "17:20",
+        "kind": "work",
+        "scene": "Resolves booking changes and covers a share of the late queue."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "17:40",
+        "end": "19:45",
+        "kind": "care",
+        "scene": "Takes over the early-evening feed and talks to the baby before settling."
+      },
+      {
+        "days": [5],
+        "start": "10:15",
+        "end": "11:15",
+        "kind": "outing",
+        "scene": "Takes a shaded stroller loop while her wife covers the next feed."
+      }
+    ],
+    "moments": [
+      "Grandma noticed the baby calmed when someone narrated placing a bottle down.",
+      "The baby was ready to sleep earlier just as the reservations call queue grew.",
+      "After a mix-up, the couple put feed labels where both could read them at a glance."
+    ]
+  },
+  "qi-wheel": {
+    "story": "He works at a motorcycle shop and the adults rotate pickups. Grandparents can cover late repairs, while the children do age-appropriate tinkering with household objects at home.",
+    "wake": "06:35",
+    "sleep": "22:35",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:10",
+        "end": "12:15",
+        "kind": "work",
+        "scene": "Diagnoses and repairs motorcycles at the shop."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:50",
+        "kind": "work",
+        "scene": "Finishes work orders and tests the completed repairs."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "17:00",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Picks up or takes over from grandparents and cooks with both children nearby."
+      },
+      {
+        "days": [1, 3],
+        "start": "07:00",
+        "end": "07:55",
+        "kind": "care",
+        "scene": "Does the school-morning handoff before his partner's pickup day."
+      },
+      {
+        "days": [5],
+        "start": "10:30",
+        "end": "11:50",
+        "kind": "outing",
+        "scene": "Visits the library and lets the children choose transportation books."
+      }
+    ],
+    "moments": [
+      "The younger child rescued the clasp from a broken backpack and wanted to repair it.",
+      "A late shop repair required Grandpa to cover pickup.",
+      "The older child drew a made-up transit route on the back of a repair estimate."
+    ]
+  },
+  "xin-mu": {
+    "story": "The theater job comes in fittings and performance calls. Her partner covers late nights. The family uses adaptive recreation on Sunday and leaves extra time to get around the venue.",
+    "wake": "07:00",
+    "sleep": "22:55",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:15",
+        "end": "08:40",
+        "kind": "care",
+        "scene": "Handles school preparation with enough time to load the walker where needed."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "09:30",
+        "end": "16:05",
+        "kind": "work",
+        "scene": "Prepares costumes and makes alterations between fittings."
+      },
+      {
+        "days": [3, 4],
+        "start": "13:40",
+        "end": "21:45",
+        "kind": "work",
+        "scene": "Works theater fitting and performance calls."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "16:30",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Handles school pickup and dinner while the children decompress after school."
+      },
+      {
+        "days": [6],
+        "start": "10:20",
+        "end": "12:05",
+        "kind": "outing",
+        "scene": "Takes the children to adaptive sports and leaves time to get through the venue."
+      }
+    ],
+    "moments": [
+      "One child wanted to time the drill even when it was the other's turn.",
+      "A ramp was temporarily closed, making them late for warmup.",
+      "The kids chose different size balls and still found a drill they could do together."
+    ]
+  },
+  "cheng-wei": {
+    "story": "He starts the restaurant kitchen before breakfast. His stepson spends school weeks at home; his stepdaughter comes every other weekend. The adults check the Friday plan before setting out food or making appointments.",
+    "wake": "04:55",
+    "sleep": "21:50",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:00",
+        "end": "13:30",
+        "kind": "work",
+        "scene": "Preps and cooks the morning restaurant service."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:30",
+        "end": "18:45",
+        "kind": "care",
+        "scene": "Makes the school pickup and sets out food for evening family time."
+      },
+      {
+        "days": [4],
+        "start": "18:55",
+        "end": "20:00",
+        "kind": "care",
+        "scene": "Meets his stepdaughter for the agreed handoff, then lets her settle in.",
+        "week": "even"
+      },
+      {
+        "days": [5],
+        "start": "16:30",
+        "end": "18:45",
+        "kind": "care",
+        "scene": "Tests a pasta recipe with both children around to help or choose something else.",
+        "week": "even"
+      },
+      {
+        "days": [6],
+        "start": "09:45",
+        "end": "11:00",
+        "kind": "outing",
+        "scene": "Goes to the produce market with his stepson; the other child can come when she is home."
+      }
+    ],
+    "moments": [
+      "His stepdaughter made a pasta list with more ingredients than would fit in her backpack.",
+      "His stepson remembered which market vendor had saved a favorite squash for them.",
+      "There was a Friday handoff delay after the kitchen closed unusually late."
+    ]
+  },
+  "pei-window": {
+    "story": "She runs parts inventory in the daytime while her partner restocks at night. The two older children can manage most mornings, and the family protects some evening time before the late shift starts.",
+    "wake": "06:35",
+    "sleep": "22:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:30",
+        "end": "12:20",
+        "kind": "work",
+        "scene": "Receives components and checks counts at the warehouse."
+      },
+      {
+        "days": [1, 2, 3],
+        "start": "12:25",
+        "end": "12:50",
+        "kind": "rest",
+        "scene": "Takes a lunch break after the first inventory check."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:45",
+        "kind": "work",
+        "scene": "Reconciles inventory and sets aside the following day's shipments."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "17:15",
+        "end": "19:15",
+        "kind": "care",
+        "scene": "Coordinates rides and supper and helps the children check their schedules."
+      },
+      {
+        "days": [6],
+        "start": "11:05",
+        "end": "12:20",
+        "kind": "outing",
+        "scene": "Picks up craft or school supplies with whoever has a project that week."
+      }
+    ],
+    "moments": [
+      "One child had a group homework session exactly when everyone normally ate.",
+      "The older child asked for a clear corner of the table to record a craft video.",
+      "An inventory discrepancy was left for the next morning so she could make a ride."
+    ]
+  },
+  "xiao-ken": {
+    "story": "Nursery work changes with the season. When the children's grandfather is in town the shared car is easier to manage, but most weeks the parents deliberately plan around a single set of keys.",
+    "wake": "06:15",
+    "sleep": "22:10",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:30",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Prepares greenhouse orders and tends nursery stock, with hours shorter off-season."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "12:45",
+        "end": "15:00",
+        "kind": "work",
+        "scene": "Finishes stock or seasonal cleanup before the car is needed."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "15:20",
+        "end": "18:50",
+        "kind": "care",
+        "scene": "Uses the shared car for pickup and takes over snacks and play."
+      },
+      {
+        "days": [5],
+        "start": "10:10",
+        "end": "11:30",
+        "kind": "outing",
+        "scene": "Walks both children to a small park or a sheltered outdoor spot in wet weather."
+      }
+    ],
+    "moments": [
+      "The toddler inspected the stroller wheels while they were waiting for the car.",
+      "Grandpa came for a summer visit and handled a pickup after the parents swapped shifts.",
+      "The preschooler pocketed a tiny stone on a walk after a rain shower."
+    ]
+  },
+  "linjie-grad": {
+    "story": "The graduate student changes work blocks when discussion sections move. The couple marks which adult is on care before agreeing to anything on campus.",
+    "wake": "07:25",
+    "sleep": "23:35",
+    "blocks": [
+      {
+        "days": [0, 1, 3, 4],
+        "start": "07:45",
+        "end": "09:00",
+        "kind": "care",
+        "scene": "Handles the toddler's breakfast and preparation for daycare."
+      },
+      {
+        "days": [0, 1],
+        "start": "10:00",
+        "end": "13:00",
+        "kind": "work",
+        "scene": "Prepares a lesson or attends a seminar on campus."
+      },
+      {
+        "days": [2, 4],
+        "start": "11:00",
+        "end": "15:00",
+        "kind": "work",
+        "scene": "Does lab or library work within the partner's available care window."
+      },
+      {
+        "days": [3],
+        "start": "13:15",
+        "end": "17:20",
+        "kind": "work",
+        "scene": "Leads discussion or office hours with a late pickup handoff arranged."
+      },
+      {
+        "days": [0, 1, 4],
+        "start": "17:15",
+        "end": "19:45",
+        "kind": "care",
+        "scene": "Collects the child and looks through family photos in the kitchen before bed."
+      },
+      {
+        "days": [6],
+        "start": "10:45",
+        "end": "12:00",
+        "kind": "outing",
+        "scene": "Takes a stroller walk before returning to prepare for the week's classes."
+      }
+    ],
+    "moments": [
+      "The toddler insisted that a photo of the partner from childhood was the toddler.",
+      "A discussion section was moved to the only time both parents normally had class.",
+      "A daycare teacher suggested bringing a copy instead of sending an original photo."
+    ]
+  },
+  "ian-pine": {
+    "story": "He manages park crews and his husband handles most early routines. Each child helped put the holidays and activities they want to keep on the family calendar.",
+    "wake": "06:00",
+    "sleep": "22:30",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:00",
+        "end": "14:50",
+        "kind": "work",
+        "scene": "Assigns park crew work and checks equipment and sites, with duties changing by season."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:20",
+        "end": "18:40",
+        "kind": "care",
+        "scene": "Meets the kids after school or aftercare and does dinner while his husband finishes work."
+      },
+      {
+        "days": [5],
+        "start": "10:30",
+        "end": "11:55",
+        "kind": "outing",
+        "scene": "Goes on a short walk with both children, leaving time for plans each chose."
+      },
+      {
+        "days": [6],
+        "start": "16:00",
+        "end": "17:30",
+        "kind": "care",
+        "scene": "Checks family plans and keeps extra paper for an origami session."
+      }
+    ],
+    "moments": [
+      "One child wanted a holiday from their earlier home on the printed calendar.",
+      "The older child took a paper crane to school without wanting to host a visit.",
+      "A path inspection ran over and the parents texted about pickup before making any promises."
+    ]
+  },
+  "sana-sun": {
+    "story": "She trains ferry customer-service workers and plans her own dropoffs and pickups with her daughter. A friend often joins them for weekend classes, but they keep the rest of Saturday flexible.",
+    "wake": "06:35",
+    "sleep": "22:10",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:55",
+        "end": "08:15",
+        "kind": "care",
+        "scene": "Gets her daughter to school before commuting to the ferry training office."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:55",
+        "end": "12:35",
+        "kind": "work",
+        "scene": "Leads new staff training and practices difficult customer calls."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:20",
+        "end": "16:00",
+        "kind": "work",
+        "scene": "Reviews trainees and schedules follow-up shifts."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "16:25",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Collects her daughter and gives her space to draw before homework and dinner."
+      },
+      {
+        "days": [5],
+        "start": "10:10",
+        "end": "11:55",
+        "kind": "outing",
+        "scene": "Goes to a weekend class and sometimes meets a family friend there."
+      }
+    ],
+    "moments": [
+      "Her daughter added a new park page to the booklet she made with a friend.",
+      "A ferry delay pushed a training session into aftercare pickup time once.",
+      "The friend had to cancel class and they spent the spare hour drawing outside."
+    ]
+  },
+  "tao-wu": {
+    "story": "The factory alternates early and late maintenance weeks. The adults check the rota on Sunday and ask Grandpa for help only when a shift unexpectedly runs long. Between the two weeks the same personal hours are most predictable, even though work can start earlier or finish later.",
+    "wake": "07:00",
+    "sleep": "21:20",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:10",
+        "end": "14:10",
+        "kind": "work",
+        "scene": "Covers the scheduled early equipment maintenance shift.",
+        "week": "even"
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:10",
+        "end": "19:15",
+        "kind": "care",
+        "scene": "Handles pickups and dinner after the early shift, then lets the toddler turn off the bedroom light.",
+        "week": "even"
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:20",
+        "end": "09:10",
+        "kind": "care",
+        "scene": "Takes morning school and daycare duties during the late-shift week.",
+        "week": "odd"
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:00",
+        "end": "22:10",
+        "kind": "work",
+        "scene": "Works the scheduled late equipment shift while the partner handles the evening.",
+        "week": "odd"
+      },
+      {
+        "days": [6],
+        "start": "10:10",
+        "end": "11:25",
+        "kind": "outing",
+        "scene": "Gets the children's groceries and checks the next shift rota at home."
+      }
+    ],
+    "moments": [
+      "The older child began setting their own alarm on late-shift weeks.",
+      "The toddler waited in a doorway to turn the light off after an unusually late evening.",
+      "Overtime once meant Grandpa stepped in with only a short warning."
+    ]
+  },
+  "fang-camp": {
+    "story": "She orders supplies for a community kitchen. The parents trade afternoon coverage for the twins and their middle-schooler, who has started making some breakfasts without help.",
+    "wake": "06:15",
+    "sleep": "22:25",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:40",
+        "end": "12:10",
+        "kind": "work",
+        "scene": "Orders supplies and checks deliveries against the kitchen's menus."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "12:50",
+        "end": "15:25",
+        "kind": "work",
+        "scene": "Plans subsequent orders and handles invoices before pickup."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "15:45",
+        "end": "19:10",
+        "kind": "care",
+        "scene": "Collects the twins and coordinates the older child's independent trip home."
+      },
+      {
+        "days": [2, 4],
+        "start": "14:45",
+        "end": "18:45",
+        "kind": "care",
+        "scene": "Takes the early after-school shift while the other adult is working."
+      },
+      {
+        "days": [6],
+        "start": "08:20",
+        "end": "10:05",
+        "kind": "care",
+        "scene": "Makes a slower breakfast and gives both twins a separate job."
+      }
+    ],
+    "moments": [
+      "One twin quietly helped set the table while the other kept building a long project.",
+      "The middle-schooler worked out a breakfast that did not require using the stove.",
+      "A late food delivery turned a normal pickup into a two-adult swap."
+    ]
+  },
+  "nash-kite": {
+    "story": "He assembles electronics at home. The small parts stay put away when the children are back. Both adults maintain a clear preschool routine for the older child and rest windows for the younger one.",
+    "wake": "06:55",
+    "sleep": "22:50",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:10",
+        "end": "08:45",
+        "kind": "care",
+        "scene": "Does breakfast and preschool dropoff while their partner gets to work."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:05",
+        "end": "12:10",
+        "kind": "work",
+        "scene": "Assembles electronics at the child-free workbench."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "13:00",
+        "end": "15:10",
+        "kind": "work",
+        "scene": "Packages checked batches and clears away small parts before pickup."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:40",
+        "end": "19:35",
+        "kind": "care",
+        "scene": "Collects the children, then handles play, meals, and bathroom routines."
+      },
+      {
+        "days": [5],
+        "start": "10:30",
+        "end": "11:25",
+        "kind": "outing",
+        "scene": "Visits a low-key neighborhood activity with time for the older child to watch first."
+      }
+    ],
+    "moments": [
+      "The younger child recognized the bathroom sign on an outing before anyone pointed at it.",
+      "The preschooler watched the rim of a small group activity before deciding to walk over.",
+      "A component shipment was late and had to stay sealed until childcare the next day."
+    ]
+  },
+  "yu-zhi": {
+    "story": "He looks after hotel equipment near the shore. The older two manage much of their own schedules, leaving him and his partner to swap care around the toddler's meals and naps.",
+    "wake": "06:05",
+    "sleep": "22:20",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:20",
+        "end": "15:15",
+        "kind": "work",
+        "scene": "Inspects hotel equipment and covers maintenance calls."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "15:45",
+        "end": "18:50",
+        "kind": "care",
+        "scene": "Picks up or takes over toddler care and checks the older children's plans."
+      },
+      {
+        "days": [1, 3],
+        "start": "17:30",
+        "end": "19:35",
+        "kind": "care",
+        "scene": "Handles supper and bath after his partner's pickup."
+      },
+      {
+        "days": [6],
+        "start": "08:45",
+        "end": "10:05",
+        "kind": "outing",
+        "scene": "Takes the toddler to the sand before the sun is high and leaves water play optional."
+      }
+    ],
+    "moments": [
+      "The toddler walked along dry footprints rather than follow the other children to the water.",
+      "A teen booked a community event and checked only whether the family needed the car.",
+      "A late equipment call collided with the older child's planned study time."
+    ]
+  },
+  "le-ship": {
+    "story": "She runs an independent layout studio on small contracts. She blocks predictable coverage when her military partner is away and builds client deadlines around care she can actually arrange.",
+    "wake": "06:50",
+    "sleep": "23:20",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:05",
+        "end": "08:50",
+        "kind": "care",
+        "scene": "Manages school and toddler handoffs, doing both when her partner is away."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:15",
+        "end": "12:10",
+        "kind": "work",
+        "scene": "Lays out client documents and checks page proofs from home."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "13:10",
+        "end": "15:05",
+        "kind": "work",
+        "scene": "Finishes independent contract revisions before school pickup."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:25",
+        "end": "19:35",
+        "kind": "care",
+        "scene": "Handles pickup and evening, using a simple calendar for any expected return dates."
+      },
+      {
+        "days": [5],
+        "start": "10:15",
+        "end": "11:30",
+        "kind": "outing",
+        "scene": "Takes both children to a small playground or an errand near home."
+      }
+    ],
+    "moments": [
+      "The school child counted all the boxes on the calendar and asked what that meant in sleeps.",
+      "The toddler heard the absent parent's voice and looked toward the hallway.",
+      "She declined a rush job that would have required a sitter during the bedtime routine."
+    ]
+  },
+  "momo-line": {
+    "story": "Exhibition design means one weekend day usually belongs to work. Her partner and nearby Grandma help with coverage, and Monday morning is kept free of site calls.",
+    "wake": "07:20",
+    "sleep": "23:15",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:35",
+        "end": "08:45",
+        "kind": "care",
+        "scene": "Handles the weekday childcare handoff when another adult is on pickup."
+      },
+      {
+        "days": [1, 2, 3, 4, 5],
+        "start": "09:45",
+        "end": "16:30",
+        "kind": "work",
+        "scene": "Builds and tests exhibition experiences, including the public Saturday shift."
+      },
+      {
+        "days": [0],
+        "start": "09:15",
+        "end": "13:15",
+        "kind": "care",
+        "scene": "Takes the younger child on a quieter weekday outing and covers lunch."
+      },
+      {
+        "days": [1, 3, 4],
+        "start": "16:50",
+        "end": "19:15",
+        "kind": "care",
+        "scene": "Collects the children and plans dinner and activity rides."
+      },
+      {
+        "days": [6],
+        "start": "10:30",
+        "end": "12:10",
+        "kind": "outing",
+        "scene": "Meets Grandma when she is free and lets the older child choose an activity."
+      }
+    ],
+    "moments": [
+      "The younger child took several photos of a tower before it fell.",
+      "The school child asked to put a personal weekend plan on the family calendar.",
+      "A Saturday event needed extra setup and Grandma agreed to cover only the first part."
+    ]
+  },
+  "dun-route": {
+    "story": "He delivers by bike through the weekday lunch window. The toddler lives with him and his partner; his school child moves between households with a regular midweek handoff and alternating Saturdays.",
+    "wake": "06:35",
+    "sleep": "22:30",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "08:50",
+        "end": "15:05",
+        "kind": "work",
+        "scene": "Runs bike deliveries and adjusts the route for weather."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "15:30",
+        "end": "18:45",
+        "kind": "care",
+        "scene": "Picks up the toddler, adds the school pickup on agreed days, and makes dinner."
+      },
+      {
+        "days": [2],
+        "start": "18:50",
+        "end": "19:35",
+        "kind": "care",
+        "scene": "Meets the other household for the school-child handoff and checks the bag."
+      },
+      {
+        "days": [5],
+        "start": "10:05",
+        "end": "11:50",
+        "kind": "outing",
+        "scene": "Takes both children on a slow ride near home.",
+        "week": "odd"
+      },
+      {
+        "days": [5],
+        "start": "10:40",
+        "end": "11:40",
+        "kind": "outing",
+        "scene": "Walks with the toddler while the older child is with their other parent.",
+        "week": "even"
+      }
+    ],
+    "moments": [
+      "A puncture left him doing a daycare pickup on foot.",
+      "The older child remembered which color key cover belonged to which home.",
+      "They shortened a handoff conversation so the toddler could keep moving."
+    ]
+  },
+  "eden-page": {
+    "story": "She edits magazine copy. The parents live in the same school zone and coordinate recurring assignments across both houses without asking the children to carry important messages between them.",
+    "wake": "06:55",
+    "sleep": "22:55",
+    "blocks": [
+      {
+        "days": [0, 1, 3],
+        "start": "07:10",
+        "end": "08:30",
+        "kind": "care",
+        "scene": "Gets the children ready for school on the mornings they are staying with her."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:00",
+        "end": "12:05",
+        "kind": "work",
+        "scene": "Reads proofs and sends edits from home."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:00",
+        "kind": "work",
+        "scene": "Checks corrections and prepares copy for publication."
+      },
+      {
+        "days": [0, 1, 3],
+        "start": "16:25",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Coordinates after-school plans and offers reading time on home days."
+      },
+      {
+        "days": [2],
+        "start": "17:15",
+        "end": "18:10",
+        "kind": "care",
+        "scene": "Works through the joint school calendar and any handoff with their father."
+      }
+    ],
+    "moments": [
+      "The younger child reached the same page in two different copies of a library book.",
+      "The older child proposed a clear afternoon for a new activity rather than asking at the last moment.",
+      "A publication deadline and a parent call were moved so the parents could both join."
+    ]
+  },
+  "la-ari": {
+    "story": "She helps teach ceramics and shares childcare rides with her partner in a Hebrew- and Mandarin-speaking home. Her late class is planned in advance so the new preschool pickup remains familiar.",
+    "wake": "06:55",
+    "sleep": "22:35",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:15",
+        "end": "08:40",
+        "kind": "care",
+        "scene": "Covers preschool and toddler preparation or their usual dropoff handoff."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "09:30",
+        "end": "15:05",
+        "kind": "work",
+        "scene": "Prepares the ceramics studio and assists with classes."
+      },
+      {
+        "days": [3],
+        "start": "13:00",
+        "end": "20:10",
+        "kind": "work",
+        "scene": "Assists afternoon and evening studio sessions."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "15:25",
+        "end": "19:20",
+        "kind": "care",
+        "scene": "Collects both children and sets aside time for a quiet wind-down."
+      },
+      {
+        "days": [1],
+        "start": "11:40",
+        "end": "14:10",
+        "kind": "care",
+        "scene": "Handles lunch and a calm afternoon handoff on her weekday away from the studio."
+      },
+      {
+        "days": [6],
+        "start": "10:30",
+        "end": "11:45",
+        "kind": "outing",
+        "scene": "Visits a small park, allowing enough time for the preschooler to settle in."
+      }
+    ],
+    "moments": [
+      "The younger child sang a line from one language and finished with a line from the other.",
+      "The preschooler asked which adult would be waiting before the next new class.",
+      "A clay delivery ran late and her partner picked up with the familiar tote bag."
+    ]
+  },
+  "ya-qin": {
+    "story": "He teaches carpentry in a vocational program. The teenager asks before being included in family photos, and his partner and he set out scraps the younger child can safely use to build models.",
+    "wake": "06:20",
+    "sleep": "22:30",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:40",
+        "end": "12:00",
+        "kind": "work",
+        "scene": "Teaches workshop safety and supervised carpentry."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "12:05",
+        "end": "12:25",
+        "kind": "rest",
+        "scene": "Eats lunch after storing the tools and before the next lab."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "12:50",
+        "end": "15:45",
+        "kind": "work",
+        "scene": "Checks student projects and prepares the next workshop."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "16:15",
+        "end": "19:05",
+        "kind": "care",
+        "scene": "Handles the school pickup and dinner while both children choose how to use their time."
+      },
+      {
+        "days": [1, 3],
+        "start": "17:40",
+        "end": "19:25",
+        "kind": "care",
+        "scene": "Checks rides, makes dinner, and keeps tools put away."
+      },
+      {
+        "days": [5],
+        "start": "10:45",
+        "end": "12:20",
+        "kind": "outing",
+        "scene": "Runs an errand with the younger child and makes a little space for paper models at home."
+      }
+    ],
+    "moments": [
+      "The younger child built a tiny room around a scrap of patterned paper.",
+      "The teenager asked the family to crop them out of a photo before it was sent.",
+      "A workshop ran late while his partner was preparing dinner alone."
+    ]
+  },
+  "he-oak": {
+    "story": "She designs municipal museum graphics. She and her hearing partner use signs, speech, and written pickup notes as useful for each family member without making either child responsible for interpreting adult conversations.",
+    "wake": "06:40",
+    "sleep": "22:20",
+    "blocks": [
+      {
+        "days": [0, 2, 4],
+        "start": "06:55",
+        "end": "08:35",
+        "kind": "care",
+        "scene": "Handles breakfast and both school-day handoffs."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:00",
+        "end": "12:10",
+        "kind": "work",
+        "scene": "Designs museum labels and graphics and reviews accessible layouts."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:30",
+        "kind": "work",
+        "scene": "Coordinates print preparation and checks layouts on site."
+      },
+      {
+        "days": [1, 3],
+        "start": "16:55",
+        "end": "19:25",
+        "kind": "care",
+        "scene": "Collects the children and takes time to act out part of a picture book."
+      },
+      {
+        "days": [6],
+        "start": "10:10",
+        "end": "11:35",
+        "kind": "outing",
+        "scene": "Visits a small park and lets the children carry the story or game."
+      }
+    ],
+    "moments": [
+      "A pickup note once mentioned the wrong door and they corrected it before school ended.",
+      "The older child showed a friend a sign they use at dinner.",
+      "The younger child used only actions to tell the family what happened to a picture-book character."
+    ]
+  },
+  "juan-pasta": {
+    "story": "Most days she works the community hotel's kitchen into the evening. Monday is deliberately left for buying ingredients with her partner and children so the oldest can plan around seeing friends.",
+    "wake": "07:35",
+    "sleep": "23:15",
+    "blocks": [
+      {
+        "days": [0],
+        "start": "16:15",
+        "end": "17:55",
+        "kind": "outing",
+        "scene": "Lets each family member choose something on the weekly grocery trip."
+      },
+      {
+        "days": [1, 2, 3, 4, 5],
+        "start": "10:45",
+        "end": "15:10",
+        "kind": "work",
+        "scene": "Preps meals in the hotel kitchen."
+      },
+      {
+        "days": [1, 2, 3, 4, 5],
+        "start": "16:00",
+        "end": "21:00",
+        "kind": "work",
+        "scene": "Cooks the dinner service while the other adult is home."
+      },
+      {
+        "days": [1, 2, 3, 4],
+        "start": "08:00",
+        "end": "09:10",
+        "kind": "care",
+        "scene": "Checks school departure plans and makes room for the younger child's packed lunch."
+      },
+      {
+        "days": [6],
+        "start": "12:15",
+        "end": "14:20",
+        "kind": "care",
+        "scene": "Keeps a shared lunch available before the children go their separate ways."
+      }
+    ],
+    "moments": [
+      "The younger child chose a cold lunch that could be packed without borrowing her knife.",
+      "The older child asked to skip the grocery trip for a friend's meal and offered to write down their items.",
+      "The hotel dinner service ran late and a family shopping list was updated on the fridge."
+    ]
+  },
+  "sam-drift": {
+    "story": "He helps IT customers remotely. His partner's flower-shop opening makes a couple of mornings his, and they move pickups before busy shop days instead of assuming that working from home means being free.",
+    "wake": "07:30",
+    "sleep": "23:25",
+    "blocks": [
+      {
+        "days": [0, 2, 4],
+        "start": "07:40",
+        "end": "08:45",
+        "kind": "care",
+        "scene": "Does the toddler's breakfast and dropoff while his partner opens the shop."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:00",
+        "end": "12:20",
+        "kind": "work",
+        "scene": "Works the remote IT support queue and attends the team handoff."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:00",
+        "end": "16:45",
+        "kind": "work",
+        "scene": "Handles later support calls and documentation."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "17:10",
+        "end": "19:35",
+        "kind": "care",
+        "scene": "Collects the toddler or takes over dinner and bedtime."
+      },
+      {
+        "days": [6],
+        "start": "10:45",
+        "end": "12:10",
+        "kind": "outing",
+        "scene": "Lets the toddler practice on a shallow slope on a park walk."
+      }
+    ],
+    "moments": [
+      "The toddler picked up a toy from the floor and stood back up without taking a hand.",
+      "A last-minute flower order required the parents to swap pickup duties.",
+      "A support call had to be passed to a teammate during the daycare handoff."
+    ]
+  },
+  "yao-he": {
+    "story": "She works part-time in school procurement. Grandpa reads with the school children at an agreed time, and the parents protect quiet pickup transitions when the day has been noisy.",
+    "wake": "06:35",
+    "sleep": "22:15",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:50",
+        "end": "08:35",
+        "kind": "care",
+        "scene": "Helps three children get breakfast and handles the early dropoff handoff."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:10",
+        "end": "12:45",
+        "kind": "work",
+        "scene": "Processes purchasing requests and receives supplies for the school district."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:35",
+        "end": "17:30",
+        "kind": "care",
+        "scene": "Gets the children home and sets out separate quiet and active choices before Grandpa's reading time."
+      },
+      {
+        "days": [1, 3],
+        "start": "17:35",
+        "end": "19:15",
+        "kind": "care",
+        "scene": "Takes dinner duty while Grandpa wraps up the planned reading session."
+      },
+      {
+        "days": [6],
+        "start": "10:10",
+        "end": "11:25",
+        "kind": "outing",
+        "scene": "Visits a quieter park or a craft shop at the older child's request."
+      }
+    ],
+    "moments": [
+      "The toddler rolled a ball under a cabinet Grandpa could not reach.",
+      "A surprise loud machine noise meant using the quieter exit after school.",
+      "The eldest asked for their craft to stay on the table unfinished overnight."
+    ]
+  },
+  "yu-fei": {
+    "story": "He builds mobile software and splits the children's pickup and evening care with his partner. Their younger child is still a toddler; the older one likes hearing family stories during calm evenings.",
+    "wake": "06:50",
+    "sleep": "23:25",
+    "blocks": [
+      {
+        "days": [0, 1, 3],
+        "start": "07:05",
+        "end": "08:35",
+        "kind": "care",
+        "scene": "Gets the older child to school and helps with toddler dropoff."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "09:10",
+        "end": "12:20",
+        "kind": "work",
+        "scene": "Builds app changes and reviews code from home."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "13:05",
+        "end": "16:55",
+        "kind": "work",
+        "scene": "Tests devices and coordinates fixes with coworkers."
+      },
+      {
+        "days": [0, 2, 4],
+        "start": "17:10",
+        "end": "19:50",
+        "kind": "care",
+        "scene": "Takes over the children, cooks, and shares a short family story when they ask."
+      },
+      {
+        "days": [6],
+        "start": "10:05",
+        "end": "11:40",
+        "kind": "outing",
+        "scene": "Gets out for a quiet family walk or a grocery errand."
+      }
+    ],
+    "moments": [
+      "The toddler tried to hum along when the older child sang a made-up tune.",
+      "The older child asked what a small family celebration was like before they could remember it.",
+      "A bug fix was signed off after his partner had already put the children down."
+    ]
+  },
+  "luo-yan": {
+    "story": "His station placement alternates earlier and later turns across the week. He and his spouse plan newborn feeds around the posted shift, and Grandma comes by every other Sunday.",
+    "wake": "06:00",
+    "sleep": "23:35",
+    "blocks": [
+      {
+        "days": [0, 1],
+        "start": "07:15",
+        "end": "15:10",
+        "kind": "work",
+        "scene": "Puts in an early supervised shift at the station."
+      },
+      {
+        "days": [3, 4],
+        "start": "13:45",
+        "end": "21:40",
+        "kind": "work",
+        "scene": "Puts in a later supervised shift while her spouse covers evening."
+      },
+      {
+        "days": [0, 1, 2],
+        "start": "15:40",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Takes a stretch of newborn care including feed, change, and some window-side wake time."
+      },
+      {
+        "days": [3, 4],
+        "start": "08:15",
+        "end": "11:10",
+        "kind": "care",
+        "scene": "Takes the morning care stretch before leaving for the later shift."
+      },
+      {
+        "days": [6],
+        "start": "09:00",
+        "end": "09:30",
+        "kind": "rest",
+        "scene": "Takes a quiet breakfast while Grandma covers the newborn.",
+        "week": "odd"
+      },
+      {
+        "days": [6],
+        "start": "09:30",
+        "end": "10:40",
+        "kind": "care",
+        "scene": "Stays off the phone to catch up on sleep while Grandma has the newborn.",
+        "week": "odd"
+      },
+      {
+        "days": [6],
+        "start": "09:00",
+        "end": "10:40",
+        "kind": "care",
+        "scene": "Handles a morning feed and a slow walk indoors when Grandma is away.",
+        "week": "even"
+      }
+    ],
+    "moments": [
+      "The baby watched the same stripe of window light for much longer than expected.",
+      "A roster change made them move Grandma's Sunday visit by a week.",
+      "They rewrote a feed note that neither parent could read easily in dim light."
+    ]
+  },
+  "shi-shan": {
+    "story": "The retired mechanic helps at school once a week and shares care with his wife. The granddaughters have independent plans for band and college visits, with regular family check-ins and very different needs for rides.",
+    "wake": "06:50",
+    "sleep": "22:05",
+    "blocks": [
+      {
+        "days": [2],
+        "start": "09:15",
+        "end": "11:30",
+        "kind": "work",
+        "scene": "Volunteers at the school with a standing midweek slot."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "16:00",
+        "end": "18:05",
+        "kind": "care",
+        "scene": "Checks the teens' plans, does the occasional pickup, and cooks early."
+      },
+      {
+        "days": [5],
+        "start": "10:15",
+        "end": "11:55",
+        "kind": "outing",
+        "scene": "Offers a lift to band practice or a planned campus-related errand."
+      },
+      {
+        "days": [6],
+        "start": "17:30",
+        "end": "19:00",
+        "kind": "care",
+        "scene": "Sets out supper and helps line up the family video call."
+      }
+    ],
+    "moments": [
+      "The younger granddaughter stopped asking for a ride after learning the bus to rehearsal.",
+      "The older one asked to make the first campus choice without a family vote.",
+      "His wife had an online shift and he helped juggle the regular family call."
+    ]
+  },
+  "julie-reed": {
+    "story": "She administers adult education courses and shares care for four children. The older children can choose to help with a ride; the parents keep final responsibility and arrange coverage during an evening registration shift.",
+    "wake": "06:20",
+    "sleep": "22:40",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "06:45",
+        "end": "08:25",
+        "kind": "care",
+        "scene": "Gets the younger children out and checks who needs a ride or aftercare."
+      },
+      {
+        "days": [0, 1, 2, 4],
+        "start": "08:55",
+        "end": "15:45",
+        "kind": "work",
+        "scene": "Coordinates adult education classes and follows up with instructors."
+      },
+      {
+        "days": [3],
+        "start": "11:30",
+        "end": "19:30",
+        "kind": "work",
+        "scene": "Runs late course registration while her spouse handles afternoon care."
+      },
+      {
+        "days": [0, 1, 2, 4],
+        "start": "16:10",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Collects the younger children and checks in about the older children's own activities."
+      },
+      {
+        "days": [5],
+        "start": "10:15",
+        "end": "12:00",
+        "kind": "outing",
+        "scene": "Takes whichever children are free on a market or library run."
+      }
+    ],
+    "moments": [
+      "The youngest insisted on carrying each bowl to the table individually.",
+      "The oldest circled two campus visits and asked whether either needed a ride.",
+      "An older sibling volunteered for a pickup once but asked to keep the next week free."
+    ]
+  },
+  "wei-chen": {
+    "story": "Since a retail installation contract ended, Wei is the primary unpaid weekday caregiver. School and toddler routines come first while Wei searches during real preschool or nap windows and occasionally takes a short paid job when the other parent can cover.",
+    "wake": "06:50",
+    "sleep": "22:45",
+    "blocks": [
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "07:05",
+        "end": "09:05",
+        "kind": "care",
+        "scene": "Handles both children's breakfast, school departure, and the toddler's morning start."
+      },
+      {
+        "days": [0, 1, 3, 4],
+        "start": "09:20",
+        "end": "12:25",
+        "kind": "care",
+        "scene": "Cares for the toddler at home or at the park, including the requested stops at benches."
+      },
+      {
+        "days": [2],
+        "start": "09:20",
+        "end": "11:00",
+        "kind": "work",
+        "scene": "Follows up on contract leads and job applications while the toddler is at preschool."
+      },
+      {
+        "days": [2],
+        "start": "11:15",
+        "end": "12:25",
+        "kind": "care",
+        "scene": "Collects the toddler and covers the rest of the morning."
+      },
+      {
+        "days": [1, 4],
+        "start": "13:20",
+        "end": "14:05",
+        "kind": "work",
+        "scene": "Does a short job search during the toddler's regular rest, postponing it if care is needed."
+      },
+      {
+        "days": [0, 1, 2, 3, 4],
+        "start": "14:40",
+        "end": "19:30",
+        "kind": "care",
+        "scene": "Collects the school child, covers playdates or errands, and prepares dinner for both kids."
+      },
+      {
+        "days": [5],
+        "start": "09:30",
+        "end": "11:30",
+        "kind": "work",
+        "scene": "Keeps a short occasional paid-work slot if the partner is home and the job is confirmed.",
+        "week": "even"
+      },
+      {
+        "days": [6],
+        "start": "10:25",
+        "end": "11:45",
+        "kind": "outing",
+        "scene": "Takes both children out for an inexpensive park or library outing."
+      }
+    ],
+    "moments": [
+      "The toddler turned a short park loop into a long series of visits to benches.",
+      "The older child arranged a playground catch-up with a former classmate.",
+      "A daytime interview moved to a slot when the partner could finish school pickup."
+    ]
+  }
+}
