@@ -187,6 +187,7 @@ def test_deployed_opt_in_is_scoped_to_alpha_testing_database(monkeypatch):
         "com.ordashtech.nuri.beta:1099", "com.ordashtech.nuri.beta:1102",
         "com.ordashtech.nuri.beta:1103",
         "com.ordashtech.nuri.beta:1104", "com.ordashtech.nuri.beta:1105",
+        "com.ordashtech.nuri.beta:1106",
     }
 
     monkeypatch.setenv("NURI_LOCAL_ACTIVITY_PUSH_BUILDS", "com.ordashtech.nuri.beta:1097,com.example.pro:1097")

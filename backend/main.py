@@ -7350,7 +7350,7 @@ async def internal_alpha_community_bots_tick(authorization: Optional[str] = Head
 
 class AlphaLocalActivityTick(BaseModel):
     model_config = {"extra": "forbid"}
-    action: Literal["status", "probe", "generate", "dispatch"]
+    action: Literal["status", "probe", "generate", "dispatch", "dispatch_community"]
 
 
 @api.post("/internal/alpha-local-activities/tick", include_in_schema=False)
@@ -7363,14 +7363,22 @@ async def internal_alpha_local_activities_tick(
     feature = local_activities.enabled()
     compatible_build = bool(local_activities.supported_builds())
     if body.action == "status":
-        return {"ok": True, "scheduled": scheduled, "feature": feature, "compatible_build": compatible_build}
+        return {"ok": True, "scheduled": scheduled, "feature": feature, "compatible_build": compatible_build,
+                "apns_configured": push_apns.configured()}
     if body.action == "probe":
         return await public_city_probe()
+    if body.action == "dispatch_community":
+        if not scheduled:
+            return {"ok": True, "state": "paused"}
+        if not push_apns.configured():
+            return {"ok": True, "state": "apns_unconfigured"}
+        counts = await push_service.dispatch_due_notifications(sb, batch_size=10, scope="alpha_community")
+        return {"ok": True, **counts}
     if not scheduled or not feature or not compatible_build:
         return {"ok": True, "state": "paused"}
     if body.action == "generate":
         return await _generate_local_activity_batch(sb)
-    counts = await push_service.dispatch_due_notifications(sb, batch_size=30, local_activities_only=True)
+    counts = await push_service.dispatch_due_notifications(sb, batch_size=30, scope="local_activity")
     return {"ok": True, **counts}
 
 

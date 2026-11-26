@@ -2936,28 +2936,46 @@ async def notification_target(uid: str, notification_id: str) -> dict:
     kind = target.get("kind")
     try:
         if kind == "community_question":
-            await get_question(uid, target["question_id"])
+            question_id = target.get("question_id")
+            if not question_id:
+                raise _not_found("question")
+            question = (await get_question(uid, question_id))["question"]
+            if not question["is_mine"] and (question.get("delivery") or {}).get("delivery_id") != target.get("delivery_id"):
+                raise _not_found("delivery")
         elif kind == "community_reply":
-            question, _ = await _visible_question(uid, target["question_id"])
-            await _thread_access(uid, question, target.get("thread_id") or "all")
+            question_id = target.get("question_id")
+            if not question_id:
+                raise _not_found("question")
+            question, _ = await _visible_question(uid, question_id)
+            target["thread_id"] = target.get("thread_id") or "all"
+            if not isinstance(target["thread_id"], str):
+                raise _not_found("thread")
+            await _thread_access(uid, question, target["thread_id"])
             comment_id = target.get("comment_id")
             if runtime.alpha_features_available() and comment_id:
                 comments = await _notification_comments({comment_id})
                 if not _notification_comment_matches(target, comments.get(comment_id)):
                     raise _not_found("comment")
         elif kind == "community_invitation":
-            inv = await _one("community_invitations", lambda q: q.eq("id", target["invitation_id"]))
+            invitation_id = target.get("invitation_id")
+            try:
+                uuid.UUID(str(invitation_id))
+            except ValueError:
+                raise _not_found("invitation")
+            inv = await _one("community_invitations", lambda q: q.eq("id", invitation_id))
             if not inv or uid not in (inv["sender_id"], inv["recipient_id"]):
                 raise _not_found("invitation")
             target["state"] = inv["state"]
         elif kind in ("community_conversation", "community_ai_consent"):
-            conv, other = await _member_conversation(uid, target["conversation_id"])
+            _, other = await _member_conversation(uid, target.get("conversation_id") or "")
             i_blocked, they_blocked = await _blocked_between(uid, other)
             if i_blocked or they_blocked:
                 raise _not_found("conversation")
         else:
             raise _not_found("target")
     except CommunityError as exc:
+        if exc.retryable:
+            raise
         return {"notification_id": notification_id, "accessible": False, "target": None,
                 "reason": exc.error_code}
     return {"notification_id": notification_id, "accessible": True, "target": target, "reason": None}

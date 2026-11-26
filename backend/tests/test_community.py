@@ -949,6 +949,24 @@ def test_community_notifications_list_target_read_and_open_guard(env):
     assert gone["accessible"] is False and gone["target"] is None
 
 
+def test_community_notification_target_storage_failure_is_retryable(env, monkeypatch):
+    for uid in ("u_ann", "u_ben"):
+        make_profile(env, uid)
+    conv = connect(env, "u_ann", "u_ben")
+    ok(env.call("u_ann", "POST", f"/conversations/{conv}/messages",
+                json={"text": "hi", "client_message_id": "nt-retry-0001"}), 201)
+    items = ok(env.call("u_ben", "GET", "/me/notifications"))["items"]
+    path = f"/me/notifications/{items[0]['notification_id']}/target"
+
+    async def unavailable(_uid, _conversation_id):
+        raise community.CommunityError("STORAGE_OR_SERVICE_UNAVAILABLE", "Synthetic timeout")
+
+    monkeypatch.setattr(community, "_member_conversation", unavailable)
+    response = env.call("u_ben", "GET", path)
+    err(response, 503, "STORAGE_OR_SERVICE_UNAVAILABLE")
+    assert response.json()["error"]["retryable"] is True
+
+
 def test_alpha_bottle_notifications_identify_existing_reply_and_private_comment(env, monkeypatch):
     monkeypatch.setattr(runtime, "alpha_features_available", lambda: False)
     for uid in ("u_ann", "u_ben"):

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import date, datetime, time as dt_time, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
@@ -35,6 +35,16 @@ _SENDERS = {"ios": push_apns, "android": push_fcm}
 #: How many events one dispatch run will claim. Vercel's cron fires every five
 #: minutes, so this only has to keep up with a backlog, not drain one instantly.
 DEFAULT_BATCH_SIZE = 100
+ALPHA_IOS_TOPIC = "com.ordashtech.nuri.beta"
+_COMMUNITY_PUSH_KINDS = frozenset({
+    "community_question", "community_reply", "community_invitation",
+    "community_conversation", "community_ai_consent",
+})
+_CLAIM_RPC = {
+    "default": "claim_due_notifications",
+    "local_activity": "claim_due_local_activity_notifications",
+    "alpha_community": "claim_due_alpha_community_notifications",
+}
 
 #: §13 bans the raw token, the payload text and the user's own words from logs.
 #: Only these fields are ever logged.
@@ -521,7 +531,7 @@ async def _requeue(sb: Any, event_id: str, delay_minutes: int, error: str = "") 
 
 async def dispatch_due_notifications(
     sb: Any, *, batch_size: int = DEFAULT_BATCH_SIZE, now: Optional[datetime] = None,
-    local_activities_only: bool = False,
+    scope: Literal["default", "local_activity", "alpha_community"] = "default",
 ) -> dict[str, int]:
     """Claim due events and try to deliver each to the account's devices."""
     now = now or _now()
@@ -530,15 +540,21 @@ async def dispatch_due_notifications(
                 "no_devices": 0, "deactivated": 0}
 
     def _claim() -> list[dict]:
-        rpc = "claim_due_local_activity_notifications" if local_activities_only else "claim_due_notifications"
         return (
-            sb.rpc(rpc, {"batch_size": batch_size})
+            sb.rpc(_CLAIM_RPC[scope], {"batch_size": batch_size})
             .execute().data or []
         )
 
     events = await anyio.to_thread.run_sync(_claim)
-    if local_activities_only:
+    alpha_community = scope == "alpha_community"
+    if scope == "local_activity":
         events = [event for event in events if (event.get("data") or {}).get("kind") == activities.KIND]
+    elif alpha_community:
+        counters.update(skipped_inaccessible=0, deferred_target=0)
+        events = [
+            event for event in events if event.get("type") == "chat"
+            and (event.get("data") or {}).get("kind") in _COMMUNITY_PUSH_KINDS
+        ]
     counters["claimed"] = len(events)
     if not events:
         return counters
@@ -558,14 +574,22 @@ async def dispatch_due_notifications(
         is_local_activity = data.get("kind") == activities.KIND
         try:
             prefs = await anyio.to_thread.run_sync(
-                lambda: _preferences(sb, uid, fail_closed=True) if is_local_activity else _preferences(sb, uid),
+                lambda: _preferences(sb, uid, fail_closed=True)
+                if is_local_activity or alpha_community else _preferences(sb, uid),
             )
+            parent_messages = True
+            if alpha_community:
+                rows = await anyio.to_thread.run_sync(
+                    lambda: sb.table("community_preferences")
+                    .select("parent_message_notifications_enabled").eq("user_id", uid).limit(1).execute().data or []
+                )
+                parent_messages = not rows or rows[0].get("parent_message_notifications_enabled", True)
         except Exception:
             await _requeue(sb, event_id, 15, "notification_preferences_unavailable")
             continue
 
         allowed = prefs.get("enabled", True) if is_local_activity else _type_enabled(prefs, event["type"])
-        if not allowed:
+        if not allowed or not parent_messages:
             await _finish(sb, event_id, "cancelled", "type_disabled")
             counters["skipped_prefs"] += 1
             continue
@@ -577,7 +601,7 @@ async def dispatch_due_notifications(
             continue
 
         cap = int(prefs.get("max_per_day", 4) or 0)
-        if (event.get("data") or {}).get("test_burst"):
+        if not alpha_community and data.get("test_burst"):
             cap = 0  # Test accounts run every half hour, uncapped.
         if event["type"] != "system" and cap > 0:
             if await anyio.to_thread.run_sync(lambda: _sent_today(sb, uid, prefs, now)) >= cap:
@@ -585,17 +609,44 @@ async def dispatch_due_notifications(
                 counters["capped"] += 1
                 continue
 
+        if alpha_community:
+            # Community owns current target and recipient visibility. A queued
+            # event cannot rely on the permissions it had when it was created.
+            from backend import community
+
+            try:
+                resolved = await community.notification_target(uid, event_id)
+            except community.CommunityError as exc:
+                if exc.retryable:
+                    await _requeue(sb, event_id, 15, "community_target_unavailable")
+                    counters["deferred_target"] += 1
+                    continue
+                resolved = {}
+            if not resolved.get("accessible"):
+                await _finish(sb, event_id, "cancelled", "community_target_no_longer_accessible")
+                counters["skipped_inaccessible"] += 1
+                continue
+
         def _devices() -> list[dict]:
-            return (
+            query = (
                 sb.table("push_devices")
                 .select("id,platform,apns_token,apns_environment,permission_status,bundle_id,build_number")
-                .eq("user_id", uid).eq("is_active", True).execute().data or []
+                .eq("user_id", uid).eq("is_active", True)
             )
+            if alpha_community:
+                query = query.eq("platform", "ios").eq("bundle_id", ALPHA_IOS_TOPIC).eq("apns_environment", "production")
+            return query.execute().data or []
 
         reachable = [
             d for d in await anyio.to_thread.run_sync(_devices)
             if d.get("permission_status") in {"authorized", "provisional"}
         ]
+        if alpha_community:
+            reachable = [
+                d for d in reachable if d.get("platform") == "ios" and d.get("bundle_id") == ALPHA_IOS_TOPIC
+                and d.get("apns_environment") == "production"
+            ]
+            data = {"kind": data["kind"]}
         if is_local_activity:
             builds = activities.supported_builds()
             reachable = [d for d in reachable if activities.supports_push(d, builds)]
@@ -616,6 +667,11 @@ async def dispatch_due_notifications(
             # Keep the account's coarse area and the consent revision off-device.
             data = {"kind": activities.KIND}
         if not reachable:
+            if alpha_community:
+                # The Alpha registration may have changed since the claim.
+                await _requeue(sb, event_id, 10, "no_active_alpha_device")
+                counters["no_devices"] += 1
+                continue
             await _finish(sb, event_id, "cancelled", "no_active_device")
             counters["no_devices"] += 1
             continue
@@ -639,7 +695,8 @@ async def dispatch_due_notifications(
                     environment=device["apns_environment"],
                     title=event["title"], body=event["body"],
                     notification_id=event_id, notification_type=event["type"],
-                    route=event["route"], data=data,
+                    # A claimed row may precede the queue's route write-back.
+                    route=care.route_for(event_id), data=data,
                     thread_id=event.get("thread_id") or "nuri-reminders",
                     collapse_id=event.get("collapse_id"),
                     **topic,
