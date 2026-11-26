@@ -220,6 +220,7 @@ class _OpenDb:
     def __init__(self, event: dict):
         self.event = event
         self.messages: dict[str, dict] = {}
+        self.lookup_failure = None
 
     def table(self, name):
         db = self
@@ -228,7 +229,9 @@ class _OpenDb:
             def select(self, *_a, **_k):
                 return self
 
-            def eq(self, *_a):
+            def eq(self, key, value):
+                if key == "id":
+                    self._lookup_id = value
                 return self
 
             def limit(self, *_a):
@@ -242,7 +245,10 @@ class _OpenDb:
                 if name == "chat_messages":
                     db.messages.setdefault(self._row["id"], self._row)
                     return SimpleNamespace(data=[])
-                return SimpleNamespace(data=[db.event])
+                if db.lookup_failure is not None:
+                    raise db.lookup_failure
+                rows = [db.event] if db.event["id"] == self._lookup_id else []
+                return SimpleNamespace(data=rows)
 
         return _T()
 
@@ -276,10 +282,15 @@ def opened(monkeypatch):
 
     client = TestClient(main.app)
 
+    def read(uid="u1", notification_id="ev-1"):
+        return client.get(f"/api/notifications/{notification_id}",
+                          headers={"Authorization": f"Bearer {main._make_token(uid)}"})
+
     def tap(uid="u1", notification_id="ev-1"):
         return client.post(f"/api/notifications/{notification_id}/open",
                            headers={"Authorization": f"Bearer {main._make_token(uid)}"})
 
+    state["read"] = read
     state["tap"] = tap
     return state
 
@@ -343,9 +354,25 @@ def test_a_second_tap_adds_nothing(opened):
     assert len(opened["db"].messages) == 1
 
 
-def test_someone_elses_notification_is_a_404(opened):
-    response = opened["tap"](uid="u2")
-    assert response.status_code == 404
+@pytest.mark.parametrize("action", ["read", "tap"])
+def test_missing_and_other_users_notifications_return_the_same_404(opened, action):
+    for response in (opened[action](uid="u2"), opened[action](notification_id="missing")):
+        assert response.status_code == 404
+        payload = response.json()
+        assert payload["detail"] == "notification not found"
+        assert payload["error"]["code"] == "NOT_FOUND"
+        assert payload["error"]["retryable"] is False
+    assert opened["db"].messages == {}
+
+
+@pytest.mark.parametrize("action", ["read", "tap"])
+def test_unavailable_notification_storage_is_retryable(opened, action):
+    opened["db"].lookup_failure = TimeoutError("synthetic lookup failure")
+    response = opened[action]()
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["detail"] == "Notification storage unavailable"
+    assert payload["error"]["retryable"] is True
     assert opened["db"].messages == {}
 
 

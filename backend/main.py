@@ -6961,8 +6961,10 @@ async def read_notification(notification_id: str, uid: str = Depends(_req_uid)):
 
     try:
         rows = await anyio.to_thread.run_sync(_load)
-    except Exception:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Notification storage unavailable",
+        ) from exc
     if not rows or rows[0].get("user_id") != uid:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
 
@@ -7073,8 +7075,10 @@ async def open_notification(notification_id: str, uid: str = Depends(_req_uid)):
 
     try:
         rows = await anyio.to_thread.run_sync(_load)
-    except Exception:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Notification storage unavailable",
+        ) from exc
     if not rows or rows[0].get("user_id") != uid:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
     row = rows[0]
